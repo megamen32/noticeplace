@@ -20,6 +20,9 @@ need Node, npm, Python, a database, or the primary notification-center package.
   `telegram,matrix`, Matrix is attempted only when Telegram fails.
 - A total delivery failure remains pending in the mode-0600 state file and is
   retried after `ALERT_RETRY_SECONDS`, including across service restarts.
+- The process lock is a bounded lease. `WATCHDOG_LOCK_STALE_SECONDS` defaults
+  to 120 seconds; a fresh lease blocks overlap, while an expired lease is
+  reclaimed even if its PID is missing, malformed, or has been reused.
 - Recovery is sent only if a DOWN alert was actually delivered. A brief outage
   that recovered before any alert transport succeeded does not create a confusing
   standalone recovery message.

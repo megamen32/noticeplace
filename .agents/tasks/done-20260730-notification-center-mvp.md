@@ -54,6 +54,18 @@ authenticated `/health` JSON and accepted a bearer-authenticated critical
 event. Live vpn2/systemd/Telegram/Matrix evidence is not claimed: it needs an
 approved external hostname/TLS route and separate real credentials.
 
+Final Critic gate initially returned `RETHINK`: the Matrix failover method was
+implicit POST and stale locks without trustworthy PID metadata could persist.
+Both were repaired before close. The watchdog now explicitly sends Matrix
+events with `PUT`, and uses a bounded 120-second configurable lock lease that
+recovers expired locks even for missing, malformed, or PID-reused metadata,
+while fresh locks still prevent overlap. New regressions assert the request
+method and all four lock cases. Final evidence: `python3
+tests/test_vpn2_watchdog_shell.py -v` passed 10/10; `pytest -q` passed 25;
+`sh -n deploy/vpn2/notification-center-watchdog.sh` and `git diff --check`
+passed. The tested watchdog artifact SHA-256 is
+`1f3983f4a2b5db7096d76dc228ad6f82d260b3b16ee2139a26a0455a2593867b`.
+
 ### Authenticated core health slice (`/root/core_endpoint`)
 
 - `GET /health` now requires a dedicated `NOTIFY_CENTER_HEALTH_TOKEN`;

@@ -2,25 +2,35 @@
 set -eu
 umask 077
 now=${WATCHDOG_NOW_EPOCH:-$(date +%s)}
-fail_threshold=${FAIL_THRESHOLD:-3}; recovery_threshold=${RECOVERY_THRESHOLD:-2}; retry_seconds=${ALERT_RETRY_SECONDS:-60}; channels=${WATCHDOG_CHANNELS:-telegram}
+fail_threshold=${FAIL_THRESHOLD:-3}; recovery_threshold=${RECOVERY_THRESHOLD:-2}; retry_seconds=${ALERT_RETRY_SECONDS:-60}; lock_stale_seconds=${WATCHDOG_LOCK_STALE_SECONDS:-120}; channels=${WATCHDOG_CHANNELS:-telegram}
 require_value() { if [ -z "$2" ]; then echo "$1 is required" >&2; return 1; fi; }
+is_uint() { case ${1:-} in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
 check_config() {
   require_value PRIMARY_HEALTH_URL "${PRIMARY_HEALTH_URL:-}"
   require_value PRIMARY_HEALTH_TOKEN "${PRIMARY_HEALTH_TOKEN:-}"
   case "$channels" in *telegram*) require_value TELEGRAM_BOT_TOKEN "${TELEGRAM_BOT_TOKEN:-}"; require_value TELEGRAM_CHAT_ID "${TELEGRAM_CHAT_ID:-}";; esac
   case "$channels" in *matrix*) require_value MATRIX_HOMESERVER "${MATRIX_HOMESERVER:-}"; require_value MATRIX_ROOM_ID_ENCODED "${MATRIX_ROOM_ID_ENCODED:-}"; require_value MATRIX_ACCESS_TOKEN "${MATRIX_ACCESS_TOKEN:-}";; esac
+  is_uint "$now" && is_uint "$lock_stale_seconds" && [ "$lock_stale_seconds" -gt 0 ] || { echo "watchdog lock timestamps must be positive integers" >&2; return 1; }
 }
 if [ "${1:-}" = "--check-config" ]; then check_config; exit 0; fi
 check_config
 state_file=${WATCHDOG_STATE_FILE:?WATCHDOG_STATE_FILE is required}; lock_dir=${WATCHDOG_LOCK_DIR:-"${state_file}.lock"}
 if [ -d "$lock_dir" ]; then
-  stale_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
-  if [ -n "$stale_pid" ] && ! kill -0 "$stale_pid" 2>/dev/null; then rm -rf "$lock_dir"; echo 'removed stale watchdog lock' >&2; else exit 0; fi
+  lock_created_at=$(cat "$lock_dir/created_at" 2>/dev/null || true)
+  if is_uint "$lock_created_at" && [ "$lock_created_at" -le "$now" ] && [ $((now - lock_created_at)) -lt "$lock_stale_seconds" ]; then
+    exit 0
+  else
+    rm -f "$lock_dir/pid" "$lock_dir/created_at"
+    rmdir "$lock_dir" 2>/dev/null || exit 0
+    echo 'removed stale watchdog lock' >&2
+  fi
 fi
-mkdir "$lock_dir"; printf '%s\n' "$$" > "$lock_dir/pid"
+mkdir "$lock_dir"
+printf '%s\n' "$now" > "$lock_dir/created_at"
+printf '%s\n' "$$" > "$lock_dir/pid"
 FAILURE_COUNT=0; SUCCESS_COUNT=0; DOWN=0; ALERT_SENT=0; PENDING_KIND=; LAST_ALERT_ATTEMPT=0
 if [ -f "$state_file" ]; then while IFS='=' read -r key value; do case "$key:$value" in FAILURE_COUNT:*|SUCCESS_COUNT:*|DOWN:*|ALERT_SENT:*|LAST_ALERT_ATTEMPT:*) case "$value" in *[!0-9]*|'') ;; *) case "$key" in FAILURE_COUNT) FAILURE_COUNT=$value;; SUCCESS_COUNT) SUCCESS_COUNT=$value;; DOWN) DOWN=$value;; ALERT_SENT) ALERT_SENT=$value;; LAST_ALERT_ATTEMPT) LAST_ALERT_ATTEMPT=$value;; esac;; esac;; PENDING_KIND:DOWN|PENDING_KIND:RECOVERED|PENDING_KIND:) PENDING_KIND=$value;; esac; done < "$state_file"; fi
-cleanup() { rm -f "${health_body:-}" "${tmp:-}" "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null || true; }
+cleanup() { rm -f "${health_body:-}" "${tmp:-}" "$lock_dir/pid" "$lock_dir/created_at"; rmdir "$lock_dir" 2>/dev/null || true; }
 trap cleanup EXIT HUP INT TERM
 save_state() { mkdir -p "$(dirname "$state_file")"; tmp="${state_file}.tmp.$$"; printf 'FAILURE_COUNT=%s\nSUCCESS_COUNT=%s\nDOWN=%s\nALERT_SENT=%s\nPENDING_KIND=%s\nLAST_ALERT_ATTEMPT=%s\n' "$FAILURE_COUNT" "$SUCCESS_COUNT" "$DOWN" "$ALERT_SENT" "$PENDING_KIND" "$LAST_ALERT_ATTEMPT" > "$tmp"; chmod 600 "$tmp"; mv "$tmp" "$state_file"; }
 health_body=$(mktemp)
@@ -63,6 +73,7 @@ output = "/dev/null"
 silent
 show-error
 fail
+request = "PUT"
 proto = "=https"
 tlsv1.2
 connect-timeout = 3

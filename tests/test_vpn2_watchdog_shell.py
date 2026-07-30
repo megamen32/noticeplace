@@ -51,6 +51,7 @@ case "$url" in
   "$MATRIX_HOMESERVER"/*)
     grep -F "header = \\"Authorization: Bearer $MATRIX_ACCESS_TOKEN\\"" "$config" >/dev/null || exit 93
     grep -F '\\"msgtype\\":\\"m.text\\"' "$config" >/dev/null || exit 92
+    grep -F 'request = "PUT"' "$config" >/dev/null || exit 91
     exit "${FAKE_MATRIX_RC:-0}"
     ;;
   *)
@@ -76,6 +77,7 @@ esac
             "FAIL_THRESHOLD": "3",
             "RECOVERY_THRESHOLD": "2",
             "ALERT_RETRY_SECONDS": "60",
+            "WATCHDOG_LOCK_STALE_SECONDS": "120",
             "WATCHDOG_CHANNELS": "telegram,matrix",
             "TELEGRAM_BOT_TOKEN": "test-telegram-token",
             "TELEGRAM_CHAT_ID": "test-chat",
@@ -213,16 +215,45 @@ esac
         self.assertEqual("1", self.state()["FAILURE_COUNT"])
         self.assertEqual("0", self.state()["DOWN"])
 
-    def test_stale_process_lock_is_recovered(self) -> None:
-        """Do not stay blind forever after a killed process leaves its lock directory."""
+    def test_expired_lock_with_missing_or_malformed_pid_is_recovered(self) -> None:
+        """Expire a bounded lease even when PID metadata cannot identify an owner."""
+        for pid_value in (None, "not-a-pid\n"):
+            with self.subTest(pid_value=pid_value):
+                lock = self.root / "lock"
+                lock.mkdir()
+                (lock / "created_at").write_text("800\n", encoding="utf-8")
+                if pid_value is not None:
+                    (lock / "pid").write_text(pid_value, encoding="utf-8")
+                result = self.run_cycle(1000)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("removed stale watchdog lock", result.stderr)
+                self.assertTrue((self.root / "state").exists())
+                self.assertFalse(lock.exists())
+                (self.root / "state").unlink()
+
+    def test_expired_lock_is_recovered_even_if_pid_was_reused(self) -> None:
+        """Lease age wins over kill(0) when an old PID now belongs to another process."""
         lock = self.root / "lock"
         lock.mkdir()
-        (lock / "pid").write_text("99999999\n", encoding="utf-8")
+        (lock / "created_at").write_text("800\n", encoding="utf-8")
+        (lock / "pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
         result = self.run_cycle(1000)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("removed stale watchdog lock", result.stderr)
         self.assertTrue((self.root / "state").exists())
         self.assertFalse(lock.exists())
+
+    def test_fresh_active_lock_prevents_a_concurrent_cycle(self) -> None:
+        """Keep a fresh live lease even though another process invokes the timer."""
+        lock = self.root / "lock"
+        lock.mkdir()
+        (lock / "created_at").write_text("950\n", encoding="utf-8")
+        (lock / "pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        result = self.run_cycle(1000)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse((self.root / "state").exists())
+        self.assertFalse(self.curl_log.exists())
+        self.assertTrue(lock.exists())
 
     def test_wrong_authenticated_health_contract_counts_as_failure(self) -> None:
         """Reject a 200 response whose identity does not match the primary service."""
