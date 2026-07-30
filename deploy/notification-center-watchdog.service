@@ -1,0 +1,20 @@
+[Unit]
+Description=Independent vpn2 notification-center health watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=notification-center-watchdog
+Group=notification-center-watchdog
+EnvironmentFile=/etc/notification-center-watchdog.env
+WorkingDirectory=/opt/notify
+ExecStart=/bin/sh /opt/notify/deploy/vpn2/notification-center-watchdog.sh
+StateDirectory=notification-center-watchdog
+UMask=0077
+TimeoutStartSec=20s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/notification-center-watchdog

@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Run the low-RAM notification-center HTTP API and Telegram delivery worker."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from notification_center.core import NotificationCenter
+from notification_center.http_api import DeliveryWorker, run_http, telegram_from_environment
+
+
+def load_tokens() -> dict[str, dict[str, str]]:
+    """Load token scopes from NOTIFY_CENTER_TOKENS_JSON; exits if absent or malformed."""
+    raw = os.environ.get("NOTIFY_CENTER_TOKENS_JSON", "")
+    try:
+        tokens = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SystemExit("NOTIFY_CENTER_TOKENS_JSON must be a JSON object") from error
+    if not isinstance(tokens, dict) or not tokens:
+        raise SystemExit("NOTIFY_CENTER_TOKENS_JSON must contain at least one token scope")
+    return tokens
+
+
+def worker_loop(worker: DeliveryWorker) -> None:
+    """Poll durable due jobs every second; delivery errors are persisted by the worker."""
+    while True:
+        worker.run_once()
+        time.sleep(1)
+
+
+def main() -> None:
+    """Create durable dependencies and run worker plus API in one small process."""
+    center = NotificationCenter(os.environ.get("NOTIFY_CENTER_DB", "./var/notify-center.sqlite3"), load_tokens())
+    threading.Thread(target=worker_loop, args=(DeliveryWorker(center, telegram_from_environment()),), daemon=True).start()
+    run_http(center, os.environ.get("NOTIFY_CENTER_HOST", "127.0.0.1"), int(os.environ.get("NOTIFY_CENTER_PORT", "8091")))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,24 @@
+[Unit]
+Description=Notification Center API and durable Telegram dispatcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=notification-center
+Group=notification-center
+EnvironmentFile=/etc/notification-center.env
+WorkingDirectory=/opt/notify
+ExecStart=/usr/bin/python3 /opt/notify/bin/notify-center
+Restart=on-failure
+RestartSec=3
+StateDirectory=notification-center
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/notification-center
+
+[Install]
+WantedBy=multi-user.target

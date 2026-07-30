@@ -1,0 +1,33 @@
+[Unit]
+Description=Independent vpn2 notification-center health watchdog
+Documentation=file:/opt/notification-center-watchdog/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=notify-watchdog
+Group=notify-watchdog
+EnvironmentFile=/etc/notification-center-watchdog.env
+ExecStart=/opt/notification-center-watchdog/notification-center-watchdog.sh
+StateDirectory=notification-center-watchdog
+StateDirectoryMode=0700
+RuntimeDirectory=notification-center-watchdog
+RuntimeDirectoryMode=0700
+Environment=WATCHDOG_LOCK_DIR=/run/notification-center-watchdog/cycle.lock
+UMask=0077
+TimeoutStartSec=30
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallArchitectures=native

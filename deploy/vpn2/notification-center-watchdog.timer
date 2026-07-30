@@ -1,0 +1,13 @@
+[Unit]
+Description=Probe the primary notification center every 20 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=20s
+AccuracySec=2s
+RandomizedDelaySec=2s
+Persistent=yes
+Unit=notification-center-watchdog.service
+
+[Install]
+WantedBy=timers.target
