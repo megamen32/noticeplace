@@ -2,15 +2,25 @@
 
 **Languages:** English | [Русский](README.ru.md) | [中文](README.zh.md)
 
-<p align="center">
-  <img src="assets/hero.svg" alt="Notify MCP sends Telegram pings from AI agents" width="100%">
-</p>
+![Notify MCP sends Telegram pings from AI agents](docs/assets/readme-hero.png)
+
+> Runtime baseline checked with Node.js 22.22.3 and npm 10.9.8.
 
 **Ping the human when the agent needs attention.**
 
 Notify MCP is now primarily a lightweight Telegram ping tool for AI agents: use it at the end of work or before asking the user a question. Long work and returning to the correct chat should be handled by `agent-resume`. Legacy process watchers are still available when you specifically need Telegram on process completion.
 
 For long builds, migrations, test suites, backups, and deployments, prefer `agent-resume` for waiting/resume. Use `notify.send_message` as the human-facing final ping: “I finished, please check.”
+
+## Quick start: install in Codex
+
+If Codex is your MCP client, this single command adds Notify and starts it through the real GitHub package launcher:
+
+```bash
+codex mcp add notify -- npx -y github:megamen32/notify
+```
+
+Restart or reload Codex, then run `codex mcp list` to confirm the server is registered. For OpenCode, VS Code, or a local stdio process, use the client-specific examples below.
 
 ## Why agents use it
 
@@ -159,4 +169,3 @@ Do not use `notify` as the default mechanism for long waiting/resume. That job b
 ```
 
 This is separate from `agent-resume`, which is the preferred mechanism for long work and resuming the correct chat. `run_and_notify`/`attach_pid` remain legacy process-completion helpers.
-

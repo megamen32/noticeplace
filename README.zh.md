@@ -2,15 +2,23 @@
 
 [English](README.md) | [Русский](README.ru.md) | **中文**
 
-<p align="center">
-  <img src="assets/hero.svg" alt="Notify MCP 从 AI agent 发送 Telegram 提醒" width="100%">
-</p>
+![Notify MCP 从 AI agent 发送 Telegram 提醒](docs/assets/readme-hero.png)
 
 **当 agent 需要人类注意时发送提醒。**
 
 Notify MCP 现在主要是给 AI agent 使用的轻量 Telegram 人类提示：在工作结束时或向用户提问之前发送提醒。长任务、等待以及回到正确聊天上下文应由 `agent-resume` 处理。旧的进程 watcher 仍然保留，只用于确实需要“进程结束时发 Telegram”的场景。
 
 对于长构建、迁移、测试、备份和部署，请使用 `agent-resume` 进行等待/resume。`notify.send_message` 只作为面向人的最终提示：“我完成了，请检查”。
+
+## 快速开始：安装到 Codex
+
+如果 MCP 客户端是 Codex，可以用一条命令通过 GitHub 中真实的 launcher 添加 Notify：
+
+```bash
+codex mcp add notify -- npx -y github:megamen32/notify
+```
+
+重启或重新加载 Codex，然后运行 `codex mcp list` 确认服务器已注册。OpenCode、VS Code 或本地 stdio 进程请使用下面对应的配置示例。
 
 ## 为什么智能体需要它
 
