@@ -332,9 +332,12 @@ class NotificationCenter:
             raise ValidationError("delivery outcome must be sent, cancelled, or retry")
         now = time.time()
         with self._lock, self._connection:
-            row = self._connection.execute("SELECT incident_id FROM deliveries WHERE id = ?", (delivery_id,)).fetchone()
+            row = self._connection.execute("SELECT d.incident_id, i.state FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
             if row is None:
                 raise ValidationError("delivery not found")
+            if outcome == "sent" and str(row["state"]) not in DELIVERABLE_STATES:
+                outcome = "cancelled"
+                error = error or "incident is no longer active"
             if outcome == "retry":
                 self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), (error or "")[-1000:], now, delivery_id))
             else:
@@ -361,7 +364,23 @@ class NotificationCenter:
 
     def acknowledge(self, incident_id: str, actor: str) -> dict[str, Any]:
         """Explicitly ACK an active incident and cancel future escalation."""
-        return self._transition(incident_id, "acknowledged", actor)
+        existing = self.get_incident(incident_id)
+        if existing is not None and existing["state"] == "acknowledged":
+            return existing
+        result = self.acknowledge_if_active(incident_id, actor)
+        if result is None:
+            raise ValidationError("cannot acknowledge an inactive incident")
+        return result
+
+    def acknowledge_if_active(self, incident_id: str, actor: str) -> dict[str, Any] | None:
+        """ACK only an open or snoozed incident; never resurrect a resolved one."""
+        with self._lock, self._connection:
+            incident = self.get_incident(incident_id)
+            if incident is None:
+                raise ValidationError("incident not found")
+            if incident["state"] not in DELIVERABLE_STATES:
+                return None
+            return self._transition(incident_id, "acknowledged", actor)
 
     def resolve(self, incident_id: str, actor: str) -> dict[str, Any]:
         """Resolve an incident and prevent future delivery from its prior state."""

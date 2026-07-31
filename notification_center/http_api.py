@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import time
 import urllib.parse
 import urllib.request
 from http import HTTPStatus
@@ -36,27 +37,98 @@ class TelegramSender:
                 raise RuntimeError(f"Telegram returned HTTP {response.status}")
 
 
+class MatrixCallSender:
+    """POST an incident to the LAN-only MatrixRTC bridge and return its answer state."""
+
+    def __init__(self, url: str, token: str, timeout_seconds: float = 150, runner: Any = urllib.request.urlopen) -> None:
+        self._url = url
+        self._token = token
+        self._timeout_seconds = timeout_seconds
+        self._runner = runner
+
+    def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Submit one incident over one bounded authenticated HTTP request."""
+        if not self._url or not self._token:
+            raise RuntimeError("Matrix call sender is not configured")
+        incident = payload["incident"]
+        request = {
+            "incident_id": str(incident["id"]),
+            "project": str(incident["project"]),
+            "severity": str(incident["severity"]),
+            "title": str(incident["title"]),
+            "body": str(incident["body"]),
+        }
+        bridge_request = urllib.request.Request(
+            self._url,
+            data=json.dumps(request, ensure_ascii=False).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._token}"},
+            method="POST",
+        )
+        try:
+            with self._runner(bridge_request, timeout=self._timeout_seconds) as response:
+                if not 200 <= int(response.status) < 300:
+                    raise RuntimeError(f"Matrix call bridge returned HTTP {response.status}")
+                result = json.loads(response.read())
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Matrix call bridge returned invalid JSON") from error
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise RuntimeError("Matrix call bridge did not start a call")
+        answered = result.get("answered") is True
+        target = str(result.get("target") or "")
+        if answered and not target.startswith("@"):
+            raise RuntimeError("Matrix call bridge did not identify the answerer")
+        return {"answered": answered, "actor": f"matrix:{target}" if answered else None}
+
+
 class DeliveryWorker:
     """Run due delivery claims through known adapters without hiding failures."""
 
-    def __init__(self, center: NotificationCenter, telegram: TelegramSender) -> None:
-        """Attach the durable core to its current Telegram delivery adapter."""
+    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0) -> None:
+        """Attach durable delivery state to Telegram and an optional MatrixRTC bridge."""
         self._center = center
         self._telegram = telegram
+        self._matrix_call = matrix_call
+        self._lease_seconds = lease_seconds
+        self._call_escalation_seconds = max(0, call_escalation_seconds)
+
+    def claim_due(self) -> list[dict[str, Any]]:
+        """Claim a bounded batch without blocking the dispatcher heartbeat."""
+        deliveries = self._center.claim_due_deliveries(lease_seconds=self._lease_seconds)
+        self._center.mark_dispatcher_healthy()
+        return deliveries
+
+    def deliver(self, delivery: dict[str, Any]) -> None:
+        """Deliver one claimed job; callers may run this in a bounded worker pool."""
+        try:
+            payload = self._center.delivery_payload(delivery)
+            if delivery["channel"] == "telegram.main":
+                self._telegram.send(payload)
+                incident = payload["incident"]
+                if (
+                    self._matrix_call is not None
+                    and self._call_escalation_seconds > 0
+                    and incident["severity"] == "critical"
+                    and str(delivery["delivery_key"]).endswith(":initial")
+                ):
+                    self._center.schedule_escalation(str(delivery["incident_id"]), "matrix.call", time.time() + self._call_escalation_seconds)
+            elif delivery["channel"] == "matrix.call":
+                if self._matrix_call is None:
+                    raise RuntimeError("Matrix call sender is not configured")
+                result = self._matrix_call.send(payload)
+                if result["answered"]:
+                    self._center.acknowledge_if_active(str(delivery["incident_id"]), str(result["actor"]))
+            else:
+                raise RuntimeError(f"channel adapter is not configured: {delivery['channel']}")
+            self._center.complete_delivery(delivery["id"], "sent")
+        except Exception as error:
+            delay = min(300, 5 * (2 ** min(int(delivery["attempt"]), 6)))
+            self._center.complete_delivery(delivery["id"], "retry", str(error), delay)
 
     def run_once(self) -> int:
         """Deliver a bounded batch and retry failures; returns claims processed."""
-        deliveries = self._center.claim_due_deliveries()
-        self._center.mark_dispatcher_healthy()
+        deliveries = self.claim_due()
         for delivery in deliveries:
-            try:
-                if delivery["channel"] != "telegram.main":
-                    raise RuntimeError(f"channel adapter is not configured: {delivery['channel']}")
-                self._telegram.send(self._center.delivery_payload(delivery))
-                self._center.complete_delivery(delivery["id"], "sent")
-            except Exception as error:
-                delay = min(300, 5 * (2 ** min(int(delivery["attempt"]), 6)))
-                self._center.complete_delivery(delivery["id"], "retry", str(error), delay)
+            self.deliver(delivery)
         return len(deliveries)
 
 
@@ -181,3 +253,10 @@ def run_http(center: NotificationCenter, host: str, port: int, health_token: str
 def telegram_from_environment() -> TelegramSender:
     """Build the Telegram adapter from env vars without ever logging credentials."""
     return TelegramSender(os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""))
+
+
+def matrix_call_from_environment() -> MatrixCallSender | None:
+    """Build the optional remote MatrixRTC adapter without loading its credentials locally."""
+    url = os.environ.get("MATRIX_CALL_URL", "")
+    token = os.environ.get("MATRIX_CALL_TOKEN", "")
+    return MatrixCallSender(url, token, float(os.environ.get("MATRIX_CALL_TIMEOUT_SECONDS", "150"))) if url or token else None

@@ -8,12 +8,13 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from notification_center.core import NotificationCenter
-from notification_center.http_api import DeliveryWorker, run_http, telegram_from_environment
+from notification_center.http_api import DeliveryWorker, matrix_call_from_environment, run_http, telegram_from_environment
 
 
 def load_tokens() -> dict[str, dict[str, str]]:
@@ -29,16 +30,26 @@ def load_tokens() -> dict[str, dict[str, str]]:
 
 
 def worker_loop(worker: DeliveryWorker) -> None:
-    """Poll durable due jobs every second; delivery errors are persisted by the worker."""
-    while True:
-        worker.run_once()
-        time.sleep(1)
+    """Claim often enough to keep health honest while slow call adapters run separately."""
+    max_workers = max(1, int(os.environ.get("NOTIFY_CENTER_DELIVERY_WORKERS", "4")))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="notify-delivery") as executor:
+        inflight = set()
+        while True:
+            inflight = {future for future in inflight if not future.done()}
+            for delivery in worker.claim_due():
+                inflight.add(executor.submit(worker.deliver, delivery))
+            time.sleep(1)
 
 
 def main() -> None:
     """Create durable dependencies and run worker plus API in one small process."""
     center = NotificationCenter(os.environ.get("NOTIFY_CENTER_DB", "./var/notify-center.sqlite3"), load_tokens())
-    threading.Thread(target=worker_loop, args=(DeliveryWorker(center, telegram_from_environment()),), daemon=True).start()
+    threading.Thread(target=worker_loop, args=(DeliveryWorker(
+        center,
+        telegram_from_environment(),
+        matrix_call_from_environment(),
+        call_escalation_seconds=float(os.environ.get("MATRIX_CALL_ESCALATION_SECONDS", "0")),
+    ),), daemon=True).start()
     run_http(center, os.environ.get("NOTIFY_CENTER_HOST", "127.0.0.1"), int(os.environ.get("NOTIFY_CENTER_PORT", "8091")))
 
 
