@@ -1,0 +1,95 @@
+#!/bin/sh
+# Send one durable Notify Center event without exposing the bearer token.
+set -eu
+
+usage() {
+    echo "usage: notify-producer --project PROJECT --dedupe-key KEY [--recipient RECIPIENT] [--severity SEVERITY --title TITLE [--body BODY]] [--idempotency-key KEY] [--resolve]" >&2
+    exit 64
+}
+
+project=
+recipient=me
+severity=
+title=
+body=
+dedupe_key=
+idempotency_key=
+resolve=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --project|--recipient|--severity|--title|--body|--dedupe-key|--idempotency-key)
+            [ "$#" -ge 2 ] || usage
+            case "$1" in
+                --project) project=$2 ;;
+                --recipient) recipient=$2 ;;
+                --severity) severity=$2 ;;
+                --title) title=$2 ;;
+                --body) body=$2 ;;
+                --dedupe-key) dedupe_key=$2 ;;
+                --idempotency-key) idempotency_key=$2 ;;
+            esac
+            shift 2
+            ;;
+        --resolve) resolve=1; shift ;;
+        --check-config) check_config=1; shift ;;
+        --help|-h) usage ;;
+        *) usage ;;
+    esac
+done
+
+event_url=${NOTIFY_CENTER_EVENT_URL:-}
+token=${NOTIFY_CENTER_TOKEN:-}
+[ -n "$event_url" ] || { echo "NOTIFY_CENTER_EVENT_URL is required" >&2; exit 78; }
+[ -n "$token" ] || { echo "NOTIFY_CENTER_TOKEN is required" >&2; exit 78; }
+
+if [ "${check_config:-0}" = 1 ]; then
+    exit 0
+fi
+
+[ -n "$project" ] && [ -n "$dedupe_key" ] && [ -n "$idempotency_key" ] || usage
+case "$project" in
+    *[!A-Za-z0-9._-]*|'') echo "project contains unsupported characters" >&2; exit 64 ;;
+esac
+
+if [ "$resolve" = 1 ]; then
+    payload=$(python3 - "$project" "$recipient" "$dedupe_key" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "schema": "notify.event.v1",
+    "action": "resolve",
+    "project": sys.argv[1],
+    "recipient": sys.argv[2],
+    "dedup_key": sys.argv[3],
+}, ensure_ascii=False, separators=(",", ":")))
+PY
+)
+else
+    [ -n "$severity" ] && [ -n "$title" ] || usage
+    case "$severity" in debug|info|notice|important|critical|emergency) ;; *) echo "unsupported severity" >&2; exit 64 ;; esac
+    payload=$(python3 - "$project" "$recipient" "$severity" "$title" "$body" "$dedupe_key" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "schema": "notify.event.v1",
+    "project": sys.argv[1],
+    "recipient": sys.argv[2],
+    "kind": "incident",
+    "severity": sys.argv[3],
+    "title": sys.argv[4],
+    "body": sys.argv[5],
+    "dedup_key": sys.argv[6],
+}, ensure_ascii=False, separators=(",", ":")))
+PY
+)
+fi
+
+exec curl --noproxy '*' --fail-with-body --silent --show-error \
+    --connect-timeout "${NOTIFY_CENTER_CONNECT_TIMEOUT_SECONDS:-3}" \
+    --max-time "${NOTIFY_CENTER_TIMEOUT_SECONDS:-8}" \
+    --request POST "$event_url" \
+    --header "Authorization: Bearer $token" \
+    --header "Idempotency-Key: $idempotency_key" \
+    --header 'Content-Type: application/json' \
+    --data-binary "$payload" >/dev/null

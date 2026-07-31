@@ -21,7 +21,13 @@ class HttpApiTests(unittest.TestCase):
     def setUp(self) -> None:
         """Start an isolated API server with separate producer and probe tokens."""
         self.tempdir = tempfile.TemporaryDirectory()
-        self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"secret-token": {"project": "hermes", "max_severity": "critical"}})
+        self.center = NotificationCenter(
+            Path(self.tempdir.name) / "notify.sqlite3",
+            {
+                "secret-token": {"project": "hermes", "max_severity": "critical"},
+                "notice-token": {"project": "hermes", "max_severity": "notice"},
+            },
+        )
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(self.center, "health-token"))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -88,6 +94,59 @@ class HttpApiTests(unittest.TestCase):
         status, response = self.request("POST", "/v1/events", changed, **headers)
         self.assertEqual(409, status)
         self.assertIn("Idempotency-Key", str(response["error"]))
+
+    def test_producer_can_resolve_an_incident_by_its_stable_dedup_key(self) -> None:
+        """Let stateful sources such as Fail2ban close their own earlier alert."""
+        event = {
+            "schema": "notify.event.v1",
+            "project": "hermes",
+            "recipient": "me",
+            "kind": "incident",
+            "severity": "important",
+            "title": "Gateway unavailable",
+            "dedup_key": "hermes:gateway",
+        }
+        headers = {"Authorization": "Bearer secret-token", "Idempotency-Key": "http-event-create"}
+        self.assertEqual(202, self.request("POST", "/v1/events", event, **headers)[0])
+
+        resolution = {
+            "schema": "notify.event.v1",
+            "action": "resolve",
+            "project": "hermes",
+            "recipient": "me",
+            "dedup_key": "hermes:gateway",
+        }
+        headers["Idempotency-Key"] = "http-event-resolve"
+        status, response = self.request("POST", "/v1/events", resolution, **headers)
+        self.assertEqual(200, status)
+        self.assertTrue(response["resolved"])
+        self.assertEqual("resolved", response["state"])
+
+        status, repeated = self.request("POST", "/v1/events", resolution, **headers)
+        self.assertEqual(200, status)
+        self.assertTrue(repeated["idempotent"])
+
+    def test_low_severity_token_cannot_resolve_a_critical_incident(self) -> None:
+        """A limited producer must not silence an escalation it could not create."""
+        event = {
+            "schema": "notify.event.v1", "project": "hermes", "recipient": "me",
+            "kind": "incident", "severity": "critical", "title": "Critical outage", "dedup_key": "hermes:critical",
+        }
+        self.assertEqual(202, self.request("POST", "/v1/events", event, Authorization="Bearer secret-token", **{"Idempotency-Key": "create-critical"})[0])
+        resolution = {"schema": "notify.event.v1", "action": "resolve", "project": "hermes", "recipient": "me", "dedup_key": "hermes:critical"}
+        status, _ = self.request("POST", "/v1/events", resolution, Authorization="Bearer notice-token", **{"Idempotency-Key": "resolve-critical"})
+        self.assertEqual(401, status)
+
+    def test_low_severity_token_cannot_ack_by_incident_id(self) -> None:
+        """The incident action API has exactly the same severity boundary."""
+        event = {
+            "schema": "notify.event.v1", "project": "hermes", "recipient": "me",
+            "kind": "incident", "severity": "critical", "title": "Critical outage", "dedup_key": "hermes:critical-action",
+        }
+        status, created = self.request("POST", "/v1/events", event, Authorization="Bearer secret-token", **{"Idempotency-Key": "create-critical-action"})
+        self.assertEqual(202, status)
+        status, _ = self.request("POST", f"/v1/incidents/{created['incident_id']}/ack", {"actor": "limited"}, Authorization="Bearer notice-token")
+        self.assertEqual(401, status)
 
 
 if __name__ == "__main__":

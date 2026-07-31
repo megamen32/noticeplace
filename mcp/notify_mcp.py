@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal stdio MCP server for /usr/local/bin/notify.
 
-Designed for AI agents: send lightweight human-facing Telegram pings.
+Designed for AI agents: submit lightweight human-facing notification cards.
 For long background work and returning to the right chat, use agent-resume;
 use notify at the end of work or before asking the user a question.
 """
@@ -13,7 +13,6 @@ import shlex
 import signal
 import subprocess
 import urllib.error
-import urllib.parse
 import urllib.request
 import sys
 import time
@@ -129,55 +128,42 @@ def parse_env_file(path: Path) -> Dict[str, str]:
     return env
 
 
-def telegram_config() -> Dict[str, str]:
+def notify_center_config() -> Dict[str, str]:
+    """Load a project-scoped producer identity, never Telegram credentials."""
     secrets_file = Path(os.environ.get("NOTIFY_SECRETS_FILE", "~/.config/secrets/notifier.env")).expanduser()
     file_env = parse_env_file(secrets_file)
-    token = os.environ.get("TELEGRAM_BOT_TOKEN") or file_env.get("TELEGRAM_BOT_TOKEN") or ""
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID") or file_env.get("TELEGRAM_CHAT_ID") or ""
-    proxy = os.environ.get("TELEGRAM_PROXY_URL") or os.environ.get("TELEGRAM_PROXY") or file_env.get("TELEGRAM_PROXY_URL") or file_env.get("TELEGRAM_PROXY") or ""
-    timeout_ms = os.environ.get("TELEGRAM_TIMEOUT_MS") or file_env.get("TELEGRAM_TIMEOUT_MS") or "3500"
-    if not token or not chat_id:
-        raise ValueError(f"TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured in env or {secrets_file}")
-    return {"token": token, "chat_id": chat_id, "proxy": proxy, "timeout_ms": timeout_ms, "secrets_file": str(secrets_file)}
+    token = os.environ.get("NOTIFY_CENTER_TOKEN") or file_env.get("NOTIFY_CENTER_TOKEN") or ""
+    event_url = os.environ.get("NOTIFY_CENTER_EVENT_URL") or file_env.get("NOTIFY_CENTER_EVENT_URL") or ""
+    project = os.environ.get("NOTIFY_CENTER_PROJECT") or file_env.get("NOTIFY_CENTER_PROJECT") or "notify-mcp"
+    recipient = os.environ.get("NOTIFY_CENTER_RECIPIENT") or file_env.get("NOTIFY_CENTER_RECIPIENT") or "me"
+    if not token or not event_url:
+        raise ValueError(f"NOTIFY_CENTER_EVENT_URL/NOTIFY_CENTER_TOKEN not configured in env or {secrets_file}")
+    return {"token": token, "event_url": event_url, "project": project, "recipient": recipient}
 
 
-def normalize_timeout_seconds_from_ms(value: str) -> int:
-    digits = "".join(ch for ch in str(value or "3500") if ch.isdigit()) or "3500"
-    return max(1, (int(digits) + 999) // 1000)
-
-
-def telegram_send_text(message: str, *, disable_web_page_preview: bool = True) -> Dict[str, Any]:
-    cfg = telegram_config()
-    timeout = normalize_timeout_seconds_from_ms(cfg["timeout_ms"])
-    url = f"https://api.telegram.org/bot{cfg['token']}/sendMessage"
-    data = urllib.parse.urlencode({
-        "chat_id": cfg["chat_id"],
-        "text": message,
-        "disable_web_page_preview": "true" if disable_web_page_preview else "false",
-    }).encode("utf-8")
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": cfg["proxy"], "http": cfg["proxy"]}) if cfg["proxy"] else urllib.request.ProxyHandler({}))
-    req = urllib.request.Request(url, data=data, method="POST")
-    with opener.open(req, timeout=timeout) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
-        status = getattr(resp, "status", None) or resp.getcode()
+def notify_center_send_text(message: str, title: str, request_key: str) -> Dict[str, Any]:
+    """Submit a normal-priority MCP card to the durable center."""
+    cfg = notify_center_config()
+    payload = json.dumps({
+        "schema": "notify.event.v1", "project": cfg["project"], "recipient": cfg["recipient"],
+        "kind": "notification", "severity": "notice", "title": title or "Notify MCP", "body": message,
+        "dedup_key": request_key,
+    }, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        cfg["event_url"], data=payload, method="POST",
+        headers={"Authorization": f"Bearer {cfg['token']}", "Idempotency-Key": request_key, "Content-Type": "application/json"},
+    )
     try:
-        parsed = json.loads(body)
-    except Exception:
-        parsed = {"ok": False, "raw": body[-1000:]}
-    result = {
-        "http_status": status,
-        "ok": bool(parsed.get("ok")) and 200 <= int(status) < 300,
-        "telegram_ok": parsed.get("ok"),
-        "description": parsed.get("description"),
-    }
-    if isinstance(parsed.get("result"), dict):
-        msg = parsed["result"]
-        result["message_id"] = msg.get("message_id")
-        result["date"] = msg.get("date")
-    return result
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=8) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            body = json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        status = error.code
+        body = json.loads(error.read() or b"{}")
+    return {"http_status": status, "ok": status == 202, "incident_id": body.get("incident_id"), "event_id": body.get("event_id")}
 
 
-def split_telegram_message(text: str, limit: int = 3900) -> List[str]:
+def split_notification_message(text: str, limit: int = 3900) -> List[str]:
     if len(text) <= limit:
         return [text]
     parts: List[str] = []
@@ -197,14 +183,13 @@ def tool_send_message(args: Dict[str, Any]) -> Dict[str, Any]:
     if not message:
         raise ValueError("message is required")
     title = str(args.get("title") or "").strip()
-    disable_preview = bool(args.get("disable_web_page_preview", True))
     text = f"{title}\n\n{message}" if title else message
-    parts = split_telegram_message(text)
+    parts = split_notification_message(text)
     sent = []
     for idx, part in enumerate(parts, start=1):
         if len(parts) > 1:
             part = f"[{idx}/{len(parts)}]\n" + part
-        sent.append(telegram_send_text(part, disable_web_page_preview=disable_preview))
+        sent.append(notify_center_send_text(part, title, f"notify-mcp:{uuid.uuid4().hex}"))
     ok = all(item.get("ok") for item in sent)
     return {"ok": ok, "sent_parts": len(sent), "results": sent}
 

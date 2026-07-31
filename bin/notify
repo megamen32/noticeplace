@@ -59,13 +59,12 @@ else
   exit 1
 fi
 
-BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-CHAT_ID="${TELEGRAM_CHAT_ID:-}"
-PROXY="${TELEGRAM_PROXY_URL:-${TELEGRAM_PROXY:-}}"
-TIMEOUT_MS="${TELEGRAM_TIMEOUT_MS:-3500}"
+NOTIFY_PRODUCER_BIN="${NOTIFY_PRODUCER_BIN:-/usr/local/bin/notify-producer}"
+NOTIFY_PROJECT="${NOTIFY_CENTER_PROJECT:-notify-cli}"
+NOTIFY_RECIPIENT="${NOTIFY_CENTER_RECIPIENT:-me}"
 
-if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
-  echo "❌ В $SECRETS_FILE нет TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID"
+if [ -z "${NOTIFY_CENTER_EVENT_URL:-}" ] || [ -z "${NOTIFY_CENTER_TOKEN:-}" ]; then
+  echo "❌ В $SECRETS_FILE нет NOTIFY_CENTER_EVENT_URL или NOTIFY_CENTER_TOKEN"
   exit 1
 fi
 
@@ -84,7 +83,6 @@ normalize_timeout_seconds() {
   echo "$(( (timeout_ms + 999) / 1000 ))"
 }
 
-TIMEOUT_SECONDS="$(normalize_timeout_seconds "$TIMEOUT_MS")"
 TG_LIMIT=4096
 
 parse_duration_seconds() {
@@ -147,30 +145,20 @@ human_duration() {
   fi
 }
 
-send_tg() {
+send_notification() {
   local text="$1"
-  local log_file="$STATE_DIR/telegram.log"
+  local log_file="$STATE_DIR/notify-center.log"
+  local request_key="notify-cli:${USER:-unknown}:$$:$(date +%s%N)"
 
-  if [ -n "$PROXY" ]; then
-    curl -sS \
-      --max-time "$TIMEOUT_SECONDS" \
-      --proxy "$PROXY" \
-      -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-      -d chat_id="$CHAT_ID" \
-      -d disable_web_page_preview=true \
-      --data-urlencode text="$text" \
-      >>"$log_file" \
-      2>&1
-  else
-    curl -sS \
-      --max-time "$TIMEOUT_SECONDS" \
-      -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-      -d chat_id="$CHAT_ID" \
-      -d disable_web_page_preview=true \
-      --data-urlencode text="$text" \
-      >>"$log_file" \
-      2>&1
-  fi
+  "$NOTIFY_PRODUCER_BIN" \
+    --project "$NOTIFY_PROJECT" \
+    --recipient "$NOTIFY_RECIPIENT" \
+    --severity notice \
+    --dedupe-key "$request_key" \
+    --idempotency-key "$request_key" \
+    --title "Process watcher" \
+    --body "$text" \
+    >>"$log_file" 2>&1
 }
 
 proc_short_cmd() {
@@ -591,7 +579,7 @@ file: $file
   local trimmed
   trimmed="$(printf "%s" "$line" | tail -c "$budget")"
 
-  send_tg "${prefix}${trimmed}"
+  send_notification "${prefix}${trimmed}"
 }
 
 start_live_log_watcher() {
@@ -666,7 +654,7 @@ while [ "$#" -gt 0 ]; do
 server: $(hostname)
 time: $(now)"
       echo "$TEXT"
-      send_tg "$TEXT"
+      send_notification "$TEXT"
       exit 0
       ;;
     --query)
@@ -727,7 +715,7 @@ server: $(hostname)
 time: $(now)"
 
   echo "$TEXT"
-  send_tg "$TEXT"
+  send_notification "$TEXT"
   exit 1
 fi
 
@@ -850,7 +838,7 @@ TEXT="$TEXT
 Сообщу, когда завершится."
 
 echo "$TEXT"
-send_tg "$TEXT"
+send_notification "$TEXT"
 
 LIVE_LOG_PID=""
 
@@ -882,7 +870,7 @@ time: $(now)
 
 Процесс всё ещё жив. Watcher остановлен, чтобы не висеть бесконечно."
         echo "$TIMEOUT_TEXT" >> "$STATE_DIR/done.log"
-        send_tg "$TIMEOUT_TEXT"
+        send_notification "$TIMEOUT_TEXT"
         rm -f "$LOCK_FILE"
         exit 124
       fi
@@ -928,7 +916,7 @@ $LOG_FILE
   fi
 
   echo "$DONE_TEXT" >> "$STATE_DIR/done.log"
-  send_tg "$DONE_TEXT"
+  send_notification "$DONE_TEXT"
   rm -f "$LOCK_FILE"
 ) >"$WATCHER_OUT" 2>"$WATCHER_ERR" &
 

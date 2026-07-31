@@ -137,6 +137,9 @@ def build_handler(center: NotificationCenter, health_token: str) -> type[BaseHTT
                 body = _json_body(self)
                 if self.path == "/v1/events":
                     key = self.headers.get("Idempotency-Key") or ""
+                    if body.get("action") == "resolve":
+                        self._reply(HTTPStatus.OK, center.resolve_event(token, key, body))
+                        return
                     self._reply(HTTPStatus.ACCEPTED, center.create_event(token, key, body))
                     return
                 parts = self.path.split("/")

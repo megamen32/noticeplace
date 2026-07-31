@@ -110,33 +110,50 @@ class NotificationCenter:
                     payload_json TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS resolution_events (
+                    idempotency_key TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL,
+                    project TEXT NOT NULL,
+                    recipient TEXT NOT NULL,
+                    dedup_key TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    incident_id TEXT,
+                    created_at REAL NOT NULL
+                );
                 """
             )
 
-    def _token(self, token: str, event: Mapping[str, Any]) -> Mapping[str, str]:
-        """Validate token project and severity boundaries; raises AuthorizationError."""
+    def _scope(self, token: str, project: str) -> Mapping[str, str]:
+        """Validate a token's project boundary without requiring an event severity."""
         scope = self._tokens.get(token)
         if scope is None:
             raise AuthorizationError("invalid bearer token")
-        project = str(event.get("project") or "")
         if scope.get("project") not in ("*", project):
             raise AuthorizationError("token is not allowed for this project")
-        requested = str(event.get("severity") or "")
-        maximum = scope.get("max_severity", "notice")
-        if requested not in SEVERITIES or maximum not in SEVERITIES or SEVERITIES.index(requested) > SEVERITIES.index(maximum):
-            raise AuthorizationError("token is not allowed for this severity")
         return scope
+
+    def _token(self, token: str, event: Mapping[str, Any]) -> Mapping[str, str]:
+        """Validate token project and severity boundaries; raises AuthorizationError."""
+        scope = self._scope(token, str(event.get("project") or ""))
+        self._require_severity(scope, str(event.get("severity") or ""))
+        return scope
+
+    @staticmethod
+    def _require_severity(scope: Mapping[str, str], severity: str) -> None:
+        """Reject a scope that is not allowed to create or resolve this severity."""
+        maximum = scope.get("max_severity", "notice")
+        if severity not in SEVERITIES or maximum not in SEVERITIES or SEVERITIES.index(severity) > SEVERITIES.index(maximum):
+            raise AuthorizationError("token is not allowed for this severity")
 
     def authorize_incident(self, token: str, incident_id: str) -> None:
         """Authorize a token to read or mutate one incident; raises AuthorizationError."""
-        scope = self._tokens.get(token)
-        if scope is None:
-            raise AuthorizationError("invalid bearer token")
         incident = self.get_incident(incident_id)
         if incident is None:
+            if token not in self._tokens:
+                raise AuthorizationError("invalid bearer token")
             return
-        if scope.get("project") not in ("*", incident["project"]):
-            raise AuthorizationError("token is not allowed for this project")
+        scope = self._scope(token, str(incident["project"]))
+        self._require_severity(scope, str(incident["severity"]))
 
     @staticmethod
     def _validate_event(event: Mapping[str, Any]) -> None:
@@ -151,6 +168,16 @@ class NotificationCenter:
             raise ValidationError("unsupported severity")
         if str(event["kind"]) not in ("incident", "notification", "audit", "log"):
             raise ValidationError("unsupported kind")
+
+    @staticmethod
+    def _validate_resolution(event: Mapping[str, Any]) -> None:
+        """Validate a minimal source-driven resolution event."""
+        required = ("project", "recipient", "dedup_key")
+        missing = [key for key in required if not str(event.get(key) or "").strip()]
+        if missing:
+            raise ValidationError(f"missing required resolution fields: {', '.join(missing)}")
+        if event.get("schema", "notify.event.v1") != "notify.event.v1" or event.get("action") != "resolve":
+            raise ValidationError("unsupported resolution event")
 
     def _audit(self, incident_id: str | None, event_type: str, actor: str | None, payload: Mapping[str, Any]) -> None:
         """Record an immutable state transition for later human and machine audit."""
@@ -209,6 +236,52 @@ class NotificationCenter:
             self._connection.execute("INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?)", (idempotency_key, event_id, incident_id, payload_json, now))
             delivery_id = self._schedule_delivery(incident_id, "telegram.main", "initial", now)
             return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id}
+
+    def resolve_event(self, token: str, idempotency_key: str, event: Mapping[str, Any]) -> dict[str, Any]:
+        """Resolve an active incident by stable producer identity, idempotently."""
+        if not idempotency_key.strip():
+            raise ValidationError("Idempotency-Key is required")
+        self._validate_resolution(event)
+        project, recipient, dedup_key = (str(event["project"]), str(event["recipient"]), str(event["dedup_key"]))
+        self._scope(token, project)
+        payload_json = json.dumps(dict(event), ensure_ascii=False, sort_keys=True)
+        now = time.time()
+        with self._lock, self._connection:
+            previous = self._connection.execute(
+                "SELECT event_id, incident_id, payload_json FROM resolution_events WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if previous is not None:
+                if previous["payload_json"] != payload_json:
+                    raise IdempotencyConflict("Idempotency-Key was already used with different event content")
+                incident = self.get_incident(str(previous["incident_id"])) if previous["incident_id"] else None
+                return {
+                    "event_id": previous["event_id"],
+                    "incident_id": previous["incident_id"],
+                    "resolved": bool(previous["incident_id"] is not None),
+                    "state": incident["state"] if incident else "not_found",
+                    "idempotent": True,
+                }
+            row = self._connection.execute(
+                "SELECT id, severity FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? AND state != 'resolved'",
+                (project, recipient, dedup_key),
+            ).fetchone()
+            event_id = f"evt_{uuid.uuid4().hex}"
+            incident_id = str(row["id"]) if row is not None else None
+            if incident_id is not None:
+                self._require_severity(self._scope(token, project), str(row["severity"]))
+                self._transition(incident_id, "resolved", "producer")
+            self._connection.execute(
+                "INSERT INTO resolution_events(idempotency_key, event_id, project, recipient, dedup_key, payload_json, incident_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (idempotency_key, event_id, project, recipient, dedup_key, payload_json, incident_id, now),
+            )
+            return {
+                "event_id": event_id,
+                "incident_id": incident_id,
+                "resolved": incident_id is not None,
+                "state": "resolved" if incident_id is not None else "not_found",
+                "idempotent": False,
+            }
 
     def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float) -> str:
         """Create a stable scheduled delivery and return its identity."""
