@@ -36,6 +36,16 @@ def _tap_bounds(xml_text: str, labels: Sequence[str]) -> tuple[int, int] | None:
     return None
 
 
+def _telegram_qr_login_visible(xml_text: str) -> bool:
+    """Identify Telegram's device-linking screen without retaining UI contents."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return False
+    labels = " ".join((node.attrib.get("content-desc") or node.attrib.get("text") or "").casefold() for node in root.iter("node"))
+    return any(marker in labels for marker in ("scan qr", "qr-код", "привязк"))
+
+
 @dataclass(frozen=True)
 class AndroidPhoneConfig:
     adb_path: str
@@ -79,15 +89,24 @@ class AndroidPhoneAdapter:
         self._run("shell", "uiautomator", "dump", "/sdcard/notify-center-window.xml")
         return self._run("exec-out", "cat", "/sdcard/notify-center-window.xml")
 
+    def _telegram_foreground(self) -> bool:
+        return "org.telegram.messenger" in self._run("shell", "dumpsys", "window")
+
     def telegram_call(self, _payload: dict[str, Any]) -> None:
         """Open the configured Telegram chat and tap only an explicit voice-call control."""
         self._ensure_ready()
         if not self._config.telegram_target:
             raise RuntimeError("Android Telegram target is not configured")
         target = self._config.telegram_target.removeprefix("@").strip()
+        self._run("shell", "cmd", "statusbar", "collapse")
         self._run("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", f"tg://resolve?domain={target}")
         self._sleeper(1.5)
-        point = _tap_bounds(self._window_xml(), self._config.call_labels)
+        if not self._telegram_foreground():
+            raise RuntimeError("Telegram did not reach the foreground")
+        xml_text = self._window_xml()
+        if _telegram_qr_login_visible(xml_text):
+            raise RuntimeError("Telegram device login is required")
+        point = _tap_bounds(xml_text, self._config.call_labels)
         if point is None:
             raise RuntimeError("Telegram voice-call control is not visible")
         self._run("shell", "input", "tap", str(point[0]), str(point[1]))

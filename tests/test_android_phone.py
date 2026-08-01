@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 import unittest
 
-from notification_center.android_phone import AndroidPhoneAdapter, AndroidPhoneConfig, voice_service_registered
+from notification_center.android_phone import AndroidPhoneAdapter, AndroidPhoneConfig, _telegram_qr_login_visible, voice_service_registered
 
 
 class AndroidPhoneAdapterTests(unittest.TestCase):
@@ -17,13 +17,17 @@ class AndroidPhoneAdapterTests(unittest.TestCase):
 
         def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
             commands.append(command)
-            stdout = "device\n" if command[-1] == "get-state" else xml if command[-2:] == ["cat", "/sdcard/notify-center-window.xml"] else ""
+            stdout = "device\n" if command[-1] == "get-state" else "org.telegram.messenger/.LaunchActivity" if command[-2:] == ["dumpsys", "window"] else xml if command[-2:] == ["cat", "/sdcard/notify-center-window.xml"] else ""
             return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
         adapter = AndroidPhoneAdapter(AndroidPhoneConfig("adb", "serial", "@bezrabotnyi"), runner=runner, sleeper=lambda _seconds: None)
         adapter.telegram_call({})
         self.assertIn(["adb", "-s", "serial", "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "tg://resolve?domain=bezrabotnyi"], commands)
         self.assertIn(["adb", "-s", "serial", "shell", "input", "tap", "20", "40"], commands)
+
+    def test_qr_linking_screen_is_not_treated_as_a_telegram_call_screen(self) -> None:
+        self.assertTrue(_telegram_qr_login_visible('<hierarchy><node text="Сканировать QR-код, чтобы продолжить привязку" /></hierarchy>'))
+        self.assertFalse(_telegram_qr_login_visible('<hierarchy><node content-desc="Voice call" /></hierarchy>'))
 
     def test_phone_call_refuses_when_voice_service_is_out(self) -> None:
         def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
