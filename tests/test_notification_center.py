@@ -91,6 +91,16 @@ class NotificationCenterTests(unittest.TestCase):
         self.assertEqual("resolved", resolved["state"])
         self.assertEqual("resolved", self.center.get_incident(incident_id)["state"])
 
+    def test_ack_cancels_a_claim_that_finishes_with_retry(self) -> None:
+        """A slow failed adapter must not resurrect a call after its incident is ACKed."""
+        created = self.center.create_event("producer-token", "request-race", self.event(dedup_key="ack-race"))
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)[0]
+        self.center.acknowledge(created["incident_id"], actor="telegram:42")
+        self.center.complete_delivery(claimed["id"], "retry", "adapter unavailable")
+
+        status = self.center._connection.execute("SELECT status FROM deliveries WHERE id = ?", (claimed["id"],)).fetchone()["status"]
+        self.assertEqual("cancelled", status)
+
     def test_snooze_defers_and_then_releases_escalation(self) -> None:
         """Allow explicit snooze without losing a durable escalation."""
         created = self.center.create_event("producer-token", "request-1", self.event())

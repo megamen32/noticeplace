@@ -339,7 +339,7 @@ class NotificationCenter:
             row = self._connection.execute("SELECT d.incident_id, i.state FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
             if row is None:
                 raise ValidationError("delivery not found")
-            if outcome == "sent" and str(row["state"]) not in DELIVERABLE_STATES:
+            if outcome in ("sent", "retry") and str(row["state"]) not in DELIVERABLE_STATES:
                 outcome = "cancelled"
                 error = error or "incident is no longer active"
             if outcome == "retry":
