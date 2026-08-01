@@ -66,6 +66,33 @@ def _telegram_header_call_point(xml_text: str) -> tuple[int, int] | None:
     return ((call[0] + call[2]) // 2, (call[1] + call[3]) // 2)
 
 
+def _telegram_header_overflow_point(xml_text: str) -> tuple[int, int] | None:
+    """Find a sole top-right Telegram overflow icon without assuming coordinates."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    all_bounds = [re.findall(r"\d+", node.attrib.get("bounds", "")) for node in root.iter("node")]
+    widths = [int(values[2]) for values in all_bounds if len(values) == 4]
+    if not widths:
+        return None
+    screen_width = max(widths)
+    candidates: list[tuple[int, int, int, int]] = []
+    for node in root.iter("node"):
+        if node.attrib.get("class") != "android.widget.ImageView":
+            continue
+        match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.attrib.get("bounds", ""))
+        if not match:
+            continue
+        left, top, right, bottom = (int(value) for value in match.groups())
+        if left >= screen_width * 3 // 4 and top <= 180 and 20 <= right - left <= 120 and 20 <= bottom - top <= 120:
+            candidates.append((left, top, right, bottom))
+    if len(candidates) != 1:
+        return None
+    left, top, right, bottom = candidates[0]
+    return ((left + right) // 2, (top + bottom) // 2)
+
+
 def _telegram_qr_login_visible(xml_text: str) -> bool:
     """Identify Telegram's device-linking screen without retaining UI contents."""
     try:
@@ -147,6 +174,13 @@ class AndroidPhoneAdapter:
         if _telegram_qr_login_visible(xml_text):
             raise RuntimeError("Telegram device login is required")
         point = _tap_bounds(xml_text, self._config.call_labels) or _telegram_header_call_point(xml_text)
+        if point is None:
+            overflow = _telegram_header_overflow_point(xml_text)
+            if overflow is None:
+                raise RuntimeError("Telegram voice-call control is not visible")
+            self._run("shell", "input", "tap", str(overflow[0]), str(overflow[1]))
+            self._sleeper(0.3)
+            point = _tap_bounds(self._window_xml(), self._config.call_labels)
         if point is None:
             raise RuntimeError("Telegram voice-call control is not visible")
         self._run("shell", "input", "tap", str(point[0]), str(point[1]))

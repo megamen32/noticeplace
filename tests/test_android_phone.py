@@ -7,6 +7,7 @@ from notification_center.android_phone import (
     AndroidPhoneAdapter,
     AndroidPhoneConfig,
     _telegram_header_call_point,
+    _telegram_header_overflow_point,
     _telegram_qr_login_visible,
     voice_service_registered,
 )
@@ -43,6 +44,30 @@ class AndroidPhoneAdapterTests(unittest.TestCase):
         </hierarchy>"""
         self.assertEqual(_telegram_header_call_point(xml), (607, 100))
         self.assertIsNone(_telegram_header_call_point(xml.replace('[627,51][702,149]', '[400,51][475,149]')))
+
+    def test_telegram_header_overflow_fallback_requires_a_single_right_edge_icon(self) -> None:
+        xml = """<hierarchy>
+          <node class="android.widget.FrameLayout" bounds="[0,0][720,1600]" />
+          <node class="android.widget.ImageView" bounds="[588,23][641,51]" />
+        </hierarchy>"""
+        self.assertEqual(_telegram_header_overflow_point(xml), (614, 37))
+        self.assertIsNone(_telegram_header_overflow_point(xml.replace('[588,23][641,51]', '[388,23][441,51]')))
+
+    def test_telegram_call_uses_a_verified_overflow_menu_when_the_header_has_no_call_icon(self) -> None:
+        commands: list[list[str]] = []
+        windows = iter((
+            '<hierarchy><node class="android.widget.FrameLayout" bounds="[0,0][720,1600]" /><node class="android.widget.ImageView" bounds="[588,23][641,51]" /></hierarchy>',
+            '<hierarchy><node content-desc="Voice call" bounds="[10,20][30,60]" /></hierarchy>',
+        ))
+
+        def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            stdout = "device\n" if command[-1] == "get-state" else "org.telegram.messenger/.LaunchActivity" if command[-2:] == ["dumpsys", "window"] else next(windows) if command[-2:] == ["cat", "/sdcard/notify-center-window.xml"] else ""
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        AndroidPhoneAdapter(AndroidPhoneConfig("adb", "serial", "careviolan"), runner=runner, sleeper=lambda _seconds: None).telegram_call({})
+        self.assertIn(["adb", "-s", "serial", "shell", "input", "tap", "614", "37"], commands)
+        self.assertIn(["adb", "-s", "serial", "shell", "input", "tap", "20", "40"], commands)
 
     def test_telegram_call_wakes_a_dozing_phone_before_opening_the_target(self) -> None:
         commands: list[list[str]] = []
