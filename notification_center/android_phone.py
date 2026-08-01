@@ -36,6 +36,36 @@ def _tap_bounds(xml_text: str, labels: Sequence[str]) -> tuple[int, int] | None:
     return None
 
 
+def _telegram_header_call_point(xml_text: str) -> tuple[int, int] | None:
+    """Return Telegram's unlabelled header call control only for its known layout.
+
+    Current Telegram Android draws the call and overflow actions as two adjacent
+    unlabelled ``ImageView`` nodes.  Requiring the complete header pair avoids
+    guessing from a fixed screen coordinate or tapping a lone unrelated icon.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    candidates: list[tuple[int, int, int, int]] = []
+    for node in root.iter("node"):
+        if node.attrib.get("class") != "android.widget.ImageView":
+            continue
+        match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.attrib.get("bounds", ""))
+        if not match:
+            continue
+        left, top, right, bottom = (int(value) for value in match.groups())
+        if left >= 500 and top <= 180 and 50 <= right - left <= 120 and 50 <= bottom - top <= 120:
+            candidates.append((left, top, right, bottom))
+    candidates.sort()
+    if len(candidates) != 2:
+        return None
+    call, overflow = candidates
+    if not (call[0] < overflow[0] and call[2] <= overflow[0] + 24 and abs(call[1] - overflow[1]) <= 12):
+        return None
+    return ((call[0] + call[2]) // 2, (call[1] + call[3]) // 2)
+
+
 def _telegram_qr_login_visible(xml_text: str) -> bool:
     """Identify Telegram's device-linking screen without retaining UI contents."""
     try:
@@ -92,12 +122,22 @@ class AndroidPhoneAdapter:
     def _telegram_foreground(self) -> bool:
         return "org.telegram.messenger" in self._run("shell", "dumpsys", "window")
 
+    def _wake_for_interaction(self) -> None:
+        """Wake only an always-on screen with ordinary Android input events."""
+        if "mWakefulness=Dozing" not in self._run("shell", "dumpsys", "power"):
+            return
+        self._run("shell", "input", "keyevent", "KEYCODE_POWER")
+        self._sleeper(0.2)
+        self._run("shell", "input", "keyevent", "KEYCODE_MENU")
+        self._run("shell", "input", "swipe", "540", "1800", "540", "700", "180")
+
     def telegram_call(self, _payload: dict[str, Any]) -> None:
-        """Open the configured Telegram chat and tap only an explicit voice-call control."""
+        """Open the configured Telegram chat and tap a verified voice-call control."""
         self._ensure_ready()
         if not self._config.telegram_target:
             raise RuntimeError("Android Telegram target is not configured")
         target = self._config.telegram_target.removeprefix("@").strip()
+        self._wake_for_interaction()
         self._run("shell", "cmd", "statusbar", "collapse")
         self._run("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", f"tg://resolve?domain={target}")
         self._sleeper(1.5)
@@ -106,7 +146,7 @@ class AndroidPhoneAdapter:
         xml_text = self._window_xml()
         if _telegram_qr_login_visible(xml_text):
             raise RuntimeError("Telegram device login is required")
-        point = _tap_bounds(xml_text, self._config.call_labels)
+        point = _tap_bounds(xml_text, self._config.call_labels) or _telegram_header_call_point(xml_text)
         if point is None:
             raise RuntimeError("Telegram voice-call control is not visible")
         self._run("shell", "input", "tap", str(point[0]), str(point[1]))

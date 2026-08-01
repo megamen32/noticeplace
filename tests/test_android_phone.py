@@ -3,7 +3,13 @@ from __future__ import annotations
 import subprocess
 import unittest
 
-from notification_center.android_phone import AndroidPhoneAdapter, AndroidPhoneConfig, _telegram_qr_login_visible, voice_service_registered
+from notification_center.android_phone import (
+    AndroidPhoneAdapter,
+    AndroidPhoneConfig,
+    _telegram_header_call_point,
+    _telegram_qr_login_visible,
+    voice_service_registered,
+)
 
 
 class AndroidPhoneAdapterTests(unittest.TestCase):
@@ -28,6 +34,34 @@ class AndroidPhoneAdapterTests(unittest.TestCase):
     def test_qr_linking_screen_is_not_treated_as_a_telegram_call_screen(self) -> None:
         self.assertTrue(_telegram_qr_login_visible('<hierarchy><node text="Сканировать QR-код, чтобы продолжить привязку" /></hierarchy>'))
         self.assertFalse(_telegram_qr_login_visible('<hierarchy><node content-desc="Voice call" /></hierarchy>'))
+
+    def test_telegram_header_fallback_requires_the_known_call_then_menu_structure(self) -> None:
+        xml = """<hierarchy>
+          <node class="android.widget.FrameLayout" bounds="[0,0][720,1600]" />
+          <node class="android.widget.ImageView" bounds="[570,51][645,149]" />
+          <node class="android.widget.ImageView" bounds="[627,51][702,149]" />
+        </hierarchy>"""
+        self.assertEqual(_telegram_header_call_point(xml), (607, 100))
+        self.assertIsNone(_telegram_header_call_point(xml.replace('[627,51][702,149]', '[400,51][475,149]')))
+
+    def test_telegram_call_wakes_a_dozing_phone_before_opening_the_target(self) -> None:
+        commands: list[list[str]] = []
+        xml = """<hierarchy>
+          <node class="android.widget.ImageView" bounds="[570,51][645,149]" />
+          <node class="android.widget.ImageView" bounds="[627,51][702,149]" />
+        </hierarchy>"""
+
+        def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            stdout = "device\n" if command[-1] == "get-state" else "mWakefulness=Dozing" if command[-2:] == ["dumpsys", "power"] else "org.telegram.messenger/.LaunchActivity" if command[-2:] == ["dumpsys", "window"] else xml if command[-2:] == ["cat", "/sdcard/notify-center-window.xml"] else ""
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        adapter = AndroidPhoneAdapter(AndroidPhoneConfig("adb", "serial", "bezrabotnyi"), runner=runner, sleeper=lambda _seconds: None)
+        adapter.telegram_call({})
+        self.assertLess(
+            commands.index(["adb", "-s", "serial", "shell", "input", "keyevent", "KEYCODE_POWER"]),
+            commands.index(["adb", "-s", "serial", "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "tg://resolve?domain=bezrabotnyi"]),
+        )
 
     def test_phone_call_refuses_when_voice_service_is_out(self) -> None:
         def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
