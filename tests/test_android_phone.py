@@ -113,3 +113,25 @@ class AndroidPhoneAdapterTests(unittest.TestCase):
         adapter = AndroidPhoneAdapter(AndroidPhoneConfig("adb", "serial", "bezrabotnyi", "+70000000000"), runner=runner)
         with self.assertRaisesRegex(RuntimeError, "voice service"):
             adapter.phone_call({})
+
+    def test_phone_call_resolves_the_configured_hardware_serial_over_wifi_adb(self) -> None:
+        commands: list[list[str]] = []
+        hardware_serial = "R5CR702SRFP"
+        wifi_serial = "adb-R5CR702SRFP-example._adb-tls-connect._tcp"
+
+        def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            if command == ["adb", "-s", hardware_serial, "get-state"]:
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="device not found")
+            if command == ["adb", "devices"]:
+                return subprocess.CompletedProcess(command, 0, stdout=f"List of devices attached\n{wifi_serial}\tdevice\n", stderr="")
+            if command == ["adb", "-s", wifi_serial, "shell", "getprop", "ro.serialno"]:
+                return subprocess.CompletedProcess(command, 0, stdout=f"{hardware_serial}\n", stderr="")
+            if command == ["adb", "-s", wifi_serial, "get-state"]:
+                return subprocess.CompletedProcess(command, 0, stdout="device\n", stderr="")
+            if command[-3:] == ["shell", "dumpsys", "telephony.registry"]:
+                return subprocess.CompletedProcess(command, 0, stdout="mVoiceRegState=0(IN_SERVICE)", stderr="")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        AndroidPhoneAdapter(AndroidPhoneConfig("adb", hardware_serial, "careviolan", "+70000000000"), runner=runner).phone_call({})
+        self.assertIn(["adb", "-s", wifi_serial, "shell", "am", "start", "-a", "android.intent.action.CALL", "-d", "tel:+70000000000"], commands)

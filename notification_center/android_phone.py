@@ -134,23 +134,62 @@ class AndroidPhoneAdapter:
         self._runner = runner
         self._sleeper = sleeper
         self._input_scale: tuple[float, float] | None = None
+        self._transport_serial: str | None = None
 
     @property
     def can_phone_call(self) -> bool:
         return bool(self._config.phone_number)
 
-    def _run(self, *arguments: str) -> str:
-        completed = self._runner(
-            [self._config.adb_path, "-s", self._config.serial, *arguments],
+    def _completed(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        return self._runner(
+            command,
             check=False,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=self._config.command_timeout_seconds,
         )
+
+    def _run_on(self, serial: str, *arguments: str) -> str:
+        completed = self._completed([self._config.adb_path, "-s", serial, *arguments])
         if completed.returncode != 0:
             raise RuntimeError(f"Android command failed: {' '.join(arguments[:3])}")
         return completed.stdout
+
+    def _connected_transport_serial(self) -> str:
+        """Find the configured physical handset on either USB or Wi-Fi ADB.
+
+        ``adb devices`` assigns Wi-Fi debugging a transport-specific service name,
+        whereas the Notify Center setting intentionally holds the stable hardware
+        serial.  A failed direct lookup therefore falls back only to connected
+        transports whose on-device ``ro.serialno`` matches that configured serial.
+        """
+        if self._transport_serial is not None:
+            return self._transport_serial
+        configured = self._config.serial
+        direct = self._completed([self._config.adb_path, "-s", configured, "get-state"])
+        if direct.returncode == 0 and direct.stdout.strip() == "device":
+            self._transport_serial = configured
+            return configured
+        devices = self._completed([self._config.adb_path, "devices"])
+        if devices.returncode != 0:
+            raise RuntimeError("Android device discovery failed")
+        for line in devices.stdout.splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 2 or fields[1] != "device":
+                continue
+            candidate = fields[0]
+            reported = self._completed([self._config.adb_path, "-s", candidate, "shell", "getprop", "ro.serialno"])
+            if reported.returncode != 0 or reported.stdout.strip() != configured:
+                continue
+            ready = self._completed([self._config.adb_path, "-s", candidate, "get-state"])
+            if ready.returncode == 0 and ready.stdout.strip() == "device":
+                self._transport_serial = candidate
+                return candidate
+        raise RuntimeError("Configured Android device is not connected")
+
+    def _run(self, *arguments: str) -> str:
+        return self._run_on(self._connected_transport_serial(), *arguments)
 
     def _ensure_ready(self) -> None:
         if self._run("get-state").strip() != "device":
