@@ -17,6 +17,25 @@ from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, N
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 
 
+def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[str, Any]) -> dict[str, list[list[dict[str, str]]]]:
+    """Return the narrow interactive contract for this incident severity.
+
+    Only exact critical incidents ask the recipient to acknowledge or snooze;
+    every notification retains the non-blocking Ask action.
+    """
+    incident_id = str(incident["id"])
+    ask = {"text": "Ask", "callback_data": action_codec.encode("ask", incident_id)}
+    if str(incident["severity"]) != "critical":
+        return {"inline_keyboard": [[ask]]}
+    return {"inline_keyboard": [
+        [
+            {"text": "ACK", "callback_data": action_codec.encode("ack", incident_id)},
+            {"text": "Snooze 15m", "callback_data": action_codec.encode("snz", incident_id)},
+        ],
+        [ask],
+    ]}
+
+
 class TelegramSender:
     """Send compact incident cards via Telegram's HTTPS Bot API."""
 
@@ -35,11 +54,7 @@ class TelegramSender:
         text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nIncident: {incident['id']}"
         request_data: dict[str, str] = {"chat_id": self._chat_id, "text": text, "disable_web_page_preview": "true"}
         if self._action_codec is not None:
-            incident_id = str(incident["id"])
-            request_data["reply_markup"] = json.dumps({"inline_keyboard": [
-                [{"text": "ACK", "callback_data": self._action_codec.encode("ack", incident_id)}, {"text": "Snooze 15m", "callback_data": self._action_codec.encode("snz", incident_id)}],
-                [{"text": "Ask", "callback_data": self._action_codec.encode("ask", incident_id)}],
-            ]}, separators=(",", ":"))
+            request_data["reply_markup"] = json.dumps(telegram_inline_keyboard(self._action_codec, incident), separators=(",", ":"))
         data = urllib.parse.urlencode(request_data).encode()
         request = urllib.request.Request(f"https://api.telegram.org/bot{self._token}/sendMessage", data=data, method="POST")
         with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
