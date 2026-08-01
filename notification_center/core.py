@@ -120,6 +120,10 @@ class NotificationCenter:
                     incident_id TEXT,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS telegram_updates (
+                    update_id INTEGER PRIMARY KEY,
+                    created_at REAL NOT NULL
+                );
                 """
             )
 
@@ -391,6 +395,45 @@ class NotificationCenter:
         if until_epoch <= time.time():
             raise ValidationError("snooze deadline must be in the future")
         return self._transition(incident_id, "snoozed", actor, until_epoch)
+
+    def claim_telegram_update(self, update_id: int) -> bool:
+        """Claim a Bot API update once so retries cannot repeat its action."""
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "INSERT OR IGNORE INTO telegram_updates(update_id, created_at) VALUES (?, ?)",
+                (update_id, time.time()),
+            )
+            return cursor.rowcount == 1
+
+    def apply_telegram_action(self, incident_id: str, action: str, actor: str) -> dict[str, Any]:
+        """Apply an authorized compact Telegram control action to one active incident."""
+        if action == "ack":
+            result = self.acknowledge_if_active(incident_id, actor)
+            return {"action": action, "state": result["state"] if result else "inactive"}
+        if action == "snz":
+            incident = self.get_incident(incident_id)
+            if incident is None or incident["state"] not in DELIVERABLE_STATES:
+                return {"action": action, "state": "inactive"}
+            result = self.snooze(incident_id, time.time() + 900, actor)
+            return {"action": action, "state": result["state"]}
+        if action == "ask":
+            incident = self.get_incident(incident_id)
+            if incident is None:
+                raise ValidationError("incident not found")
+            with self._lock, self._connection:
+                self._audit(incident_id, "telegram_ask_requested", actor, {})
+            return {"action": action, "state": incident["state"]}
+        raise ValidationError("unsupported Telegram action")
+
+    def record_telegram_ask(self, incident_id: str, actor: str, question: str) -> None:
+        """Audit an operator question without treating its text as executable input."""
+        normalized = question.strip()
+        if not normalized or len(normalized) > 1000:
+            raise ValidationError("ask question must be between 1 and 1000 characters")
+        if self.get_incident(incident_id) is None:
+            raise ValidationError("incident not found")
+        with self._lock, self._connection:
+            self._audit(incident_id, "telegram_ask_recorded", actor, {"question": normalized})
 
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
         """Return the current incident record, or None when it has never existed."""

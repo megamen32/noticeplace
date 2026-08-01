@@ -13,6 +13,8 @@ ExecStart=/usr/bin/python3 /opt/notify/bin/notify-center
 Restart=on-failure
 RestartSec=3
 StateDirectory=notification-center
+Environment=HOME=/var/lib/notification-center
+Environment=ANDROID_USER_HOME=/var/lib/notification-center
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

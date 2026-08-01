@@ -12,17 +12,20 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
+from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 
 
 class TelegramSender:
     """Send compact incident cards via Telegram's HTTPS Bot API."""
 
-    def __init__(self, token: str, chat_id: str, timeout_seconds: float = 5) -> None:
+    def __init__(self, token: str, chat_id: str, timeout_seconds: float = 5, action_codec: TelegramActionCodec | None = None) -> None:
         """Create a sender; empty credentials intentionally leave it unavailable."""
         self._token = token
         self._chat_id = chat_id
         self._timeout_seconds = timeout_seconds
+        self._action_codec = action_codec
 
     def send(self, payload: dict[str, Any]) -> None:
         """Deliver one card; raises transport errors so the core can retry it."""
@@ -30,7 +33,14 @@ class TelegramSender:
             raise RuntimeError("Telegram sender is not configured")
         incident = payload["incident"]
         text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nIncident: {incident['id']}"
-        data = urllib.parse.urlencode({"chat_id": self._chat_id, "text": text, "disable_web_page_preview": "true"}).encode()
+        request_data: dict[str, str] = {"chat_id": self._chat_id, "text": text, "disable_web_page_preview": "true"}
+        if self._action_codec is not None:
+            incident_id = str(incident["id"])
+            request_data["reply_markup"] = json.dumps({"inline_keyboard": [
+                [{"text": "ACK", "callback_data": self._action_codec.encode("ack", incident_id)}, {"text": "Snooze 15m", "callback_data": self._action_codec.encode("snz", incident_id)}],
+                [{"text": "Ask", "callback_data": self._action_codec.encode("ask", incident_id)}],
+            ]}, separators=(",", ":"))
+        data = urllib.parse.urlencode(request_data).encode()
         request = urllib.request.Request(f"https://api.telegram.org/bot{self._token}/sendMessage", data=data, method="POST")
         with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
             if not 200 <= response.status < 300:
@@ -83,13 +93,16 @@ class MatrixCallSender:
 class DeliveryWorker:
     """Run due delivery claims through known adapters without hiding failures."""
 
-    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0) -> None:
-        """Attach durable delivery state to Telegram and an optional MatrixRTC bridge."""
+    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0) -> None:
+        """Attach durable delivery state to Telegram, Matrix, and the local S21 adapter."""
         self._center = center
         self._telegram = telegram
         self._matrix_call = matrix_call
+        self._android_phone = android_phone
         self._lease_seconds = lease_seconds
         self._call_escalation_seconds = max(0, call_escalation_seconds)
+        self._android_telegram_call_escalation_seconds = max(0, android_telegram_call_escalation_seconds)
+        self._android_phone_call_escalation_seconds = max(0, android_phone_call_escalation_seconds)
 
     def claim_due(self) -> list[dict[str, Any]]:
         """Claim a bounded batch without blocking the dispatcher heartbeat."""
@@ -111,12 +124,35 @@ class DeliveryWorker:
                     and str(delivery["delivery_key"]).endswith(":initial")
                 ):
                     self._center.schedule_escalation(str(delivery["incident_id"]), "matrix.call", time.time() + self._call_escalation_seconds)
+                if (
+                    self._android_phone is not None
+                    and self._android_telegram_call_escalation_seconds > 0
+                    and incident["severity"] == "critical"
+                    and str(delivery["delivery_key"]).endswith(":initial")
+                ):
+                    self._center.schedule_escalation(str(delivery["incident_id"]), "android.telegram.call", time.time() + self._android_telegram_call_escalation_seconds)
+                if (
+                    self._android_phone is not None
+                    and getattr(self._android_phone, "can_phone_call", False)
+                    and self._android_phone_call_escalation_seconds > 0
+                    and incident["severity"] == "critical"
+                    and str(delivery["delivery_key"]).endswith(":initial")
+                ):
+                    self._center.schedule_escalation(str(delivery["incident_id"]), "android.phone.call", time.time() + self._android_phone_call_escalation_seconds)
             elif delivery["channel"] == "matrix.call":
                 if self._matrix_call is None:
                     raise RuntimeError("Matrix call sender is not configured")
                 result = self._matrix_call.send(payload)
                 if result["answered"]:
                     self._center.acknowledge_if_active(str(delivery["incident_id"]), str(result["actor"]))
+            elif delivery["channel"] == "android.telegram.call":
+                if self._android_phone is None:
+                    raise RuntimeError("Android phone adapter is not configured")
+                self._android_phone.telegram_call(payload)
+            elif delivery["channel"] == "android.phone.call":
+                if self._android_phone is None:
+                    raise RuntimeError("Android phone adapter is not configured")
+                self._android_phone.phone_call(payload)
             else:
                 raise RuntimeError(f"channel adapter is not configured: {delivery['channel']}")
             self._center.complete_delivery(delivery["id"], "sent")
@@ -250,9 +286,24 @@ def run_http(center: NotificationCenter, host: str, port: int, health_token: str
     ThreadingHTTPServer((host, port), build_handler(center, configured_health_token)).serve_forever()
 
 
-def telegram_from_environment() -> TelegramSender:
+def telegram_action_codec_from_environment() -> TelegramActionCodec | None:
+    """Enable signed inline controls only when the dedicated callback secret exists."""
+    secret = os.environ.get("TELEGRAM_CALLBACK_SECRET", "")
+    return TelegramActionCodec(secret) if secret else None
+
+
+def telegram_from_environment(action_codec: TelegramActionCodec | None = None) -> TelegramSender:
     """Build the Telegram adapter from env vars without ever logging credentials."""
-    return TelegramSender(os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""))
+    return TelegramSender(os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""), action_codec=action_codec)
+
+
+def telegram_interactions_from_environment(center: NotificationCenter, codec: TelegramActionCodec | None) -> TelegramInteractionPoller | None:
+    """Build the optional in-process Bot API callback poller from strict allowlists."""
+    if codec is None:
+        return None
+    allowed = {part.strip() for part in os.environ.get("TELEGRAM_CALLBACK_ALLOWED_USER_IDS", os.environ.get("TELEGRAM_CHAT_ID", "")).split(",") if part.strip()}
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    return TelegramInteractionPoller(center, token, allowed, codec) if token and allowed else None
 
 
 def matrix_call_from_environment() -> MatrixCallSender | None:
@@ -260,3 +311,22 @@ def matrix_call_from_environment() -> MatrixCallSender | None:
     url = os.environ.get("MATRIX_CALL_URL", "")
     token = os.environ.get("MATRIX_CALL_TOKEN", "")
     return MatrixCallSender(url, token, float(os.environ.get("MATRIX_CALL_TIMEOUT_SECONDS", "150"))) if url or token else None
+
+
+def android_phone_from_environment() -> AndroidPhoneAdapter | None:
+    """Build the optional direct S21 adapter; all commands remain in this process."""
+    serial = os.environ.get("ANDROID_ADB_SERIAL", "").strip()
+    target = os.environ.get("ANDROID_TELEGRAM_TARGET", "").strip()
+    if not serial and not target:
+        return None
+    if not serial or not target:
+        raise RuntimeError("ANDROID_ADB_SERIAL and ANDROID_TELEGRAM_TARGET must be configured together")
+    labels = tuple(part.strip() for part in os.environ.get("ANDROID_TELEGRAM_CALL_LABELS", "Voice call,Call,Позвонить,Голосовой звонок").split(",") if part.strip())
+    return AndroidPhoneAdapter(AndroidPhoneConfig(
+        adb_path=os.environ.get("ANDROID_ADB_PATH", "/usr/local/bin/adb"),
+        serial=serial,
+        telegram_target=target,
+        phone_number=os.environ.get("ANDROID_PHONE_TARGET", "").strip(),
+        call_labels=labels,
+        command_timeout_seconds=float(os.environ.get("ANDROID_ADB_TIMEOUT_SECONDS", "12")),
+    ))

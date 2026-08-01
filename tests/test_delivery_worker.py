@@ -54,6 +54,28 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual(["matrix.call"], [item["channel"] for item in queued])
         self.assertEqual(created["incident_id"], queued[0]["incident_id"])
 
+    def test_initial_critical_delivery_schedules_the_in_process_android_channels(self) -> None:
+        created = self.center.create_event("producer", "create", self.event)
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        class Android:
+            can_phone_call = True
+
+        worker = DeliveryWorker(
+            self.center,
+            Telegram(),
+            android_phone=Android(),
+            android_telegram_call_escalation_seconds=60,
+            android_phone_call_escalation_seconds=120,
+        )
+        self.assertEqual(1, worker.run_once())
+        queued = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual(["android.telegram.call", "android.phone.call"], [item["channel"] for item in queued])
+        self.assertTrue(all(item["incident_id"] == created["incident_id"] for item in queued))
+
     def test_matrix_answer_after_resolution_does_not_resurrect_the_incident(self) -> None:
         created = self.center.create_event("producer", "create", self.event)
         self.center.complete_delivery(created["initial_delivery_id"], "sent")

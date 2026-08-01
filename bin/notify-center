@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from notification_center.core import NotificationCenter
-from notification_center.http_api import DeliveryWorker, matrix_call_from_environment, run_http, telegram_from_environment
+from notification_center.http_api import DeliveryWorker, android_phone_from_environment, matrix_call_from_environment, run_http, telegram_action_codec_from_environment, telegram_from_environment, telegram_interactions_from_environment
 
 
 def load_tokens() -> dict[str, dict[str, str]]:
@@ -41,15 +41,33 @@ def worker_loop(worker: DeliveryWorker) -> None:
             time.sleep(1)
 
 
+def telegram_interaction_loop(poller: object) -> None:
+    """Consume Bot API callbacks inside this process without affecting delivery health."""
+    while True:
+        try:
+            poller.poll_once()  # type: ignore[attr-defined]
+            time.sleep(1)
+        except Exception:
+            time.sleep(5)
+
+
 def main() -> None:
     """Create durable dependencies and run worker plus API in one small process."""
     center = NotificationCenter(os.environ.get("NOTIFY_CENTER_DB", "./var/notify-center.sqlite3"), load_tokens())
+    callback_codec = telegram_action_codec_from_environment()
+    telegram = telegram_from_environment(callback_codec)
+    poller = telegram_interactions_from_environment(center, callback_codec)
     threading.Thread(target=worker_loop, args=(DeliveryWorker(
         center,
-        telegram_from_environment(),
+        telegram,
         matrix_call_from_environment(),
+        android_phone_from_environment(),
         call_escalation_seconds=float(os.environ.get("MATRIX_CALL_ESCALATION_SECONDS", "0")),
+        android_telegram_call_escalation_seconds=float(os.environ.get("ANDROID_TELEGRAM_CALL_ESCALATION_SECONDS", "0")),
+        android_phone_call_escalation_seconds=float(os.environ.get("ANDROID_PHONE_CALL_ESCALATION_SECONDS", "0")),
     ),), daemon=True).start()
+    if poller is not None:
+        threading.Thread(target=telegram_interaction_loop, args=(poller,), daemon=True).start()
     run_http(center, os.environ.get("NOTIFY_CENTER_HOST", "127.0.0.1"), int(os.environ.get("NOTIFY_CENTER_PORT", "8091")))
 
 
