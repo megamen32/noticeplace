@@ -103,6 +103,19 @@ def _telegram_qr_login_visible(xml_text: str) -> bool:
     return any(marker in labels for marker in ("scan qr", "qr-код", "привязк"))
 
 
+def android_input_scale(wm_size_text: str) -> tuple[float, float]:
+    """Map UIAutomator's override coordinates to ``adb input`` physical pixels."""
+    physical = re.search(r"Physical size:\s*(\d+)x(\d+)", wm_size_text)
+    override = re.search(r"Override size:\s*(\d+)x(\d+)", wm_size_text)
+    if physical is None or override is None:
+        return (1.0, 1.0)
+    physical_width, physical_height = (int(value) for value in physical.groups())
+    override_width, override_height = (int(value) for value in override.groups())
+    if not override_width or not override_height:
+        return (1.0, 1.0)
+    return (physical_width / override_width, physical_height / override_height)
+
+
 @dataclass(frozen=True)
 class AndroidPhoneConfig:
     adb_path: str
@@ -120,6 +133,7 @@ class AndroidPhoneAdapter:
         self._config = config
         self._runner = runner
         self._sleeper = sleeper
+        self._input_scale: tuple[float, float] | None = None
 
     @property
     def can_phone_call(self) -> bool:
@@ -148,6 +162,12 @@ class AndroidPhoneAdapter:
 
     def _telegram_foreground(self) -> bool:
         return "org.telegram.messenger" in self._run("shell", "dumpsys", "window")
+
+    def _tap(self, point: tuple[int, int]) -> None:
+        if self._input_scale is None:
+            self._input_scale = android_input_scale(self._run("shell", "wm", "size"))
+        scale_x, scale_y = self._input_scale
+        self._run("shell", "input", "tap", str(round(point[0] * scale_x)), str(round(point[1] * scale_y)))
 
     def _wake_for_interaction(self) -> None:
         """Wake only an always-on screen with ordinary Android input events."""
@@ -178,12 +198,12 @@ class AndroidPhoneAdapter:
             overflow = _telegram_header_overflow_point(xml_text)
             if overflow is None:
                 raise RuntimeError("Telegram voice-call control is not visible")
-            self._run("shell", "input", "tap", str(overflow[0]), str(overflow[1]))
+            self._tap(overflow)
             self._sleeper(0.3)
             point = _tap_bounds(self._window_xml(), self._config.call_labels)
         if point is None:
             raise RuntimeError("Telegram voice-call control is not visible")
-        self._run("shell", "input", "tap", str(point[0]), str(point[1]))
+        self._tap(point)
 
     def phone_call(self, _payload: dict[str, Any]) -> None:
         """Place a cellular call only after Android reports voice service in operation."""
