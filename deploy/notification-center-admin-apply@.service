@@ -1,0 +1,16 @@
+[Unit]
+Description=Apply validated Notify Center admin configuration job %i
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/notification-center-admin.env
+ExecStart=/usr/bin/python3 /opt/notify/bin/notify-center-admin-apply %i
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc /var/lib/notification-center-admin

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the loopback-only, root-owned Notify Center operator console."""
+"""Apply one validated Notify Center admin job from the root-only state queue."""
 
 from __future__ import annotations
 
@@ -9,19 +9,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from notification_center.admin import AdminConfigStore
-from notification_center.admin_http import run_admin_http
+from notification_center.admin import apply_pending_job
 
 
 def main() -> None:
-    secret = os.environ.get("NOTIFY_ADMIN_CSRF_SECRET", "")
-    store = AdminConfigStore(
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: notify-center-admin-apply JOB_ID")
+    apply_pending_job(
+        sys.argv[1],
         Path(os.environ.get("NOTIFY_ADMIN_PRIMARY_ENV", "/etc/notification-center.env")),
         Path(os.environ.get("NOTIFY_ADMIN_ROUTES_ENV", "/etc/notification-center-telegram-routes.env")),
         Path(os.environ.get("NOTIFY_ADMIN_STATE_DIR", "/var/lib/notification-center-admin")),
-        apply_service=os.environ.get("NOTIFY_ADMIN_APPLY_SERVICE", "notification-center-admin-apply"),
     )
-    run_admin_http(store, secret, os.environ.get("NOTIFY_ADMIN_HOST", "127.0.0.1"), int(os.environ.get("NOTIFY_ADMIN_PORT", "8092")))
 
 
 if __name__ == "__main__":

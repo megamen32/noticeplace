@@ -68,6 +68,7 @@ class AdminConfigStore:
         routes_env: Path,
         state_dir: Path,
         restart: Callable[[], None] | None = None,
+        apply_service: str | None = None,
     ) -> None:
         self.primary_env = primary_env
         self.routes_env = routes_env
@@ -75,6 +76,7 @@ class AdminConfigStore:
         self.audit_path = state_dir / "audit.jsonl"
         self.rollback_dir = state_dir / "rollbacks"
         self.restart = restart or self._restart_center
+        self.apply_service = apply_service
 
     @staticmethod
     def _restart_center() -> None:
@@ -175,6 +177,12 @@ class AdminConfigStore:
         self._apply(self.routes_env, {"TELEGRAM_SEVERITY_ROUTES_JSON": encoded}, actor, "routes_changed", "routes", None)
 
     def _apply(self, path: Path, updates: Mapping[str, str], actor: str, action: str, subject: str, token: str | None) -> None:
+        if self.apply_service:
+            self._submit_job(path, updates, actor, action, subject, token)
+            return
+        self._apply_direct(path, updates, actor, action, subject, token)
+
+    def _apply_direct(self, path: Path, updates: Mapping[str, str], actor: str, action: str, subject: str, token: str | None) -> None:
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.rollback_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         rollback = self.rollback_dir / f"{int(time.time())}-{secrets.token_hex(4)}"
@@ -189,6 +197,31 @@ class AdminConfigStore:
             self.restart()
             raise
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": action, "subject": subject, "token_fingerprint": self._fingerprint(token) if token else None, "rollback": str(rollback)})
+
+    def _submit_job(self, path: Path, updates: Mapping[str, str], actor: str, action: str, subject: str, token: str | None) -> None:
+        """Hand a root-only configuration job to the narrowly scoped helper."""
+        target = "primary" if path == self.primary_env else "routes" if path == self.routes_env else None
+        if target is None:
+            raise ValidationError("unsupported configuration target")
+        pending = self.state_dir / "pending"
+        pending.mkdir(mode=0o700, parents=True, exist_ok=True)
+        job_id = secrets.token_hex(16)
+        job = pending / f"{job_id}.json"
+        payload = {"target": target, "updates": dict(updates), "actor": actor, "action": action, "subject": subject, "token": token}
+        handle, temporary = tempfile.mkstemp(prefix=f".{job_id}.", dir=str(pending))
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as file:
+                json.dump(payload, file, sort_keys=True)
+                file.flush()
+                os.fsync(file.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, job)
+            subprocess.run(["systemctl", "start", f"{self.apply_service}@{job_id}.service"], check=True, timeout=45)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+            if job.exists():
+                job.unlink()
 
     def _audit(self, record: Mapping[str, Any]) -> None:
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -218,3 +251,18 @@ class AdminConfigStore:
     def _validate_severity(severity: str) -> None:
         if severity not in SEVERITIES:
             raise ValidationError("unsupported max severity")
+
+
+def apply_pending_job(job_id: str, primary_env: Path, routes_env: Path, state_dir: Path) -> None:
+    """Apply one BFF-created job; used only by the root systemd helper unit."""
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        raise ValidationError("invalid admin job")
+    job = state_dir / "pending" / f"{job_id}.json"
+    with job.open(encoding="utf-8") as file:
+        payload = json.load(file)
+    target = payload.get("target")
+    path = primary_env if target == "primary" else routes_env if target == "routes" else None
+    if path is None or not isinstance(payload.get("updates"), dict):
+        raise ValidationError("invalid admin job")
+    store = AdminConfigStore(primary_env, routes_env, state_dir)
+    store._apply_direct(path, {str(key): str(value) for key, value in payload["updates"].items()}, str(payload.get("actor") or "sso:operator"), str(payload.get("action") or "configuration_changed"), str(payload.get("subject") or "configuration"), str(payload["token"]) if payload.get("token") else None)

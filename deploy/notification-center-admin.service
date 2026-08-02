@@ -18,7 +18,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/etc/notification-center.env /etc/notification-center-telegram-routes.env /var/lib/notification-center-admin
+ReadWritePaths=/var/lib/notification-center-admin
 
 [Install]
 WantedBy=multi-user.target
