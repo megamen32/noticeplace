@@ -56,3 +56,13 @@ Notify/Hub restart и возвращает terminal receipt; затем тот �
 - 2026-08-02: Follow-up review found an ACK/late-failure race and raw remote
   failure text reaching delivery audit. RED reproduced both; closed incidents
   now retain cancellation and terminal remote failures use a fixed safe reason.
+- 2026-08-02: Full suite is 87/87. Public signed Notify E2E is green first on
+  server-100 and then Mac: each delivery reached `sent` on attempt 1, reused the
+  named Agent Herder session with `created=false`, delivered exact `hi`, and
+  exact event replay preserved event/delivery/Hub job identity without another
+  agent message. Both final incidents were ACKed with zero queued follow-ups.
+  Dangerous payload target override was rejected before delivery. Services
+  remained healthy after restart, rollback receipts exist on both hosts, and
+  disposable parity/OAuth routes and credentials were removed or revoked.
+  Commit `7fb5605` is on Notify `main`; GPTAdmin `v141` release workflow
+  `30737173119` and all 12 public assets are green. P0 CONFIRMED.
