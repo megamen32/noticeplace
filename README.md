@@ -132,6 +132,9 @@ Each GitHub release includes:
 
 ## Docs
 
+- [Notify Center producer SDKs](docs/producer-sdk.md) — small Python and Node.js
+  clients for scoped operational events and optional acknowledgement waiting.
+
 - [MCP server](docs/mcp.md) — tools, schemas, agent behavior, client configs.
 - [CLI tool](docs/cli.md) — `/usr/local/bin/notify` usage, Telegram secrets, logs.
 - [AI skill](docs/skill.md) — optional fallback for clients that do not expose MCP tool descriptions well.

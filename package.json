@@ -26,6 +26,10 @@
     "notify-mcp": "npm/notify-mcp.js",
     "notify-install": "npm/install-notify.js"
   },
+  "exports": {
+    "./notification-center": "./npm/notification-center-client.js",
+    "./package.json": "./package.json"
+  },
   "files": [
     "README*.md",
     "LICENSE",
@@ -35,6 +39,7 @@
     "mcp/notify_mcp.py",
     "notification_center/",
     "npm/notify-mcp.js",
+    "npm/notification-center-client.js",
     "npm/install-notify.js",
     "docs/",
     "deploy/",
