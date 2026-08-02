@@ -12,6 +12,25 @@ Notify MCP is now primarily a lightweight Telegram ping tool for AI agents: use 
 
 For long builds, migrations, test suites, backups, and deployments, prefer `agent-resume` for waiting/resume. Use `notify.send_message` as the human-facing final ping: “I finished, please check.”
 
+## Producer SDK (optional)
+
+For a service that publishes operational incidents to Notify Center, use the
+small dependency-free producer client. It is separate from the Notify MCP
+server above.
+
+```bash
+# Python
+pip install 'git+https://github.com/megamen32/notify.git#subdirectory=python'
+
+# Node.js
+npm install github:megamen32/notify
+```
+
+Clients create authenticated events and can optionally wait until the incident
+is `acknowledged` or `resolved`. `202 Accepted` only means the event was stored,
+not that a person responded. Configuration and short examples: [Producer SDK
+guide](docs/producer-sdk.md).
+
 ## Quick start: install in Codex
 
 If Codex is your MCP client, this single command adds Notify and starts it through the real GitHub package launcher:
