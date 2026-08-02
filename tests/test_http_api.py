@@ -24,7 +24,7 @@ class HttpApiTests(unittest.TestCase):
         self.center = NotificationCenter(
             Path(self.tempdir.name) / "notify.sqlite3",
             {
-                "secret-token": {"project": "hermes", "max_severity": "critical"},
+                "secret-token": {"project": "hermes", "max_severity": "critical", "agent_jobs": ["repair_100"]},
                 "notice-token": {"project": "hermes", "max_severity": "notice"},
             },
         )
@@ -161,6 +161,23 @@ class HttpApiTests(unittest.TestCase):
         status, created = self.request("POST", "/v1/events", event, Authorization="Bearer secret-token", **{"Idempotency-Key": "create-critical-action"})
         self.assertEqual(202, status)
         status, _ = self.request("POST", f"/v1/incidents/{created['incident_id']}/ack", {"actor": "limited"}, Authorization="Bearer notice-token")
+        self.assertEqual(401, status)
+
+    def test_http_agent_job_requires_scope_and_rejects_payload_authority(self) -> None:
+        event = {
+            "schema": "notify.event.v1", "project": "hermes", "recipient": "me",
+            "kind": "incident", "severity": "critical", "title": "Disk pressure",
+            "body": "95 percent", "dedup_key": "disk-full:server-100:/", "agent_job": "repair_100",
+        }
+        status, created = self.request("POST", "/v1/events", event, Authorization="Bearer secret-token", **{"Idempotency-Key": "agent-job-http"})
+        self.assertEqual(202, status)
+        self.assertTrue(created["agent_job_delivery_id"])
+
+        status, denied = self.request("POST", "/v1/events", {**event, "target": "shell:attacker"}, Authorization="Bearer secret-token", **{"Idempotency-Key": "agent-job-danger"})
+        self.assertEqual(400, status)
+        self.assertIn("forbidden authority fields", str(denied["error"]))
+
+        status, _ = self.request("POST", "/v1/events", {**event, "dedup_key": "disk-full:unauthorized"}, Authorization="Bearer notice-token", **{"Idempotency-Key": "agent-job-unscoped"})
         self.assertEqual(401, status)
 
 

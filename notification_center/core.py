@@ -44,7 +44,7 @@ class NotificationCenter:
     failure, while stable delivery keys prevent routine duplicate scheduling.
     """
 
-    def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, str]]) -> None:
+    def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]]) -> None:
         """Open and initialize durable state; raises sqlite errors on storage failures."""
         path = Path(database_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,7 +127,7 @@ class NotificationCenter:
                 """
             )
 
-    def _scope(self, token: str, project: str) -> Mapping[str, str]:
+    def _scope(self, token: str, project: str) -> Mapping[str, Any]:
         """Validate a token's project boundary without requiring an event severity."""
         scope = self._tokens.get(token)
         if scope is None:
@@ -136,14 +136,14 @@ class NotificationCenter:
             raise AuthorizationError("token is not allowed for this project")
         return scope
 
-    def _token(self, token: str, event: Mapping[str, Any]) -> Mapping[str, str]:
+    def _token(self, token: str, event: Mapping[str, Any]) -> Mapping[str, Any]:
         """Validate token project and severity boundaries; raises AuthorizationError."""
         scope = self._scope(token, str(event.get("project") or ""))
         self._require_severity(scope, str(event.get("severity") or ""))
         return scope
 
     @staticmethod
-    def _require_severity(scope: Mapping[str, str], severity: str) -> None:
+    def _require_severity(scope: Mapping[str, Any], severity: str) -> None:
         """Reject a scope that is not allowed to create or resolve this severity."""
         maximum = scope.get("max_severity", "notice")
         if severity not in SEVERITIES or maximum not in SEVERITIES or SEVERITIES.index(severity) > SEVERITIES.index(maximum):
@@ -172,6 +172,13 @@ class NotificationCenter:
             raise ValidationError("unsupported severity")
         if str(event["kind"]) not in ("incident", "notification", "audit", "log"):
             raise ValidationError("unsupported kind")
+        agent_job = event.get("agent_job")
+        if agent_job is not None:
+            if not isinstance(agent_job, str) or not agent_job or len(agent_job) > 128 or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for character in agent_job):
+                raise ValidationError("agent_job must be a safe allowlisted identifier")
+            forbidden = sorted(set(event).intersection({"target", "command", "url", "harness", "cwd", "prompt", "tool", "mcp", "credential", "credentials", "token", "secret", "callback_url"}))
+            if forbidden:
+                raise ValidationError(f"agent_job event contains forbidden authority fields: {', '.join(forbidden)}")
 
     @staticmethod
     def _validate_resolution(event: Mapping[str, Any]) -> None:
@@ -212,7 +219,12 @@ class NotificationCenter:
         if not idempotency_key.strip():
             raise ValidationError("Idempotency-Key is required")
         self._validate_event(event)
-        self._token(token, event)
+        scope = self._token(token, event)
+        agent_job = str(event.get("agent_job") or "")
+        if agent_job:
+            allowed_jobs = scope.get("agent_jobs", [])
+            if not isinstance(allowed_jobs, (list, tuple)) or agent_job not in {str(value) for value in allowed_jobs}:
+                raise AuthorizationError("token is not allowed to start this agent job")
         now = time.time()
         with self._lock, self._connection:
             payload_json = json.dumps(dict(event), ensure_ascii=False, sort_keys=True)
@@ -221,7 +233,13 @@ class NotificationCenter:
                 if previous["payload_json"] != payload_json:
                     raise IdempotencyConflict("Idempotency-Key was already used with different event content")
                 initial = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (f"{previous['incident_id']}:telegram.main:initial",)).fetchone()
-                return {"event_id": previous["event_id"], "incident_id": previous["incident_id"], "state": self.get_incident(previous["incident_id"])["state"], "deduplicated": False, "idempotent": True, "initial_delivery_id": initial["id"] if initial else None}
+                previous_event = json.loads(previous["payload_json"])
+                previous_job = str(previous_event.get("agent_job") or "") if isinstance(previous_event, dict) else ""
+                agent_delivery = self._connection.execute(
+                    "SELECT id FROM deliveries WHERE delivery_key = ?",
+                    (f"{previous['incident_id']}:gptadmin.agent:{previous_job}:event:{previous['event_id']}",),
+                ).fetchone() if previous_job else None
+                return {"event_id": previous["event_id"], "incident_id": previous["incident_id"], "state": self.get_incident(previous["incident_id"])["state"], "deduplicated": False, "idempotent": True, "initial_delivery_id": initial["id"] if initial else None, "agent_job_delivery_id": agent_delivery["id"] if agent_delivery else None}
             project, recipient, dedup_key = str(event["project"]), str(event["recipient"]), str(event["dedup_key"])
             existing = self._connection.execute("SELECT id FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? AND state != 'resolved'", (project, recipient, dedup_key)).fetchone()
             deduplicated = existing is not None
@@ -239,7 +257,8 @@ class NotificationCenter:
             event_id = f"evt_{uuid.uuid4().hex}"
             self._connection.execute("INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?)", (idempotency_key, event_id, incident_id, payload_json, now))
             delivery_id = self._schedule_delivery(incident_id, "telegram.main", "initial", now)
-            return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id}
+            agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", f"event:{event_id}", now) if agent_job else None
+            return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id, "agent_job_delivery_id": agent_delivery_id}
 
     def resolve_event(self, token: str, idempotency_key: str, event: Mapping[str, Any]) -> dict[str, Any]:
         """Resolve an active incident by stable producer identity, idempotently."""
@@ -350,21 +369,22 @@ class NotificationCenter:
 
     def complete_delivery(self, delivery_id: str, outcome: str, error: str | None = None, retry_after_seconds: float = 30) -> None:
         """Mark one claim sent, cancelled, or safely queued for a future retry."""
-        if outcome not in ("sent", "cancelled", "retry"):
-            raise ValidationError("delivery outcome must be sent, cancelled, or retry")
+        if outcome not in ("sent", "failed", "cancelled", "retry"):
+            raise ValidationError("delivery outcome must be sent, failed, cancelled, or retry")
         now = time.time()
+        safe_error = " ".join((error or "").replace("\x00", "").splitlines())[-1000:] or None
         with self._lock, self._connection:
             row = self._connection.execute("SELECT d.incident_id, i.state FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
             if row is None:
                 raise ValidationError("delivery not found")
-            if outcome in ("sent", "retry") and str(row["state"]) not in DELIVERABLE_STATES:
+            if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES:
                 outcome = "cancelled"
-                error = error or "incident is no longer active"
+                safe_error = safe_error or "incident is no longer active"
             if outcome == "retry":
-                self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), (error or "")[-1000:], now, delivery_id))
+                self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), safe_error, now, delivery_id))
             else:
-                self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, updated_at = ? WHERE id = ?", (outcome, (error or "")[-1000:] or None, now, delivery_id))
-            self._audit(str(row["incident_id"]), f"delivery_{outcome}", "worker", {"delivery_id": delivery_id, "error": error})
+                self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, updated_at = ? WHERE id = ?", (outcome, safe_error, now, delivery_id))
+            self._audit(str(row["incident_id"]), f"delivery_{outcome}", "worker", {"delivery_id": delivery_id, "error": safe_error})
 
     def _transition(self, incident_id: str, state: str, actor: str, snoozed_until: float | None = None) -> dict[str, Any]:
         """Apply an incident transition and cancel future alerts when appropriate."""
@@ -452,6 +472,25 @@ class NotificationCenter:
             raise ValidationError("incident not found")
         with self._lock, self._connection:
             self._audit(incident_id, "telegram_ask_recorded", actor, {"question": normalized})
+
+    def record_agent_job_result(self, incident_id: str, delivery_id: str, job_name: str, receipt: Mapping[str, Any]) -> None:
+        """Persist a bounded terminal agent-job receipt without raw command output."""
+        if self.get_incident(incident_id) is None:
+            raise ValidationError("incident not found")
+        result = receipt.get("agent_receipt") if isinstance(receipt.get("agent_receipt"), Mapping) else {}
+        summary = {
+            "delivery_id": delivery_id,
+            "agent_job": job_name,
+            "hub_job_id": str(receipt.get("job_id") or "")[:128],
+            "route_id": str(receipt.get("route_id") or "")[:128],
+            "status": str(receipt.get("status") or "")[:32],
+            "session_id": str(result.get("session_id") or result.get("sessionId") or "")[:128],
+            "created": result.get("created") is True,
+            "delivery": str(result.get("delivery") or "")[:32],
+        }
+        with self._lock, self._connection:
+            event_type = "agent_job_failed" if summary["status"] == "failed" else "agent_job_completed"
+            self._audit(incident_id, event_type, "worker", summary)
 
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
         """Return the current incident record, or None when it has never existed."""
