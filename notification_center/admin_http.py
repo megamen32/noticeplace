@@ -142,7 +142,29 @@ body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}
 
 
 def _token_page(project: str, token: str) -> str:
-    return f"""<!doctype html><meta charset=utf-8><title>Copy producer token</title><style>body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:680px;margin:15vh auto;padding:28px;border:1px solid #405a88;border-radius:18px;background:#101d33}}code{{display:block;padding:16px;background:#08101e;overflow-wrap:anywhere;color:#c4bcff}}a{{color:#bdb6ff}}</style><main><h1>Copy this token now</h1><p>It is shown only on this response. Store it in the producer's secret store; the console will later keep only its fingerprint.</p><code>{html.escape(token)}</code><p><a href="/admin/">Back to admin</a></p></main>"""
+    safe_project = html.escape(project)
+    env_path = f"/etc/{safe_project}/notify.env"
+    curl = f"""curl --fail-with-body --silent --show-error --noproxy '*' \\
+  --request POST \"$NOTIFY_CENTER_EVENT_URL\" \\
+  --header \"Authorization: Bearer $NOTIFY_CENTER_TOKEN\" \\
+  --header \"Idempotency-Key: deploy-$(date +%s)\" \\
+  --header 'Content-Type: application/json' \\
+  --data '{{\"schema\":\"notify.event.v1\",\"project\":\"{safe_project}\",\"recipient\":\"me\",\"kind\":\"incident\",\"severity\":\"important\",\"title\":\"Deploy failed\",\"body\":\"Replace this message.\",\"dedup_key\":\"deploy:production\"}}'"""
+    python = f"""from notify_center_client import NotificationCenterClient
+
+client = NotificationCenterClient.from_environment()
+client.emit(project=\"{safe_project}\", severity=\"important\", title=\"Deploy failed\", dedup_key=\"deploy:production\")"""
+    node = f"""import {{ NotificationCenterClient }} from \"notify-mcp/notification-center\";
+
+const client = NotificationCenterClient.fromEnvironment();
+await client.emit({{ project: \"{safe_project}\", severity: \"important\", title: \"Deploy failed\", dedupKey: \"deploy:production\" }});"""
+    return f"""<!doctype html><meta charset=utf-8><title>Connect {safe_project}</title><style>body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:900px;margin:8vh auto;padding:28px}}section{{margin:18px 0;padding:22px;border:1px solid #405a88;border-radius:18px;background:#101d33}}code,pre{{display:block;padding:16px;background:#08101e;overflow:auto;overflow-wrap:anywhere;color:#c4bcff;white-space:pre-wrap}}.warning{{color:#ffd28a}}a{{color:#bdb6ff}}</style><main><h1>Connect {safe_project}</h1><p class=warning>Copy the token now. It is not available after leaving this page; the console retains only a fingerprint.</p><code>{html.escape(token)}</code><section><h2>1. Store it as a service secret</h2><pre># {env_path} (owner root, mode 0600)
+NOTIFY_CENTER_EVENT_URL=https://notify.bezrabotnyi.com/v1/events
+NOTIFY_CENTER_TOKEN=&lt;paste the token above here&gt;</pre><p>For systemd use <code>EnvironmentFile={env_path}</code>. Do not put the token in a unit command, Git, or shell history.</p></section><section><h2>2. Send with curl</h2><pre>{html.escape(curl)}</pre></section><section><h2>Or use a small SDK</h2><pre># Python: pip install 'git+https://github.com/megamen32/notify.git#subdirectory=python'
+{html.escape(python)}
+
+# Node.js: npm install github:megamen32/notify
+{html.escape(node)}</pre></section><p><a href=\"/admin/\">Back to admin</a></p></main>"""
 
 
 def run_admin_http(store: AdminConfigStore, csrf_secret: str, host: str, port: int) -> None:

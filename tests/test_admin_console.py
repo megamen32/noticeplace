@@ -68,6 +68,9 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertEqual(200, status)
         token = re.search(rb'<code>([^<]+)</code>', token_page).group(1).decode()
         self.assertGreater(len(token), 30)
+        self.assertIn(b"curl", token_page)
+        self.assertIn(b"EnvironmentFile", token_page)
+        self.assertIn(b"notify_center_client", token_page)
         self.assertEqual(1, self.restarts)
 
         snapshot = self.store.snapshot()
