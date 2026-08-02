@@ -137,3 +137,6 @@ result is then safe and deterministic.
 
 The source, issue tracker and releases are at
 [github.com/megamen32/notify](https://github.com/megamen32/notify).
+
+For the optional no-ADB S21 cellular fallback, see the
+[fixed GPTAdmin phone adapter](gptadmin-phone-adapter.md).

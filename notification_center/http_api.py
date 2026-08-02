@@ -14,6 +14,7 @@ from typing import Any
 
 from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
+from .gptadmin_phone import GptAdminPhoneAdapter
 from .landing import LANDING_PAGE
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 
@@ -391,10 +392,18 @@ def matrix_call_from_environment() -> MatrixCallSender | None:
     return MatrixCallSender(url, token, float(os.environ.get("MATRIX_CALL_TIMEOUT_SECONDS", "150"))) if url or token else None
 
 
-def android_phone_from_environment() -> AndroidPhoneAdapter | None:
-    """Build the optional direct S21 adapter; all commands remain in this process."""
+def android_phone_from_environment() -> AndroidPhoneAdapter | GptAdminPhoneAdapter | None:
+    """Build either the direct ADB adapter or the narrow fixed GPTAdmin call path."""
+    gptadmin_url = os.environ.get("GPTADMIN_ANDROID_PHONE_CALL_URL", "").strip()
+    gptadmin_token = os.environ.get("GPTADMIN_ANDROID_PHONE_CALL_TOKEN", "").strip()
     serial = os.environ.get("ANDROID_ADB_SERIAL", "").strip()
     target = os.environ.get("ANDROID_TELEGRAM_TARGET", "").strip()
+    if gptadmin_url or gptadmin_token:
+        if serial or target:
+            raise RuntimeError("GPTADMIN_ANDROID_PHONE_CALL_* cannot be combined with ANDROID_ADB_*/ANDROID_TELEGRAM_TARGET")
+        if not gptadmin_url or not gptadmin_token:
+            raise RuntimeError("GPTADMIN_ANDROID_PHONE_CALL_URL and GPTADMIN_ANDROID_PHONE_CALL_TOKEN must be configured together")
+        return GptAdminPhoneAdapter(gptadmin_url, gptadmin_token, float(os.environ.get("GPTADMIN_ANDROID_PHONE_CALL_TIMEOUT_SECONDS", "20")))
     if not serial and not target:
         return None
     if not serial or not target:
