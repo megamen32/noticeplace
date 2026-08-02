@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import html
+import logging
 import secrets
 import time
 import urllib.parse
@@ -14,6 +15,7 @@ from typing import Any
 from .admin import AdminConfigStore, ROUTE_SEVERITIES
 from .core import SEVERITIES, ValidationError
 
+LOGGER = logging.getLogger(__name__)
 
 def _csrf(secret: str, lifetime_seconds: int = 1800) -> str:
     expiry = str(int(time.time()) + lifetime_seconds)
@@ -107,6 +109,7 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
             except ValidationError as error:
                 self._reply(HTTPStatus.BAD_REQUEST, _page("Configuration rejected", str(error)))
             except Exception:
+                LOGGER.exception("Notify Center admin mutation failed")
                 self._reply(HTTPStatus.INTERNAL_SERVER_ERROR, _page("Configuration failed", "No change was accepted. Check the protected admin audit."))
 
         def log_message(self, _format: str, *_args: object) -> None:
