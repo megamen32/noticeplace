@@ -1,0 +1,220 @@
+"""Root-only, narrowly scoped configuration store for Notify Center admin UI."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from .core import SEVERITIES, ValidationError
+
+PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
+ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency")
+
+
+def parse_environment(path: Path) -> dict[str, str]:
+    """Read a simple EnvironmentFile without interpreting shell syntax."""
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _atomic_environment_update(path: Path, updates: Mapping[str, str]) -> None:
+    """Replace only named EnvironmentFile values, keeping mode and comments."""
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = original.splitlines()
+    remaining = dict(updates)
+    rendered: list[str] = []
+    for line in lines:
+        if "=" in line and not line.lstrip().startswith("#"):
+            key = line.split("=", 1)[0].strip()
+            if key in remaining:
+                rendered.append(f"{key}={remaining.pop(key)}")
+                continue
+        rendered.append(line)
+    rendered.extend(f"{key}={value}" for key, value in remaining.items())
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+    handle, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write("\n".join(rendered).rstrip("\n") + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+class AdminConfigStore:
+    """Manage only producer scopes and Telegram topic routing with rollback."""
+
+    def __init__(
+        self,
+        primary_env: Path,
+        routes_env: Path,
+        state_dir: Path,
+        restart: Callable[[], None] | None = None,
+    ) -> None:
+        self.primary_env = primary_env
+        self.routes_env = routes_env
+        self.state_dir = state_dir
+        self.audit_path = state_dir / "audit.jsonl"
+        self.rollback_dir = state_dir / "rollbacks"
+        self.restart = restart or self._restart_center
+
+    @staticmethod
+    def _restart_center() -> None:
+        subprocess.run(["systemctl", "restart", "notification-center"], check=True, timeout=30)
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return display-safe configuration; raw producer tokens never leave here."""
+        scopes = self._scopes()
+        projects = []
+        for token, scope in scopes.items():
+            projects.append({
+                "project": str(scope["project"]),
+                "max_severity": str(scope["max_severity"]),
+                "fingerprint": self._fingerprint(token),
+            })
+        return {"projects": sorted(projects, key=lambda item: item["project"]), "routes": self._routes()}
+
+    def create_project(self, project: str, max_severity: str, actor: str) -> str:
+        self._validate_project(project)
+        self._validate_severity(max_severity)
+        scopes = self._scopes()
+        if any(scope["project"] == project for scope in scopes.values()):
+            raise ValidationError("project already has a producer token")
+        token = secrets.token_urlsafe(32)
+        scopes[token] = {"project": project, "max_severity": max_severity}
+        self._apply_primary(scopes, actor, "project_created", project, token)
+        return token
+
+    def set_project_severity(self, project: str, max_severity: str, actor: str) -> None:
+        self._validate_project(project)
+        self._validate_severity(max_severity)
+        scopes = self._scopes()
+        token = self._token_for_project(scopes, project)
+        scopes[token]["max_severity"] = max_severity
+        self._apply_primary(scopes, actor, "project_severity_changed", project, token)
+
+    def revoke_project(self, project: str, actor: str) -> None:
+        self._validate_project(project)
+        scopes = self._scopes()
+        token = self._token_for_project(scopes, project)
+        del scopes[token]
+        self._apply_primary(scopes, actor, "project_revoked", project, token)
+
+    def set_routes(self, routes: Mapping[str, Mapping[str, Any]], actor: str) -> None:
+        normalized: dict[str, dict[str, Any]] = {}
+        for severity, route in routes.items():
+            if severity not in ROUTE_SEVERITIES:
+                raise ValidationError("unsupported route severity")
+            chat_id = str(route.get("chat_id") or "").strip()
+            topic = route.get("message_thread_id")
+            if not chat_id:
+                continue
+            if not re.fullmatch(r"-?\d+", chat_id):
+                raise ValidationError("chat_id must be numeric")
+            try:
+                topic_id = int(topic)
+            except (TypeError, ValueError) as error:
+                raise ValidationError("message_thread_id must be a positive integer") from error
+            if topic_id <= 0:
+                raise ValidationError("message_thread_id must be a positive integer")
+            normalized[severity] = {"chat_id": chat_id, "message_thread_id": topic_id}
+        self._apply_routes(normalized, actor)
+
+    def _scopes(self) -> dict[str, dict[str, str]]:
+        raw = parse_environment(self.primary_env).get("NOTIFY_CENTER_TOKENS_JSON", "{}")
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValidationError("producer scope configuration is invalid JSON") from error
+        if not isinstance(value, dict):
+            raise ValidationError("producer scope configuration is invalid")
+        normalized: dict[str, dict[str, str]] = {}
+        for token, scope in value.items():
+            if not isinstance(token, str) or not isinstance(scope, dict):
+                raise ValidationError("producer scope configuration is invalid")
+            project, severity = str(scope.get("project") or ""), str(scope.get("max_severity") or "notice")
+            self._validate_project(project)
+            self._validate_severity(severity)
+            normalized[token] = {"project": project, "max_severity": severity}
+        return normalized
+
+    def _routes(self) -> dict[str, dict[str, Any]]:
+        raw = parse_environment(self.routes_env).get("TELEGRAM_SEVERITY_ROUTES_JSON", "{}")
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValidationError("route configuration is invalid JSON") from error
+        if not isinstance(value, dict):
+            raise ValidationError("route configuration is invalid")
+        return {str(key): dict(route) for key, route in value.items() if isinstance(route, dict)}
+
+    def _apply_primary(self, scopes: Mapping[str, Mapping[str, str]], actor: str, action: str, project: str, token: str) -> None:
+        encoded = json.dumps(scopes, sort_keys=True, separators=(",", ":"))
+        self._apply(self.primary_env, {"NOTIFY_CENTER_TOKENS_JSON": encoded}, actor, action, project, token)
+
+    def _apply_routes(self, routes: Mapping[str, Mapping[str, Any]], actor: str) -> None:
+        encoded = json.dumps(routes, sort_keys=True, separators=(",", ":"))
+        self._apply(self.routes_env, {"TELEGRAM_SEVERITY_ROUTES_JSON": encoded}, actor, "routes_changed", "routes", None)
+
+    def _apply(self, path: Path, updates: Mapping[str, str], actor: str, action: str, subject: str, token: str | None) -> None:
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.rollback_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        rollback = self.rollback_dir / f"{int(time.time())}-{secrets.token_hex(4)}"
+        rollback.mkdir(mode=0o700)
+        backup = rollback / path.name
+        shutil.copy2(path, backup)
+        try:
+            _atomic_environment_update(path, updates)
+            self.restart()
+        except Exception:
+            shutil.copy2(backup, path)
+            self.restart()
+            raise
+        self._audit({"timestamp": int(time.time()), "actor": actor, "action": action, "subject": subject, "token_fingerprint": self._fingerprint(token) if token else None, "rollback": str(rollback)})
+
+    def _audit(self, record: Mapping[str, Any]) -> None:
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with self.audit_path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(record, sort_keys=True) + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(self.audit_path, 0o600)
+
+    @staticmethod
+    def _token_for_project(scopes: Mapping[str, Mapping[str, str]], project: str) -> str:
+        found = [token for token, scope in scopes.items() if scope["project"] == project]
+        if len(found) != 1:
+            raise ValidationError("project was not found")
+        return found[0]
+
+    @staticmethod
+    def _fingerprint(token: str | None) -> str:
+        return "sha256:" + hashlib.sha256(str(token or "").encode()).hexdigest()[:12]
+
+    @staticmethod
+    def _validate_project(project: str) -> None:
+        if not PROJECT_PATTERN.fullmatch(project):
+            raise ValidationError("project must use letters, digits, dot, underscore, or hyphen")
+
+    @staticmethod
+    def _validate_severity(severity: str) -> None:
+        if severity not in SEVERITIES:
+            raise ValidationError("unsupported max severity")

@@ -42,7 +42,7 @@ LANDING_PAGE = """<!doctype html>
     </section>
     <section class="api" aria-label="Producer API">
       <div><div class="eyebrow">Producer endpoint</div><code>POST /v1/events</code></div>
-      <a href="https://github.com/megamen32/notify/blob/main/docs/producer-sdk.md">Python and Node.js quick start</a>
+      <a href="/admin/">Operator sign in</a>
     </section>
     <p class="note">Operational API endpoints require project-scoped credentials. The health endpoint is intentionally not public.</p>
   </main>

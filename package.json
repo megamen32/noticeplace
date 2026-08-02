@@ -35,6 +35,7 @@
     "LICENSE",
     "bin/notify",
     "bin/notify-center",
+    "bin/notify-center-admin",
     "bin/notification-center-watchdog",
     "mcp/notify_mcp.py",
     "notification_center/",

@@ -151,6 +151,8 @@ Each GitHub release includes:
 
 ## Docs
 
+- [Operator console](docs/admin.md) — protected management of producer scopes
+  and Telegram topic routes.
 - [Notify Center producer SDKs](docs/producer-sdk.md) — small Python and Node.js
   clients for scoped operational events and optional acknowledgement waiting.
 

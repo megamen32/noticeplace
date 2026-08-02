@@ -1,0 +1,24 @@
+[Unit]
+Description=Notify Center protected operator console
+After=network-online.target notification-center.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/notification-center-admin.env
+WorkingDirectory=/opt/notify
+ExecStart=/usr/bin/python3 /opt/notify/bin/notify-center-admin
+Restart=on-failure
+RestartSec=2
+StateDirectory=notification-center-admin
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/notification-center.env /etc/notification-center-telegram-routes.env /var/lib/notification-center-admin
+
+[Install]
+WantedBy=multi-user.target
