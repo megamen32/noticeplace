@@ -164,7 +164,7 @@ NOTIFY_CENTER_TOKEN=&lt;paste the token above here&gt;</pre><p>For systemd use <
 {html.escape(python)}
 
 # Node.js: npm install github:megamen32/notify
-{html.escape(node)}</pre></section><p><a href=\"/admin/\">Back to admin</a></p></main>"""
+{html.escape(node)}</pre></section><p><a href=\"https://github.com/megamen32/notify\">GitHub repository</a> · <a href=\"https://github.com/megamen32/notify/blob/main/docs/producer-sdk.md\">Full producer guide</a> · <a href=\"/admin/\">Back to admin</a></p></main>"""
 
 
 def run_admin_http(store: AdminConfigStore, csrf_secret: str, host: str, port: int) -> None:

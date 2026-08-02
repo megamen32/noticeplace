@@ -101,6 +101,26 @@ const answer = await client.waitForResponse(created.incident_id, {
 
 Or wait inline with `waitForResponse: true` in `emit()`.
 
+## Existing systemd service
+
+Keep the producer token out of the unit and place it in a root-owned
+mode-`0600` EnvironmentFile instead:
+
+```ini
+# /etc/my-service/notify.env
+NOTIFY_CENTER_EVENT_URL=https://notify.bezrabotnyi.com/v1/events
+NOTIFY_CENTER_TOKEN=producer-token-created-once-in-the-operator-console
+```
+
+```ini
+# systemctl edit my-service
+[Service]
+EnvironmentFile=/etc/my-service/notify.env
+```
+
+Then use either SDK from the service process, or the curl contract above. Do
+not put the token in `ExecStart=`, command history, source control, or logs.
+
 ## Token scope and retry rules
 
 Give each project its own token. Notify Center enforces both the project name
@@ -114,3 +134,6 @@ to merge repeated sightings of the same still-open incident.
 Neither client silently retries an ambiguous create request. If a network
 failure happens after sending it, retry with the same idempotency key; the
 result is then safe and deterministic.
+
+The source, issue tracker and releases are at
+[github.com/megamen32/notify](https://github.com/megamen32/notify).
