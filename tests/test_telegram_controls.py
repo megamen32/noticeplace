@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from notification_center.http_api import telegram_inline_keyboard
+from notification_center.http_api import telegram_destination, telegram_inline_keyboard
 from notification_center.telegram_interactions import TelegramActionCodec
 
 
@@ -21,3 +21,14 @@ class TelegramControlPolicyTests(unittest.TestCase):
 
         self.assertEqual([["ACK", "Snooze 15m"], ["Ask"]], [[button["text"] for button in row] for row in critical["inline_keyboard"]])
         self.assertEqual([["Ask"]], [[button["text"] for button in row] for row in emergency["inline_keyboard"]])
+
+    def test_severity_route_overrides_default_chat_and_optionally_sets_topic(self) -> None:
+        route = telegram_destination(
+            "default-chat",
+            {"notice": {"chat_id": "notice-chat", "message_thread_id": 17}},
+            {"severity": "notice"},
+        )
+        fallback = telegram_destination("default-chat", {"notice": {"chat_id": "notice-chat"}}, {"severity": "important"})
+
+        self.assertEqual({"chat_id": "notice-chat", "message_thread_id": "17"}, route)
+        self.assertEqual({"chat_id": "default-chat"}, fallback)

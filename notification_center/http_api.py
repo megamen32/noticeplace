@@ -36,15 +36,26 @@ def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[s
     ]}
 
 
+def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[str, Any]], incident: dict[str, Any]) -> dict[str, str]:
+    """Resolve an allowlisted severity route without trusting event routing data."""
+    configured = severity_routes.get(str(incident["severity"]), {})
+    destination = {"chat_id": str(configured.get("chat_id") or default_chat_id)}
+    thread_id = configured.get("message_thread_id")
+    if thread_id is not None:
+        destination["message_thread_id"] = str(thread_id)
+    return destination
+
+
 class TelegramSender:
     """Send compact incident cards via Telegram's HTTPS Bot API."""
 
-    def __init__(self, token: str, chat_id: str, timeout_seconds: float = 5, action_codec: TelegramActionCodec | None = None) -> None:
+    def __init__(self, token: str, chat_id: str, timeout_seconds: float = 5, action_codec: TelegramActionCodec | None = None, severity_routes: dict[str, dict[str, Any]] | None = None) -> None:
         """Create a sender; empty credentials intentionally leave it unavailable."""
         self._token = token
         self._chat_id = chat_id
         self._timeout_seconds = timeout_seconds
         self._action_codec = action_codec
+        self._severity_routes = severity_routes or {}
 
     def send(self, payload: dict[str, Any]) -> None:
         """Deliver one card; raises transport errors so the core can retry it."""
@@ -52,7 +63,7 @@ class TelegramSender:
             raise RuntimeError("Telegram sender is not configured")
         incident = payload["incident"]
         text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nIncident: {incident['id']}"
-        request_data: dict[str, str] = {"chat_id": self._chat_id, "text": text, "disable_web_page_preview": "true"}
+        request_data: dict[str, str] = {**telegram_destination(self._chat_id, self._severity_routes, incident), "text": text, "disable_web_page_preview": "true"}
         if self._action_codec is not None:
             request_data["reply_markup"] = json.dumps(telegram_inline_keyboard(self._action_codec, incident), separators=(",", ":"))
         data = urllib.parse.urlencode(request_data).encode()
@@ -322,9 +333,32 @@ def telegram_action_codec_from_environment() -> TelegramActionCodec | None:
     return TelegramActionCodec(secret) if secret else None
 
 
+def telegram_routes_from_environment() -> dict[str, dict[str, Any]]:
+    """Load optional severity-to-chat/topic routing from one trusted config value."""
+    raw = os.environ.get("TELEGRAM_SEVERITY_ROUTES_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        routes = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("TELEGRAM_SEVERITY_ROUTES_JSON must be a JSON object") from error
+    if not isinstance(routes, dict):
+        raise RuntimeError("TELEGRAM_SEVERITY_ROUTES_JSON must be a JSON object")
+    validated: dict[str, dict[str, Any]] = {}
+    for severity, route in routes.items():
+        if not isinstance(severity, str) or not isinstance(route, dict) or not str(route.get("chat_id") or "").strip():
+            raise RuntimeError("Telegram severity route must contain a chat_id")
+        if route.get("message_thread_id") is not None and (not isinstance(route["message_thread_id"], int) or route["message_thread_id"] <= 0):
+            raise RuntimeError("Telegram message_thread_id must be a positive integer")
+        validated[severity] = {"chat_id": str(route["chat_id"]).strip()}
+        if route.get("message_thread_id") is not None:
+            validated[severity]["message_thread_id"] = route["message_thread_id"]
+    return validated
+
+
 def telegram_from_environment(action_codec: TelegramActionCodec | None = None) -> TelegramSender:
     """Build the Telegram adapter from env vars without ever logging credentials."""
-    return TelegramSender(os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""), action_codec=action_codec)
+    return TelegramSender(os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""), action_codec=action_codec, severity_routes=telegram_routes_from_environment())
 
 
 def telegram_interactions_from_environment(center: NotificationCenter, codec: TelegramActionCodec | None) -> TelegramInteractionPoller | None:
