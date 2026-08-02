@@ -50,6 +50,21 @@ class HttpApiTests(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
 
+    def request_raw(self, path: str) -> tuple[int, str, bytes]:
+        """Read a public representation without assuming the JSON API."""
+        with urllib.request.urlopen(self.base_url + path, timeout=2) as response:
+            return response.status, str(response.headers["Content-Type"]), response.read()
+
+    def test_public_root_is_a_token_free_landing_page(self) -> None:
+        """Keep the hostname useful without exposing any protected API state."""
+        status, content_type, body = self.request_raw("/")
+
+        self.assertEqual(200, status)
+        self.assertTrue(content_type.startswith("text/html"))
+        self.assertIn(b"Notify Center", body)
+        self.assertNotIn(b"health-token", body)
+        self.assertNotIn(b"secret-token", body)
+
     def test_health_and_event_require_separate_bearer_credentials(self) -> None:
         """Protect readiness separately while rejecting an unauthenticated producer."""
         status, response = self.request("GET", "/health")

@@ -14,6 +14,7 @@ from typing import Any
 
 from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
+from .landing import LANDING_PAGE
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 
 
@@ -250,8 +251,21 @@ def build_handler(center: NotificationCenter, health_token: str) -> type[BaseHTT
             self.end_headers()
             self.wfile.write(body)
 
+        def _html(self, status: HTTPStatus, body: bytes) -> None:
+            """Serve the public landing page without any incident data or tokens."""
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self) -> None:
             """Serve authenticated health and incident reads."""
+            if self.path == "/":
+                self._html(HTTPStatus.OK, LANDING_PAGE)
+                return
             if self.path == "/health":
                 try:
                     token = _bearer(self)
