@@ -108,14 +108,16 @@ class MatrixCallSender:
 class DeliveryWorker:
     """Run due delivery claims through known adapters without hiding failures."""
 
-    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0) -> None:
+    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0) -> None:
         """Attach durable delivery state to Telegram, Matrix, and the local S21 adapter."""
         self._center = center
         self._telegram = telegram
         self._matrix_call = matrix_call
         self._android_phone = android_phone
         self._lease_seconds = lease_seconds
-        self._call_escalation_seconds = max(0, call_escalation_seconds)
+        self._critical_call_escalation_seconds = max(0, call_escalation_seconds if critical_call_escalation_seconds is None else critical_call_escalation_seconds)
+        self._emergency_call_escalation_seconds = max(0, emergency_call_escalation_seconds)
+        self._critical_repeat_seconds = max(0, critical_repeat_seconds)
         self._android_telegram_call_escalation_seconds = max(0, android_telegram_call_escalation_seconds)
         self._android_phone_call_escalation_seconds = max(0, android_phone_call_escalation_seconds)
 
@@ -125,6 +127,36 @@ class DeliveryWorker:
         self._center.mark_dispatcher_healthy()
         return deliveries
 
+    def _matrix_delay_seconds(self, severity: str) -> float:
+        if severity == "critical":
+            return self._critical_call_escalation_seconds
+        if severity == "emergency":
+            return self._emergency_call_escalation_seconds
+        return 0
+
+    @staticmethod
+    def _telegram_repeat_sequence(delivery_key: str) -> int | None:
+        if delivery_key.endswith(":initial"):
+            return 0
+        prefix = ":telegram.main:repeat:"
+        if prefix not in delivery_key:
+            return None
+        try:
+            return int(delivery_key.rsplit(":", 1)[1])
+        except ValueError:
+            return None
+
+    def _after_telegram_delivery(self, delivery: dict[str, Any], incident: dict[str, Any]) -> None:
+        """Durably schedule policy follow-ups only after Telegram delivery succeeded."""
+        incident_id = str(delivery["incident_id"])
+        if str(delivery["delivery_key"]).endswith(":initial") and self._matrix_call is not None:
+            delay = self._matrix_delay_seconds(str(incident["severity"]))
+            if delay > 0:
+                self._center.schedule_escalation_if_active(incident_id, "matrix.call", time.time() + delay)
+        sequence = self._telegram_repeat_sequence(str(delivery["delivery_key"]))
+        if str(incident["severity"]) == "critical" and sequence is not None and self._critical_repeat_seconds > 0:
+            self._center.schedule_telegram_repeat_if_active(incident_id, sequence + 1, time.time() + self._critical_repeat_seconds)
+
     def deliver(self, delivery: dict[str, Any]) -> None:
         """Deliver one claimed job; callers may run this in a bounded worker pool."""
         try:
@@ -132,34 +164,17 @@ class DeliveryWorker:
             if delivery["channel"] == "telegram.main":
                 self._telegram.send(payload)
                 incident = payload["incident"]
-                if (
-                    self._matrix_call is not None
-                    and self._call_escalation_seconds > 0
-                    and incident["severity"] == "critical"
-                    and str(delivery["delivery_key"]).endswith(":initial")
-                ):
-                    self._center.schedule_escalation(str(delivery["incident_id"]), "matrix.call", time.time() + self._call_escalation_seconds)
-                if (
-                    self._android_phone is not None
-                    and self._android_telegram_call_escalation_seconds > 0
-                    and incident["severity"] == "critical"
-                    and str(delivery["delivery_key"]).endswith(":initial")
-                ):
-                    self._center.schedule_escalation(str(delivery["incident_id"]), "android.telegram.call", time.time() + self._android_telegram_call_escalation_seconds)
-                if (
-                    self._android_phone is not None
-                    and getattr(self._android_phone, "can_phone_call", False)
-                    and self._android_phone_call_escalation_seconds > 0
-                    and incident["severity"] == "critical"
-                    and str(delivery["delivery_key"]).endswith(":initial")
-                ):
-                    self._center.schedule_escalation(str(delivery["incident_id"]), "android.phone.call", time.time() + self._android_phone_call_escalation_seconds)
+                self._center.complete_delivery(delivery["id"], "sent")
+                self._after_telegram_delivery(delivery, incident)
+                return
             elif delivery["channel"] == "matrix.call":
                 if self._matrix_call is None:
                     raise RuntimeError("Matrix call sender is not configured")
                 result = self._matrix_call.send(payload)
                 if result["answered"]:
                     self._center.acknowledge_if_active(str(delivery["incident_id"]), str(result["actor"]))
+                elif self._android_phone is not None and getattr(self._android_phone, "can_phone_call", False):
+                    self._center.schedule_escalation_if_active(str(delivery["incident_id"]), "android.phone.call", time.time())
             elif delivery["channel"] == "android.telegram.call":
                 if self._android_phone is None:
                     raise RuntimeError("Android phone adapter is not configured")

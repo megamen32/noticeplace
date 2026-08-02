@@ -62,7 +62,9 @@ def main() -> None:
         telegram,
         matrix_call_from_environment(),
         android_phone_from_environment(),
-        call_escalation_seconds=float(os.environ.get("MATRIX_CALL_ESCALATION_SECONDS", "0")),
+        critical_repeat_seconds=float(os.environ.get("TELEGRAM_CRITICAL_REPEAT_SECONDS", "0")),
+        critical_call_escalation_seconds=float(os.environ.get("MATRIX_CALL_CRITICAL_ESCALATION_SECONDS", os.environ.get("MATRIX_CALL_ESCALATION_SECONDS", "0"))),
+        emergency_call_escalation_seconds=float(os.environ.get("MATRIX_CALL_EMERGENCY_ESCALATION_SECONDS", "0")),
         android_telegram_call_escalation_seconds=float(os.environ.get("ANDROID_TELEGRAM_CALL_ESCALATION_SECONDS", "0")),
         android_phone_call_escalation_seconds=float(os.environ.get("ANDROID_PHONE_CALL_ESCALATION_SECONDS", "0")),
     ),), daemon=True).start()

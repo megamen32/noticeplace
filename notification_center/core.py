@@ -296,7 +296,7 @@ class NotificationCenter:
         delivery_id = f"dlv_{uuid.uuid4().hex}"
         now = time.time()
         self._connection.execute("INSERT INTO deliveries(id, incident_id, channel, delivery_key, due_at, status, attempt, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?)", (delivery_id, incident_id, channel, delivery_key, due_epoch, now, now))
-        self._audit(incident_id, "delivery_scheduled", "policy", {"delivery_id": delivery_id, "channel": channel, "due_at": due_epoch})
+        self._audit(incident_id, "delivery_scheduled", "policy", {"delivery_id": delivery_id, "channel": channel, "step": step, "due_at": due_epoch})
         return delivery_id
 
     def schedule_escalation(self, incident_id: str, channel: str, due_epoch: float) -> str:
@@ -308,6 +308,24 @@ class NotificationCenter:
             if incident["state"] not in DELIVERABLE_STATES:
                 raise ValidationError(f"cannot escalate an {incident['state']} incident")
             return self._schedule_delivery(incident_id, channel, "escalation", due_epoch)
+
+    def schedule_escalation_if_active(self, incident_id: str, channel: str, due_epoch: float) -> str | None:
+        """Schedule an escalation unless an ACK or resolve already closed it."""
+        with self._lock, self._connection:
+            incident = self.get_incident(incident_id)
+            if incident is None or incident["state"] not in DELIVERABLE_STATES:
+                return None
+            return self._schedule_delivery(incident_id, channel, "escalation", due_epoch)
+
+    def schedule_telegram_repeat_if_active(self, incident_id: str, sequence: int, due_epoch: float) -> str | None:
+        """Persist one uniquely keyed critical repeat unless the incident is closed."""
+        if sequence < 1:
+            raise ValidationError("repeat sequence must be positive")
+        with self._lock, self._connection:
+            incident = self.get_incident(incident_id)
+            if incident is None or incident["state"] not in DELIVERABLE_STATES:
+                return None
+            return self._schedule_delivery(incident_id, "telegram.main", f"repeat:{sequence}", due_epoch)
 
     def claim_due_deliveries(self, now_epoch: float | None = None, limit: int = 20, lease_seconds: float = 60) -> list[dict[str, Any]]:
         """Claim due work and reclaim an expired worker lease after a crash.
