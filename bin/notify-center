@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from notification_center.core import NotificationCenter
-from notification_center.http_api import DeliveryWorker, android_phone_from_environment, matrix_call_from_environment, run_http, telegram_action_codec_from_environment, telegram_from_environment, telegram_interactions_from_environment
+from notification_center.http_api import DeliveryWorker, android_phone_from_environment, gptadmin_agent_jobs_from_environment, matrix_call_from_environment, run_http, telegram_action_codec_from_environment, telegram_from_environment, telegram_interactions_from_environment
 
 
 def load_tokens() -> dict[str, dict[str, str]]:
@@ -57,6 +57,7 @@ def main() -> None:
     callback_codec = telegram_action_codec_from_environment()
     telegram = telegram_from_environment(callback_codec)
     poller = telegram_interactions_from_environment(center, callback_codec)
+    agent_jobs = gptadmin_agent_jobs_from_environment()
     threading.Thread(target=worker_loop, args=(DeliveryWorker(
         center,
         telegram,
@@ -67,6 +68,7 @@ def main() -> None:
         emergency_call_escalation_seconds=float(os.environ.get("MATRIX_CALL_EMERGENCY_ESCALATION_SECONDS", "0")),
         android_telegram_call_escalation_seconds=float(os.environ.get("ANDROID_TELEGRAM_CALL_ESCALATION_SECONDS", "0")),
         android_phone_call_escalation_seconds=float(os.environ.get("ANDROID_PHONE_CALL_ESCALATION_SECONDS", "0")),
+        agent_jobs=agent_jobs,
     ),), daemon=True).start()
     if poller is not None:
         threading.Thread(target=telegram_interaction_loop, args=(poller,), daemon=True).start()

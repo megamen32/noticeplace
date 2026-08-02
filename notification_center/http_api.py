@@ -15,6 +15,7 @@ from typing import Any
 from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
 from .gptadmin_phone import GptAdminPhoneAdapter
+from .gptadmin_agent import GptAdminAgentJobAdapter
 from .landing import LANDING_PAGE
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 
@@ -121,12 +122,13 @@ class MatrixCallSender:
 class DeliveryWorker:
     """Run due delivery claims through known adapters without hiding failures."""
 
-    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0) -> None:
+    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0, agent_jobs: dict[str, GptAdminAgentJobAdapter | Any] | None = None) -> None:
         """Attach durable delivery state to Telegram, Matrix, and the local S21 adapter."""
         self._center = center
         self._telegram = telegram
         self._matrix_call = matrix_call
         self._android_phone = android_phone
+        self._agent_jobs = dict(agent_jobs or {})
         self._lease_seconds = lease_seconds
         self._critical_call_escalation_seconds = max(0, call_escalation_seconds if critical_call_escalation_seconds is None else critical_call_escalation_seconds)
         self._emergency_call_escalation_seconds = max(0, emergency_call_escalation_seconds)
@@ -196,6 +198,18 @@ class DeliveryWorker:
                 if self._android_phone is None:
                     raise RuntimeError("Android phone adapter is not configured")
                 self._android_phone.phone_call(payload)
+            elif str(delivery["channel"]).startswith("gptadmin.agent:"):
+                job_name = str(delivery["channel"])[len("gptadmin.agent:"):]
+                adapter = self._agent_jobs.get(job_name)
+                if adapter is None:
+                    raise RuntimeError(f"GPTAdmin agent job adapter is not configured: {job_name}")
+                receipt = adapter.send(payload, str(delivery["delivery_key"]))
+                self._center.record_agent_job_result(str(delivery["incident_id"]), str(delivery["id"]), job_name, receipt)
+                if str(receipt.get("status") or "") == "failed":
+                    self._center.complete_delivery(delivery["id"], "failed", "GPTAdmin agent job reported terminal failure")
+                    return
+                if str(receipt.get("status") or "") != "completed":
+                    raise RuntimeError("GPTAdmin agent job returned a non-terminal result")
             else:
                 raise RuntimeError(f"channel adapter is not configured: {delivery['channel']}")
             self._center.complete_delivery(delivery["id"], "sent")
@@ -390,6 +404,31 @@ def matrix_call_from_environment() -> MatrixCallSender | None:
     url = os.environ.get("MATRIX_CALL_URL", "")
     token = os.environ.get("MATRIX_CALL_TOKEN", "")
     return MatrixCallSender(url, token, float(os.environ.get("MATRIX_CALL_TIMEOUT_SECONDS", "150"))) if url or token else None
+
+
+def gptadmin_agent_jobs_from_environment() -> dict[str, GptAdminAgentJobAdapter]:
+    """Build fixed signed agent-job routes from one root-owned JSON setting."""
+    raw = os.environ.get("NOTIFY_GPTADMIN_AGENT_JOBS_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        configured = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("NOTIFY_GPTADMIN_AGENT_JOBS_JSON must be a JSON object") from error
+    if not isinstance(configured, dict):
+        raise RuntimeError("NOTIFY_GPTADMIN_AGENT_JOBS_JSON must be a JSON object")
+    result: dict[str, GptAdminAgentJobAdapter] = {}
+    for job_id, value in configured.items():
+        if not isinstance(job_id, str) or not isinstance(value, dict):
+            raise RuntimeError("each GPTAdmin agent job must be a named object")
+        result[job_id] = GptAdminAgentJobAdapter(
+            job_id,
+            str(value.get("url") or ""),
+            str(value.get("hmac_secret") or ""),
+            float(value.get("timeout_seconds") or 90),
+            float(value.get("poll_interval_seconds") or 1),
+        )
+    return result
 
 
 def android_phone_from_environment() -> AndroidPhoneAdapter | GptAdminPhoneAdapter | None:
