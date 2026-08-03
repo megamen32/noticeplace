@@ -168,6 +168,18 @@ class DeliveryWorker:
             delay = self._matrix_delay_seconds(str(incident["severity"]))
             if delay > 0:
                 self._center.schedule_escalation_if_active(incident_id, "matrix.call", time.time() + delay)
+        if (
+            str(delivery["delivery_key"]).endswith(":initial")
+            and str(incident["severity"]) == "critical"
+            and self._android_phone is not None
+            and getattr(self._android_phone, "can_phone_call", False)
+            and self._android_phone_call_escalation_seconds > 0
+        ):
+            self._center.schedule_escalation_if_active(
+                incident_id,
+                "android.phone.call",
+                time.time() + self._android_phone_call_escalation_seconds,
+            )
         sequence = self._telegram_repeat_sequence(str(delivery["delivery_key"]))
         if str(incident["severity"]) == "critical" and sequence is not None and self._critical_repeat_seconds > 0:
             self._center.schedule_telegram_repeat_if_active(incident_id, sequence + 1, time.time() + self._critical_repeat_seconds)

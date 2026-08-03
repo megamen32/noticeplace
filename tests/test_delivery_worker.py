@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from notification_center.core import NotificationCenter
 from notification_center.http_api import DeliveryWorker, MatrixCallSender
@@ -137,7 +138,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         queued = self.center.claim_due_deliveries(now_epoch=10**12)
         self.assertEqual(["android.phone.call"], [item["channel"] for item in queued])
 
-    def test_initial_critical_delivery_does_not_bypass_matrix_with_android_calls(self) -> None:
+    def test_initial_critical_delivery_schedules_one_phone_call_after_configured_delay(self) -> None:
         created = self.center.create_event("producer", "create", self.event)
 
         class Telegram:
@@ -147,16 +148,47 @@ class DeliveryWorkerTests(unittest.TestCase):
         class Android:
             can_phone_call = True
 
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def phone_call(self, payload: dict[str, object]) -> None:
+                self.calls.append(payload)
+
+        android = Android()
         worker = DeliveryWorker(
             self.center,
             Telegram(),
-            android_phone=Android(),
-            android_telegram_call_escalation_seconds=60,
-            android_phone_call_escalation_seconds=120,
+            android_phone=android,
+            android_phone_call_escalation_seconds=600,
         )
-        self.assertEqual(1, worker.run_once())
-        queued = self.center.claim_due_deliveries(now_epoch=10**12)
-        self.assertEqual([], queued)
+        with mock.patch("notification_center.http_api.time.time", return_value=10**12):
+            self.assertEqual(1, worker.run_once())
+
+        self.assertEqual([], self.center.claim_due_deliveries(now_epoch=(10**12) + 599.0))
+        due = self.center.claim_due_deliveries(now_epoch=(10**12) + 600.0)
+        self.assertEqual(["android.phone.call"], [item["channel"] for item in due])
+        worker.deliver(due[0])
+        self.assertEqual(1, len(android.calls))
+        self.assertEqual([], self.center.claim_due_deliveries(now_epoch=10**12))
+
+    def test_resolved_critical_incident_cancels_phone_call_before_deadline(self) -> None:
+        created = self.center.create_event("producer", "create", self.event)
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        class Android:
+            can_phone_call = True
+
+            def phone_call(self, _payload: dict[str, object]) -> None:
+                raise AssertionError("resolved incident must not call the phone")
+
+        worker = DeliveryWorker(self.center, Telegram(), android_phone=Android(), android_phone_call_escalation_seconds=600)
+        with mock.patch("notification_center.http_api.time.time", return_value=10**12):
+            self.assertEqual(1, worker.run_once())
+        self.center.resolve(created["incident_id"], "test:reply")
+        self.assertEqual([], self.center.claim_due_deliveries(now_epoch=(10**12) + 600.0))
 
     def test_matrix_answer_after_resolution_does_not_resurrect_the_incident(self) -> None:
         created = self.center.create_event("producer", "create", self.event)
