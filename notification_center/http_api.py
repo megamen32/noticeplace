@@ -18,6 +18,7 @@ from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import GptAdminAgentJobAdapter
 from .landing import LANDING_PAGE
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
+from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
 
 def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[str, Any]) -> dict[str, list[list[dict[str, str]]]]:
@@ -260,10 +261,13 @@ def _bearer(handler: BaseHTTPRequestHandler) -> str:
     return token
 
 
-def build_handler(center: NotificationCenter, health_token: str) -> type[BaseHTTPRequestHandler]:
-    """Build an HTTP handler bound to one center and one dedicated probe token."""
+def build_handler(center: NotificationCenter, health_token: str, mcp_token: str | None = None) -> type[BaseHTTPRequestHandler]:
+    """Build an HTTP handler bound to one center and two dedicated bearer tokens."""
     if not health_token:
         raise RuntimeError("NOTIFY_CENTER_HEALTH_TOKEN must be configured")
+    configured_mcp_token = mcp_token if mcp_token is not None else os.environ.get("NOTIFY_MCP_TOKEN", "")
+    if not configured_mcp_token:
+        raise RuntimeError("NOTIFY_MCP_TOKEN must be configured")
 
     class ApiHandler(BaseHTTPRequestHandler):
         """Expose the v1 event and incident state-transition endpoints."""
@@ -285,6 +289,23 @@ def build_handler(center: NotificationCenter, health_token: str) -> type[BaseHTT
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _empty(self, status: HTTPStatus) -> None:
+            """Return an empty response for MCP notifications without leaking state."""
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+
+        def _mcp(self, payload: dict[str, Any]) -> None:
+            """Return one MCP JSON-RPC response with the same manifest as stdio."""
+            body = json.dumps(payload, ensure_ascii=False).encode()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -323,6 +344,18 @@ def build_handler(center: NotificationCenter, health_token: str) -> type[BaseHTT
         def do_POST(self) -> None:
             """Accept events and explicit incident actions, returning JSON errors safely."""
             try:
+                if self.path == "/mcp":
+                    token = _bearer(self)
+                    if not secrets.compare_digest(token, configured_mcp_token):
+                        self._reply(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                        return
+                    body = _json_body(self)
+                    response = notify_mcp_dispatch(body)
+                    if response is None:
+                        self._empty(HTTPStatus.NO_CONTENT)
+                        return
+                    self._mcp(response)
+                    return
                 token = _bearer(self)
                 body = _json_body(self)
                 if self.path == "/v1/events":
@@ -362,10 +395,11 @@ def build_handler(center: NotificationCenter, health_token: str) -> type[BaseHTT
     return ApiHandler
 
 
-def run_http(center: NotificationCenter, host: str, port: int, health_token: str | None = None) -> None:
+def run_http(center: NotificationCenter, host: str, port: int, health_token: str | None = None, mcp_token: str | None = None) -> None:
     """Run the blocking HTTP server with a mandatory dedicated health token."""
     configured_health_token = health_token if health_token is not None else os.environ.get("NOTIFY_CENTER_HEALTH_TOKEN", "")
-    ThreadingHTTPServer((host, port), build_handler(center, configured_health_token)).serve_forever()
+    configured_mcp_token = mcp_token if mcp_token is not None else os.environ.get("NOTIFY_MCP_TOKEN", "")
+    ThreadingHTTPServer((host, port), build_handler(center, configured_health_token, configured_mcp_token)).serve_forever()
 
 
 def telegram_action_codec_from_environment() -> TelegramActionCodec | None:

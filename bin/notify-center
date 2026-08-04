@@ -72,7 +72,12 @@ def main() -> None:
     ),), daemon=True).start()
     if poller is not None:
         threading.Thread(target=telegram_interaction_loop, args=(poller,), daemon=True).start()
-    run_http(center, os.environ.get("NOTIFY_CENTER_HOST", "127.0.0.1"), int(os.environ.get("NOTIFY_CENTER_PORT", "8091")))
+    run_http(
+        center,
+        os.environ.get("NOTIFY_CENTER_HOST", "127.0.0.1"),
+        int(os.environ.get("NOTIFY_CENTER_PORT", "8091")),
+        mcp_token=os.environ.get("NOTIFY_MCP_TOKEN", ""),
+    )
 
 
 if __name__ == "__main__":

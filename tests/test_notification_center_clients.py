@@ -31,7 +31,7 @@ class NotificationCenterClientContractTests(unittest.TestCase):
             Path(self.tempdir.name) / "notify.sqlite3",
             {"project-token": {"project": "sdk-demo", "max_severity": "critical"}},
         )
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(self.center, "health-token"))
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(self.center, "health-token", "mcp-token"))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.event_url = f"http://127.0.0.1:{self.server.server_port}/v1/events"

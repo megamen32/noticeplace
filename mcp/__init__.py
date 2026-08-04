@@ -1,0 +1,1 @@
+"""Local notify MCP package."""

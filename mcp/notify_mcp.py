@@ -12,6 +12,7 @@ import os
 import shlex
 import signal
 import subprocess
+import threading
 import urllib.error
 import urllib.request
 import sys
@@ -27,6 +28,8 @@ NOTIFY_BIN = Path(os.environ.get("NOTIFY_BIN", "/usr/local/bin/notify"))
 STATE_DIR = Path(os.environ.get("NOTIFY_MCP_STATE_DIR", "~/.local/state/notify-mcp")).expanduser()
 JOBS_DIR = STATE_DIR / "jobs"
 MAX_TAIL_BYTES = int(os.environ.get("NOTIFY_MCP_MAX_TAIL_BYTES", "20000"))
+_RUNTIME_READY = False
+_RUNTIME_READY_LOCK = threading.Lock()
 
 
 def now_iso() -> str:
@@ -58,6 +61,18 @@ def parse_duration_seconds(value: Any, default: int = 0) -> int:
 
 def ensure_dirs() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_runtime_ready() -> None:
+    """Prepare the shared job storage used by both stdio and HTTP transports."""
+    global _RUNTIME_READY
+    if _RUNTIME_READY:
+        return
+    with _RUNTIME_READY_LOCK:
+        if _RUNTIME_READY:
+            return
+        ensure_dirs()
+        _RUNTIME_READY = True
 
 
 def json_write(path: Path, data: Dict[str, Any]) -> None:
@@ -625,24 +640,22 @@ TOOLS = {
 }
 
 
-def reply(req_id: Any, result: Any = None, error: Exception | None = None) -> None:
-    if req_id is None:
-        return
-    if error is not None:
-        payload = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": str(error), "data": error.__class__.__name__}}
-    else:
-        payload = {"jsonrpc": "2.0", "id": req_id, "result": result}
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
+def tool_specs() -> List[Dict[str, Any]]:
+    """Return the exact stdio tool manifest in insertion order."""
+    return [{"name": name, "description": spec["description"], "inputSchema": spec["inputSchema"]} for name, spec in TOOLS.items()]
 
 
-def handle(req: Dict[str, Any]) -> None:
+def dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Execute one JSON-RPC request and return the wire payload or no-op."""
     method = req.get("method")
     req_id = req.get("id")
     try:
+        if method == "tools/call":
+            ensure_runtime_ready()
         if method == "initialize":
-            reply(req_id, {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}})
+            payload = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}}
         elif method == "tools/list":
-            reply(req_id, {"tools": [{"name": n, "description": t["description"], "inputSchema": t["inputSchema"]} for n, t in TOOLS.items()]})
+            payload = {"tools": tool_specs()}
         elif method == "tools/call":
             params = req.get("params") or {}
             name = params.get("name")
@@ -650,18 +663,31 @@ def handle(req: Dict[str, Any]) -> None:
             if name not in TOOLS:
                 raise ValueError(f"unknown tool: {name}")
             result = TOOLS[name]["handler"](targs)
-            reply(req_id, {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}], "structuredContent": result})
+            payload = {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}], "structuredContent": result}
         elif method and method.startswith("notifications/"):
-            return
+            return None
         else:
-            reply(req_id, {})
+            payload = {}
+        if req_id is None:
+            return None
+        return {"jsonrpc": "2.0", "id": req_id, "result": payload}
     except Exception as e:
-        print(f"notify_mcp error: {e}", file=sys.stderr, flush=True)
-        reply(req_id, error=e)
+        if req_id is None:
+            return None
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": str(e), "data": e.__class__.__name__}}
+
+
+def handle(req: Dict[str, Any]) -> None:
+    """Keep the stdio contract stable while sharing the same dispatcher."""
+    response = dispatch(req)
+    if response is None:
+        return
+    if "error" in response:
+        print(f"notify_mcp error: {response['error']['message']}", file=sys.stderr, flush=True)
+    print(json.dumps(response, ensure_ascii=False), flush=True)
 
 
 def main() -> None:
-    ensure_dirs()
     for line in sys.stdin:
         line = line.strip()
         if not line:

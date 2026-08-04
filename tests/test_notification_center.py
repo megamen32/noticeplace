@@ -142,7 +142,7 @@ class HealthEndpointTests(unittest.TestCase):
             Path(self.tempdir.name) / "notify.sqlite3",
             {"producer-token": {"project": "hermes", "max_severity": "critical"}},
         )
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(self.center, "probe-token"))
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(self.center, "probe-token", "mcp-token"))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}/health"
@@ -169,7 +169,7 @@ class HealthEndpointTests(unittest.TestCase):
     def test_health_requires_dedicated_bearer_without_leaking_tokens(self) -> None:
         """Reject absent, wrong, and producer credentials; return only safe readiness."""
         with self.assertRaisesRegex(RuntimeError, "NOTIFY_CENTER_HEALTH_TOKEN"):
-            build_handler(self.center, "")
+            build_handler(self.center, "", "mcp-token")
 
         for token in (None, "wrong-token", "producer-token"):
             status, body = self.get_health(token)

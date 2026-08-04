@@ -6,6 +6,8 @@ import json
 import tempfile
 import threading
 import unittest
+import os
+from unittest import mock
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -13,6 +15,7 @@ from pathlib import Path
 
 from notification_center.core import NotificationCenter
 from notification_center.http_api import build_handler
+from mcp.notify_mcp import TOOLS as STDIO_TOOLS
 
 
 class HttpApiTests(unittest.TestCase):
@@ -28,7 +31,7 @@ class HttpApiTests(unittest.TestCase):
                 "notice-token": {"project": "hermes", "max_severity": "notice"},
             },
         )
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(self.center, "health-token"))
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(self.center, "health-token", "mcp-token"))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
@@ -179,6 +182,83 @@ class HttpApiTests(unittest.TestCase):
 
         status, _ = self.request("POST", "/v1/events", {**event, "dedup_key": "disk-full:unauthorized"}, Authorization="Bearer notice-token", **{"Idempotency-Key": "agent-job-unscoped"})
         self.assertEqual(401, status)
+
+    def test_remote_mcp_requires_bearer_and_matches_stdio_registry(self) -> None:
+        """Expose the exact stdio MCP registry over authenticated HTTP on /mcp."""
+        status, body = self.request("POST", "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, Authorization="Bearer wrong-token")
+        self.assertEqual(401, status)
+        self.assertEqual({"error": "unauthorized"}, body)
+
+        expected_tools = [{"name": name, "description": spec["description"], "inputSchema": spec["inputSchema"]} for name, spec in STDIO_TOOLS.items()]
+        status, initialize = self.request("POST", "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, Authorization="Bearer mcp-token")
+        self.assertEqual(200, status)
+        self.assertEqual("notify-mcp", initialize["result"]["serverInfo"]["name"])
+        self.assertEqual("1.2.0", initialize["result"]["serverInfo"]["version"])
+
+        status, listed = self.request("POST", "/mcp", {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}, Authorization="Bearer mcp-token")
+        self.assertEqual(200, status)
+        self.assertEqual(expected_tools, listed["result"]["tools"])
+
+        status, called = self.request(
+            "POST",
+            "/mcp",
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "list_jobs", "arguments": {"limit": 1}}},
+            Authorization="Bearer mcp-token",
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(called["result"]["structuredContent"], STDIO_TOOLS["list_jobs"]["handler"]({"limit": 1}))
+
+    def test_remote_mcp_initializes_shared_runtime_before_job_tools(self) -> None:
+        """Ensure the shared dispatcher prepares job state before a real job tool runs."""
+        fake_notify = Path(self.tempdir.name) / "notify"
+        fake_notify.write_text("#!/usr/bin/env bash\nexit 0\n")
+        os.chmod(fake_notify, 0o755)
+
+        job_state_dir = Path(self.tempdir.name) / "job-state"
+        with mock.patch("mcp.notify_mcp.NOTIFY_BIN", fake_notify), mock.patch("mcp.notify_mcp.STATE_DIR", job_state_dir), mock.patch("mcp.notify_mcp.JOBS_DIR", job_state_dir / "jobs"):
+            status, response = self.request(
+                "POST",
+                "/mcp",
+                {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "run_and_notify", "arguments": {"command": "true", "cwd": self.tempdir.name, "log_mode": "none", "wait_seconds": 0, "hard_timeout": "1s"}}},
+                Authorization="Bearer mcp-token",
+            )
+            local = STDIO_TOOLS["run_and_notify"]["handler"]({"command": "true", "cwd": self.tempdir.name, "log_mode": "none", "wait_seconds": 0, "hard_timeout": "1s"})
+
+        self.assertEqual(200, status)
+        self.assertTrue(response["result"]["structuredContent"]["ok"])
+        self.assertTrue(response["result"]["structuredContent"]["job_id"])
+        jobs_dir = job_state_dir / "jobs"
+        self.assertTrue(jobs_dir.exists())
+        self.assertTrue(local["ok"])
+        self.assertTrue(local["job_id"])
+        self.assertEqual(response["result"]["structuredContent"]["ok"], local["ok"])
+        self.assertEqual(response["result"]["structuredContent"]["cwd"], local["cwd"])
+        self.assertEqual(response["result"]["structuredContent"]["notify_attached"], local["notify_attached"])
+        self.assertEqual(response["result"]["structuredContent"]["hard_timeout"], local["hard_timeout"])
+        self.assertEqual(response["result"]["structuredContent"]["wait_seconds"], local["wait_seconds"])
+
+    def test_remote_mcp_initialize_then_tool_call_only_effectively_initializes_once(self) -> None:
+        """Keep the shared runtime bootstrap process-once across initialize and tool calls."""
+        with mock.patch("mcp.notify_mcp._RUNTIME_READY", False), mock.patch("mcp.notify_mcp.ensure_dirs") as ensure_dirs:
+            status, initialize = self.request(
+                "POST",
+                "/mcp",
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                Authorization="Bearer mcp-token",
+            )
+            self.assertEqual(200, status)
+            self.assertEqual("notify-mcp", initialize["result"]["serverInfo"]["name"])
+
+            status, listed = self.request(
+                "POST",
+                "/mcp",
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_jobs", "arguments": {"limit": 1}}},
+                Authorization="Bearer mcp-token",
+            )
+            self.assertEqual(200, status)
+            self.assertEqual(1, len(listed["result"]["structuredContent"]["jobs"]))
+
+        self.assertEqual(1, ensure_dirs.call_count)
 
 
 if __name__ == "__main__":
