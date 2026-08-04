@@ -209,6 +209,37 @@ def tool_send_message(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": ok, "sent_parts": len(sent), "results": sent}
 
 
+def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Place one direct configured call without creating or escalating an incident."""
+    channel = str(args.get("channel") or "phone").strip().lower()
+    if channel not in {"phone", "matrix"}:
+        raise ValueError("channel must be one of: phone, matrix")
+    message = str(args.get("message") or "").strip()
+    incident = {
+        "id": f"direct-call-{uuid.uuid4().hex}",
+        "project": "notify-mcp",
+        "kind": "direct",
+        "severity": "notice",
+        "title": "Direct Notify call",
+        "body": message or "Direct call requested by the user.",
+    }
+    if channel == "matrix":
+        from notification_center.http_api import matrix_call_from_environment
+
+        adapter = matrix_call_from_environment()
+        if adapter is None:
+            raise RuntimeError("Matrix call adapter is not configured")
+        return {"ok": True, "channel": channel, "receipt": adapter.send({"incident": incident})}
+
+    from notification_center.http_api import android_phone_from_environment
+
+    adapter = android_phone_from_environment()
+    if adapter is None or not getattr(adapter, "can_phone_call", False):
+        raise RuntimeError("Android phone call adapter is not configured")
+    adapter.phone_call({"kind": "direct", "incident": incident})
+    return {"ok": True, "channel": channel, "receipt": {"started": True}}
+
+
 def notify_args_for(pid: Optional[int] = None, query: Optional[str] = None, log_mode: str = "none", log_file: Optional[str] = None, replace: bool = True, first: bool = False, hard_timeout: Any = None) -> List[str]:
     if not NOTIFY_BIN.exists():
         raise FileNotFoundError(f"notify binary not found: {NOTIFY_BIN}")
@@ -459,6 +490,18 @@ TOOLS = {
             "additionalProperties": False,
         },
         "handler": tool_send_message,
+    },
+    "call": {
+        "description": "Place one direct call through the configured phone or Matrix adapter. Use only on an explicit user request; this does not create an incident or wait for escalation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string", "enum": ["phone", "matrix"], "default": "phone", "description": "phone places a direct cellular call; matrix starts a direct MatrixRTC call."},
+                "message": {"type": ["string", "null"], "description": "Optional short call context passed to the Matrix bridge."},
+            },
+            "additionalProperties": False,
+        },
+        "handler": tool_call,
     },
     "run_and_notify": {
         "description": (
