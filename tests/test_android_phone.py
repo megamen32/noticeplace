@@ -165,3 +165,30 @@ class AndroidPhoneAdapterTests(unittest.TestCase):
         self.assertLess(commands.index(speaker_tap), commands.index(tts))
         self.assertLess(commands.index(tts), commands.index(hangup))
         self.assertIn(12, sleeps)
+
+    def test_spoken_phone_call_keeps_talking_when_uiautomator_dump_is_killed(self) -> None:
+        commands: list[list[str]] = []
+        sleeps: list[float] = []
+
+        def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            if command[-1] == "get-state":
+                stdout = "device\n"
+            elif command[-3:] == ["shell", "dumpsys", "telephony.registry"]:
+                stdout = "mVoiceRegState=0(IN_SERVICE)"
+            elif command[-2:] == ["shell", "wm", "size"]:
+                stdout = "Physical size: 1440x3200\n"
+            elif command[-4:] == ["shell", "uiautomator", "dump", "/sdcard/notify-center-window.xml"]:
+                return subprocess.CompletedProcess(command, 137, stdout="", stderr="Killed")
+            else:
+                stdout = ""
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        adapter = AndroidPhoneAdapter(AndroidPhoneConfig("adb", "serial", "", "+70000000000"), runner=runner, sleeper=sleeps.append)
+        adapter.phone_call({"voice": {"text": "Hermes ждёт пароль", "repeat": 2, "hangup_after": True, "connect_wait_seconds": 12}})
+
+        tts = ["adb", "-s", "serial", "shell", "am", "broadcast", "-a", "com.termux.api.tts.SPEAK", "--es", "com.termux.api.extra.TEXT", "Hermes ждёт пароль"]
+        hangup = ["adb", "-s", "serial", "shell", "input", "keyevent", "KEYCODE_ENDCALL"]
+        self.assertEqual(2, commands.count(tts))
+        self.assertIn(hangup, commands)
+        self.assertIn(12, sleeps)

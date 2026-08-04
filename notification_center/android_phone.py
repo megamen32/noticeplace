@@ -261,11 +261,14 @@ class AndroidPhoneAdapter:
         hangup_after = bool(voice.get("hangup_after", True))
         try:
             self._sleeper(connect_wait_seconds)
-            speaker = _tap_bounds(self._window_xml(), ("Speaker", "Динамик", "Громкая связь"))
-            if speaker is None:
-                raise RuntimeError("Phone speaker control is not visible")
-            self._tap(speaker)
-            self._sleeper(0.5)
+            speaker = None
+            try:
+                speaker = _tap_bounds(self._window_xml(), ("Speaker", "Динамик", "Громкая связь"))
+            except RuntimeError:
+                speaker = None
+            if speaker is not None:
+                self._tap(speaker)
+                self._sleeper(0.5)
             for index in range(repeat):
                 self._run("shell", "am", "broadcast", "-a", "com.termux.api.tts.SPEAK", "--es", "com.termux.api.extra.TEXT", text)
                 if index + 1 < repeat:
