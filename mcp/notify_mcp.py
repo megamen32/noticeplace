@@ -236,7 +236,16 @@ def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
     adapter = android_phone_from_environment()
     if adapter is None or not getattr(adapter, "can_phone_call", False):
         raise RuntimeError("Android phone call adapter is not configured")
-    adapter.phone_call({"kind": "direct", "incident": incident})
+    payload: Dict[str, Any] = {"kind": "direct", "incident": incident}
+    if message:
+        payload["voice"] = {
+            "text": message,
+            "repeat": args.get("repeat") or 2,
+            "hangup_after": args.get("hangup_after", True),
+        }
+        if args.get("connect_wait_seconds") is not None:
+            payload["voice"]["connect_wait_seconds"] = args["connect_wait_seconds"]
+    adapter.phone_call(payload)
     return {"ok": True, "channel": channel, "receipt": {"started": True}}
 
 
@@ -497,7 +506,10 @@ TOOLS = {
             "type": "object",
             "properties": {
                 "channel": {"type": "string", "enum": ["phone", "matrix"], "default": "phone", "description": "phone places a direct cellular call; matrix starts a direct MatrixRTC call."},
-                "message": {"type": ["string", "null"], "description": "Optional short call context passed to the Matrix bridge."},
+                "message": {"type": ["string", "null"], "description": "Optional call context. For phone, it is spoken acoustically through speakerphone."},
+                "repeat": {"type": "integer", "minimum": 1, "maximum": 3, "default": 2, "description": "Phone only: how many times to speak message."},
+                "hangup_after": {"type": "boolean", "default": True, "description": "Phone only: end the call after spoken playback."},
+                "connect_wait_seconds": {"type": ["number", "null"], "minimum": 5, "maximum": 30, "default": 12, "description": "Phone only: fixed wait before speakerphone playback; no answer detection."},
             },
             "additionalProperties": False,
         },

@@ -252,3 +252,24 @@ class AndroidPhoneAdapter:
         if not voice_service_registered(self._run("shell", "dumpsys", "telephony.registry")):
             raise RuntimeError("Android voice service is unavailable")
         self._run("shell", "am", "start", "-a", "android.intent.action.CALL", "-d", f"tel:{self._config.phone_number}")
+        voice = _payload.get("voice") if isinstance(_payload, dict) else None
+        if not isinstance(voice, dict) or not str(voice.get("text") or "").strip():
+            return
+        text = str(voice["text"]).strip()
+        repeat = max(1, min(3, int(voice.get("repeat") or 2)))
+        connect_wait_seconds = max(5, min(30, float(voice.get("connect_wait_seconds") or 12)))
+        hangup_after = bool(voice.get("hangup_after", True))
+        try:
+            self._sleeper(connect_wait_seconds)
+            speaker = _tap_bounds(self._window_xml(), ("Speaker", "Динамик", "Громкая связь"))
+            if speaker is None:
+                raise RuntimeError("Phone speaker control is not visible")
+            self._tap(speaker)
+            self._sleeper(0.5)
+            for index in range(repeat):
+                self._run("shell", "am", "broadcast", "-a", "com.termux.api.tts.SPEAK", "--es", "com.termux.api.extra.TEXT", text)
+                if index + 1 < repeat:
+                    self._sleeper(1.5)
+        finally:
+            if hangup_after:
+                self._run("shell", "input", "keyevent", "KEYCODE_ENDCALL")

@@ -38,11 +38,12 @@ class DirectCallToolTests(unittest.TestCase):
     def test_phone_call_is_direct_and_never_creates_an_incident(self):
         phone = _Phone()
         with mock.patch("notification_center.http_api.android_phone_from_environment", return_value=phone):
-            result = notify_mcp.tool_call({"channel": "phone"})
+            result = notify_mcp.tool_call({"channel": "phone", "message": "Hermes ждёт пароль", "repeat": 2, "hangup_after": True})
 
         self.assertTrue(result["ok"])
         self.assertEqual("phone", result["channel"])
         self.assertEqual("direct", phone.payloads[0]["kind"])
+        self.assertEqual({"text": "Hermes ждёт пароль", "repeat": 2, "hangup_after": True}, phone.payloads[0]["voice"])
 
     def test_call_rejects_unknown_or_unavailable_channel(self):
         with self.assertRaisesRegex(ValueError, "channel"):
