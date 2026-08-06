@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .core import SEVERITIES, ValidationError
+from .core import NotificationCenter, SEVERITIES, ValidationError
 
 PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
 ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency")
@@ -77,6 +77,7 @@ class AdminConfigStore:
         self.rollback_dir = state_dir / "rollbacks"
         self.restart = restart or self._restart_center
         self.apply_service = apply_service
+        self._consumer_center: NotificationCenter | None = None
 
     @staticmethod
     def _restart_center() -> None:
@@ -92,7 +93,44 @@ class AdminConfigStore:
                 "max_severity": str(scope["max_severity"]),
                 "fingerprint": self._fingerprint(token),
             })
-        return {"projects": sorted(projects, key=lambda item: item["project"]), "routes": self._routes()}
+        return {
+            "projects": sorted(projects, key=lambda item: item["project"]),
+            "routes": self._routes(),
+            "consumers": self._consumers(),
+        }
+
+    def create_consumer(self, project: str, name: str, chat_id: str, topic_id: str, phone_delay_seconds: str, max_severity: str, actor: str) -> dict[str, Any]:
+        """Create an operator-owned consumer policy and reveal its intake token once."""
+        self._validate_project(project)
+        self._validate_severity(max_severity)
+        try:
+            telegram_target: dict[str, Any] = {"kind": "telegram", "chat_id": int(chat_id)}
+            if topic_id.strip():
+                telegram_target["topic_id"] = int(topic_id)
+            delay_seconds = float(phone_delay_seconds)
+        except (TypeError, ValueError) as error:
+            raise ValidationError("consumer Telegram target and phone delay must be numeric") from error
+        created = self._consumer_notification_center().create_consumer(
+            project=project,
+            name=name,
+            max_severity=max_severity,
+            policy=[telegram_target, {"kind": "phone", "delay_seconds": delay_seconds}],
+        )
+        self._audit({"timestamp": int(time.time()), "actor": actor, "action": "consumer_created", "subject": created["id"], "token_fingerprint": created["token_fingerprint"]})
+        return created
+
+    def _consumer_notification_center(self) -> NotificationCenter:
+        if self._consumer_center is None:
+            database = parse_environment(self.primary_env).get("NOTIFY_CENTER_DB", "").strip()
+            if not database:
+                raise ValidationError("NOTIFY_CENTER_DB must be configured for consumer policies")
+            self._consumer_center = NotificationCenter(database, self._scopes())
+        return self._consumer_center
+
+    def _consumers(self) -> list[dict[str, Any]]:
+        center = self._consumer_notification_center()
+        rows = center._connection.execute("SELECT id FROM consumers ORDER BY created_at DESC").fetchall()
+        return [consumer for row in rows if (consumer := center.get_consumer(str(row["id"]))) is not None]
 
     def create_project(self, project: str, max_severity: str, actor: str) -> str:
         self._validate_project(project)

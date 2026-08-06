@@ -50,6 +50,17 @@ def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[s
     return destination
 
 
+def telegram_delivery_destination(default_chat_id: str, severity_routes: dict[str, dict[str, Any]], payload: dict[str, Any]) -> dict[str, str]:
+    """Use an operator-owned consumer target when the durable delivery has one."""
+    target = payload.get("target")
+    if isinstance(target, dict) and target.get("chat_id") is not None:
+        destination = {"chat_id": str(target["chat_id"])}
+        if target.get("topic_id") is not None:
+            destination["message_thread_id"] = str(target["topic_id"])
+        return destination
+    return telegram_destination(default_chat_id, severity_routes, payload["incident"])
+
+
 class TelegramSender:
     """Send compact incident cards via Telegram's HTTPS Bot API."""
 
@@ -67,7 +78,7 @@ class TelegramSender:
             raise RuntimeError("Telegram sender is not configured")
         incident = payload["incident"]
         text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nIncident: {incident['id']}"
-        request_data: dict[str, str] = {**telegram_destination(self._chat_id, self._severity_routes, incident), "text": text, "disable_web_page_preview": "true"}
+        request_data: dict[str, str] = {**telegram_delivery_destination(self._chat_id, self._severity_routes, payload), "text": text, "disable_web_page_preview": "true"}
         if self._action_codec is not None:
             request_data["reply_markup"] = json.dumps(telegram_inline_keyboard(self._action_codec, incident), separators=(",", ":"))
         data = urllib.parse.urlencode(request_data).encode()
@@ -189,11 +200,12 @@ class DeliveryWorker:
         """Deliver one claimed job; callers may run this in a bounded worker pool."""
         try:
             payload = self._center.delivery_payload(delivery)
-            if delivery["channel"] == "telegram.main":
+            if delivery["channel"] == "telegram.main" or str(delivery["channel"]).startswith("telegram.consumer:"):
                 self._telegram.send(payload)
                 incident = payload["incident"]
                 self._center.complete_delivery(delivery["id"], "sent")
-                self._after_telegram_delivery(delivery, incident)
+                if delivery["channel"] == "telegram.main":
+                    self._after_telegram_delivery(delivery, incident)
                 return
             elif delivery["channel"] == "matrix.call":
                 if self._matrix_call is None:

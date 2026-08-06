@@ -15,6 +15,7 @@ from pathlib import Path
 
 from notification_center.admin import AdminConfigStore
 from notification_center.admin_http import build_admin_handler
+from notification_center.core import NotificationCenter
 
 
 class AdminConsoleTests(unittest.TestCase):
@@ -23,7 +24,8 @@ class AdminConsoleTests(unittest.TestCase):
         root = Path(self.tempdir.name)
         self.primary = root / "notification-center.env"
         self.routes = root / "routes.env"
-        self.primary.write_text('NOTIFY_CENTER_TOKENS_JSON={"old-token":{"project":"existing","max_severity":"notice"}}\nOTHER=unchanged\n', encoding="utf-8")
+        self.database = root / "notify-center.sqlite3"
+        self.primary.write_text(f'NOTIFY_CENTER_DB={self.database}\nNOTIFY_CENTER_TOKENS_JSON={{"old-token":{{"project":"existing","max_severity":"notice"}}}}\nOTHER=unchanged\n', encoding="utf-8")
         self.routes.write_text("TELEGRAM_SEVERITY_ROUTES_JSON={}\n", encoding="utf-8")
         self.restarts = 0
         self.store = AdminConfigStore(self.primary, self.routes, root / "state", restart=self._restart)
@@ -83,6 +85,33 @@ class AdminConsoleTests(unittest.TestCase):
         self.store.set_routes({"critical": {"chat_id": "-100123", "message_thread_id": 42}}, "sso:operator")
         self.assertEqual(1, self.restarts)
         self.assertEqual({"chat_id": "-100123", "message_thread_id": 42}, self.store.snapshot()["routes"]["critical"])
+
+    def test_consumer_form_reveals_intake_url_and_token_once(self) -> None:
+        status, page = self._request("GET", "/admin/")
+        self.assertEqual(200, status)
+        csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
+
+        status, token_page = self._request("POST", "/admin/consumers", {
+            "csrf": csrf,
+            "project": "hermes",
+            "name": "Gateway producer",
+            "max_severity": "critical",
+            "chat_id": "-100123",
+            "topic_id": "42",
+            "phone_delay_seconds": "600",
+        })
+        self.assertEqual(200, status)
+        token = re.search(rb'<code>(nct_[^<]+)</code>', token_page).group(1).decode()
+        self.assertIn(b"https://notify.bezrabotnyi.com/v1/events", token_page)
+        self.assertIn(token.encode(), token_page)
+
+        snapshot = self.store.snapshot()
+        consumer = snapshot["consumers"][0]
+        self.assertEqual("Gateway producer", consumer["name"])
+        self.assertEqual(["telegram", "phone"], [stage["kind"] for stage in consumer["policy"] if stage["enabled"]])
+        self.assertNotIn(token, json.dumps(snapshot))
+        reopened = NotificationCenter(self.database, {"old-token": {"project": "existing", "max_severity": "notice"}})
+        self.assertNotIn("intake_token", reopened.get_consumer(consumer["id"]))
 
 
 if __name__ == "__main__":

@@ -90,6 +90,14 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                     token = store.create_project(form.get("project", ""), form.get("max_severity", ""), actor)
                     self._reply(HTTPStatus.OK, _token_page(form.get("project", ""), token))
                     return
+                if self.path in ("/consumers", "/admin/consumers"):
+                    created = store.create_consumer(
+                        form.get("project", ""), form.get("name", ""), form.get("chat_id", ""),
+                        form.get("topic_id", ""), form.get("phone_delay_seconds", ""),
+                        form.get("max_severity", "critical"), actor,
+                    )
+                    self._reply(HTTPStatus.OK, _consumer_token_page(form.get("name", ""), created["intake_token"]))
+                    return
                 if self.path.endswith("/severity"):
                     project = urllib.parse.unquote(self.path.rsplit("/", 2)[-2])
                     store.set_project_severity(project, form.get("max_severity", ""), actor)
@@ -133,12 +141,33 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         f'<tr><td>{severity}</td><td><input name="{severity}_chat" value="{html.escape(str(routes.get(severity, {}).get("chat_id", "")))}" placeholder="-100…"></td><td><input name="{severity}_topic" value="{html.escape(str(routes.get(severity, {}).get("message_thread_id", "")))}" placeholder="topic id"></td></tr>'
         for severity in ROUTE_SEVERITIES
     )
+    consumer_rows = "".join(
+        f'<tr><td>{html.escape(item["name"])}</td><td>{html.escape(item["project"])}</td><td><code>{html.escape(item["token_fingerprint"])}</code></td><td>{html.escape(_policy_display(item["policy"]))}</td></tr>'
+        for item in snapshot["consumers"]
+    ) or '<tr><td colspan="4">No scoped consumers yet.</td></tr>'
     return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Notify Center Admin</title><style>
 body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:1100px;margin:auto;padding:42px 20px 80px}}h1{{font-size:2.4rem;margin:0 0 8px}}p,.hint{{color:#aeb9cf}}section{{margin-top:24px;padding:24px;border:1px solid #31466f;border-radius:18px;background:#101d33}}h2{{margin-top:0}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px 8px;border-top:1px solid #31466f;text-align:left;vertical-align:top}}input,select,button{{padding:9px;border-radius:8px;border:1px solid #405a88;background:#0b172b;color:#e9edf7}}button{{background:#796ef0;border:0;cursor:pointer}}.danger{{background:#8a3647}}form{{display:inline-flex;gap:7px;margin:3px 5px 3px 0;flex-wrap:wrap}}code{{color:#c4bcff}}@media(max-width:760px){{table{{display:block;overflow:auto}}}}
 </style><body><main><div class="hint">Protected operator console</div><h1>Notify Center</h1><p>Producer scopes and Telegram topic routing. Delivery credentials remain server-only.</p>
 <section><h2>Add producer</h2><form method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
 <section><h2>Producer projects</h2><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></section>
+<section><h2>Add scoped consumer</h2><p class="hint">Telegram is immediate; the fixed server phone adapter is queued after the chosen delay. Producer events cannot alter these targets.</p><form method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><select name="max_severity">{options}</select><input required name="chat_id" inputmode="numeric" placeholder="Telegram chat ID"><input name="topic_id" inputmode="numeric" placeholder="Optional topic ID"><input required name="phone_delay_seconds" type="number" min="1" step="1" placeholder="Phone delay (seconds)"><button>Create consumer intake</button></form></section>
+<section><h2>Scoped consumer policies</h2><table><tr><th>Name</th><th>Project</th><th>Token fingerprint</th><th>Ordered delivery policy</th></tr>{consumer_rows}</table></section>
 <section><h2>Telegram topic routes</h2><form method="post" action="/admin/routes"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><table><tr><th>Severity</th><th>Chat ID</th><th>Topic ID</th></tr>{route_rows}</table><p class="hint">Leave a row blank to use the default route.</p><button>Save routes</button></form></section></main></body></html>"""
+
+
+def _policy_display(policy: list[dict[str, Any]]) -> str:
+    labels = []
+    for stage in policy:
+        if not stage["enabled"]:
+            continue
+        if stage["kind"] == "telegram":
+            destination = f'chat {stage["chat_id"]}'
+            if "topic_id" in stage:
+                destination += f', topic {stage["topic_id"]}'
+            labels.append(f"Telegram: {destination} (immediate)")
+        elif stage["kind"] == "phone":
+            labels.append(f'Phone: fixed adapter after {stage["delay_seconds"]:g}s')
+    return " → ".join(labels)
 
 
 def _token_page(project: str, token: str) -> str:
@@ -165,6 +194,12 @@ NOTIFY_CENTER_TOKEN=&lt;paste the token above here&gt;</pre><p>For systemd use <
 
 # Node.js: npm install github:megamen32/notify
 {html.escape(node)}</pre></section><p><a href=\"https://github.com/megamen32/notify\">GitHub repository</a> · <a href=\"https://github.com/megamen32/notify/blob/main/docs/producer-sdk.md\">Full producer guide</a> · <a href=\"/admin/\">Back to admin</a></p></main>"""
+
+
+def _consumer_token_page(name: str, token: str) -> str:
+    safe_name = html.escape(name)
+    intake_url = "https://notify.bezrabotnyi.com/v1/events"
+    return f"""<!doctype html><meta charset=utf-8><title>Connect {safe_name}</title><style>body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:900px;margin:8vh auto;padding:28px}}section{{margin:18px 0;padding:22px;border:1px solid #405a88;border-radius:18px;background:#101d33}}code{{display:block;padding:16px;background:#08101e;overflow:auto;overflow-wrap:anywhere;color:#c4bcff}}.warning{{color:#ffd28a}}a{{color:#bdb6ff}}</style><main><h1>Connect {safe_name}</h1><p class=warning>Copy this intake URL and token now. The token is shown only on this page; the console retains only its fingerprint.</p><section><h2>Intake URL</h2><code>{intake_url}</code></section><section><h2>Scoped bearer token</h2><code>{html.escape(token)}</code></section><p>Delivery targets are fixed by the operator policy and cannot be selected by producer events.</p><p><a href=\"/admin/\">Back to admin</a></p></main>"""
 
 
 def run_admin_http(store: AdminConfigStore, csrf_secret: str, host: str, port: int) -> None:

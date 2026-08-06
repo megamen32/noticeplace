@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import threading
 import time
@@ -86,9 +87,24 @@ class NotificationCenter:
                     resolved_at REAL,
                     snoozed_until REAL
                 );
-                CREATE UNIQUE INDEX IF NOT EXISTS incidents_open_dedup
-                    ON incidents(project, recipient, dedup_key)
-                    WHERE state != 'resolved';
+                CREATE TABLE IF NOT EXISTS consumers (
+                    id TEXT PRIMARY KEY,
+                    project TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    token_fingerprint TEXT NOT NULL,
+                    max_severity TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS consumer_policy_stages (
+                    consumer_id TEXT NOT NULL REFERENCES consumers(id),
+                    stage INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    target_json TEXT NOT NULL,
+                    PRIMARY KEY (consumer_id, stage)
+                );
                 CREATE TABLE IF NOT EXISTS deliveries (
                     id TEXT PRIMARY KEY,
                     incident_id TEXT NOT NULL REFERENCES incidents(id),
@@ -126,12 +142,29 @@ class NotificationCenter:
                 );
                 """
             )
+            incident_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(incidents)")}
+            if "consumer_id" not in incident_columns:
+                self._connection.execute("ALTER TABLE incidents ADD COLUMN consumer_id TEXT REFERENCES consumers(id)")
+            delivery_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(deliveries)")}
+            if "target_json" not in delivery_columns:
+                self._connection.execute("ALTER TABLE deliveries ADD COLUMN target_json TEXT NOT NULL DEFAULT '{}'")
+            self._connection.execute("DROP INDEX IF EXISTS incidents_open_dedup")
+            self._connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS incidents_open_dedup_scope "
+                "ON incidents(project, recipient, IFNULL(consumer_id, ''), dedup_key) WHERE state != 'resolved'"
+            )
 
     def _scope(self, token: str, project: str) -> Mapping[str, Any]:
         """Validate a token's project boundary without requiring an event severity."""
         scope = self._tokens.get(token)
         if scope is None:
-            raise AuthorizationError("invalid bearer token")
+            token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            row = self._connection.execute(
+                "SELECT id, project, max_severity FROM consumers WHERE token_hash = ?", (token_hash,)
+            ).fetchone()
+            if row is None:
+                raise AuthorizationError("invalid bearer token")
+            scope = {"project": row["project"], "max_severity": row["max_severity"], "consumer_id": row["id"]}
         if scope.get("project") not in ("*", project):
             raise AuthorizationError("token is not allowed for this project")
         return scope
@@ -172,13 +205,17 @@ class NotificationCenter:
             raise ValidationError("unsupported severity")
         if str(event["kind"]) not in ("incident", "notification", "audit", "log"):
             raise ValidationError("unsupported kind")
+        forbidden = sorted(
+            set(event).intersection(
+                {"target", "platform", "phone_number", "command", "delay_seconds", "retry", "stage", "url", "harness", "cwd", "prompt", "tool", "mcp", "credential", "credentials", "token", "secret", "callback_url"}
+            )
+        )
+        if forbidden:
+            raise ValidationError(f"event contains forbidden delivery authority fields: {', '.join(forbidden)}")
         agent_job = event.get("agent_job")
         if agent_job is not None:
             if not isinstance(agent_job, str) or not agent_job or len(agent_job) > 128 or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for character in agent_job):
                 raise ValidationError("agent_job must be a safe allowlisted identifier")
-            forbidden = sorted(set(event).intersection({"target", "command", "url", "harness", "cwd", "prompt", "tool", "mcp", "credential", "credentials", "token", "secret", "callback_url"}))
-            if forbidden:
-                raise ValidationError(f"agent_job event contains forbidden authority fields: {', '.join(forbidden)}")
 
     @staticmethod
     def _validate_resolution(event: Mapping[str, Any]) -> None:
@@ -201,6 +238,99 @@ class NotificationCenter:
     def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
         """Convert a SQLite row to a JSON-safe dictionary, preserving nulls."""
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _validate_consumer_policy(policy: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """Validate the fixed two-stage policy and disabled reserved schema kinds."""
+        if not isinstance(policy, list):
+            raise ValidationError("consumer policy must be a list")
+        normalized: list[dict[str, Any]] = []
+        expected = ("telegram", "phone")
+        if any(not isinstance(stage, Mapping) for stage in policy):
+            raise ValidationError("consumer policy stages must be objects")
+        active = [stage for stage in policy if bool(stage.get("enabled", True))]
+        if [str(stage.get("kind") or "") for stage in active] != list(expected):
+            raise ValidationError("consumer policy requires enabled telegram then phone stages")
+        if len(policy) != 2 + sum(str(stage.get("kind") or "") in ("matrix", "whatsapp") for stage in policy):
+            raise ValidationError("only telegram, phone, and disabled reserved matrix/whatsapp stages are allowed")
+        for index, raw_stage in enumerate(policy, start=1):
+            kind = str(raw_stage.get("kind") or "")
+            enabled = bool(raw_stage.get("enabled", True))
+            if kind not in ("telegram", "phone", "matrix", "whatsapp"):
+                raise ValidationError("unsupported consumer target kind")
+            if kind in ("matrix", "whatsapp"):
+                if enabled:
+                    raise ValidationError(f"{kind} is reserved and must remain disabled")
+                normalized.append({"stage": index, "kind": kind, "enabled": False, "target": {}})
+                continue
+            if kind == "telegram":
+                chat_id = raw_stage.get("chat_id")
+                if isinstance(chat_id, bool) or not isinstance(chat_id, int):
+                    raise ValidationError("telegram stage requires integer chat_id")
+                topic_id = raw_stage.get("topic_id")
+                if topic_id is not None and (isinstance(topic_id, bool) or not isinstance(topic_id, int)):
+                    raise ValidationError("telegram topic_id must be an integer")
+                target = {"chat_id": chat_id}
+                if topic_id is not None:
+                    target["topic_id"] = topic_id
+            else:
+                delay = raw_stage.get("delay_seconds")
+                if isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay <= 0:
+                    raise ValidationError("phone stage requires positive delay_seconds")
+                target = {"delay_seconds": float(delay)}
+            normalized.append({"stage": index, "kind": kind, "enabled": enabled, "target": target})
+        return normalized
+
+    def create_consumer(
+        self, project: str, name: str, policy: list[Mapping[str, Any]], max_severity: str = "critical"
+    ) -> dict[str, Any]:
+        """Persist an operator-owned consumer and reveal its intake token once."""
+        project = project.strip()
+        name = name.strip()
+        if not project or not name:
+            raise ValidationError("consumer project and name are required")
+        if max_severity not in SEVERITIES:
+            raise ValidationError("unsupported consumer maximum severity")
+        normalized_policy = self._validate_consumer_policy(policy)
+        consumer_id = f"consumer_{uuid.uuid4().hex}"
+        intake_token = f"nct_{uuid.uuid4().hex}{uuid.uuid4().hex}"
+        token_hash = hashlib.sha256(intake_token.encode("utf-8")).hexdigest()
+        fingerprint = token_hash[:12]
+        now = time.time()
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO consumers(id, project, name, token_hash, token_fingerprint, max_severity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (consumer_id, project, name, token_hash, fingerprint, max_severity, now, now),
+            )
+            self._connection.executemany(
+                "INSERT INTO consumer_policy_stages(consumer_id, stage, kind, enabled, target_json) VALUES (?, ?, ?, ?, ?)",
+                [
+                    (consumer_id, stage["stage"], stage["kind"], int(stage["enabled"]), json.dumps(stage["target"], sort_keys=True))
+                    for stage in normalized_policy
+                ],
+            )
+            self._audit(None, "consumer_created", "operator", {"consumer_id": consumer_id, "project": project})
+        return {"id": consumer_id, "token_fingerprint": fingerprint, "intake_token": intake_token}
+
+    def get_consumer(self, consumer_id: str) -> dict[str, Any] | None:
+        """Return safe consumer metadata and its operator-owned delivery policy."""
+        with self._lock:
+            consumer = self._connection.execute(
+                "SELECT id, project, name, token_fingerprint, max_severity, created_at, updated_at FROM consumers WHERE id = ?",
+                (consumer_id,),
+            ).fetchone()
+            if consumer is None:
+                return None
+            result = dict(consumer)
+            stages = self._connection.execute(
+                "SELECT stage, kind, enabled, target_json FROM consumer_policy_stages WHERE consumer_id = ? ORDER BY stage",
+                (consumer_id,),
+            ).fetchall()
+            result["policy"] = [
+                {"stage": row["stage"], "kind": row["kind"], "enabled": bool(row["enabled"]), **json.loads(row["target_json"])}
+                for row in stages
+            ]
+            return result
 
     def create_event(self, token: str, idempotency_key: str, event: Mapping[str, Any]) -> dict[str, Any]:
         """Accept one event and schedule its initial Telegram delivery.
@@ -228,11 +358,14 @@ class NotificationCenter:
         now = time.time()
         with self._lock, self._connection:
             payload_json = json.dumps(dict(event), ensure_ascii=False, sort_keys=True)
+            consumer_id = str(scope.get("consumer_id") or "") or None
             previous = self._connection.execute("SELECT event_id, incident_id, payload_json FROM events WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
             if previous is not None:
                 if previous["payload_json"] != payload_json:
                     raise IdempotencyConflict("Idempotency-Key was already used with different event content")
-                initial = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (f"{previous['incident_id']}:telegram.main:initial",)).fetchone()
+                previous_incident = self.get_incident(str(previous["incident_id"]))
+                initial_channel = f"telegram.consumer:{previous_incident['consumer_id']}" if previous_incident and previous_incident.get("consumer_id") else "telegram.main"
+                initial = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (f"{previous['incident_id']}:{initial_channel}:initial",)).fetchone()
                 previous_event = json.loads(previous["payload_json"])
                 previous_job = str(previous_event.get("agent_job") or "") if isinstance(previous_event, dict) else ""
                 agent_delivery = self._connection.execute(
@@ -241,13 +374,13 @@ class NotificationCenter:
                 ).fetchone() if previous_job else None
                 return {"event_id": previous["event_id"], "incident_id": previous["incident_id"], "state": self.get_incident(previous["incident_id"])["state"], "deduplicated": False, "idempotent": True, "initial_delivery_id": initial["id"] if initial else None, "agent_job_delivery_id": agent_delivery["id"] if agent_delivery else None}
             project, recipient, dedup_key = str(event["project"]), str(event["recipient"]), str(event["dedup_key"])
-            existing = self._connection.execute("SELECT id FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? AND state != 'resolved'", (project, recipient, dedup_key)).fetchone()
+            existing = self._connection.execute("SELECT id FROM incidents WHERE project = ? AND recipient = ? AND IFNULL(consumer_id, '') = IFNULL(?, '') AND dedup_key = ? AND state != 'resolved'", (project, recipient, consumer_id, dedup_key)).fetchone()
             deduplicated = existing is not None
             if existing is None:
                 incident_id = f"inc_{uuid.uuid4().hex}"
                 self._connection.execute(
-                    "INSERT INTO incidents(id, project, recipient, kind, severity, title, body, dedup_key, collapse_key, state, occurrences, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?)",
-                    (incident_id, project, recipient, str(event["kind"]), str(event["severity"]), str(event["title"]), str(event.get("body") or ""), dedup_key, event.get("collapse_key"), now, now),
+                    "INSERT INTO incidents(id, project, recipient, kind, severity, title, body, dedup_key, collapse_key, consumer_id, state, occurrences, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?)",
+                    (incident_id, project, recipient, str(event["kind"]), str(event["severity"]), str(event["title"]), str(event.get("body") or ""), dedup_key, event.get("collapse_key"), consumer_id, now, now),
                 )
                 self._audit(incident_id, "incident_created", "producer", {"dedup_key": dedup_key})
             else:
@@ -256,7 +389,10 @@ class NotificationCenter:
                 self._audit(incident_id, "incident_repeated", "producer", {"dedup_key": dedup_key})
             event_id = f"evt_{uuid.uuid4().hex}"
             self._connection.execute("INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?)", (idempotency_key, event_id, incident_id, payload_json, now))
-            delivery_id = self._schedule_delivery(incident_id, "telegram.main", "initial", now)
+            if consumer_id:
+                delivery_id = self._schedule_consumer_policy(incident_id, consumer_id, now)
+            else:
+                delivery_id = self._schedule_delivery(incident_id, "telegram.main", "initial", now)
             agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", f"event:{event_id}", now) if agent_job else None
             return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id, "agent_job_delivery_id": agent_delivery_id}
 
@@ -306,7 +442,7 @@ class NotificationCenter:
                 "idempotent": False,
             }
 
-    def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float) -> str:
+    def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float, target: Mapping[str, Any] | None = None) -> str:
         """Create a stable scheduled delivery and return its identity."""
         delivery_key = f"{incident_id}:{channel}:{step}"
         row = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (delivery_key,)).fetchone()
@@ -314,9 +450,31 @@ class NotificationCenter:
             return str(row["id"])
         delivery_id = f"dlv_{uuid.uuid4().hex}"
         now = time.time()
-        self._connection.execute("INSERT INTO deliveries(id, incident_id, channel, delivery_key, due_at, status, attempt, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?)", (delivery_id, incident_id, channel, delivery_key, due_epoch, now, now))
+        self._connection.execute("INSERT INTO deliveries(id, incident_id, channel, delivery_key, due_at, status, attempt, target_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)", (delivery_id, incident_id, channel, delivery_key, due_epoch, json.dumps(dict(target or {}), sort_keys=True), now, now))
         self._audit(incident_id, "delivery_scheduled", "policy", {"delivery_id": delivery_id, "channel": channel, "step": step, "due_at": due_epoch})
         return delivery_id
+
+    def _schedule_consumer_policy(self, incident_id: str, consumer_id: str, now: float) -> str:
+        """Materialize the operator-approved policy as immutable durable deliveries."""
+        stages = self._connection.execute(
+            "SELECT stage, kind, target_json FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1 ORDER BY stage",
+            (consumer_id,),
+        ).fetchall()
+        initial_delivery_id: str | None = None
+        for stage in stages:
+            target = json.loads(stage["target_json"])
+            if stage["kind"] == "telegram":
+                channel, step, due_at = f"telegram.consumer:{consumer_id}", "initial", now
+            elif stage["kind"] == "phone":
+                channel, step, due_at = "android.phone.call", "escalation", now + float(target["delay_seconds"])
+            else:
+                continue
+            delivery_id = self._schedule_delivery(incident_id, channel, step, due_at, target)
+            if initial_delivery_id is None:
+                initial_delivery_id = delivery_id
+        if initial_delivery_id is None:
+            raise ValidationError("consumer policy has no enabled delivery stages")
+        return initial_delivery_id
 
     def schedule_escalation(self, incident_id: str, channel: str, due_epoch: float) -> str:
         """Schedule one named escalation while the incident remains active."""
@@ -507,7 +665,16 @@ class NotificationCenter:
         incident = self.get_incident(str(delivery["incident_id"]))
         if incident is None:
             raise ValidationError("delivery references missing incident")
-        return {"delivery": dict(delivery), "incident": incident}
+        payload = {"delivery": dict(delivery), "incident": incident}
+        target_json = delivery.get("target_json")
+        if isinstance(target_json, str):
+            try:
+                target = json.loads(target_json)
+            except json.JSONDecodeError:
+                target = None
+            if isinstance(target, dict):
+                payload["target"] = target
+        return payload
 
     def mark_dispatcher_healthy(self) -> None:
         """Record a local worker heartbeat used by public readiness, not liveness."""

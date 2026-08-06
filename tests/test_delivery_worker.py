@@ -171,6 +171,44 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual(1, len(android.calls))
         self.assertEqual([], self.center.claim_due_deliveries(now_epoch=10**12))
 
+    def test_consumer_telegram_uses_policy_target_and_keeps_existing_phone_deadline(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Gateway producer",
+            policy=[
+                {"kind": "telegram", "chat_id": -100123, "topic_id": 42},
+                {"kind": "phone", "delay_seconds": 600},
+            ],
+        )
+        created = self.center.create_event(consumer["intake_token"], "consumer-dispatch", self.event)
+        sent: list[dict[str, object]] = []
+
+        class Telegram:
+            def send(self, payload: dict[str, object]) -> None:
+                sent.append(payload)
+
+        class Android:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def phone_call(self, payload: dict[str, object]) -> None:
+                self.calls.append(payload)
+
+        android = Android()
+        worker = DeliveryWorker(self.center, Telegram(), android_phone=android)
+        deadlines = self.center._connection.execute(
+            "SELECT channel, due_at FROM deliveries WHERE incident_id = ? ORDER BY due_at", (created["incident_id"],)
+        ).fetchall()
+        initial = self.center.claim_due_deliveries(now_epoch=deadlines[0]["due_at"])
+        self.assertEqual(1, len(initial))
+        worker.deliver(initial[0])
+        self.assertEqual({"chat_id": -100123, "topic_id": 42}, sent[0]["target"])
+        self.assertEqual([], self.center.claim_due_deliveries(now_epoch=deadlines[1]["due_at"] - 0.1))
+        due = self.center.claim_due_deliveries(now_epoch=deadlines[1]["due_at"])
+        self.assertEqual(["android.phone.call"], [item["channel"] for item in due])
+        worker.deliver(due[0])
+        self.assertEqual(1, len(android.calls))
+
     def test_resolved_critical_incident_cancels_phone_call_before_deadline(self) -> None:
         created = self.center.create_event("producer", "create", self.event)
 
