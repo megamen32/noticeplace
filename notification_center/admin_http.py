@@ -114,6 +114,16 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
+                if self.path in ("/topics/save", "/admin/topics/save"):
+                    store.save_topic(
+                        form.get("topic_id", ""), form.get("name", ""), form.get("chat_id", ""),
+                        form.get("message_thread_id", ""), form.get("enabled", "true") == "true", actor,
+                    )
+                    self.send_response(HTTPStatus.SEE_OTHER)
+                    self.send_header("Location", "/admin/")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
                 if self.path.endswith("/severity"):
                     project = urllib.parse.unquote(self.path.rsplit("/", 2)[-2])
                     store.set_project_severity(project, form.get("max_severity", ""), actor)
@@ -152,11 +162,16 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         f'<tr><td>{html.escape(item["project"])}</td><td>{html.escape(item["max_severity"])}</td><td><code>{html.escape(item["fingerprint"])}</code></td><td><form method="post" action="/admin/projects/{urllib.parse.quote(item["project"], safe="")}/severity"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><select name="max_severity">{options}</select><button>Save level</button></form><form method="post" action="/admin/projects/{urllib.parse.quote(item["project"], safe="")}/revoke"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><button class="danger">Revoke</button></form></td></tr>'
         for item in snapshot["projects"]
     ) or '<tr><td colspan="4">No producer projects yet.</td></tr>'
-    routes = snapshot["routes"]
-    route_rows = "".join(
-        f'<tr><td>{severity}</td><td><input name="{severity}_chat" value="{html.escape(str(routes.get(severity, {}).get("chat_id", "")))}" placeholder="-100…"></td><td><input name="{severity}_topic" value="{html.escape(str(routes.get(severity, {}).get("message_thread_id", "")))}" placeholder="topic id"></td></tr>'
-        for severity in ROUTE_SEVERITIES
+    topics = snapshot.get("topics", [])
+    topic_rows = "".join(
+        f'<tr><td>{html.escape(topic["name"])}</td><td>{html.escape(topic["id"])}</td><td>{html.escape(topic["chat_id"])}</td><td>{html.escape(str(topic["message_thread_id"] or ""))}</td><td>{"preset" if topic["preset"] else "custom"}</td><td><a href="#topic-{html.escape(topic["id"])}">Edit</a></td></tr>'
+        for topic in topics
+    ) or '<tr><td colspan="6">No topics yet.</td></tr>'
+    topic_forms = "".join(
+        f'<form id="topic-{html.escape(topic["id"])}" method="post" action="/admin/topics/save"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="topic_id" value="{html.escape(topic["id"])}"><input required name="name" value="{html.escape(topic["name"])}" placeholder="Topic name"><input required name="chat_id" value="{html.escape(topic["chat_id"])}" placeholder="-100…"><input name="message_thread_id" value="{html.escape(str(topic["message_thread_id"] or ""))}" placeholder="blank = create" inputmode="numeric"><label><input type="checkbox" name="enabled" value="true" {"checked" if topic["enabled"] else ""}> active</label><button>Save {html.escape(topic["name"])}</button></form>'
+        for topic in topics
     )
+    topic_forms += f'<form method="post" action="/admin/topics/save"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="topic_id" value="new-topic"><input required name="name" placeholder="New topic name"><input required name="chat_id" placeholder="-100…"><input name="message_thread_id" placeholder="blank = create" inputmode="numeric"><label><input type="checkbox" name="enabled" value="true" checked> active</label><button>Create topic</button></form>'
     consumer_rows = "".join(
         f'<tr><td>{html.escape(item["name"])}</td><td>{html.escape(item["project"])}</td><td><code>{html.escape(item["token_fingerprint"])}</code></td><td>{html.escape(_policy_display(item["policy"]))}</td></tr>'
         for item in snapshot["consumers"]
@@ -186,7 +201,7 @@ body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}
 <section><h2>Live delivery timers</h2><p class="hint">Changes apply to newly scheduled/retried deliveries and do not restart Notify. Zero disables that timer. An already executing adapter call is unchanged.</p><form method="post" action="/admin/settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}">{setting_inputs}<button>Save live settings</button></form></section>
 <section><h2>Add scoped consumer</h2><p class="hint">Build any escalation chain. Each step is a JSON object with platform, action, target, retry_interval_seconds, max_repeats, and optional previous_step_id. The successor points to its predecessor; no platform order is imposed. Leave policy JSON blank for the legacy Telegram/Matrix/Phone form.</p><form method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><select name="max_severity">{options}</select><textarea name="policy_json" rows="5" cols="70" placeholder='[{{"id":"telegram-1","platform":"telegram","action":"message","target":{{"chat_id":-100123}},"retry_interval_seconds":10800,"max_repeats":10}}]'></textarea><input name="chat_id" inputmode="numeric" placeholder="Legacy Telegram chat ID"><input name="topic_id" inputmode="numeric" placeholder="Legacy topic ID"><input name="matrix_delay_seconds" type="number" min="1" step="1" placeholder="Legacy Matrix delay (seconds)"><input name="phone_delay_seconds" type="number" min="1" step="1" placeholder="Legacy phone delay (seconds)"><button>Create consumer intake</button></form></section>
 <section><h2>Scoped consumer policies</h2><table><tr><th>Name</th><th>Project</th><th>Token fingerprint</th><th>Ordered delivery policy</th></tr>{consumer_rows}</table></section>
-<section><h2>Telegram topic routes</h2><form method="post" action="/admin/routes"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><table><tr><th>Severity</th><th>Chat ID</th><th>Topic ID</th></tr>{route_rows}</table><p class="hint">Leave a row blank to use the default route.</p><button>Save routes</button></form></section></main></body></html>"""
+<section><h2>Telegram topics</h2><p class="hint">Preset and custom topics use the same editor. Preset means only that Notify shipped the topic by default; it is still editable. Changes apply live without restarting Notify.</p><table><tr><th>Name</th><th>Key</th><th>Chat</th><th>Topic</th><th>Type</th><th>Action</th></tr>{topic_rows}</table><div class="topic-forms">{topic_forms}</div></section></main></body></html>"""
 
 
 def _policy_display(policy: list[dict[str, Any]]) -> str:

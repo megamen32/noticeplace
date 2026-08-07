@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .core import NotificationCenter, SEVERITIES, ValidationError
-from .http_api import telegram_create_forum_topic
+from .http_api import telegram_create_forum_topic, telegram_edit_forum_topic
 
 PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
-ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency")
+ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency", "log")
 DEFAULT_CALLS_OVERRIDE_PATH = Path("/etc/systemd/system/notification-center.service.d/zzzz-disable-automatic-calls.conf")
 RUNTIME_SETTING_ENV = {
     "matrix_call_critical_escalation_seconds": "MATRIX_CALL_CRITICAL_ESCALATION_SECONDS",
@@ -108,11 +108,68 @@ class AdminConfigStore:
             })
         return {
             "projects": sorted(projects, key=lambda item: item["project"]),
-            "routes": self._routes(),
+            "routes": self._topic_routes(),
+            "topics": self.topics(),
             "consumers": self._consumers(),
             "automatic_calls_enabled": self.automatic_calls_enabled(),
             "runtime_settings": self.runtime_settings(),
         }
+
+    def topics(self) -> list[dict[str, Any]]:
+        """Return preset and custom Telegram topics through one admin model."""
+        routes = self._topic_routes()
+        result = []
+        for topic_id, route in sorted(routes.items()):
+            result.append({
+                "id": topic_id,
+                "name": str(route.get("name") or topic_id.replace("-", " ").title()),
+                "chat_id": str(route.get("chat_id") or ""),
+                "message_thread_id": int(route["message_thread_id"]) if route.get("message_thread_id") is not None else None,
+                "preset": topic_id in ROUTE_SEVERITIES,
+                "enabled": bool(route.get("enabled", True)),
+            })
+        return result
+
+    def save_topic(self, topic_id: str, name: str, chat_id: str, message_thread_id: str, enabled: bool, actor: str) -> dict[str, Any]:
+        """Create or update any topic using the same durable runtime flow."""
+        name = name.strip()
+        chat_id = chat_id.strip()
+        topic_id = topic_id.strip().lower()
+        if topic_id == "new-topic":
+            topic_id = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-_") or "custom-topic"
+            base = topic_id
+            suffix = 2
+            while topic_id in self._topic_routes():
+                topic_id = f"{base}-{suffix}"
+                suffix += 1
+        if not name or len(name) > 128:
+            raise ValidationError("topic name is required and must be at most 128 characters")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", topic_id):
+            raise ValidationError("topic id must contain lowercase letters, numbers, _ or -")
+        if not re.fullmatch(r"-?\d+", chat_id):
+            raise ValidationError("chat_id must be numeric")
+        env = parse_environment(self.primary_env)
+        token = env.get("TELEGRAM_BOT_TOKEN", "")
+        if not str(message_thread_id).strip():
+            if not token or env.get("TELEGRAM_AUTO_CREATE_TOPICS", "").lower() not in {"1", "true", "yes"}:
+                raise ValidationError("topic id is required when Telegram auto-create is disabled")
+            thread_id = telegram_create_forum_topic(token, chat_id, name)
+        else:
+            try:
+                thread_id = int(message_thread_id)
+            except (TypeError, ValueError) as error:
+                raise ValidationError("topic id must be a positive integer") from error
+        if thread_id <= 0:
+            raise ValidationError("topic id must be a positive integer")
+        routes = self._topic_routes()
+        existing = routes.get(topic_id, {})
+        old_name = str(existing.get("name") or topic_id.replace("-", " ").title())
+        if existing and old_name != name and token:
+            telegram_edit_forum_topic(token, chat_id, thread_id, name)
+        routes[topic_id] = {"name": name, "chat_id": chat_id, "message_thread_id": thread_id, "enabled": enabled}
+        self._consumer_notification_center().set_runtime_setting("telegram_topics_json", json.dumps(routes, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        self._audit({"timestamp": int(time.time()), "actor": actor, "action": "topic_changed", "subject": topic_id, "created": not bool(existing)})
+        return next(topic for topic in self.topics() if topic["id"] == topic_id)
 
     def runtime_settings(self) -> dict[str, str]:
         """Return live timing controls with startup env values as migration defaults."""
@@ -328,6 +385,18 @@ class AdminConfigStore:
         if not isinstance(value, dict):
             raise ValidationError("route configuration is invalid")
         return {str(key): dict(route) for key, route in value.items() if isinstance(route, dict)}
+
+    def _topic_routes(self) -> dict[str, dict[str, Any]]:
+        """Prefer the live DB topic registry and retain env routes during migration."""
+        center = self._consumer_notification_center()
+        raw = center.get_runtime_setting("telegram_topics_json")
+        if raw is None:
+            return self._routes()
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._routes()
+        return {str(key): dict(route) for key, route in value.items() if isinstance(route, dict)} if isinstance(value, dict) else self._routes()
 
     def _apply_primary(self, scopes: Mapping[str, Mapping[str, str]], actor: str, action: str, project: str, token: str) -> None:
         encoded = json.dumps(scopes, sort_keys=True, separators=(",", ":"))

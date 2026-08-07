@@ -55,7 +55,7 @@ def main() -> None:
     """Create durable dependencies and run worker plus API in one small process."""
     center = NotificationCenter(os.environ.get("NOTIFY_CENTER_DB", "./var/notify-center.sqlite3"), load_tokens())
     callback_codec = telegram_action_codec_from_environment()
-    telegram = telegram_from_environment(callback_codec)
+    telegram = telegram_from_environment(callback_codec, center)
     poller = telegram_interactions_from_environment(center, callback_codec)
     agent_jobs = gptadmin_agent_jobs_from_environment()
     threading.Thread(target=worker_loop, args=(DeliveryWorker(

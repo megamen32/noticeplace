@@ -109,6 +109,18 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertEqual(values, self.store.snapshot()["runtime_settings"])
         self.assertEqual(0, self.restarts)
 
+    def test_preset_and_custom_topics_share_the_same_live_editor(self) -> None:
+        self.store._consumer_notification_center().set_runtime_setting("telegram_topics_json", json.dumps({
+            "emergency": {"name": "Emergency", "chat_id": "-1001", "message_thread_id": 7, "enabled": True},
+        }))
+        updated = self.store.save_topic("emergency", "Critical emergency", "-1001", "8", True, "sso:operator")
+        created = self.store.save_topic("new-topic", "Deployments", "-1001", "9", True, "sso:operator")
+        self.assertTrue(updated["preset"])
+        self.assertEqual("Critical emergency", next(item for item in self.store.topics() if item["id"] == "emergency")["name"])
+        self.assertEqual("deployments", created["id"])
+        self.assertFalse(created["preset"])
+        self.assertEqual(0, self.restarts)
+
     def test_consumer_form_reveals_intake_url_and_token_once(self) -> None:
         status, page = self._request("GET", "/admin/")
         self.assertEqual(200, status)
