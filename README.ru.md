@@ -17,7 +17,7 @@ codex mcp add notify -- npx -y github:megamen32/noticeplace
 ```
 
 Для маленького SSH/process watcher используйте отдельный публичный проект
-[Notify.cli](https://github.com/megamen32/notify-cli).
+[Notify](https://github.com/megamen32/notify) — маленький CLI и AI skill.
 
 ## Быстрый старт
 

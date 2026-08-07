@@ -70,7 +70,7 @@ the event was stored; an optional wait ends only at `acknowledged` or
 - [Operator console](docs/admin.md)
 - [Allowlisted GPTAdmin agent jobs](docs/gptadmin-agent-jobs.md)
 - [MCP server](docs/mcp.md)
-- [Legacy process watcher CLI](https://github.com/megamen32/notify-cli)
+- [Notify CLI and AI skill](https://github.com/megamen32/notify)
 - [AI skill](docs/skill.md)
 
 ## License

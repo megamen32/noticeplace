@@ -11,7 +11,7 @@ MCP server 在底层使用这个 CLI。
 通过 npx/npm package：
 
 ```bash
-npm exec -y --package github:megamen32/notify-cli -- notify-install
+npm exec -y --package github:megamen32/notify -- notify-install
 ```
 
 通过 clone 的 repo 或解压的 release archive：
