@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .core import NotificationCenter, SEVERITIES, ValidationError
+from .http_api import telegram_create_forum_topic
 
 PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
 ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency")
@@ -125,6 +126,7 @@ class AdminConfigStore:
             if matrix_delay is not None:
                 policy.append({"kind": "matrix", "delay_seconds": matrix_delay})
             policy.append({"kind": "phone", "delay_seconds": delay_seconds})
+        self._attach_custom_telegram_topic(policy, name)
         created = self._consumer_notification_center().create_consumer(
             project=project,
             name=name,
@@ -133,6 +135,41 @@ class AdminConfigStore:
         )
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "consumer_created", "subject": created["id"], "token_fingerprint": created["token_fingerprint"]})
         return created
+
+    def _attach_custom_telegram_topic(self, policy: list[dict[str, Any]], name: str) -> None:
+        """Give each Telegram-targeting custom consumer one ordinary forum topic."""
+        env = parse_environment(self.primary_env)
+        if env.get("TELEGRAM_AUTO_CREATE_TOPICS", "").lower() not in {"1", "true", "yes"}:
+            return
+        token = env.get("TELEGRAM_BOT_TOKEN", "")
+        routes_env = parse_environment(self.routes_env)
+        try:
+            routes = json.loads(routes_env.get("TELEGRAM_SEVERITY_ROUTES_JSON", "{}"))
+        except json.JSONDecodeError as error:
+            raise ValidationError("Telegram routes configuration is invalid") from error
+        default_chat = str(env.get("TELEGRAM_CHAT_ID") or "")
+        if not default_chat:
+            default_chat = str(next((route.get("chat_id") for route in routes.values() if isinstance(route, dict) and route.get("chat_id")), ""))
+        if not token or not default_chat:
+            return
+        topic_id: int | None = None
+        for step in policy:
+            if str(step.get("platform") or step.get("kind") or "") != "telegram":
+                continue
+            target = step.setdefault("target", {}) if step.get("platform") else step
+            if not isinstance(target, dict) or str(target.get("chat_id") or "") != default_chat:
+                continue
+            if target.get("topic_id") is not None:
+                topic_id = int(target["topic_id"])
+                break
+        if topic_id is None and any(str(step.get("platform") or step.get("kind") or "") == "telegram" for step in policy):
+            topic_id = telegram_create_forum_topic(token, default_chat, name)
+        if topic_id is not None:
+            for step in policy:
+                if str(step.get("platform") or step.get("kind") or "") == "telegram":
+                    target = step.setdefault("target", {}) if step.get("platform") else step
+                    if isinstance(target, dict) and str(target.get("chat_id") or "") == default_chat:
+                        target["topic_id"] = topic_id
 
     def _consumer_notification_center(self) -> NotificationCenter:
         if self._consumer_center is None:

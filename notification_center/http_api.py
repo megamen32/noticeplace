@@ -41,7 +41,8 @@ def telegram_active_modes(raw: str) -> set[str]:
 
 def telegram_mode(incident: dict[str, Any]) -> str:
     """Map an incident to the operator-facing forum mode."""
-    return "log" if str(incident.get("kind")) == "log" else str(incident["severity"])
+    severity = str(incident["severity"])
+    return severity if severity in {"emergency", "important"} else "log"
 
 
 def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[str, Any]) -> dict[str, list[list[dict[str, str]]]]:

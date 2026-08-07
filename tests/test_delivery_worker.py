@@ -24,10 +24,10 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_inactive_standard_mode_is_cancelled_without_telegram_send(self) -> None:
-        created = self.center.create_event("producer", "inactive-critical", self.event)
+        created = self.center.create_event("producer", "inactive-critical", {**self.event, "severity": "debug"})
 
         class Telegram:
-            active_modes = {"emergency", "important", "log"}
+            active_modes = {"important"}
 
             def send(self, _payload: dict[str, object]) -> None:
                 raise AssertionError("inactive mode must not reach Telegram")

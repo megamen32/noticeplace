@@ -17,7 +17,7 @@ class TelegramTopicTests(unittest.TestCase):
             "emergency": {"chat_id": "-1001", "message_thread_id": 13},
         }
         self.assertEqual("11", telegram_destination("-1001", routes, {"kind": "log", "severity": "info"}, {"log", "important", "emergency"})["message_thread_id"])
-        self.assertEqual({}, telegram_destination("-1001", routes, {"kind": "incident", "severity": "critical"}, {"log", "important", "emergency"}))
+        self.assertEqual("11", telegram_destination("-1001", routes, {"kind": "incident", "severity": "critical"}, {"log", "important", "emergency"})["message_thread_id"])
 
     def test_active_modes_default_to_small_operator_set(self) -> None:
         self.assertEqual({"emergency", "important", "log"}, telegram_active_modes(""))
