@@ -28,7 +28,8 @@ class AdminConsoleTests(unittest.TestCase):
         self.primary.write_text(f'NOTIFY_CENTER_DB={self.database}\nNOTIFY_CENTER_TOKENS_JSON={{"old-token":{{"project":"existing","max_severity":"notice"}}}}\nOTHER=unchanged\n', encoding="utf-8")
         self.routes.write_text("TELEGRAM_SEVERITY_ROUTES_JSON={}\n", encoding="utf-8")
         self.restarts = 0
-        self.store = AdminConfigStore(self.primary, self.routes, root / "state", restart=self._restart)
+        self.calls_override = root / "notification-center-calls.conf"
+        self.store = AdminConfigStore(self.primary, self.routes, root / "state", restart=self._restart, calls_override_path=self.calls_override, daemon_reload=lambda: None)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), build_admin_handler(self.store, "test-csrf-secret"))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -85,6 +86,15 @@ class AdminConsoleTests(unittest.TestCase):
         self.store.set_routes({"critical": {"chat_id": "-100123", "message_thread_id": 42}}, "sso:operator")
         self.assertEqual(1, self.restarts)
         self.assertEqual({"chat_id": "-100123", "message_thread_id": 42}, self.store.snapshot()["routes"]["critical"])
+
+    def test_operator_can_toggle_automatic_call_escalation(self) -> None:
+        self.assertTrue(self.store.snapshot()["automatic_calls_enabled"])
+        self.store.set_automatic_calls(False, "sso:operator")
+        self.assertFalse(self.store.snapshot()["automatic_calls_enabled"])
+        self.assertTrue(self.calls_override.exists())
+        self.store.set_automatic_calls(True, "sso:operator")
+        self.assertTrue(self.store.snapshot()["automatic_calls_enabled"])
+        self.assertFalse(self.calls_override.exists())
 
     def test_consumer_form_reveals_intake_url_and_token_once(self) -> None:
         status, page = self._request("GET", "/admin/")

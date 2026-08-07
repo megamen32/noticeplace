@@ -19,6 +19,7 @@ from .http_api import telegram_create_forum_topic
 
 PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
 ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency")
+DEFAULT_CALLS_OVERRIDE_PATH = Path("/etc/systemd/system/notification-center.service.d/zzzz-disable-automatic-calls.conf")
 
 
 def parse_environment(path: Path) -> dict[str, str]:
@@ -70,6 +71,8 @@ class AdminConfigStore:
         state_dir: Path,
         restart: Callable[[], None] | None = None,
         apply_service: str | None = None,
+        calls_override_path: Path | None = None,
+        daemon_reload: Callable[[], None] | None = None,
     ) -> None:
         self.primary_env = primary_env
         self.routes_env = routes_env
@@ -78,6 +81,8 @@ class AdminConfigStore:
         self.rollback_dir = state_dir / "rollbacks"
         self.restart = restart or self._restart_center
         self.apply_service = apply_service
+        self.calls_override_path = calls_override_path or DEFAULT_CALLS_OVERRIDE_PATH
+        self.daemon_reload = daemon_reload or self._daemon_reload
         self._consumer_center: NotificationCenter | None = None
 
     @staticmethod
@@ -98,7 +103,51 @@ class AdminConfigStore:
             "projects": sorted(projects, key=lambda item: item["project"]),
             "routes": self._routes(),
             "consumers": self._consumers(),
+            "automatic_calls_enabled": self.automatic_calls_enabled(),
         }
+
+    def automatic_calls_enabled(self) -> bool:
+        """Return whether future automatic call escalation is allowed."""
+        return not self.calls_override_path.exists()
+
+    def set_automatic_calls(self, enabled: bool, actor: str) -> None:
+        """Toggle future call escalation and cancel already queued call jobs."""
+        if enabled:
+            if self.calls_override_path.exists():
+                self.calls_override_path.unlink()
+        else:
+            self.calls_override_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            temporary = self.calls_override_path.with_name(f".{self.calls_override_path.name}.tmp")
+            temporary.write_text(
+                "[Service]\n"
+                "Environment=ANDROID_PHONE_CALL_ESCALATION_SECONDS=0\n"
+                "Environment=ANDROID_TELEGRAM_CALL_ESCALATION_SECONDS=0\n"
+                "Environment=MATRIX_CALL_CRITICAL_ESCALATION_SECONDS=0\n"
+                "Environment=MATRIX_CALL_EMERGENCY_ESCALATION_SECONDS=0\n",
+                encoding="utf-8",
+            )
+            os.chmod(temporary, 0o644)
+            os.replace(temporary, self.calls_override_path)
+            self._cancel_queued_calls()
+        self.daemon_reload()
+        self.restart()
+        self._audit({"timestamp": int(time.time()), "actor": actor, "action": "automatic_calls_changed", "enabled": enabled})
+
+    def _cancel_queued_calls(self) -> None:
+        """Cancel future call work without touching an adapter already in flight."""
+        database = parse_environment(self.primary_env).get("NOTIFY_CENTER_DB", "").strip()
+        if not database:
+            return
+        center = NotificationCenter(database, self._scopes())
+        with center._lock, center._connection:
+            center._connection.execute(
+                "UPDATE deliveries SET status='cancelled', last_error=?, updated_at=? WHERE status IN ('queued','claimed') AND channel IN ('android.phone.call','android.telegram.call','matrix.call')",
+                ("automatic calls disabled by operator", time.time()),
+            )
+
+    @staticmethod
+    def _daemon_reload() -> None:
+        subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=30)
 
     def create_consumer(self, project: str, name: str, chat_id: str, topic_id: str, matrix_delay_seconds: str, phone_delay_seconds: str, max_severity: str, actor: str, policy_json: str = "") -> dict[str, Any]:
         """Create an operator-owned consumer policy and reveal its intake token once."""
