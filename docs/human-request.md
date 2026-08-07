@@ -16,7 +16,11 @@ This note is a boundary document, not an implementation claim. The current Notif
 - HumanRequest should own the upstream request lifecycle and correlation. `request_id` should be the stable cross-system identifier for one human request.
 - Notify should receive a sanitized HumanRequest event envelope that already carries `request_id` as correlation metadata, while Notify continues to create and manage its own `event_id`, `incident_id`, and `delivery_id`.
 - The boundary should stay event-shaped, not command-shaped: HumanRequest expresses what happened and what attention is needed, while Notify decides how to route, persist, escalate, acknowledge, and cancel within its own contract.
-- Exact severity call policy, Ask User / Ask Secret lifecycle rules, and any future human-in-the-loop branching are proposed here only. They must not be treated as implemented Notify behavior.
+- HumanRequest-specific call policy, Ask User / Ask Secret lifecycle rules, and
+  future human-in-the-loop branching remain proposed here only. Notify itself
+  does implement bounded optional call escalation through configured Matrix,
+  Android Telegram, and Android phone adapters; its delivery guarantee is
+  at-least-once rather than exactly-once.
 
 ## What Notify must not receive
 

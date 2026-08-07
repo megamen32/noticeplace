@@ -12,6 +12,29 @@
 - Optional signed GPTAdmin agent jobs selected only from each producer token's
   allowlist, with durable idempotency and terminal result tracking.
 
+The public center hostname has one deliberate entry behavior: `GET /` returns
+`303 See Other` to `/admin/`. The admin UI is not the producer API; nginx first
+checks the existing `auth.bezrabotnyi.com` session and only then proxies the
+request to the loopback admin service. The API and health endpoints remain
+Bearer-authenticated separately.
+
+## HTTP surface
+
+- `POST /v1/events` — project-scoped event intake (`202 Accepted`).
+- `GET /v1/incidents/{incident_id}` — read an incident with its project token.
+- `POST /v1/incidents/{incident_id}/ack|resolve|snooze` — explicit incident
+  actions with that token.
+- `GET /health` — dedicated health-probe Bearer token; returns
+  `notify.health.v1` JSON or `503` when readiness is degraded.
+- `POST /mcp` — HTTP JSON-RPC MCP transport with its own `NOTIFY_MCP_TOKEN`.
+- `/admin/` — SSO/cookie-protected operator console; it is not a public API
+  credential boundary.
+
+Delivery is durable and at-least-once: stable keys prevent routine duplicate
+scheduling, but a worker crash after claiming a delivery can cause a retry and
+therefore a duplicate external send. A successful adapter response means the
+adapter accepted the request, not that a carrier or human completed a call.
+
 ## Install
 
 ```bash
