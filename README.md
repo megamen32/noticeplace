@@ -2,13 +2,14 @@
 
 [Русский](README.ru.md) · [中文](README.zh.md) · [GitHub](https://github.com/megamen32/noticeplace) · [Docs](docs/)
 
-![NoticePlace is a universal inbox for AI-to-human attention](assets/hero-universal-inbox.png)
+![NoticePlace is a Universal Outbox for AI-to-human attention](assets/hero-universal-inbox.png)
 
-> The universal inbox that lets AI reach you through any available channel.
+> Universal Outbox for AI-to-human attention.
 
 AI does not stop working because it needs your answer. NoticePlace keeps the
-work running, routes important attention to calls, chats, messages, or email,
-and gives the human one place to receive and acknowledge it.
+work running and sends important attention to calls, chats, messages, email,
+or any other configured channel. Your separate [Universal Inbox](https://github.com/megamen32/universal-inbox)
+can receive and organize the incoming human-facing conversation.
 
 - One universal inbox for AI-to-human attention.
 - Calls, chats, messages, email, and other configured adapters.

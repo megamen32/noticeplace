@@ -2,13 +2,13 @@
 
 [English](README.md) · **Русский** · [中文](README.zh.md) · [Документация](docs/)
 
-![NoticePlace — universal inbox для связи AI с человеком](assets/hero-universal-inbox.png)
+![NoticePlace — Universal Outbox для связи AI с человеком](assets/hero-universal-inbox.png)
 
-> Universal inbox, через который AI может достучаться до человека любым способом.
+> Universal Outbox для AI-to-human attention.
 
 AI продолжает работу, пока NoticePlace доставляет важное через звонок, чат,
-сообщение, email или другой настроенный канал. Человек получает и подтверждает
-всё в одном месте.
+сообщение, email или другой настроенный канал. Для обратного потока и входящих
+сообщений используется отдельный [Universal Inbox](https://github.com/megamen32/universal-inbox).
 
 ## Установка
 
