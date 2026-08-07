@@ -257,10 +257,27 @@ class DeliveryWorker:
 
     def _matrix_delay_seconds(self, severity: str) -> float:
         if severity == "critical":
-            return self._critical_call_escalation_seconds
+            return self._runtime_float("matrix_call_critical_escalation_seconds", self._critical_call_escalation_seconds)
         if severity == "emergency":
-            return self._emergency_call_escalation_seconds
+            return self._runtime_float("matrix_call_emergency_escalation_seconds", self._emergency_call_escalation_seconds)
         return 0
+
+    def _runtime_float(self, key: str, fallback: float) -> float:
+        """Read a non-negative live setting, retaining env as the migration fallback."""
+        value = self._center.get_runtime_setting(key)
+        if value is None:
+            return fallback
+        try:
+            return max(0, float(value))
+        except (TypeError, ValueError):
+            return fallback
+
+    def _automatic_calls_enabled(self) -> bool:
+        """Read the operator kill switch for each delivery, without a process restart."""
+        value = self._center.get_runtime_setting("automatic_calls_enabled")
+        if value is None:
+            return True
+        return value.lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _telegram_repeat_sequence(delivery_key: str) -> int | None:
@@ -286,21 +303,27 @@ class DeliveryWorker:
             and str(incident["severity"]) == "critical"
             and self._android_phone is not None
             and getattr(self._android_phone, "can_phone_call", False)
-            and self._android_phone_call_escalation_seconds > 0
+            and self._automatic_calls_enabled()
+            and self._runtime_float("android_phone_call_escalation_seconds", self._android_phone_call_escalation_seconds) > 0
         ):
+            delay = self._runtime_float("android_phone_call_escalation_seconds", self._android_phone_call_escalation_seconds)
             self._center.schedule_escalation_if_active(
                 incident_id,
                 "android.phone.call",
-                time.time() + self._android_phone_call_escalation_seconds,
+                time.time() + delay,
             )
         sequence = self._telegram_repeat_sequence(str(delivery["delivery_key"]))
-        if str(incident["severity"]) == "critical" and sequence is not None and self._critical_repeat_seconds > 0:
-            self._center.schedule_telegram_repeat_if_active(incident_id, sequence + 1, time.time() + self._critical_repeat_seconds)
+        repeat_delay = self._runtime_float("telegram_critical_repeat_seconds", self._critical_repeat_seconds)
+        if str(incident["severity"]) == "critical" and sequence is not None and repeat_delay > 0:
+            self._center.schedule_telegram_repeat_if_active(incident_id, sequence + 1, time.time() + repeat_delay)
 
     def deliver(self, delivery: dict[str, Any]) -> None:
         """Deliver one claimed job; callers may run this in a bounded worker pool."""
         try:
             payload = self._center.delivery_payload(delivery)
+            if delivery["channel"] in {"matrix.call", "android.telegram.call", "android.phone.call"} and not self._automatic_calls_enabled():
+                self._center.complete_delivery(delivery["id"], "cancelled", "automatic calls disabled by operator")
+                return
             if delivery["channel"] == "telegram.main" or str(delivery["channel"]).startswith("telegram.consumer:"):
                 if delivery["channel"] == "telegram.main":
                     active_modes = getattr(self._telegram, "active_modes", None)
@@ -319,7 +342,7 @@ class DeliveryWorker:
                 result = self._matrix_call.send(payload)
                 if result["answered"]:
                     self._center.acknowledge_if_active(str(delivery["incident_id"]), str(result["actor"]))
-                elif self._android_phone is not None and getattr(self._android_phone, "can_phone_call", False):
+                elif self._automatic_calls_enabled() and self._android_phone is not None and getattr(self._android_phone, "can_phone_call", False):
                     self._center.schedule_escalation_if_active(str(delivery["incident_id"]), "android.phone.call", time.time())
             elif delivery["channel"] == "android.telegram.call":
                 if self._android_phone is None:

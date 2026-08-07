@@ -71,6 +71,51 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual(["matrix.call"], [item["channel"] for item in queued])
         self.assertEqual(created["incident_id"], queued[0]["incident_id"])
 
+    def test_automatic_calls_can_be_disabled_without_restarting_worker(self) -> None:
+        created = self.center.create_event("producer", "runtime-disable", self.event)
+        self.center.complete_delivery(created["initial_delivery_id"], "sent")
+        self.center.schedule_escalation(created["incident_id"], "android.phone.call", due_epoch=0)
+        self.center.set_runtime_setting("automatic_calls_enabled", "false")
+        calls: list[dict[str, object]] = []
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        class Android:
+            def phone_call(self, payload: dict[str, object]) -> None:
+                calls.append(payload)
+
+        worker = DeliveryWorker(self.center, Telegram(), android_phone=Android())
+        self.assertEqual(1, worker.run_once())
+        self.assertEqual([], calls)
+        status = self.center._connection.execute(
+            "SELECT status, last_error FROM deliveries WHERE channel = 'android.phone.call' AND incident_id = ?",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertEqual("cancelled", status["status"])
+        self.assertEqual("automatic calls disabled by operator", status["last_error"])
+
+    def test_runtime_phone_delay_is_used_for_new_escalations(self) -> None:
+        created = self.center.create_event("producer", "runtime-delay", self.event)
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        class Android:
+            can_phone_call = True
+
+        self.center.set_runtime_setting("android_phone_call_escalation_seconds", "17")
+        worker = DeliveryWorker(self.center, Telegram(), android_phone=Android(), android_phone_call_escalation_seconds=600)
+        with mock.patch("notification_center.http_api.time.time", return_value=10**12):
+            self.assertEqual(1, worker.run_once())
+        row = self.center._connection.execute(
+            "SELECT due_at FROM deliveries WHERE incident_id = ? AND channel = 'android.phone.call'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertAlmostEqual(10**12 + 17, row["due_at"])
+
     def test_critical_repeats_while_open_and_calls_matrix_after_its_deadline(self) -> None:
         created = self.center.create_event("producer", "critical-repeat", self.event)
 

@@ -107,6 +107,13 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
+                if self.path in ("/settings", "/admin/settings"):
+                    store.set_runtime_settings(form, actor)
+                    self.send_response(HTTPStatus.SEE_OTHER)
+                    self.send_header("Location", "/admin/")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
                 if self.path.endswith("/severity"):
                     project = urllib.parse.unquote(self.path.rsplit("/", 2)[-2])
                     store.set_project_severity(project, form.get("max_severity", ""), actor)
@@ -158,12 +165,25 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
     calls_label = "Enabled" if calls_enabled else "Disabled"
     calls_action = "false" if calls_enabled else "true"
     calls_button = "Disable automatic calls" if calls_enabled else "Enable automatic calls"
+    runtime_settings = snapshot.get("runtime_settings", {})
+    setting_labels = {
+        "matrix_call_critical_escalation_seconds": "Matrix critical call delay (s)",
+        "matrix_call_emergency_escalation_seconds": "Matrix emergency call delay (s)",
+        "android_phone_call_escalation_seconds": "Android phone call delay (s)",
+        "android_telegram_call_escalation_seconds": "Android Telegram call delay (s)",
+        "telegram_critical_repeat_seconds": "Critical Telegram repeat delay (s)",
+    }
+    setting_inputs = "".join(
+        f'<label>{html.escape(label)} <input required name="{key}" type="number" min="0" step="any" value="{html.escape(str(runtime_settings.get(key, "0")))}"></label>'
+        for key, label in setting_labels.items()
+    )
     return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Notify Center Admin</title><style>
 body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:1100px;margin:auto;padding:42px 20px 80px}}h1{{font-size:2.4rem;margin:0 0 8px}}p,.hint{{color:#aeb9cf}}section{{margin-top:24px;padding:24px;border:1px solid #31466f;border-radius:18px;background:#101d33}}h2{{margin-top:0}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px 8px;border-top:1px solid #31466f;text-align:left;vertical-align:top}}input,select,button{{padding:9px;border-radius:8px;border:1px solid #405a88;background:#0b172b;color:#e9edf7}}button{{background:#796ef0;border:0;cursor:pointer}}.danger{{background:#8a3647}}form{{display:inline-flex;gap:7px;margin:3px 5px 3px 0;flex-wrap:wrap}}code{{color:#c4bcff}}@media(max-width:760px){{table{{display:block;overflow:auto}}}}
 </style><body><main><div class="hint">Protected operator console</div><h1>Notify Center</h1><p>Producer scopes and Telegram topic routing. Delivery credentials remain server-only.</p>
 <section><h2>Add producer</h2><form method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
 <section><h2>Producer projects</h2><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></section>
 <section><h2>Automatic call escalation</h2><p class="hint">{calls_label}. This controls future Android phone, Telegram-call, and Matrix-call escalations. Text notifications are unchanged; an already active phone call cannot be interrupted.</p><form method="post" action="/admin/calls"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="enabled" value="{calls_action}"><button>{calls_button}</button></form></section>
+<section><h2>Live delivery timers</h2><p class="hint">Changes apply to newly scheduled/retried deliveries and do not restart Notify. Zero disables that timer. An already executing adapter call is unchanged.</p><form method="post" action="/admin/settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}">{setting_inputs}<button>Save live settings</button></form></section>
 <section><h2>Add scoped consumer</h2><p class="hint">Build any escalation chain. Each step is a JSON object with platform, action, target, retry_interval_seconds, max_repeats, and optional previous_step_id. The successor points to its predecessor; no platform order is imposed. Leave policy JSON blank for the legacy Telegram/Matrix/Phone form.</p><form method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><select name="max_severity">{options}</select><textarea name="policy_json" rows="5" cols="70" placeholder='[{{"id":"telegram-1","platform":"telegram","action":"message","target":{{"chat_id":-100123}},"retry_interval_seconds":10800,"max_repeats":10}}]'></textarea><input name="chat_id" inputmode="numeric" placeholder="Legacy Telegram chat ID"><input name="topic_id" inputmode="numeric" placeholder="Legacy topic ID"><input name="matrix_delay_seconds" type="number" min="1" step="1" placeholder="Legacy Matrix delay (seconds)"><input name="phone_delay_seconds" type="number" min="1" step="1" placeholder="Legacy phone delay (seconds)"><button>Create consumer intake</button></form></section>
 <section><h2>Scoped consumer policies</h2><table><tr><th>Name</th><th>Project</th><th>Token fingerprint</th><th>Ordered delivery policy</th></tr>{consumer_rows}</table></section>
 <section><h2>Telegram topic routes</h2><form method="post" action="/admin/routes"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><table><tr><th>Severity</th><th>Chat ID</th><th>Topic ID</th></tr>{route_rows}</table><p class="hint">Leave a row blank to use the default route.</p><button>Save routes</button></form></section></main></body></html>"""

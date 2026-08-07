@@ -91,10 +91,23 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertTrue(self.store.snapshot()["automatic_calls_enabled"])
         self.store.set_automatic_calls(False, "sso:operator")
         self.assertFalse(self.store.snapshot()["automatic_calls_enabled"])
-        self.assertTrue(self.calls_override.exists())
+        self.assertFalse(self.calls_override.exists())
         self.store.set_automatic_calls(True, "sso:operator")
         self.assertTrue(self.store.snapshot()["automatic_calls_enabled"])
         self.assertFalse(self.calls_override.exists())
+        self.assertEqual(0, self.restarts)
+
+    def test_operator_can_change_live_delivery_timers_without_restart(self) -> None:
+        values = {
+            "matrix_call_critical_escalation_seconds": "91",
+            "matrix_call_emergency_escalation_seconds": "31",
+            "android_phone_call_escalation_seconds": "601",
+            "android_telegram_call_escalation_seconds": "41",
+            "telegram_critical_repeat_seconds": "121",
+        }
+        self.store.set_runtime_settings(values, "sso:operator")
+        self.assertEqual(values, self.store.snapshot()["runtime_settings"])
+        self.assertEqual(0, self.restarts)
 
     def test_consumer_form_reveals_intake_url_and_token_once(self) -> None:
         status, page = self._request("GET", "/admin/")

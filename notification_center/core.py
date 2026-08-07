@@ -146,6 +146,11 @@ class NotificationCenter:
                     update_id INTEGER PRIMARY KEY,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS runtime_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
                 """
             )
             incident_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(incidents)")}
@@ -800,6 +805,22 @@ class NotificationCenter:
         """Record a local worker heartbeat used by public readiness, not liveness."""
         with self._lock:
             self._dispatcher_heartbeat = time.time()
+
+    def get_runtime_setting(self, key: str, default: str | None = None) -> str | None:
+        """Read one operator-controlled live setting without restarting the worker."""
+        with self._lock:
+            row = self._connection.execute("SELECT value FROM runtime_settings WHERE key = ?", (key,)).fetchone()
+            return str(row["value"]) if row is not None else default
+
+    def set_runtime_setting(self, key: str, value: str) -> None:
+        """Atomically persist one live setting for all current and future workers."""
+        if not key or len(key) > 128:
+            raise ValidationError("runtime setting key is invalid")
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO runtime_settings(key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (key, str(value), time.time()),
+            )
 
     def health(self) -> dict[str, Any]:
         """Probe durable dependencies and return only safe externally visible state."""

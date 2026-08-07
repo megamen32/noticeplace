@@ -20,6 +20,13 @@ from .http_api import telegram_create_forum_topic
 PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
 ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency")
 DEFAULT_CALLS_OVERRIDE_PATH = Path("/etc/systemd/system/notification-center.service.d/zzzz-disable-automatic-calls.conf")
+RUNTIME_SETTING_ENV = {
+    "matrix_call_critical_escalation_seconds": "MATRIX_CALL_CRITICAL_ESCALATION_SECONDS",
+    "matrix_call_emergency_escalation_seconds": "MATRIX_CALL_EMERGENCY_ESCALATION_SECONDS",
+    "android_phone_call_escalation_seconds": "ANDROID_PHONE_CALL_ESCALATION_SECONDS",
+    "android_telegram_call_escalation_seconds": "ANDROID_TELEGRAM_CALL_ESCALATION_SECONDS",
+    "telegram_critical_repeat_seconds": "TELEGRAM_CRITICAL_REPEAT_SECONDS",
+}
 
 
 def parse_environment(path: Path) -> dict[str, str]:
@@ -104,33 +111,48 @@ class AdminConfigStore:
             "routes": self._routes(),
             "consumers": self._consumers(),
             "automatic_calls_enabled": self.automatic_calls_enabled(),
+            "runtime_settings": self.runtime_settings(),
         }
+
+    def runtime_settings(self) -> dict[str, str]:
+        """Return live timing controls with startup env values as migration defaults."""
+        center = self._consumer_notification_center()
+        env = parse_environment(self.primary_env)
+        return {
+            key: center.get_runtime_setting(key, env.get(env_key, "0")) or "0"
+            for key, env_key in RUNTIME_SETTING_ENV.items()
+        }
+
+    def set_runtime_settings(self, values: Mapping[str, str], actor: str) -> None:
+        """Validate and persist live timing controls without restarting Notify."""
+        center = self._consumer_notification_center()
+        normalized: dict[str, str] = {}
+        for key in RUNTIME_SETTING_ENV:
+            raw = str(values.get(key, "")).strip()
+            try:
+                number = float(raw)
+            except (TypeError, ValueError) as error:
+                raise ValidationError(f"{key} must be a non-negative number") from error
+            if number < 0:
+                raise ValidationError(f"{key} must be a non-negative number")
+            normalized[key] = str(int(number)) if number.is_integer() else str(number)
+        for key, value in normalized.items():
+            center.set_runtime_setting(key, value)
+        self._audit({"timestamp": int(time.time()), "actor": actor, "action": "runtime_settings_changed", "settings": normalized})
 
     def automatic_calls_enabled(self) -> bool:
         """Return whether future automatic call escalation is allowed."""
+        value = self._consumer_notification_center().get_runtime_setting("automatic_calls_enabled")
+        if value is not None:
+            return value.lower() in {"1", "true", "yes", "on"}
         return not self.calls_override_path.exists()
 
     def set_automatic_calls(self, enabled: bool, actor: str) -> None:
-        """Toggle future call escalation and cancel already queued call jobs."""
-        if enabled:
-            if self.calls_override_path.exists():
-                self.calls_override_path.unlink()
-        else:
-            self.calls_override_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-            temporary = self.calls_override_path.with_name(f".{self.calls_override_path.name}.tmp")
-            temporary.write_text(
-                "[Service]\n"
-                "Environment=ANDROID_PHONE_CALL_ESCALATION_SECONDS=0\n"
-                "Environment=ANDROID_TELEGRAM_CALL_ESCALATION_SECONDS=0\n"
-                "Environment=MATRIX_CALL_CRITICAL_ESCALATION_SECONDS=0\n"
-                "Environment=MATRIX_CALL_EMERGENCY_ESCALATION_SECONDS=0\n",
-                encoding="utf-8",
-            )
-            os.chmod(temporary, 0o644)
-            os.replace(temporary, self.calls_override_path)
+        """Toggle future call escalation without restarting the service."""
+        center = self._consumer_notification_center()
+        center.set_runtime_setting("automatic_calls_enabled", "true" if enabled else "false")
+        if not enabled:
             self._cancel_queued_calls()
-        self.daemon_reload()
-        self.restart()
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "automatic_calls_changed", "enabled": enabled})
 
     def _cancel_queued_calls(self) -> None:
