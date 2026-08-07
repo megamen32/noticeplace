@@ -139,10 +139,10 @@ class AdminConfigStore:
     def _attach_custom_telegram_topic(self, policy: list[dict[str, Any]], name: str) -> None:
         """Give each Telegram-targeting custom consumer one ordinary forum topic."""
         env = parse_environment(self.primary_env)
-        if env.get("TELEGRAM_AUTO_CREATE_TOPICS", "").lower() not in {"1", "true", "yes"}:
+        routes_env = parse_environment(self.routes_env)
+        if (routes_env.get("TELEGRAM_AUTO_CREATE_TOPICS") or env.get("TELEGRAM_AUTO_CREATE_TOPICS", "")).lower() not in {"1", "true", "yes"}:
             return
         token = env.get("TELEGRAM_BOT_TOKEN", "")
-        routes_env = parse_environment(self.routes_env)
         try:
             routes = json.loads(routes_env.get("TELEGRAM_SEVERITY_ROUTES_JSON", "{}"))
         except json.JSONDecodeError as error:
