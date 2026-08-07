@@ -41,3 +41,15 @@ path; existing health and producer API contracts remain reachable.
 1. Переименовать GitHub/local repo и брендовые ссылки.
 2. Проверить deployment copy и перевести его на NoticePlace path.
 3. Перезапустить API/admin, проверить health, redirect и producer canary.
+
+## Implementation progress (English)
+
+- Renamed the public GitHub repository from `megamen32/notify` to `megamen32/noticeplace` and updated the local remote.
+- Renamed the workspace folder from `/home/roomhacker/agents-projects/notify` to `/home/roomhacker/agents-projects/noticeplace`.
+- Rebranded product-facing documentation, UI text, package repository URLs, deployment templates, and SDK links; retained `notification-center.service`, `NOTIFY_CENTER_*`, `notify.bezrabotnyi.com`, and CLI `Notify` for compatibility.
+- Moved the production checkout from `/opt/notify` to `/opt/noticeplace`, updated API/admin systemd ExecStart and WorkingDirectory, corrected checkout permissions, reloaded systemd, and restarted both services.
+- Verification: focused tests 34 passed; `GET https://notify.bezrabotnyi.com/` returned `303` with `Location: /admin/`; authenticated health returned HTTP 200; both systemd services are active.
+
+## Estimate revision
+
+- Revised likely active time: 180 minutes. Trigger: production path migration exposed and required correction of root-only checkout permissions before restart could pass; evidence: journal showed Permission denied, then active services and HTTP canaries passed.
