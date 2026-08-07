@@ -1,4 +1,4 @@
-# Notify
+# NoticePlace
 
 [Русский](README.ru.md) · [中文](README.zh.md) · [GitHub](https://github.com/megamen32/noticeplace) · [Docs](docs/)
 
