@@ -483,7 +483,10 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
         def do_GET(self) -> None:
             """Serve authenticated health and incident reads."""
             if self.path == "/":
-                self._reply(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                self.send_response(HTTPStatus.SEE_OTHER)
+                self.send_header("Location", "/admin/")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
                 return
             if self.path == "/health":
                 try:

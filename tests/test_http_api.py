@@ -58,11 +58,18 @@ class HttpApiTests(unittest.TestCase):
         with urllib.request.urlopen(self.base_url + path, timeout=2) as response:
             return response.status, str(response.headers["Content-Type"]), response.read()
 
-    def test_public_root_has_no_landing_page(self) -> None:
-        """Keep the public API surface minimal; only documented API paths remain."""
+    def test_public_root_redirects_to_protected_admin(self) -> None:
+        """Make the hostname useful while keeping the operator UI protected by nginx."""
+        request = urllib.request.Request(self.base_url + "/")
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+        opener = urllib.request.build_opener(NoRedirect)
         with self.assertRaises(urllib.error.HTTPError) as context:
-            urllib.request.urlopen(self.base_url + "/", timeout=2)
-        self.assertEqual(404, context.exception.code)
+            opener.open(request, timeout=2)
+        self.assertEqual(303, context.exception.code)
+        self.assertEqual("/admin/", context.exception.headers.get("Location"))
 
     def test_health_and_event_require_separate_bearer_credentials(self) -> None:
         """Protect readiness separately while rejecting an unauthenticated producer."""
