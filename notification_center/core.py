@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import sqlite3
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 
 SEVERITIES = ("debug", "info", "notice", "important", "critical", "emergency")
 OPEN_STATES = ("open", "acknowledged", "snoozed")
 DELIVERABLE_STATES = ("open", "snoozed")
+DEFAULT_CONSUMER_QUIET_HOURS = (
+    {"start": "01:00", "end": "09:00", "timezone": "Europe/Moscow", "suppress": ["call"]},
+)
 
 
 class NotificationCenterError(Exception):
@@ -95,7 +101,8 @@ class NotificationCenter:
                     token_fingerprint TEXT NOT NULL,
                     max_severity TEXT NOT NULL,
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    quiet_hours_json TEXT
                 );
                 CREATE TABLE IF NOT EXISTS consumer_policy_stages (
                     consumer_id TEXT NOT NULL REFERENCES consumers(id),
@@ -166,6 +173,13 @@ class NotificationCenter:
                 if column not in delivery_columns:
                     self._connection.execute(f"ALTER TABLE deliveries ADD COLUMN {column} {definition}")
             policy_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(consumer_policy_stages)")}
+            consumer_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(consumers)")}
+            if "quiet_hours_json" not in consumer_columns:
+                self._connection.execute("ALTER TABLE consumers ADD COLUMN quiet_hours_json TEXT")
+            self._connection.execute(
+                "UPDATE consumers SET quiet_hours_json = ? WHERE quiet_hours_json IS NULL",
+                (json.dumps(list(DEFAULT_CONSUMER_QUIET_HOURS), sort_keys=True),),
+            )
             for column, definition in (
                 ("step_id", "TEXT"),
                 ("platform", "TEXT"),
@@ -366,8 +380,33 @@ class NotificationCenter:
             normalized.append({"stage": index, "kind": kind, "enabled": enabled, "target": target, "generic": False})
         return normalized
 
+    @staticmethod
+    def _normalize_quiet_hours(quiet_hours: list[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+        """Validate per-consumer quiet windows without introducing global policy."""
+        raw_rules = list(DEFAULT_CONSUMER_QUIET_HOURS) if quiet_hours is None else quiet_hours
+        if not isinstance(raw_rules, list):
+            raise ValidationError("consumer quiet_hours must be a list")
+        normalized: list[dict[str, Any]] = []
+        for raw in raw_rules:
+            if not isinstance(raw, Mapping):
+                raise ValidationError("consumer quiet-hour rules must be objects")
+            start = str(raw.get("start") or "")
+            end = str(raw.get("end") or "")
+            if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", start) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", end):
+                raise ValidationError("consumer quiet-hour times must use HH:MM")
+            timezone = str(raw.get("timezone") or "Europe/Moscow")
+            try:
+                ZoneInfo(timezone)
+            except Exception as error:
+                raise ValidationError("consumer quiet-hour timezone is invalid") from error
+            suppress = raw.get("suppress", ["call"])
+            if not isinstance(suppress, list) or not suppress or any(str(item) not in {"call", "message"} for item in suppress):
+                raise ValidationError("consumer quiet-hour suppress must contain call or message")
+            normalized.append({"start": start, "end": end, "timezone": timezone, "suppress": sorted({str(item) for item in suppress})})
+        return normalized
+
     def create_consumer(
-        self, project: str, name: str, policy: list[Mapping[str, Any]], max_severity: str = "critical"
+        self, project: str, name: str, policy: list[Mapping[str, Any]], max_severity: str = "critical", quiet_hours: list[Mapping[str, Any]] | None = None
     ) -> dict[str, Any]:
         """Persist an operator-owned consumer and reveal its intake token once."""
         project = project.strip()
@@ -377,6 +416,7 @@ class NotificationCenter:
         if max_severity not in SEVERITIES:
             raise ValidationError("unsupported consumer maximum severity")
         normalized_policy = self._validate_consumer_policy(policy)
+        normalized_quiet_hours = self._normalize_quiet_hours(quiet_hours)
         consumer_id = f"consumer_{uuid.uuid4().hex}"
         intake_token = f"nct_{uuid.uuid4().hex}{uuid.uuid4().hex}"
         token_hash = hashlib.sha256(intake_token.encode("utf-8")).hexdigest()
@@ -384,8 +424,8 @@ class NotificationCenter:
         now = time.time()
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO consumers(id, project, name, token_hash, token_fingerprint, max_severity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (consumer_id, project, name, token_hash, fingerprint, max_severity, now, now),
+                "INSERT INTO consumers(id, project, name, token_hash, token_fingerprint, max_severity, created_at, updated_at, quiet_hours_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (consumer_id, project, name, token_hash, fingerprint, max_severity, now, now, json.dumps(normalized_quiet_hours, sort_keys=True)),
             )
             self._connection.executemany(
                 "INSERT INTO consumer_policy_stages(consumer_id, stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, retry_interval_seconds, max_repeats) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -401,12 +441,16 @@ class NotificationCenter:
         """Return safe consumer metadata and its operator-owned delivery policy."""
         with self._lock:
             consumer = self._connection.execute(
-                "SELECT id, project, name, token_fingerprint, max_severity, created_at, updated_at FROM consumers WHERE id = ?",
+                "SELECT id, project, name, token_fingerprint, max_severity, created_at, updated_at, quiet_hours_json FROM consumers WHERE id = ?",
                 (consumer_id,),
             ).fetchone()
             if consumer is None:
                 return None
             result = dict(consumer)
+            try:
+                result["quiet_hours"] = json.loads(result.pop("quiet_hours_json") or "[]")
+            except json.JSONDecodeError:
+                result["quiet_hours"] = list(DEFAULT_CONSUMER_QUIET_HOURS)
             stages = self._connection.execute(
                 "SELECT stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? ORDER BY stage",
                 (consumer_id,),
@@ -577,6 +621,38 @@ class NotificationCenter:
                 raise ValidationError("consumer policy has no enabled delivery stages")
         return initial_delivery_id
 
+    def _quiet_hours_resume_at(self, consumer_id: str | None, channel: str, now_epoch: float) -> float | None:
+        """Return the next allowed time for a per-consumer call delivery."""
+        if not consumer_id or not channel.endswith(".call"):
+            return None
+        row = self._connection.execute("SELECT quiet_hours_json FROM consumers WHERE id = ?", (consumer_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            rules = json.loads(row["quiet_hours_json"] or "[]")
+        except json.JSONDecodeError:
+            return None
+        for rule in rules if isinstance(rules, list) else []:
+            if not isinstance(rule, Mapping) or "call" not in rule.get("suppress", ["call"]):
+                continue
+            try:
+                timezone = ZoneInfo(str(rule.get("timezone") or "Europe/Moscow"))
+                start_hour, start_minute = (int(part) for part in str(rule["start"]).split(":"))
+                end_hour, end_minute = (int(part) for part in str(rule["end"]).split(":"))
+            except (KeyError, TypeError, ValueError):
+                continue
+            local_now = datetime.fromtimestamp(now_epoch, timezone)
+            start = start_hour * 60 + start_minute
+            end = end_hour * 60 + end_minute
+            minute = local_now.hour * 60 + local_now.minute
+            active = (start <= minute < end) if start < end else (minute >= start or minute < end)
+            if not active:
+                continue
+            end_date = local_now.date() + (timedelta(days=1) if start > end and minute >= start else timedelta())
+            resume = datetime.combine(end_date, datetime.min.time(), timezone) + timedelta(hours=end_hour, minutes=end_minute)
+            return resume.timestamp()
+        return None
+
     def schedule_escalation(self, incident_id: str, channel: str, due_epoch: float) -> str:
         """Schedule one named escalation while the incident remains active."""
         with self._lock, self._connection:
@@ -614,11 +690,15 @@ class NotificationCenter:
         now = time.time() if now_epoch is None else now_epoch
         with self._lock, self._connection:
             rows = self._connection.execute(
-                "SELECT d.* FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND i.state IN (?, ?) AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) ORDER BY d.due_at LIMIT ?",
+                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND i.state IN (?, ?) AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) ORDER BY d.due_at LIMIT ?",
                 (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, limit),
             ).fetchall()
             result: list[dict[str, Any]] = []
             for row in rows:
+                quiet_resume = self._quiet_hours_resume_at(row["consumer_id"], str(row["channel"]), now)
+                if quiet_resume is not None and quiet_resume > now:
+                    self._connection.execute("UPDATE deliveries SET due_at = ?, updated_at = ? WHERE id = ?", (quiet_resume, now, row["id"]))
+                    continue
                 cursor = self._connection.execute("UPDATE deliveries SET status = 'claimed', claimed_at = ?, attempt = attempt + 1, updated_at = ? WHERE id = ? AND (status = 'queued' OR (status = 'claimed' AND claimed_at <= ?))", (now, now, row["id"], now - max(1, lease_seconds)))
                 if cursor.rowcount != 1:
                     continue

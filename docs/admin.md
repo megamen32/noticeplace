@@ -22,7 +22,11 @@ grant any of those tokens. See [the producer guide](producer-sdk.md) and the
   otherwise an existing positive thread ID is required;
 - automatic call enablement and live timing values for Matrix calls, Android
   Telegram calls, Android phone calls, and critical Telegram repeats;
-- scoped consumers through a visual adapter builder.
+- scoped consumers through a visual adapter builder;
+- per-consumer quiet hours. New and existing consumers currently default to
+  `01:00–09:00 Europe/Moscow` for calls only: messages continue, while queued
+  calls are deferred until 09:00. This is intentionally not a global quiet
+  window; each consumer stores its own policy.
 
 The consumer builder emits generic linked steps. Each step has a platform,
 action, target, retry interval, repeat limit, and optional predecessor. Generic

@@ -5,7 +5,9 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from notification_center.core import NotificationCenter, ValidationError
 
@@ -208,6 +210,7 @@ class ConsumerPolicyTests(unittest.TestCase):
         next_due = self.center._connection.execute(
             "SELECT due_at FROM deliveries WHERE incident_id = ? AND status = 'queued'", (created["incident_id"],)
         ).fetchone()["due_at"]
+
         second = self.center.claim_due_deliveries(now_epoch=next_due)
         self.assertEqual(1, len(second))
         self.center.complete_delivery(second[0]["id"], "sent")
@@ -216,6 +219,48 @@ class ConsumerPolicyTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual(["telegram.message", "telegram.message", "phone.call"], [row["channel"] for row in rows])
         self.assertEqual("queued", rows[2]["status"])
+
+    def test_each_consumer_default_quiet_hours_defer_calls_but_not_messages(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Quiet-hours consumer",
+            policy=[
+                {
+                    "id": "telegram-root",
+                    "platform": "telegram",
+                    "action": "message",
+                    "target": {"chat_id": -100123},
+                    "retry_interval_seconds": 60,
+                    "max_repeats": 1,
+                },
+                {
+                    "id": "phone-next",
+                    "platform": "phone",
+                    "action": "call",
+                    "target": {"device": "operator"},
+                    "retry_interval_seconds": 120,
+                    "max_repeats": 1,
+                    "previous_step_id": "telegram-root",
+                },
+            ],
+        )
+        stored = self.center.get_consumer(consumer["id"])
+        self.assertEqual(
+            [{"start": "01:00", "end": "09:00", "timezone": "Europe/Moscow", "suppress": ["call"]}],
+            stored["quiet_hours"],
+        )
+        created = self.center.create_event(consumer["intake_token"], "quiet-hours", self.event())
+        message = self.center.claim_due_deliveries(now_epoch=time.time() + 1)
+        self.assertEqual(["telegram.message"], [row["channel"] for row in message])
+        self.center.complete_delivery(message[0]["id"], "sent")
+        call = self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id = ? AND channel = 'phone.call'", (created["incident_id"],)
+        ).fetchone()
+        quiet_start = datetime(2030, 1, 2, 2, 0, tzinfo=ZoneInfo("Europe/Moscow")).timestamp()
+        self.center._connection.execute("UPDATE deliveries SET due_at = ? WHERE id = ?", (quiet_start, call["id"]))
+        self.assertEqual([], self.center.claim_due_deliveries(now_epoch=quiet_start))
+        deferred = self.center._connection.execute("SELECT due_at FROM deliveries WHERE id = ?", (call["id"],)).fetchone()["due_at"]
+        self.assertEqual(datetime(2030, 1, 2, 9, 0, tzinfo=ZoneInfo("Europe/Moscow")).timestamp(), deferred)
 
 
 if __name__ == "__main__":
