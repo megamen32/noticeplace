@@ -23,6 +23,22 @@ class DeliveryWorkerTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
+    def test_inactive_standard_mode_is_cancelled_without_telegram_send(self) -> None:
+        created = self.center.create_event("producer", "inactive-critical", self.event)
+
+        class Telegram:
+            active_modes = {"emergency", "important", "log"}
+
+            def send(self, _payload: dict[str, object]) -> None:
+                raise AssertionError("inactive mode must not reach Telegram")
+
+        worker = DeliveryWorker(self.center, Telegram())
+        self.assertEqual(1, worker.run_once())
+        status = self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()["status"]
+        self.assertEqual("cancelled", status)
+
     def test_confirmed_matrix_answer_acknowledges_only_that_incident(self) -> None:
         created = self.center.create_event("producer", "create", self.event)
         self.center.complete_delivery(created["initial_delivery_id"], "sent")

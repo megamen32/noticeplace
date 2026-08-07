@@ -20,6 +20,29 @@ from .landing import LANDING_PAGE
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
+ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log"))
+
+
+def telegram_active_modes(raw: str) -> set[str]:
+    """Parse the operator-selected active topic modes."""
+    if not raw.strip():
+        return set(ACTIVE_TELEGRAM_MODES)
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("TELEGRAM_ACTIVE_MODES_JSON must be a JSON array") from error
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise RuntimeError("TELEGRAM_ACTIVE_MODES_JSON must be a JSON array")
+    modes = {item.strip().lower() for item in value}
+    if not modes.issubset(ACTIVE_TELEGRAM_MODES):
+        raise RuntimeError("unsupported active Telegram mode")
+    return modes
+
+
+def telegram_mode(incident: dict[str, Any]) -> str:
+    """Map an incident to the operator-facing forum mode."""
+    return "log" if str(incident.get("kind")) == "log" else str(incident["severity"])
+
 
 def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[str, Any]) -> dict[str, list[list[dict[str, str]]]]:
     """Return the narrow interactive contract for this incident severity.
@@ -40,9 +63,12 @@ def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[s
     ]}
 
 
-def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[str, Any]], incident: dict[str, Any]) -> dict[str, str]:
+def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[str, Any]], incident: dict[str, Any], active_modes: set[str] | None = None) -> dict[str, str]:
     """Resolve an allowlisted severity route without trusting event routing data."""
-    configured = severity_routes.get(str(incident["severity"]), {})
+    mode = telegram_mode(incident)
+    if active_modes is not None and mode not in active_modes:
+        return {}
+    configured = severity_routes.get(mode, {})
     destination = {"chat_id": str(configured.get("chat_id") or default_chat_id)}
     thread_id = configured.get("message_thread_id")
     if thread_id is not None:
@@ -50,7 +76,72 @@ def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[s
     return destination
 
 
-def telegram_delivery_destination(default_chat_id: str, severity_routes: dict[str, dict[str, Any]], payload: dict[str, Any]) -> dict[str, str]:
+class TelegramTopicManager:
+    """Reconcile active forum modes without deleting operator-created topics."""
+
+    def __init__(self, chat_id: str, create_topic: Any) -> None:
+        self._chat_id = chat_id
+        self._create_topic = create_topic
+
+    def reconcile(self, routes: dict[str, dict[str, Any]], active_modes: set[str]) -> dict[str, dict[str, Any]]:
+        """Reuse known topic IDs and create one topic for each missing mode."""
+        result = {mode: dict(route) for mode, route in routes.items() if mode in active_modes}
+        for mode in sorted(active_modes):
+            route = result.get(mode, {})
+            if route.get("message_thread_id") is not None:
+                continue
+            thread_id = int(self._create_topic(mode.title()))
+            if thread_id <= 0:
+                raise RuntimeError("Telegram createForumTopic returned an invalid thread ID")
+            result[mode] = {"chat_id": self._chat_id, "message_thread_id": thread_id}
+        return result
+
+
+def telegram_create_forum_topic(token: str, chat_id: str, name: str, timeout_seconds: float = 5, runner: Any = urllib.request.urlopen) -> int:
+    """Create one Telegram forum topic and return its durable thread ID."""
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/createForumTopic",
+        data=urllib.parse.urlencode({"chat_id": chat_id, "name": name}).encode(),
+        method="POST",
+    )
+    with runner(request, timeout=timeout_seconds) as response:
+        if not 200 <= int(response.status) < 300:
+            raise RuntimeError(f"Telegram createForumTopic returned HTTP {response.status}")
+        result = json.loads(response.read())
+    message = result.get("result") if isinstance(result, dict) else None
+    thread_id = message.get("message_thread_id") if isinstance(message, dict) else None
+    if result.get("ok") is not True or not isinstance(thread_id, int) or thread_id <= 0:
+        raise RuntimeError("Telegram createForumTopic returned an invalid response")
+    return thread_id
+
+
+def telegram_routes_with_auto_topics(token: str, chat_id: str, routes: dict[str, dict[str, Any]], active_modes: set[str], state_path: str, *, enabled: bool, runner: Any = urllib.request.urlopen) -> dict[str, dict[str, Any]]:
+    """Load persisted topic IDs, create missing active topics, and persist the result."""
+    state_file = os.path.abspath(state_path)
+    persisted: dict[str, dict[str, Any]] = {}
+    try:
+        with open(state_file, encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        if isinstance(loaded, dict):
+            persisted = {str(mode): dict(route) for mode, route in loaded.items() if isinstance(route, dict)}
+    except FileNotFoundError:
+        pass
+    merged = {**persisted, **routes}
+    if not enabled:
+        return {mode: route for mode, route in merged.items() if mode in active_modes}
+    manager = TelegramTopicManager(chat_id, lambda name: telegram_create_forum_topic(token, chat_id, name, runner=runner))
+    reconciled = manager.reconcile(merged, active_modes)
+    parent = os.path.dirname(state_file) or "."
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    temporary = f"{state_file}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(reconciled, handle, ensure_ascii=False, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, state_file)
+    return reconciled
+
+
+def telegram_delivery_destination(default_chat_id: str, severity_routes: dict[str, dict[str, Any]], payload: dict[str, Any], active_modes: set[str] | None = None) -> dict[str, str]:
     """Use an operator-owned consumer target when the durable delivery has one."""
     target = payload.get("target")
     if isinstance(target, dict) and target.get("chat_id") is not None:
@@ -58,19 +149,20 @@ def telegram_delivery_destination(default_chat_id: str, severity_routes: dict[st
         if target.get("topic_id") is not None:
             destination["message_thread_id"] = str(target["topic_id"])
         return destination
-    return telegram_destination(default_chat_id, severity_routes, payload["incident"])
+    return telegram_destination(default_chat_id, severity_routes, payload["incident"], active_modes)
 
 
 class TelegramSender:
     """Send compact incident cards via Telegram's HTTPS Bot API."""
 
-    def __init__(self, token: str, chat_id: str, timeout_seconds: float = 5, action_codec: TelegramActionCodec | None = None, severity_routes: dict[str, dict[str, Any]] | None = None) -> None:
+    def __init__(self, token: str, chat_id: str, timeout_seconds: float = 5, action_codec: TelegramActionCodec | None = None, severity_routes: dict[str, dict[str, Any]] | None = None, active_modes: set[str] | None = None) -> None:
         """Create a sender; empty credentials intentionally leave it unavailable."""
         self._token = token
         self._chat_id = chat_id
         self._timeout_seconds = timeout_seconds
         self._action_codec = action_codec
         self._severity_routes = severity_routes or {}
+        self._active_modes = active_modes
 
     def send(self, payload: dict[str, Any]) -> None:
         """Deliver one card; raises transport errors so the core can retry it."""
@@ -78,7 +170,10 @@ class TelegramSender:
             raise RuntimeError("Telegram sender is not configured")
         incident = payload["incident"]
         text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nIncident: {incident['id']}"
-        request_data: dict[str, str] = {**telegram_delivery_destination(self._chat_id, self._severity_routes, payload), "text": text, "disable_web_page_preview": "true"}
+        destination = telegram_delivery_destination(self._chat_id, self._severity_routes, payload, self._active_modes)
+        if self._active_modes is not None and not destination:
+            raise RuntimeError(f"Telegram mode is inactive: {telegram_mode(incident)}")
+        request_data: dict[str, str] = {**destination, "text": text, "disable_web_page_preview": "true"}
         if self._action_codec is not None:
             request_data["reply_markup"] = json.dumps(telegram_inline_keyboard(self._action_codec, incident), separators=(",", ":"))
         data = urllib.parse.urlencode(request_data).encode()
@@ -86,6 +181,11 @@ class TelegramSender:
         with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
             if not 200 <= response.status < 300:
                 raise RuntimeError(f"Telegram returned HTTP {response.status}")
+
+    @property
+    def active_modes(self) -> set[str] | None:
+        """Expose the immutable operator mode set to the dispatcher."""
+        return set(self._active_modes) if self._active_modes is not None else None
 
 
 class MatrixCallSender:
@@ -201,6 +301,11 @@ class DeliveryWorker:
         try:
             payload = self._center.delivery_payload(delivery)
             if delivery["channel"] == "telegram.main" or str(delivery["channel"]).startswith("telegram.consumer:"):
+                if delivery["channel"] == "telegram.main":
+                    active_modes = getattr(self._telegram, "active_modes", None)
+                    if active_modes is not None and telegram_mode(payload["incident"]) not in active_modes:
+                        self._center.complete_delivery(delivery["id"], "cancelled", "Telegram mode is inactive")
+                        return
                 self._telegram.send(payload)
                 incident = payload["incident"]
                 self._center.complete_delivery(delivery["id"], "sent")
@@ -443,9 +548,25 @@ def telegram_routes_from_environment() -> dict[str, dict[str, Any]]:
     return validated
 
 
+def telegram_active_modes_from_environment() -> set[str]:
+    """Load the small operator-selected mode set from the service environment."""
+    return telegram_active_modes(os.environ.get("TELEGRAM_ACTIVE_MODES_JSON", ""))
+
+
 def telegram_from_environment(action_codec: TelegramActionCodec | None = None) -> TelegramSender:
     """Build the Telegram adapter from env vars without ever logging credentials."""
-    return TelegramSender(os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""), action_codec=action_codec, severity_routes=telegram_routes_from_environment())
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    active_modes = telegram_active_modes_from_environment()
+    routes = telegram_routes_with_auto_topics(
+        token,
+        chat_id,
+        telegram_routes_from_environment(),
+        active_modes,
+        os.environ.get("TELEGRAM_TOPIC_STATE_PATH", "/var/lib/notification-center/telegram-topics.json"),
+        enabled=os.environ.get("TELEGRAM_AUTO_CREATE_TOPICS", "false").lower() in {"1", "true", "yes"},
+    ) if token and chat_id else telegram_routes_from_environment()
+    return TelegramSender(token, chat_id, action_codec=action_codec, severity_routes=routes, active_modes=active_modes)
 
 
 def telegram_interactions_from_environment(center: NotificationCenter, codec: TelegramActionCodec | None) -> TelegramInteractionPoller | None:

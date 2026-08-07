@@ -8,8 +8,11 @@ admin service and the Center bound to loopback.
 
 - one producer token per project;
 - maximum allowed severity for that project;
-- Telegram chat/topic route per `notice`, `important`, `critical`, or
-  `emergency`.
+- Telegram forum routing uses an explicit active-mode set. The current deploy
+  activates only `emergency`, `important`, and `log`; inactive catalog modes do
+  not create topics or deliver to Telegram.
+- On startup, the bot can create missing active forum topics (`Emergency`,
+  `Important`, `Log`) and persist their thread IDs without deleting old topics.
 
 When a project is created, its token is displayed exactly once. Copy it into
 that project's secret store. The console subsequently displays only a short

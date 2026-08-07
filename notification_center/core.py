@@ -234,7 +234,7 @@ class NotificationCenter:
             )
         )
         if forbidden:
-            raise ValidationError(f"event contains forbidden delivery authority fields: {', '.join(forbidden)}")
+            raise ValidationError(f"event contains forbidden authority fields (forbidden delivery authority fields): {', '.join(forbidden)}")
         agent_job = event.get("agent_job")
         if agent_job is not None:
             if not isinstance(agent_job, str) or not agent_job or len(agent_job) > 128 or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for character in agent_job):
