@@ -1,7 +1,8 @@
 # Notification Center MVP
 
-This is a low-RAM service beside the existing Notify MCP process watcher. It
-uses Python's standard library and SQLite in WAL mode.
+NoticePlace is a low-RAM universal inbox for AI-to-human attention. It keeps
+AI work running while routing important requests through the configured human
+channels. It uses Python's standard library and SQLite in WAL mode.
 
 ## Current HTTP surface
 

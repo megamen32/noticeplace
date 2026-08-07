@@ -280,7 +280,7 @@ NOTIFY_CENTER_EVENT_URL=https://notify.bezrabotnyi.com/v1/events
 NOTIFY_CENTER_TOKEN=&lt;paste the token above here&gt;</pre><p>For systemd use <code>EnvironmentFile={env_path}</code>. Do not put the token in a unit command, Git, or shell history.</p></section><section><h2>2. Send with curl</h2><pre>{html.escape(curl)}</pre></section><section><h2>Or use a small SDK</h2><pre># Python: pip install 'git+https://github.com/megamen32/noticeplace.git#subdirectory=python'
 {html.escape(python)}
 
-# Node.js: npm install github:megamen32/notify
+# Node.js: npm install github:megamen32/noticeplace
 {html.escape(node)}</pre></section><p><a href=\"https://github.com/megamen32/noticeplace\">GitHub repository</a> · <a href=\"https://github.com/megamen32/noticeplace/blob/main/docs/producer-sdk.md\">Full producer guide</a> · <a href=\"/admin/\">Back to admin</a></p></main>"""
 
 

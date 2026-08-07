@@ -11,7 +11,7 @@ The MCP server uses this CLI under the hood.
 From npx/npm package:
 
 ```bash
-npm exec -y --package github:megamen32/notify -- notify-install
+npm exec -y --package github:megamen32/notify-cli -- notify-install
 ```
 
 From a cloned or extracted release archive:

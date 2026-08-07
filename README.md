@@ -2,12 +2,17 @@
 
 [Русский](README.ru.md) · [中文](README.zh.md) · [GitHub](https://github.com/megamen32/noticeplace) · [Docs](docs/)
 
-![NoticePlace routes durable events to human-facing adapters](assets/hero.svg)
+![NoticePlace is a universal inbox for AI-to-human attention](assets/hero-universal-inbox.png)
 
-> Send a human ping from an agent, or publish a durable operational event to
-> NoticePlace without giving every service delivery credentials.
+> The universal inbox that lets AI reach you through any available channel.
 
-- MCP notifications for agents.
+AI does not stop working because it needs your answer. NoticePlace keeps the
+work running, routes important attention to calls, chats, messages, or email,
+and gives the human one place to receive and acknowledge it.
+
+- One universal inbox for AI-to-human attention.
+- Calls, chats, messages, email, and other configured adapters.
+- AI can continue its work while NoticePlace escalates what matters.
 - Project-scoped producer events with severity limits.
 - Optional acknowledgement/resolution waiting for Python and Node.js services.
 - Protected operator console for producer scopes and Telegram topic routes.
@@ -40,7 +45,7 @@ adapter accepted the request, not that a carrier or human completed a call.
 ## Install
 
 ```bash
-codex mcp add notify -- npx -y github:megamen32/notify
+codex mcp add notify -- npx -y github:megamen32/noticeplace
 ```
 
 ## Production events
@@ -50,7 +55,7 @@ codex mcp add notify -- npx -y github:megamen32/notify
 pip install 'git+https://github.com/megamen32/noticeplace.git#subdirectory=python'
 
 # Node.js
-npm install github:megamen32/notify
+npm install github:megamen32/noticeplace
 ```
 
 Create a scoped producer token in the operator console, store it in the
@@ -64,7 +69,7 @@ the event was stored; an optional wait ends only at `acknowledged` or
 - [Operator console](docs/admin.md)
 - [Allowlisted GPTAdmin agent jobs](docs/gptadmin-agent-jobs.md)
 - [MCP server](docs/mcp.md)
-- [Legacy process watcher CLI](https://github.com/megamen32/noticeplace-cli)
+- [Legacy process watcher CLI](https://github.com/megamen32/notify-cli)
 - [AI skill](docs/skill.md)
 
 ## License

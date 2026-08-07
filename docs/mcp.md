@@ -84,7 +84,7 @@ Send `TERM`, `INT`, or `KILL` to the job process group.
 Recommended npx install:
 
 ```bash
-codex mcp add notify -- npx -y github:megamen32/notify
+codex mcp add notify -- npx -y github:megamen32/noticeplace
 codex mcp list
 ```
 
@@ -93,7 +93,7 @@ Manual TOML:
 ```toml
 [mcp_servers.notify]
 command = "npx"
-args = ["-y", "github:megamen32/notify"]
+args = ["-y", "github:megamen32/noticeplace"]
 ```
 
 Local Python install is also supported:
@@ -111,7 +111,7 @@ args = ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
   "mcp": {
     "notify": {
       "type": "local",
-      "command": ["npx", "-y", "github:megamen32/notify"],
+      "command": ["npx", "-y", "github:megamen32/noticeplace"],
       "enabled": true
     }
   }
@@ -128,7 +128,7 @@ args = ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
     "notify": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "github:megamen32/notify"]
+      "args": ["-y", "github:megamen32/noticeplace"]
     }
   }
 }

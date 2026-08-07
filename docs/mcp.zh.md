@@ -84,7 +84,7 @@ Notify MCP 是 self-describing 的。它的 `tools/list` 响应会把 long-job p
 推荐通过 npx 安装：
 
 ```bash
-codex mcp add notify -- npx -y github:megamen32/notify
+codex mcp add notify -- npx -y github:megamen32/noticeplace
 codex mcp list
 ```
 
@@ -93,7 +93,7 @@ codex mcp list
 ```toml
 [mcp_servers.notify]
 command = "npx"
-args = ["-y", "github:megamen32/notify"]
+args = ["-y", "github:megamen32/noticeplace"]
 ```
 
 也支持本地 Python 安装：
@@ -111,7 +111,7 @@ args = ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
   "mcp": {
     "notify": {
       "type": "local",
-      "command": ["npx", "-y", "github:megamen32/notify"],
+      "command": ["npx", "-y", "github:megamen32/noticeplace"],
       "enabled": true
     }
   }
@@ -128,7 +128,7 @@ args = ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
     "notify": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "github:megamen32/notify"]
+      "args": ["-y", "github:megamen32/noticeplace"]
     }
   }
 }

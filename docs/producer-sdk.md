@@ -71,7 +71,7 @@ Node.js 18 or newer has the required built-in `fetch` support. Install the
 existing package once:
 
 ```bash
-npm install github:megamen32/notify
+npm install github:megamen32/noticeplace
 ```
 
 Remove it when no longer needed:

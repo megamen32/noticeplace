@@ -2,21 +2,21 @@
 
 [English](README.md) · [Русский](README.ru.md) · **中文** · [文档](docs/)
 
-![NoticePlace 将事件路由到人类通知渠道](assets/hero.svg)
+![NoticePlace 是 AI 与人类之间的 universal inbox](assets/hero-universal-inbox.png)
 
-> 面向 AI agent 和生产服务的统一通知中心。
+> 让 AI 通过任何可用渠道联系到你的 universal inbox。
 
-NoticePlace 接收 durable events，保存 incident，并通过 Telegram、Matrix
-和电话适配器发送通知，支持 ACK、resolve、retry 和 escalation。
+AI 不会因为等待你的回答而停止工作。NoticePlace 会通过电话、聊天、消息、
+email 或其他已配置渠道发送重要提醒，并让你在一个地方接收和确认。
 
 ## 安装
 
 ```bash
-codex mcp add notify -- npx -y github:megamen32/notify
+codex mcp add notify -- npx -y github:megamen32/noticeplace
 ```
 
 如果只需要小型 SSH/process watcher，请使用独立的公开项目
-[Notify.cli](https://github.com/megamen32/noticeplace-cli)。
+[Notify.cli](https://github.com/megamen32/notify-cli)。
 
 ## 快速开始
 

@@ -2,21 +2,22 @@
 
 [English](README.md) · **Русский** · [中文](README.zh.md) · [Документация](docs/)
 
-![NoticePlace маршрутизирует события в пользовательские каналы](assets/hero.svg)
+![NoticePlace — universal inbox для связи AI с человеком](assets/hero-universal-inbox.png)
 
-> Единый центр уведомлений для AI-агентов и production-сервисов.
+> Universal inbox, через который AI может достучаться до человека любым способом.
 
-NoticePlace принимает durable events, хранит инциденты и доставляет их в
-Telegram, Matrix и телефонные адаптеры с ACK, resolve, retry и escalation.
+AI продолжает работу, пока NoticePlace доставляет важное через звонок, чат,
+сообщение, email или другой настроенный канал. Человек получает и подтверждает
+всё в одном месте.
 
 ## Установка
 
 ```bash
-codex mcp add notify -- npx -y github:megamen32/notify
+codex mcp add notify -- npx -y github:megamen32/noticeplace
 ```
 
 Для маленького SSH/process watcher используйте отдельный публичный проект
-[Notify.cli](https://github.com/megamen32/noticeplace-cli).
+[Notify.cli](https://github.com/megamen32/notify-cli).
 
 ## Быстрый старт
 
