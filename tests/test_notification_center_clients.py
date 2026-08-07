@@ -1,4 +1,4 @@
-"""Contract tests for the distributable Notify Center Python and Node clients."""
+"""Contract tests for the distributable NoticePlace Python and Node clients."""
 
 from __future__ import annotations
 

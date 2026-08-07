@@ -1,4 +1,4 @@
-"""In-process Android call adapter for the Notify Center delivery worker."""
+"""In-process Android call adapter for the NoticePlace delivery worker."""
 
 from __future__ import annotations
 
@@ -127,7 +127,7 @@ class AndroidPhoneConfig:
 
 
 class AndroidPhoneAdapter:
-    """Use the already USB-connected S21 directly from the Notify Center process."""
+    """Use the already USB-connected S21 directly from the NoticePlace process."""
 
     def __init__(self, config: AndroidPhoneConfig, runner: CommandRunner = subprocess.run, sleeper: Callable[[float], None] = time.sleep) -> None:
         self._config = config
@@ -160,7 +160,7 @@ class AndroidPhoneAdapter:
         """Find the configured physical handset on either USB or Wi-Fi ADB.
 
         ``adb devices`` assigns Wi-Fi debugging a transport-specific service name,
-        whereas the Notify Center setting intentionally holds the stable hardware
+        whereas the NoticePlace setting intentionally holds the stable hardware
         serial.  A failed direct lookup therefore falls back only to connected
         transports whose on-device ``ro.serialno`` matches that configured serial.
         """

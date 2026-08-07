@@ -1,4 +1,4 @@
-"""A small, dependency-free producer client for Notify Center."""
+"""A small, dependency-free producer client for NoticePlace."""
 
 from .client import NotificationCenterClient, NotificationCenterError, WaitTimeoutError
 

@@ -1,12 +1,12 @@
-# Notify Center
+# NoticePlace
 
 [English](README.md) · **Русский** · [中文](README.zh.md) · [Документация](docs/)
 
-![Notify Center маршрутизирует события в пользовательские каналы](assets/hero.svg)
+![NoticePlace маршрутизирует события в пользовательские каналы](assets/hero.svg)
 
 > Единый центр уведомлений для AI-агентов и production-сервисов.
 
-Notify Center принимает durable events, хранит инциденты и доставляет их в
+NoticePlace принимает durable events, хранит инциденты и доставляет их в
 Telegram, Matrix и телефонные адаптеры с ACK, resolve, retry и escalation.
 
 ## Установка
@@ -16,7 +16,7 @@ codex mcp add notify -- npx -y github:megamen32/notify
 ```
 
 Для маленького SSH/process watcher используйте отдельный публичный проект
-[Notify.cli](https://github.com/megamen32/notify-cli).
+[Notify.cli](https://github.com/megamen32/noticeplace-cli).
 
 ## Быстрый старт
 

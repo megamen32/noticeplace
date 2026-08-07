@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply one validated Notify Center admin job from the root-only state queue."""
+"""Apply one validated NoticePlace admin job from the root-only state queue."""
 
 from __future__ import annotations
 

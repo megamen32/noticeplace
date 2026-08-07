@@ -4,7 +4,7 @@ This optional fallback calls one preconfigured cellular number after Matrix
 does not answer.  It does not use ADB once provisioned.
 
 ```text
-Notify Center -> GPTAdmin ShellMCP -> notify-phone-call -> Termux:API -> cellular call
+NoticePlace -> GPTAdmin ShellMCP -> notify-phone-call -> Termux:API -> cellular call
 ```
 
 The Notify process sends exactly this command to the dedicated S21 ShellMCP
@@ -47,14 +47,14 @@ chmod 700 "$HOME/.local/bin/notify-phone-call"
 ```
 
 Grant the Termux:API phone permission when Android asks.  Do not put the phone
-number in GPTAdmin, Notify Center, a shell history, or a repository.
+number in GPTAdmin, NoticePlace, a shell history, or a repository.
 
 Install and register the normal outbound GPTAdmin ShellMCP agent from Termux
 under a dedicated `s21-phone` target.  The agent must be reachable by the
 already configured GPTAdmin hub, but no ADB connection is involved in runtime
 delivery.
 
-## Notify Center configuration
+## NoticePlace configuration
 
 Create a **dedicated GPTAdmin credential for the `s21-phone` target** and put
 it in the existing root-owned `/etc/notification-center.env`:

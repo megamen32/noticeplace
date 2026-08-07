@@ -1,5 +1,5 @@
 #!/bin/sh
-# Send one durable Notify Center event without exposing the bearer token.
+# Send one durable NoticePlace event without exposing the bearer token.
 set -eu
 
 usage() {

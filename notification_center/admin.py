@@ -1,4 +1,4 @@
-"""Root-only, narrowly scoped configuration store for Notify Center admin UI."""
+"""Root-only, narrowly scoped configuration store for NoticePlace admin UI."""
 
 from __future__ import annotations
 

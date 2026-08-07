@@ -4,13 +4,13 @@
   "description": "MCP server that lets AI agents run long jobs without burning tokens while waiting",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://github.com/megamen32/notify#readme",
+  "homepage": "https://github.com/megamen32/noticeplace#readme",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/megamen32/notify.git"
+    "url": "git+ssh://git@github.com/megamen32/noticeplace.git"
   },
   "bugs": {
-    "url": "https://github.com/megamen32/notify/issues"
+    "url": "https://github.com/megamen32/noticeplace/issues"
   },
   "keywords": [
     "mcp",

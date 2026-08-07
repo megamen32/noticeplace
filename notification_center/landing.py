@@ -1,4 +1,4 @@
-"""Public, token-free landing representation for the Notify Center hostname."""
+"""Public, token-free landing representation for the NoticePlace hostname."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ LANDING_PAGE = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Notify Center</title>
+  <title>NoticePlace</title>
   <style>
     :root { --ink:#e9edf7; --muted:#aeb9cf; --panel:rgba(19,31,55,.78); --line:#31466f; --accent:#8a7dff; --good:#51d3a2; }
     * { box-sizing:border-box; }
@@ -33,7 +33,7 @@ LANDING_PAGE = """<!doctype html>
 <body>
   <main>
     <div class="eyebrow">Notification infrastructure</div>
-    <h1>Notify Center</h1>
+    <h1>NoticePlace</h1>
     <p class="lead">One durable place for operational events, acknowledgements, and escalation—without putting delivery credentials into every project.</p>
     <section class="grid" aria-label="Capabilities">
       <article class="card"><div class="mark">01</div><b>Scoped events</b><p>Each producer is limited to its own project and permitted severity.</p></article>

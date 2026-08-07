@@ -1,6 +1,6 @@
 # Allowlisted GPTAdmin agent jobs
 
-Notify Center can turn a durable incident into one fixed GPTAdmin automation
+NoticePlace can turn a durable incident into one fixed GPTAdmin automation
 without giving an event control over a server, command, MCP tool, model, CWD,
 URL, credential, or prompt.
 
@@ -76,7 +76,7 @@ authentication, the fixed
 `shell:<host>` target, `bounded_autonomous` approval, and this command:
 
 ```text
-GPTADMIN_NOTIFY_EVENT={{json}} exec /opt/notify/bin/notify-agent-job run repair_100
+GPTADMIN_NOTIFY_EVENT={{json}} exec /opt/noticeplace/bin/notify-agent-job run repair_100
 ```
 
 GPTAdmin's shell renderer passes `{{json}}` through a second environment value

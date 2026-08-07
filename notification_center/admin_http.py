@@ -1,4 +1,4 @@
-"""SSO-gated HTML admin surface for Notify Center configuration."""
+"""SSO-gated HTML admin surface for NoticePlace configuration."""
 
 from __future__ import annotations
 
@@ -150,7 +150,7 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
             except ValidationError as error:
                 self._reply(HTTPStatus.BAD_REQUEST, _page("Configuration rejected", str(error)))
             except Exception:
-                LOGGER.exception("Notify Center admin mutation failed")
+                LOGGER.exception("NoticePlace admin mutation failed")
                 self._reply(HTTPStatus.INTERNAL_SERVER_ERROR, _page("Configuration failed", "No change was accepted. Check the protected admin audit."))
 
         def log_message(self, _format: str, *_args: object) -> None:
@@ -221,9 +221,9 @@ function addStep() {
 }
 document.getElementById('add-adapter-step').onclick = addStep;
 </script>"""
-    return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Notify Center Admin</title><style>
+    return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NoticePlace Admin</title><style>
 body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:1100px;margin:auto;padding:42px 20px 80px}}h1{{font-size:2.4rem;margin:0 0 8px}}p,.hint{{color:#aeb9cf}}section{{margin-top:24px;padding:24px;border:1px solid #31466f;border-radius:18px;background:#101d33}}h2{{margin-top:0}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px 8px;border-top:1px solid #31466f;text-align:left;vertical-align:top}}input,select,button{{padding:9px;border-radius:8px;border:1px solid #405a88;background:#0b172b;color:#e9edf7}}button{{background:#796ef0;border:0;cursor:pointer}}.danger{{background:#8a3647}}form{{display:inline-flex;gap:7px;margin:3px 5px 3px 0;flex-wrap:wrap}}code{{color:#c4bcff}}@media(max-width:760px){{table{{display:block;overflow:auto}}}}
-</style><body><main><div class="hint">Protected operator console</div><h1>Notify Center</h1><p>Producer scopes, delivery chains, and Telegram topics. Delivery credentials remain server-only.</p>
+</style><body><main><div class="hint">Protected operator console</div><h1>NoticePlace</h1><p>Producer scopes, delivery chains, and Telegram topics. Delivery credentials remain server-only.</p>
 <section><h2>Add producer</h2><form method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
 <section><h2>Producer projects</h2><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></section>
 <section><h2>Automatic call escalation</h2><p class="hint">{calls_label}. This controls future Android phone, Telegram-call, and Matrix-call escalations. Text notifications are unchanged; an already active phone call cannot be interrupted.</p><form method="post" action="/admin/calls"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="enabled" value="{calls_action}"><button>{calls_button}</button></form></section>
@@ -277,11 +277,11 @@ const client = NotificationCenterClient.fromEnvironment();
 await client.emit({{ project: \"{safe_project}\", severity: \"important\", title: \"Deploy failed\", dedupKey: \"deploy:production\" }});"""
     return f"""<!doctype html><meta charset=utf-8><title>Connect {safe_project}</title><style>body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:900px;margin:8vh auto;padding:28px}}section{{margin:18px 0;padding:22px;border:1px solid #405a88;border-radius:18px;background:#101d33}}code,pre{{display:block;padding:16px;background:#08101e;overflow:auto;overflow-wrap:anywhere;color:#c4bcff;white-space:pre-wrap}}.warning{{color:#ffd28a}}a{{color:#bdb6ff}}</style><main><h1>Connect {safe_project}</h1><p class=warning>Copy the token now. It is not available after leaving this page; the console retains only a fingerprint.</p><code>{html.escape(token)}</code><section><h2>1. Store it as a service secret</h2><pre># {env_path} (owner root, mode 0600)
 NOTIFY_CENTER_EVENT_URL=https://notify.bezrabotnyi.com/v1/events
-NOTIFY_CENTER_TOKEN=&lt;paste the token above here&gt;</pre><p>For systemd use <code>EnvironmentFile={env_path}</code>. Do not put the token in a unit command, Git, or shell history.</p></section><section><h2>2. Send with curl</h2><pre>{html.escape(curl)}</pre></section><section><h2>Or use a small SDK</h2><pre># Python: pip install 'git+https://github.com/megamen32/notify.git#subdirectory=python'
+NOTIFY_CENTER_TOKEN=&lt;paste the token above here&gt;</pre><p>For systemd use <code>EnvironmentFile={env_path}</code>. Do not put the token in a unit command, Git, or shell history.</p></section><section><h2>2. Send with curl</h2><pre>{html.escape(curl)}</pre></section><section><h2>Or use a small SDK</h2><pre># Python: pip install 'git+https://github.com/megamen32/noticeplace.git#subdirectory=python'
 {html.escape(python)}
 
 # Node.js: npm install github:megamen32/notify
-{html.escape(node)}</pre></section><p><a href=\"https://github.com/megamen32/notify\">GitHub repository</a> · <a href=\"https://github.com/megamen32/notify/blob/main/docs/producer-sdk.md\">Full producer guide</a> · <a href=\"/admin/\">Back to admin</a></p></main>"""
+{html.escape(node)}</pre></section><p><a href=\"https://github.com/megamen32/noticeplace\">GitHub repository</a> · <a href=\"https://github.com/megamen32/noticeplace/blob/main/docs/producer-sdk.md\">Full producer guide</a> · <a href=\"/admin/\">Back to admin</a></p></main>"""
 
 
 def _consumer_token_page(name: str, token: str) -> str:

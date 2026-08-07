@@ -1,12 +1,12 @@
-# Notify Center producer SDKs
+# NoticePlace producer SDKs
 
 Use these tiny clients when a project must report an operational event to the
-central Notify Center. They know only the producer HTTP API: they do not carry
+central NoticePlace. They know only the producer HTTP API: they do not carry
 Telegram, Matrix, Android, or operator credentials.
 
 ## What “wait for a response” means
 
-Creating an event returns `202 Accepted`: Notify Center stored it, but a person
+Creating an event returns `202 Accepted`: NoticePlace stored it, but a person
 has not necessarily seen it. Waiting is optional and polls the incident with
 the same project-scoped token until an operator either:
 
@@ -22,7 +22,7 @@ it never loops forever.
 Install directly from this repository:
 
 ```bash
-pip install 'git+https://github.com/megamen32/notify.git#subdirectory=python'
+pip install 'git+https://github.com/megamen32/noticeplace.git#subdirectory=python'
 ```
 
 Remove it when no longer needed:
@@ -123,7 +123,7 @@ not put the token in `ExecStart=`, command history, source control, or logs.
 
 ## Token scope and retry rules
 
-Give each project its own token. Notify Center enforces both the project name
+Give each project its own token. NoticePlace enforces both the project name
 and the maximum allowed severity. For example, a service with a maximum of
 `important` cannot create a `critical` event.
 
@@ -136,7 +136,7 @@ failure happens after sending it, retry with the same idempotency key; the
 result is then safe and deterministic.
 
 The source, issue tracker and releases are at
-[github.com/megamen32/notify](https://github.com/megamen32/notify).
+[github.com/megamen32/noticeplace](https://github.com/megamen32/noticeplace).
 
 For the optional no-ADB S21 cellular fallback, see the
 [fixed GPTAdmin phone adapter](gptadmin-phone-adapter.md).

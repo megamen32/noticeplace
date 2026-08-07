@@ -1,4 +1,4 @@
-/** A small dependency-free producer client for Notify Center (Node.js 18+). */
+/** A small dependency-free producer client for NoticePlace (Node.js 18+). */
 
 export class NotificationCenterError extends Error {
   constructor(message, { status, payload } = {}) {
@@ -81,17 +81,17 @@ export class NotificationCenterClient {
         method, headers, body: payload === undefined ? undefined : JSON.stringify(payload), signal: controller.signal,
       });
       let decoded;
-      try { decoded = await response.json(); } catch { throw new NotificationCenterError("Notify Center returned invalid JSON"); }
+      try { decoded = await response.json(); } catch { throw new NotificationCenterError("NoticePlace returned invalid JSON"); }
       if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
-        throw new NotificationCenterError("Notify Center returned an invalid response envelope");
+        throw new NotificationCenterError("NoticePlace returned an invalid response envelope");
       }
       if (!response.ok) {
-        throw new NotificationCenterError(decoded.error || `Notify Center returned HTTP ${response.status}`, { status: response.status, payload: decoded });
+        throw new NotificationCenterError(decoded.error || `NoticePlace returned HTTP ${response.status}`, { status: response.status, payload: decoded });
       }
       return decoded;
     } catch (error) {
       if (error instanceof NotificationCenterError) throw error;
-      throw new NotificationCenterError("Notify Center request failed");
+      throw new NotificationCenterError("NoticePlace request failed");
     } finally {
       clearTimeout(timer);
     }

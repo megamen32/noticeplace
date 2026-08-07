@@ -1,4 +1,4 @@
-"""Telegram inline controls handled inside the Notify Center process."""
+"""Telegram inline controls handled inside the NoticePlace process."""
 
 from __future__ import annotations
 

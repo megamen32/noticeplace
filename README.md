@@ -1,11 +1,11 @@
 # Notify
 
-[Русский](README.ru.md) · [中文](README.zh.md) · [GitHub](https://github.com/megamen32/notify) · [Docs](docs/)
+[Русский](README.ru.md) · [中文](README.zh.md) · [GitHub](https://github.com/megamen32/noticeplace) · [Docs](docs/)
 
-![Notify Center routes durable events to human-facing adapters](assets/hero.svg)
+![NoticePlace routes durable events to human-facing adapters](assets/hero.svg)
 
 > Send a human ping from an agent, or publish a durable operational event to
-> Notify Center without giving every service delivery credentials.
+> NoticePlace without giving every service delivery credentials.
 
 - MCP notifications for agents.
 - Project-scoped producer events with severity limits.
@@ -47,7 +47,7 @@ codex mcp add notify -- npx -y github:megamen32/notify
 
 ```bash
 # Python
-pip install 'git+https://github.com/megamen32/notify.git#subdirectory=python'
+pip install 'git+https://github.com/megamen32/noticeplace.git#subdirectory=python'
 
 # Node.js
 npm install github:megamen32/notify
@@ -64,7 +64,7 @@ the event was stored; an optional wait ends only at `acknowledged` or
 - [Operator console](docs/admin.md)
 - [Allowlisted GPTAdmin agent jobs](docs/gptadmin-agent-jobs.md)
 - [MCP server](docs/mcp.md)
-- [Legacy process watcher CLI](https://github.com/megamen32/notify-cli)
+- [Legacy process watcher CLI](https://github.com/megamen32/noticeplace-cli)
 - [AI skill](docs/skill.md)
 
 ## License

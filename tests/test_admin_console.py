@@ -1,4 +1,4 @@
-"""Contract tests for the SSO-gated Notify Center operator console."""
+"""Contract tests for the SSO-gated NoticePlace operator console."""
 
 from __future__ import annotations
 

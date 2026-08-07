@@ -1,4 +1,4 @@
-"""HTTP client for creating and observing Notify Center incidents."""
+"""HTTP client for creating and observing NoticePlace incidents."""
 
 from __future__ import annotations
 
@@ -143,17 +143,17 @@ class NotificationCenterClient:
                 return self._decode(response.read())
         except urllib.error.HTTPError as error:
             decoded = self._decode(error.read())
-            message = str(decoded.get("error") or f"Notify Center returned HTTP {error.code}")
+            message = str(decoded.get("error") or f"NoticePlace returned HTTP {error.code}")
             raise NotificationCenterError(message, status=error.code, payload=decoded) from None
         except urllib.error.URLError as error:
-            raise NotificationCenterError("Notify Center request failed") from error
+            raise NotificationCenterError("NoticePlace request failed") from error
 
     @staticmethod
     def _decode(body: bytes) -> dict[str, Any]:
         try:
             decoded = json.loads(body)
         except (TypeError, json.JSONDecodeError) as error:
-            raise NotificationCenterError("Notify Center returned invalid JSON") from error
+            raise NotificationCenterError("NoticePlace returned invalid JSON") from error
         if not isinstance(decoded, dict):
-            raise NotificationCenterError("Notify Center returned an invalid response envelope")
+            raise NotificationCenterError("NoticePlace returned an invalid response envelope")
         return decoded

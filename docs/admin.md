@@ -1,4 +1,4 @@
-# Notify Center operator console
+# NoticePlace operator console
 
 `GET /` redirects to `/admin/`. `/admin/` is the protected operator surface,
 not a producer API. Nginx uses the existing `auth.bezrabotnyi.com` login flow,

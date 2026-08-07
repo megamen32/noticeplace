@@ -37,8 +37,8 @@ Private GitHub repository `megamen32/notify-cli` exists, contains the runnable w
 
 ## Evidence (English)
 
-- Created and pushed private repository: https://github.com/megamen32/notify-cli
-- Repository is now public: https://github.com/megamen32/notify-cli
+- Created and pushed private repository: https://github.com/megamen32/noticeplace-cli
+- Repository is now public: https://github.com/megamen32/noticeplace-cli
 - Commit: `1443c21`, branch `main`.
 - Extracted files: `bin/notify`, `bin/notify-producer`, `docs/cli.md`, `docs/cli.ru.md`, `docs/cli.zh.md`, `README.md`, `LICENSE`.
 - Workspace folders are separate siblings: `notify` (Center) and `notify-cli` (Notify.cli).

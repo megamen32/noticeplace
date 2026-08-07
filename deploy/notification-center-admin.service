@@ -1,5 +1,5 @@
 [Unit]
-Description=Notify Center protected operator console
+Description=NoticePlace protected operator console
 After=network-online.target notification-center.service
 Wants=network-online.target
 
@@ -8,8 +8,8 @@ Type=simple
 User=root
 Group=root
 EnvironmentFile=/etc/notification-center-admin.env
-WorkingDirectory=/opt/notify
-ExecStart=/usr/bin/python3 /opt/notify/bin/notify-center-admin
+WorkingDirectory=/opt/noticeplace
+ExecStart=/usr/bin/python3 /opt/noticeplace/bin/notify-center-admin
 Restart=on-failure
 RestartSec=2
 StateDirectory=notification-center-admin

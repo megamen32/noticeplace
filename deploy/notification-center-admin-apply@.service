@@ -1,5 +1,5 @@
 [Unit]
-Description=Apply validated Notify Center admin configuration job %i
+Description=Apply validated NoticePlace admin configuration job %i
 After=network-online.target
 
 [Service]
@@ -7,7 +7,7 @@ Type=oneshot
 User=root
 Group=root
 EnvironmentFile=/etc/notification-center-admin.env
-ExecStart=/usr/bin/python3 /opt/notify/bin/notify-center-admin-apply %i
+ExecStart=/usr/bin/python3 /opt/noticeplace/bin/notify-center-admin-apply %i
 UMask=0077
 NoNewPrivileges=true
 ProtectHome=true
