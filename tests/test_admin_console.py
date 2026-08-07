@@ -61,6 +61,9 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertEqual(403, status)
         status, page = self._request("GET", "/admin/")
         self.assertEqual(200, status)
+        self.assertIn(b"adapter-steps", page)
+        self.assertIn(b"add-adapter-step", page)
+        self.assertNotIn(b"textarea name=\"policy_json\"", page)
         csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
 
         status, rejected = self._request("POST", "/admin/projects", {"project": "service-a", "max_severity": "important", "csrf": "wrong"})

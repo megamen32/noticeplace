@@ -16,7 +16,6 @@ from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
 from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import GptAdminAgentJobAdapter
-from .landing import LANDING_PAGE
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
@@ -484,7 +483,7 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
         def do_GET(self) -> None:
             """Serve authenticated health and incident reads."""
             if self.path == "/":
-                self._html(HTTPStatus.OK, LANDING_PAGE)
+                self._reply(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
             if self.path == "/health":
                 try:

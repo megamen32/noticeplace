@@ -58,15 +58,11 @@ class HttpApiTests(unittest.TestCase):
         with urllib.request.urlopen(self.base_url + path, timeout=2) as response:
             return response.status, str(response.headers["Content-Type"]), response.read()
 
-    def test_public_root_is_a_token_free_landing_page(self) -> None:
-        """Keep the hostname useful without exposing any protected API state."""
-        status, content_type, body = self.request_raw("/")
-
-        self.assertEqual(200, status)
-        self.assertTrue(content_type.startswith("text/html"))
-        self.assertIn(b"Notify Center", body)
-        self.assertNotIn(b"health-token", body)
-        self.assertNotIn(b"secret-token", body)
+    def test_public_root_has_no_landing_page(self) -> None:
+        """Keep the public API surface minimal; only documented API paths remain."""
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            urllib.request.urlopen(self.base_url + "/", timeout=2)
+        self.assertEqual(404, context.exception.code)
 
     def test_health_and_event_require_separate_bearer_credentials(self) -> None:
         """Protect readiness separately while rejecting an unauthenticated producer."""

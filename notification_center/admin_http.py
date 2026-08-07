@@ -51,7 +51,7 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(rendered)))
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
             self.end_headers()
             self.wfile.write(rendered)
 
@@ -199,16 +199,41 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         f'<label>{html.escape(label)} <input required name="{key}" type="number" min="0" step="any" value="{html.escape(str(runtime_settings.get(key, "0")))}"></label>'
         for key, label in setting_labels.items()
     )
+    adapter_builder = """<div id="adapter-steps"></div>
+<button type="button" id="add-adapter-step">+ Add adapter step</button>
+<script>
+const steps = document.getElementById('adapter-steps');
+function refreshPrevious() {
+  [...steps.querySelectorAll('[data-step]')].forEach((row, index) => {
+    const select = row.querySelector('[data-previous]');
+    const current = select.value;
+    select.innerHTML = '<option value="">First step</option>' + [...steps.querySelectorAll('[data-step]')].slice(0, index).map((_, i) => `<option value="step-${i + 1}">After step ${i + 1}</option>`).join('');
+    select.value = current;
+  });
+}
+function addStep() {
+  const index = steps.children.length + 1;
+  const row = document.createElement('fieldset');
+  row.dataset.step = index;
+  row.innerHTML = `<legend>Step ${index}</legend><select data-platform><option>telegram</option><option>matrix</option><option>whatsapp</option><option>phone</option></select><select data-action><option>message</option><option>call</option></select><input data-target required placeholder='{"chat_id":-100123}'><input data-retry type="number" min="1" value="3600"><input data-repeats type="number" min="1" value="1"><select data-previous><option value="">First step</option></select><button type="button" data-remove>Remove</button>`;
+  row.querySelector('[data-remove]').onclick = () => { row.remove(); [...steps.children].forEach((item, i) => item.querySelector('legend').textContent = `Step ${i + 1}`); refreshPrevious(); };
+  steps.append(row); refreshPrevious();
+}
+document.getElementById('add-adapter-step').onclick = addStep;
+</script>"""
     return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Notify Center Admin</title><style>
 body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:1100px;margin:auto;padding:42px 20px 80px}}h1{{font-size:2.4rem;margin:0 0 8px}}p,.hint{{color:#aeb9cf}}section{{margin-top:24px;padding:24px;border:1px solid #31466f;border-radius:18px;background:#101d33}}h2{{margin-top:0}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px 8px;border-top:1px solid #31466f;text-align:left;vertical-align:top}}input,select,button{{padding:9px;border-radius:8px;border:1px solid #405a88;background:#0b172b;color:#e9edf7}}button{{background:#796ef0;border:0;cursor:pointer}}.danger{{background:#8a3647}}form{{display:inline-flex;gap:7px;margin:3px 5px 3px 0;flex-wrap:wrap}}code{{color:#c4bcff}}@media(max-width:760px){{table{{display:block;overflow:auto}}}}
-</style><body><main><div class="hint">Protected operator console</div><h1>Notify Center</h1><p>Producer scopes and Telegram topic routing. Delivery credentials remain server-only.</p>
+</style><body><main><div class="hint">Protected operator console</div><h1>Notify Center</h1><p>Producer scopes, delivery chains, and Telegram topics. Delivery credentials remain server-only.</p>
 <section><h2>Add producer</h2><form method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
 <section><h2>Producer projects</h2><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></section>
 <section><h2>Automatic call escalation</h2><p class="hint">{calls_label}. This controls future Android phone, Telegram-call, and Matrix-call escalations. Text notifications are unchanged; an already active phone call cannot be interrupted.</p><form method="post" action="/admin/calls"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="enabled" value="{calls_action}"><button>{calls_button}</button></form></section>
 <section><h2>Live delivery timers</h2><p class="hint">Changes apply to newly scheduled/retried deliveries and do not restart Notify. Zero disables that timer. An already executing adapter call is unchanged.</p><form method="post" action="/admin/settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}">{setting_inputs}<button>Save live settings</button></form></section>
-<section><h2>Add scoped consumer</h2><p class="hint">Build any escalation chain. Each step is a JSON object with platform, action, target, retry_interval_seconds, max_repeats, and optional previous_step_id. The successor points to its predecessor; no platform order is imposed. Leave policy JSON blank for the legacy Telegram/Matrix/Phone form.</p><form method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><select name="max_severity">{options}</select><textarea name="policy_json" rows="5" cols="70" placeholder='[{{"id":"telegram-1","platform":"telegram","action":"message","target":{{"chat_id":-100123}},"retry_interval_seconds":10800,"max_repeats":10}}]'></textarea><input name="chat_id" inputmode="numeric" placeholder="Legacy Telegram chat ID"><input name="topic_id" inputmode="numeric" placeholder="Legacy topic ID"><input name="matrix_delay_seconds" type="number" min="1" step="1" placeholder="Legacy Matrix delay (seconds)"><input name="phone_delay_seconds" type="number" min="1" step="1" placeholder="Legacy phone delay (seconds)"><button>Create consumer intake</button></form></section>
+<section><h2>Add scoped consumer</h2><p class="hint">Create the delivery chain visually. Choose platform, action, target, retry interval, repeats, and optional predecessor.</p><form method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><select name="max_severity">{options}</select><input type="hidden" name="policy_json" id="policy-json"><div id="adapter-builder">{adapter_builder}</div><button type="submit" onclick="return buildPolicy()">Create consumer intake</button></form><p class="hint">Target example: <code>{{"chat_id":-100123,"topic_id":122}}</code> or <code>{{"phone_number":"+79990000000"}}</code>.</p></section>
 <section><h2>Scoped consumer policies</h2><table><tr><th>Name</th><th>Project</th><th>Token fingerprint</th><th>Ordered delivery policy</th></tr>{consumer_rows}</table></section>
-<section><h2>Telegram topics</h2><p class="hint">All topics are equal. Some were created by the initial configuration, but they can be edited or deleted exactly like any other topic. Changes apply live without restarting Notify.</p><table><tr><th>Name</th><th>Key</th><th>Chat</th><th>Topic</th><th>Action</th></tr>{topic_rows}</table><div class="topic-forms">{topic_forms}</div></section></main></body></html>"""
+<section><h2>Telegram topics</h2><p class="hint">All topics are equal. Some were created by the initial configuration, but they can be edited or deleted exactly like any other topic. Changes apply live without restarting Notify.</p><table><tr><th>Name</th><th>Key</th><th>Chat</th><th>Topic</th><th>Action</th></tr>{topic_rows}</table><div class="topic-forms">{topic_forms}</div></section></main><script>
+function buildPolicy() {{ const rows = [...document.querySelectorAll('#adapter-steps [data-step]')]; const policy = rows.map((row, index) => {{ let target; try {{ target = JSON.parse(row.querySelector('[data-target]').value); }} catch (_) {{ target = {{}}; }} return {{id:`step-${{index + 1}}`, platform:row.querySelector('[data-platform]').value, action:row.querySelector('[data-action]').value, target, retry_interval_seconds:Number(row.querySelector('[data-retry]').value), max_repeats:Number(row.querySelector('[data-repeats]').value), previous_step_id:row.querySelector('[data-previous]').value || null}}; }}); document.getElementById('policy-json').value = JSON.stringify(policy); return policy.length > 0; }}
+addStep();
+</script></body></html>"""
 
 
 def _policy_display(policy: list[dict[str, Any]]) -> str:
