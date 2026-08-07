@@ -99,7 +99,7 @@ class AdminConfigStore:
             "consumers": self._consumers(),
         }
 
-    def create_consumer(self, project: str, name: str, chat_id: str, topic_id: str, phone_delay_seconds: str, max_severity: str, actor: str) -> dict[str, Any]:
+    def create_consumer(self, project: str, name: str, chat_id: str, topic_id: str, matrix_delay_seconds: str, phone_delay_seconds: str, max_severity: str, actor: str, policy_json: str = "") -> dict[str, Any]:
         """Create an operator-owned consumer policy and reveal its intake token once."""
         self._validate_project(project)
         self._validate_severity(max_severity)
@@ -107,14 +107,29 @@ class AdminConfigStore:
             telegram_target: dict[str, Any] = {"kind": "telegram", "chat_id": int(chat_id)}
             if topic_id.strip():
                 telegram_target["topic_id"] = int(topic_id)
+            matrix_delay = float(matrix_delay_seconds) if matrix_delay_seconds.strip() else None
+            if matrix_delay is not None and matrix_delay <= 0:
+                raise ValueError("matrix delay must be positive")
             delay_seconds = float(phone_delay_seconds)
         except (TypeError, ValueError) as error:
-            raise ValidationError("consumer Telegram target and phone delay must be numeric") from error
+            raise ValidationError("consumer Telegram target and delays must be numeric") from error
+        if policy_json.strip():
+            try:
+                policy = json.loads(policy_json)
+            except json.JSONDecodeError as error:
+                raise ValidationError("consumer policy JSON is invalid") from error
+            if not isinstance(policy, list):
+                raise ValidationError("consumer policy JSON must be a list")
+        else:
+            policy = [telegram_target]
+            if matrix_delay is not None:
+                policy.append({"kind": "matrix", "delay_seconds": matrix_delay})
+            policy.append({"kind": "phone", "delay_seconds": delay_seconds})
         created = self._consumer_notification_center().create_consumer(
             project=project,
             name=name,
             max_severity=max_severity,
-            policy=[telegram_target, {"kind": "phone", "delay_seconds": delay_seconds}],
+            policy=policy,
         )
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "consumer_created", "subject": created["id"], "token_fingerprint": created["token_fingerprint"]})
         return created

@@ -103,6 +103,12 @@ class NotificationCenter:
                     kind TEXT NOT NULL,
                     enabled INTEGER NOT NULL,
                     target_json TEXT NOT NULL,
+                    step_id TEXT,
+                    platform TEXT,
+                    action TEXT,
+                    previous_step_id TEXT,
+                    retry_interval_seconds REAL,
+                    max_repeats INTEGER,
                     PRIMARY KEY (consumer_id, stage)
                 );
                 CREATE TABLE IF NOT EXISTS deliveries (
@@ -148,6 +154,23 @@ class NotificationCenter:
             delivery_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(deliveries)")}
             if "target_json" not in delivery_columns:
                 self._connection.execute("ALTER TABLE deliveries ADD COLUMN target_json TEXT NOT NULL DEFAULT '{}'")
+            for column, definition in (
+                ("policy_step_id", "TEXT"),
+                ("repeat_number", "INTEGER"),
+            ):
+                if column not in delivery_columns:
+                    self._connection.execute(f"ALTER TABLE deliveries ADD COLUMN {column} {definition}")
+            policy_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(consumer_policy_stages)")}
+            for column, definition in (
+                ("step_id", "TEXT"),
+                ("platform", "TEXT"),
+                ("action", "TEXT"),
+                ("previous_step_id", "TEXT"),
+                ("retry_interval_seconds", "REAL"),
+                ("max_repeats", "INTEGER"),
+            ):
+                if column not in policy_columns:
+                    self._connection.execute(f"ALTER TABLE consumer_policy_stages ADD COLUMN {column} {definition}")
             self._connection.execute("DROP INDEX IF EXISTS incidents_open_dedup")
             self._connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS incidents_open_dedup_scope "
@@ -241,27 +264,84 @@ class NotificationCenter:
 
     @staticmethod
     def _validate_consumer_policy(policy: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        """Validate the fixed two-stage policy and disabled reserved schema kinds."""
+        """Validate generic linked steps, while accepting the legacy policy shape."""
         if not isinstance(policy, list):
             raise ValidationError("consumer policy must be a list")
-        normalized: list[dict[str, Any]] = []
-        expected = ("telegram", "phone")
         if any(not isinstance(stage, Mapping) for stage in policy):
             raise ValidationError("consumer policy stages must be objects")
+        generic = any("platform" in stage or "action" in stage or "previous_step_id" in stage for stage in policy)
+        if generic:
+            allowed = {
+                ("telegram", "message"), ("telegram", "call"),
+                ("matrix", "message"), ("matrix", "call"),
+                ("whatsapp", "message"), ("whatsapp", "call"),
+                ("phone", "call"),
+            }
+            normalized: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for index, raw_stage in enumerate(policy, start=1):
+                if not bool(raw_stage.get("enabled", True)):
+                    raise ValidationError("generic consumer steps cannot be disabled")
+                step_id = str(raw_stage.get("id") or raw_stage.get("step_id") or f"step-{index}")
+                if not step_id or step_id in seen:
+                    raise ValidationError("generic consumer step ids must be unique")
+                seen.add(step_id)
+                platform = str(raw_stage.get("platform") or "")
+                action = str(raw_stage.get("action") or "")
+                if (platform, action) not in allowed:
+                    raise ValidationError("unsupported consumer platform/action")
+                target = raw_stage.get("target", {})
+                if not isinstance(target, Mapping):
+                    raise ValidationError("consumer step target must be an object")
+                interval = raw_stage.get("retry_interval_seconds")
+                if isinstance(interval, bool) or not isinstance(interval, (int, float)) or interval <= 0:
+                    raise ValidationError("consumer step requires positive retry_interval_seconds")
+                repeats = raw_stage.get("max_repeats")
+                if isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 1:
+                    raise ValidationError("consumer step requires positive max_repeats")
+                previous = raw_stage.get("previous_step_id")
+                if previous is not None and not isinstance(previous, str):
+                    raise ValidationError("previous_step_id must be a string")
+                normalized.append({
+                    "stage": index, "kind": f"{platform}.{action}", "enabled": True,
+                    "target": dict(target), "step_id": step_id, "platform": platform,
+                    "action": action, "previous_step_id": previous,
+                    "retry_interval_seconds": float(interval), "max_repeats": repeats,
+                    "generic": True,
+                })
+            roots = [step for step in normalized if step["previous_step_id"] is None]
+            if len(roots) != 1:
+                raise ValidationError("generic consumer policy requires exactly one root step")
+            ids = {step["step_id"] for step in normalized}
+            for step in normalized:
+                previous = step["previous_step_id"]
+                if previous is not None and previous not in ids:
+                    raise ValidationError("previous_step_id must reference a policy step")
+            return normalized
+
+        normalized = []
         active = [stage for stage in policy if bool(stage.get("enabled", True))]
-        if [str(stage.get("kind") or "") for stage in active] != list(expected):
-            raise ValidationError("consumer policy requires enabled telegram then phone stages")
-        if len(policy) != 2 + sum(str(stage.get("kind") or "") in ("matrix", "whatsapp") for stage in policy):
-            raise ValidationError("only telegram, phone, and disabled reserved matrix/whatsapp stages are allowed")
+        active_kinds = [str(stage.get("kind") or "") for stage in active]
+        if active_kinds not in (["telegram", "phone"], ["telegram", "matrix", "phone"]):
+            raise ValidationError("consumer policy requires telegram, optional matrix, then phone stages")
         for index, raw_stage in enumerate(policy, start=1):
             kind = str(raw_stage.get("kind") or "")
             enabled = bool(raw_stage.get("enabled", True))
             if kind not in ("telegram", "phone", "matrix", "whatsapp"):
                 raise ValidationError("unsupported consumer target kind")
-            if kind in ("matrix", "whatsapp"):
+            if kind == "whatsapp":
                 if enabled:
-                    raise ValidationError(f"{kind} is reserved and must remain disabled")
-                normalized.append({"stage": index, "kind": kind, "enabled": False, "target": {}})
+                    raise ValidationError("whatsapp is reserved and must remain disabled")
+                normalized.append({"stage": index, "kind": kind, "enabled": False, "target": {}, "generic": False})
+                continue
+            if kind == "matrix":
+                if not enabled:
+                    normalized.append({"stage": index, "kind": kind, "enabled": False, "target": {}, "generic": False})
+                    continue
+                delay = raw_stage.get("delay_seconds")
+                if isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay <= 0:
+                    raise ValidationError("matrix stage requires positive delay_seconds")
+                normalized.append({"stage": index, "kind": kind, "enabled": enabled, "target": {"delay_seconds": float(delay)}, "generic": False})
                 continue
             if kind == "telegram":
                 chat_id = raw_stage.get("chat_id")
@@ -278,7 +358,7 @@ class NotificationCenter:
                 if isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay <= 0:
                     raise ValidationError("phone stage requires positive delay_seconds")
                 target = {"delay_seconds": float(delay)}
-            normalized.append({"stage": index, "kind": kind, "enabled": enabled, "target": target})
+            normalized.append({"stage": index, "kind": kind, "enabled": enabled, "target": target, "generic": False})
         return normalized
 
     def create_consumer(
@@ -303,9 +383,9 @@ class NotificationCenter:
                 (consumer_id, project, name, token_hash, fingerprint, max_severity, now, now),
             )
             self._connection.executemany(
-                "INSERT INTO consumer_policy_stages(consumer_id, stage, kind, enabled, target_json) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO consumer_policy_stages(consumer_id, stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, retry_interval_seconds, max_repeats) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
-                    (consumer_id, stage["stage"], stage["kind"], int(stage["enabled"]), json.dumps(stage["target"], sort_keys=True))
+                    (consumer_id, stage["stage"], stage["kind"], int(stage["enabled"]), json.dumps(stage["target"], sort_keys=True), stage.get("step_id"), stage.get("platform"), stage.get("action"), stage.get("previous_step_id"), stage.get("retry_interval_seconds"), stage.get("max_repeats"))
                     for stage in normalized_policy
                 ],
             )
@@ -323,13 +403,17 @@ class NotificationCenter:
                 return None
             result = dict(consumer)
             stages = self._connection.execute(
-                "SELECT stage, kind, enabled, target_json FROM consumer_policy_stages WHERE consumer_id = ? ORDER BY stage",
+                "SELECT stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? ORDER BY stage",
                 (consumer_id,),
             ).fetchall()
-            result["policy"] = [
-                {"stage": row["stage"], "kind": row["kind"], "enabled": bool(row["enabled"]), **json.loads(row["target_json"])}
-                for row in stages
-            ]
+            result["policy"] = []
+            for row in stages:
+                item = {"stage": row["stage"], "kind": row["kind"], "enabled": bool(row["enabled"]), **json.loads(row["target_json"])}
+                if row["step_id"] is not None:
+                    item.update({"id": row["step_id"], "step_id": row["step_id"], "platform": row["platform"], "action": row["action"], "retry_interval_seconds": row["retry_interval_seconds"], "max_repeats": row["max_repeats"]})
+                    if row["previous_step_id"] is not None:
+                        item["previous_step_id"] = row["previous_step_id"]
+                result["policy"].append(item)
             return result
 
     def create_event(self, token: str, idempotency_key: str, event: Mapping[str, Any]) -> dict[str, Any]:
@@ -442,7 +526,7 @@ class NotificationCenter:
                 "idempotent": False,
             }
 
-    def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float, target: Mapping[str, Any] | None = None) -> str:
+    def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float, target: Mapping[str, Any] | None = None, policy_step_id: str | None = None, repeat_number: int | None = None) -> str:
         """Create a stable scheduled delivery and return its identity."""
         delivery_key = f"{incident_id}:{channel}:{step}"
         row = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (delivery_key,)).fetchone()
@@ -450,12 +534,21 @@ class NotificationCenter:
             return str(row["id"])
         delivery_id = f"dlv_{uuid.uuid4().hex}"
         now = time.time()
-        self._connection.execute("INSERT INTO deliveries(id, incident_id, channel, delivery_key, due_at, status, attempt, target_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)", (delivery_id, incident_id, channel, delivery_key, due_epoch, json.dumps(dict(target or {}), sort_keys=True), now, now))
+        self._connection.execute("INSERT INTO deliveries(id, incident_id, channel, delivery_key, due_at, status, attempt, target_json, policy_step_id, repeat_number, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?)", (delivery_id, incident_id, channel, delivery_key, due_epoch, json.dumps(dict(target or {}), sort_keys=True), policy_step_id, repeat_number, now, now))
         self._audit(incident_id, "delivery_scheduled", "policy", {"delivery_id": delivery_id, "channel": channel, "step": step, "due_at": due_epoch})
         return delivery_id
 
     def _schedule_consumer_policy(self, incident_id: str, consumer_id: str, now: float) -> str:
-        """Materialize the operator-approved policy as immutable durable deliveries."""
+        """Materialize only the root generic step, or preserve legacy scheduling."""
+        generic = self._connection.execute(
+            "SELECT step_id, platform, action, target_json, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1 AND step_id IS NOT NULL AND previous_step_id IS NULL",
+            (consumer_id,),
+        ).fetchone()
+        if generic is not None:
+            return self._schedule_delivery(
+                incident_id, f"{generic['platform']}.{generic['action']}", f"step:{generic['step_id']}:repeat:1", now,
+                json.loads(generic["target_json"]), str(generic["step_id"]), 1,
+            )
         stages = self._connection.execute(
             "SELECT stage, kind, target_json FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1 ORDER BY stage",
             (consumer_id,),
@@ -465,6 +558,9 @@ class NotificationCenter:
             target = json.loads(stage["target_json"])
             if stage["kind"] == "telegram":
                 channel, step, due_at = f"telegram.consumer:{consumer_id}", "initial", now
+            elif stage["kind"] == "matrix":
+                channel, step, due_at = "matrix.call", "escalation", now + float(target["delay_seconds"])
+                target = {}
             elif stage["kind"] == "phone":
                 channel, step, due_at = "android.phone.call", "escalation", now + float(target["delay_seconds"])
             else:
@@ -472,8 +568,8 @@ class NotificationCenter:
             delivery_id = self._schedule_delivery(incident_id, channel, step, due_at, target)
             if initial_delivery_id is None:
                 initial_delivery_id = delivery_id
-        if initial_delivery_id is None:
-            raise ValidationError("consumer policy has no enabled delivery stages")
+            if initial_delivery_id is None:
+                raise ValidationError("consumer policy has no enabled delivery stages")
         return initial_delivery_id
 
     def schedule_escalation(self, incident_id: str, channel: str, due_epoch: float) -> str:
@@ -532,7 +628,7 @@ class NotificationCenter:
         now = time.time()
         safe_error = " ".join((error or "").replace("\x00", "").splitlines())[-1000:] or None
         with self._lock, self._connection:
-            row = self._connection.execute("SELECT d.incident_id, i.state FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
+            row = self._connection.execute("SELECT d.incident_id, d.policy_step_id, d.repeat_number, i.state, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
             if row is None:
                 raise ValidationError("delivery not found")
             if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES:
@@ -542,6 +638,30 @@ class NotificationCenter:
                 self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), safe_error, now, delivery_id))
             else:
                 self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, updated_at = ? WHERE id = ?", (outcome, safe_error, now, delivery_id))
+            if outcome == "sent" and row["policy_step_id"] is not None and str(row["state"]) in DELIVERABLE_STATES:
+                step = self._connection.execute(
+                    "SELECT platform, action, target_json, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? AND step_id = ? AND enabled = 1",
+                    (row["consumer_id"], row["policy_step_id"]),
+                ).fetchone()
+                repeat_number = int(row["repeat_number"] or 1)
+                if step is not None and repeat_number < int(step["max_repeats"]):
+                    self._schedule_delivery(
+                        str(row["incident_id"]), f"{step['platform']}.{step['action']}",
+                        f"step:{row['policy_step_id']}:repeat:{repeat_number + 1}",
+                        now + float(step["retry_interval_seconds"]), json.loads(step["target_json"]),
+                        str(row["policy_step_id"]), repeat_number + 1,
+                    )
+                elif step is not None:
+                    successor = self._connection.execute(
+                        "SELECT step_id, platform, action, target_json FROM consumer_policy_stages WHERE consumer_id = ? AND previous_step_id = ? AND enabled = 1",
+                        (row["consumer_id"], row["policy_step_id"]),
+                    ).fetchone()
+                    if successor is not None:
+                        self._schedule_delivery(
+                            str(row["incident_id"]), f"{successor['platform']}.{successor['action']}",
+                            f"step:{successor['step_id']}:repeat:1", now, json.loads(successor["target_json"]),
+                            str(successor["step_id"]), 1,
+                        )
             self._audit(str(row["incident_id"]), f"delivery_{outcome}", "worker", {"delivery_id": delivery_id, "error": safe_error})
 
     def _transition(self, incident_id: str, state: str, actor: str, snoozed_until: float | None = None) -> dict[str, Any]:

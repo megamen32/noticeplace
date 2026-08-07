@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -89,6 +90,132 @@ class ConsumerPolicyTests(unittest.TestCase):
             "SELECT channel FROM deliveries WHERE id = ?", (legacy["initial_delivery_id"],)
         ).fetchone()["channel"]
         self.assertEqual("telegram.main", channel)
+
+    def test_matrix_stage_is_scheduled_after_its_operator_deadline_and_ack_cancels_it(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Matrix escalation",
+            policy=[
+                {"kind": "telegram", "chat_id": -100123},
+                {"kind": "matrix", "delay_seconds": 120},
+                {"kind": "phone", "delay_seconds": 600},
+            ],
+        )
+        created = self.center.create_event(consumer["intake_token"], "matrix-event", self.event())
+        rows = self.center._connection.execute(
+            "SELECT channel, due_at, target_json FROM deliveries WHERE incident_id = ? ORDER BY due_at",
+            (created["incident_id"],),
+        ).fetchall()
+        self.assertEqual(
+            ["telegram.consumer:" + consumer["id"], "matrix.call", "android.phone.call"],
+            [row["channel"] for row in rows],
+        )
+        self.assertLess(rows[0]["due_at"], rows[1]["due_at"])
+        self.assertLess(rows[1]["due_at"], rows[2]["due_at"])
+        self.assertEqual("{}", rows[1]["target_json"])
+        initial = self.center.claim_due_deliveries(now_epoch=rows[0]["due_at"])
+        self.assertEqual(1, len(initial))
+        self.center.complete_delivery(initial[0]["id"], "sent")
+        self.assertEqual([], self.center.claim_due_deliveries(now_epoch=rows[1]["due_at"] - 0.01))
+        self.center.acknowledge(created["incident_id"], "telegram:operator")
+        self.assertEqual([], self.center.claim_due_deliveries(now_epoch=rows[2]["due_at"]))
+
+    def test_generic_policy_accepts_one_root_step_without_fixed_platform_order(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Generic root",
+            policy=[
+                {
+                    "id": "matrix-root",
+                    "platform": "matrix",
+                    "action": "call",
+                    "target": {"room_id": "!ops:example.org"},
+                    "retry_interval_seconds": 30,
+                    "max_repeats": 1,
+                }
+            ],
+        )
+
+        stored = self.center.get_consumer(consumer["id"])
+        self.assertEqual("matrix", stored["policy"][0]["platform"])
+        self.assertEqual("call", stored["policy"][0]["action"])
+        self.assertNotIn("previous_step_id", stored["policy"][0])
+
+    def test_generic_policy_schedules_only_root_step_initially(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Root first",
+            policy=[
+                {
+                    "id": "matrix-root",
+                    "platform": "matrix",
+                    "action": "message",
+                    "target": {"room_id": "!ops:example.org"},
+                    "retry_interval_seconds": 60,
+                    "max_repeats": 2,
+                },
+                {
+                    "id": "telegram-successor",
+                    "platform": "telegram",
+                    "action": "message",
+                    "target": {"chat_id": -100123},
+                    "retry_interval_seconds": 15,
+                    "max_repeats": 1,
+                    "previous_step_id": "matrix-root",
+                },
+            ],
+        )
+        created = self.center.create_event(consumer["intake_token"], "root-only", self.event())
+        rows = self.center._connection.execute(
+            "SELECT channel FROM deliveries WHERE incident_id = ? ORDER BY due_at", (created["incident_id"],)
+        ).fetchall()
+        self.assertEqual(["matrix.message"], [row["channel"] for row in rows])
+
+    def test_generic_policy_repeat_budget_then_schedules_successor(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Budgeted chain",
+            policy=[
+                {
+                    "id": "telegram-root",
+                    "platform": "telegram",
+                    "action": "message",
+                    "target": {"chat_id": -100123},
+                    "retry_interval_seconds": 60,
+                    "max_repeats": 2,
+                },
+                {
+                    "id": "phone-next",
+                    "platform": "phone",
+                    "action": "call",
+                    "target": {"device": "operator"},
+                    "retry_interval_seconds": 120,
+                    "max_repeats": 1,
+                    "previous_step_id": "telegram-root",
+                },
+            ],
+        )
+        created = self.center.create_event(consumer["intake_token"], "budgeted-chain", self.event())
+        first = self.center.claim_due_deliveries(now_epoch=time.time() + 1)
+        self.assertEqual(1, len(first))
+        self.center.complete_delivery(first[0]["id"], "sent")
+        rows = self.center._connection.execute(
+            "SELECT channel, status FROM deliveries WHERE incident_id = ? ORDER BY created_at", (created["incident_id"],)
+        ).fetchall()
+        self.assertEqual(["telegram.message", "telegram.message"], [row["channel"] for row in rows])
+        self.assertEqual(["sent", "queued"], [row["status"] for row in rows])
+
+        next_due = self.center._connection.execute(
+            "SELECT due_at FROM deliveries WHERE incident_id = ? AND status = 'queued'", (created["incident_id"],)
+        ).fetchone()["due_at"]
+        second = self.center.claim_due_deliveries(now_epoch=next_due)
+        self.assertEqual(1, len(second))
+        self.center.complete_delivery(second[0]["id"], "sent")
+        rows = self.center._connection.execute(
+            "SELECT channel, status FROM deliveries WHERE incident_id = ? ORDER BY created_at", (created["incident_id"],)
+        ).fetchall()
+        self.assertEqual(["telegram.message", "telegram.message", "phone.call"], [row["channel"] for row in rows])
+        self.assertEqual("queued", rows[2]["status"])
 
 
 if __name__ == "__main__":

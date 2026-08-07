@@ -98,6 +98,7 @@ class AdminConsoleTests(unittest.TestCase):
             "max_severity": "critical",
             "chat_id": "-100123",
             "topic_id": "42",
+            "matrix_delay_seconds": "120",
             "phone_delay_seconds": "600",
         })
         self.assertEqual(200, status)
@@ -108,7 +109,8 @@ class AdminConsoleTests(unittest.TestCase):
         snapshot = self.store.snapshot()
         consumer = snapshot["consumers"][0]
         self.assertEqual("Gateway producer", consumer["name"])
-        self.assertEqual(["telegram", "phone"], [stage["kind"] for stage in consumer["policy"] if stage["enabled"]])
+        self.assertEqual(["telegram", "matrix", "phone"], [stage["kind"] for stage in consumer["policy"] if stage["enabled"]])
+        self.assertIn(b"Matrix", page)
         self.assertNotIn(token, json.dumps(snapshot))
         reopened = NotificationCenter(self.database, {"old-token": {"project": "existing", "max_severity": "notice"}})
         self.assertNotIn("intake_token", reopened.get_consumer(consumer["id"]))

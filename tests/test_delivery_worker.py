@@ -209,6 +209,41 @@ class DeliveryWorkerTests(unittest.TestCase):
         worker.deliver(due[0])
         self.assertEqual(1, len(android.calls))
 
+    def test_consumer_matrix_is_not_delivered_before_its_policy_deadline(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Matrix producer",
+            policy=[
+                {"kind": "telegram", "chat_id": -100123},
+                {"kind": "matrix", "delay_seconds": 120},
+                {"kind": "phone", "delay_seconds": 600},
+            ],
+        )
+        created = self.center.create_event(consumer["intake_token"], "consumer-matrix", self.event)
+        calls: list[dict[str, object]] = []
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        class Matrix:
+            def send(self, payload: dict[str, object]) -> dict[str, object]:
+                calls.append(payload)
+                return {"answered": False, "actor": None}
+
+        worker = DeliveryWorker(self.center, Telegram(), matrix_call=Matrix())
+        rows = self.center._connection.execute(
+            "SELECT channel, due_at FROM deliveries WHERE incident_id = ? ORDER BY due_at",
+            (created["incident_id"],),
+        ).fetchall()
+        initial = self.center.claim_due_deliveries(now_epoch=rows[0]["due_at"])
+        worker.deliver(initial[0])
+        self.assertEqual([], self.center.claim_due_deliveries(now_epoch=rows[1]["due_at"] - 0.01))
+        due = self.center.claim_due_deliveries(now_epoch=rows[1]["due_at"])
+        self.assertEqual(["matrix.call"], [item["channel"] for item in due])
+        worker.deliver(due[0])
+        self.assertEqual(1, len(calls))
+
     def test_resolved_critical_incident_cancels_phone_call_before_deadline(self) -> None:
         created = self.center.create_event("producer", "create", self.event)
 

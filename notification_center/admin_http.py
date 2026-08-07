@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import html
+import json
 import logging
 import secrets
 import time
@@ -93,8 +94,8 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                 if self.path in ("/consumers", "/admin/consumers"):
                     created = store.create_consumer(
                         form.get("project", ""), form.get("name", ""), form.get("chat_id", ""),
-                        form.get("topic_id", ""), form.get("phone_delay_seconds", ""),
-                        form.get("max_severity", "critical"), actor,
+                        form.get("topic_id", ""), form.get("matrix_delay_seconds", ""), form.get("phone_delay_seconds", ""),
+                        form.get("max_severity", "critical"), actor, form.get("policy_json", ""),
                     )
                     self._reply(HTTPStatus.OK, _consumer_token_page(form.get("name", ""), created["intake_token"]))
                     return
@@ -150,7 +151,7 @@ body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}
 </style><body><main><div class="hint">Protected operator console</div><h1>Notify Center</h1><p>Producer scopes and Telegram topic routing. Delivery credentials remain server-only.</p>
 <section><h2>Add producer</h2><form method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
 <section><h2>Producer projects</h2><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></section>
-<section><h2>Add scoped consumer</h2><p class="hint">Telegram is immediate; the fixed server phone adapter is queued after the chosen delay. Producer events cannot alter these targets.</p><form method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><select name="max_severity">{options}</select><input required name="chat_id" inputmode="numeric" placeholder="Telegram chat ID"><input name="topic_id" inputmode="numeric" placeholder="Optional topic ID"><input required name="phone_delay_seconds" type="number" min="1" step="1" placeholder="Phone delay (seconds)"><button>Create consumer intake</button></form></section>
+<section><h2>Add scoped consumer</h2><p class="hint">Build any escalation chain. Each step is a JSON object with platform, action, target, retry_interval_seconds, max_repeats, and optional previous_step_id. The successor points to its predecessor; no platform order is imposed. Leave policy JSON blank for the legacy Telegram/Matrix/Phone form.</p><form method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><select name="max_severity">{options}</select><textarea name="policy_json" rows="5" cols="70" placeholder='[{{"id":"telegram-1","platform":"telegram","action":"message","target":{{"chat_id":-100123}},"retry_interval_seconds":10800,"max_repeats":10}}]'></textarea><input name="chat_id" inputmode="numeric" placeholder="Legacy Telegram chat ID"><input name="topic_id" inputmode="numeric" placeholder="Legacy topic ID"><input name="matrix_delay_seconds" type="number" min="1" step="1" placeholder="Legacy Matrix delay (seconds)"><input name="phone_delay_seconds" type="number" min="1" step="1" placeholder="Legacy phone delay (seconds)"><button>Create consumer intake</button></form></section>
 <section><h2>Scoped consumer policies</h2><table><tr><th>Name</th><th>Project</th><th>Token fingerprint</th><th>Ordered delivery policy</th></tr>{consumer_rows}</table></section>
 <section><h2>Telegram topic routes</h2><form method="post" action="/admin/routes"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><table><tr><th>Severity</th><th>Chat ID</th><th>Topic ID</th></tr>{route_rows}</table><p class="hint">Leave a row blank to use the default route.</p><button>Save routes</button></form></section></main></body></html>"""
 
@@ -160,13 +161,20 @@ def _policy_display(policy: list[dict[str, Any]]) -> str:
     for stage in policy:
         if not stage["enabled"]:
             continue
-        if stage["kind"] == "telegram":
+        if "platform" in stage:
+            target = json.dumps(stage.get("target", {}), ensure_ascii=False, sort_keys=True)
+            previous = stage.get("previous_step_id")
+            suffix = f", after {previous}" if previous else ", first"
+            labels.append(f'{stage["platform"]}.{stage["action"]}: {target}, every {stage.get("retry_interval_seconds", 0):g}s × {stage.get("max_repeats", 0)}{suffix}')
+        elif stage["kind"] == "telegram":
             destination = f'chat {stage["chat_id"]}'
             if "topic_id" in stage:
                 destination += f', topic {stage["topic_id"]}'
             labels.append(f"Telegram: {destination} (immediate)")
         elif stage["kind"] == "phone":
             labels.append(f'Phone: fixed adapter after {stage["delay_seconds"]:g}s')
+        elif stage["kind"] == "matrix":
+            labels.append(f'Matrix call after {stage["delay_seconds"]:g}s (server-owned target)')
     return " → ".join(labels)
 
 
