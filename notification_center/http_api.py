@@ -559,14 +559,19 @@ def telegram_from_environment(action_codec: TelegramActionCodec | None = None) -
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
     active_modes = telegram_active_modes_from_environment()
+    configured_routes = telegram_routes_from_environment()
+    topic_chat_id = next(
+        (str(route["chat_id"]) for mode, route in configured_routes.items() if mode in active_modes and route.get("chat_id")),
+        chat_id,
+    )
     routes = telegram_routes_with_auto_topics(
         token,
-        chat_id,
-        telegram_routes_from_environment(),
+        topic_chat_id,
+        configured_routes,
         active_modes,
         os.environ.get("TELEGRAM_TOPIC_STATE_PATH", "/var/lib/notification-center/telegram-topics.json"),
         enabled=os.environ.get("TELEGRAM_AUTO_CREATE_TOPICS", "false").lower() in {"1", "true", "yes"},
-    ) if token and chat_id else telegram_routes_from_environment()
+    ) if token and topic_chat_id else configured_routes
     return TelegramSender(token, chat_id, action_codec=action_codec, severity_routes=routes, active_modes=active_modes)
 
 

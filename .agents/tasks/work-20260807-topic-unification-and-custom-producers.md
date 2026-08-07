@@ -38,3 +38,10 @@ After restart, a new emergency event lands in `Emergency`, an important event in
 1. Проверить фактические env/routes/state и доступный Telegram topic inventory.
 2. Применить reconcile общей модели и удалить только подтверждённые неактивные топики.
 3. Перезапустить сервис и проверить emergency/important/log плюс custom producer topic.
+
+## Execution log (English)
+
+- 2026-08-07: Read-only production inspection found the old `/etc` route file and no topic state. The first restart failed because `TELEGRAM_CHAT_ID` was a personal chat while forum routes use `-1004322359393`; fixed topic-chat selection to prefer active route chat IDs.
+- Restart succeeded after the fix. `/var/lib/notification-center/telegram-topics.json` now records `Emergency=7`, `Important=5`, `Log=122`; Notify health is `ok`, storage and dispatcher are ready, and the outbox is empty.
+- Deleted exact confirmed inactive legacy topics `notice=4` and `critical=6` through Telegram Bot API. Unknown topics were not guessed or deleted; Telegram Bot API did not provide a topic inventory endpoint in this path.
+- Applied the active route file to `/etc`, restarted `notification-center.service` again, and restarted `notification-center-admin.service` so custom producer topic creation code is loaded. No custom producer was created during this canary, so its live topic creation remains unexercised.
