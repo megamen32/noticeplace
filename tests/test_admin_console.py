@@ -115,10 +115,10 @@ class AdminConsoleTests(unittest.TestCase):
         }))
         updated = self.store.save_topic("emergency", "Critical emergency", "-1001", "8", True, "sso:operator")
         created = self.store.save_topic("new-topic", "Deployments", "-1001", "9", True, "sso:operator")
-        self.assertTrue(updated["preset"])
         self.assertEqual("Critical emergency", next(item for item in self.store.topics() if item["id"] == "emergency")["name"])
         self.assertEqual("deployments", created["id"])
-        self.assertFalse(created["preset"])
+        self.store.delete_topic("emergency", "sso:operator")
+        self.assertNotIn("emergency", {item["id"] for item in self.store.topics()})
         self.assertEqual(0, self.restarts)
 
     def test_consumer_form_reveals_intake_url_and_token_once(self) -> None:

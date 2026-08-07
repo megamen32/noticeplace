@@ -125,7 +125,6 @@ class AdminConfigStore:
                 "name": str(route.get("name") or topic_id.replace("-", " ").title()),
                 "chat_id": str(route.get("chat_id") or ""),
                 "message_thread_id": int(route["message_thread_id"]) if route.get("message_thread_id") is not None else None,
-                "preset": topic_id in ROUTE_SEVERITIES,
                 "enabled": bool(route.get("enabled", True)),
             })
         return result
@@ -170,6 +169,16 @@ class AdminConfigStore:
         self._consumer_notification_center().set_runtime_setting("telegram_topics_json", json.dumps(routes, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "topic_changed", "subject": topic_id, "created": not bool(existing)})
         return next(topic for topic in self.topics() if topic["id"] == topic_id)
+
+    def delete_topic(self, topic_id: str, actor: str) -> None:
+        """Remove any topic from live Notify routing without deleting Telegram history."""
+        topic_id = topic_id.strip().lower()
+        routes = self._topic_routes()
+        if topic_id not in routes:
+            raise ValidationError("topic not found")
+        del routes[topic_id]
+        self._consumer_notification_center().set_runtime_setting("telegram_topics_json", json.dumps(routes, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        self._audit({"timestamp": int(time.time()), "actor": actor, "action": "topic_deleted", "subject": topic_id})
 
     def runtime_settings(self) -> dict[str, str]:
         """Return live timing controls with startup env values as migration defaults."""

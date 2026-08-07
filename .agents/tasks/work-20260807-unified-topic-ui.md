@@ -22,7 +22,7 @@ The protected admin page shows the existing Emergency/Important/Log topics and c
 
 ## Explicit exclusions
 
-- No deletion of Telegram forum topics.
+- Deletion removes Notify routing only; Telegram forum history is not deleted.
 - No changes to the unrelated inactive-mode route test.
 
 ## Initial estimate (immutable)
@@ -43,6 +43,7 @@ The protected admin page shows the existing Emergency/Important/Log topics and c
 - Preset and custom topics now share one model and one protected admin create/edit flow with name, chat, topic ID, and active state.
 - Existing environment routes remain the fallback; TelegramSender reads the registry on each send.
 - Optional Telegram forum creation and topic rename use the Bot API when credentials and auto-create are enabled.
+- Any topic, including the initially configured three, can be edited or removed from live Notify routing; no preset distinction is exposed in the UI.
 - Focused verification: `python -m pytest -q tests/test_admin_console.py tests/test_delivery_worker.py tests/test_http_api.py` -> 32 passed; Python compilation passed.
 
 ## Estimate revision
