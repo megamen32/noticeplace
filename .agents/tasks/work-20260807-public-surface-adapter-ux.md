@@ -36,3 +36,14 @@ Root Notify endpoint no longer serves a public landing page; protected admin loa
 1. Убрать публичную landing-страницу без изменения API.
 2. Сделать визуальный конструктор adapter steps.
 3. Прогнать браузерного тестировщика и записать TODO.
+
+## Implementation progress (English)
+
+- Public API root now returns 404 JSON; `/health`, `/v1/*`, `/mcp`, and protected admin routes remain unchanged.
+- Replaced the raw consumer `policy_json` textarea with a visual adapter-step builder for platform, action, target JSON, retry interval, repeats, and predecessor.
+- Focused and broad verification: 32 focused tests passed; full suite excluding the pre-existing inactive `notice` route test passed 114 tests.
+- Independent browser Tester was launched, but the Touchpoint connector returned `Transport closed` for diagnostics, windows, and apps. No browser click-through or production mutation occurred; evidence is recorded in `work-20260807-notify-browser-qa.md`.
+
+## Blocker
+
+Live browser QA remains pending until a working browser connector is available.
