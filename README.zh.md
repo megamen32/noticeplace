@@ -2,7 +2,7 @@
 
 [English](README.md) · [Русский](README.ru.md) · **中文** · [文档](docs/)
 
-![NoticePlace 是 AI 与人类之间的 Universal Outbox](assets/hero-universal-inbox.png)
+![NoticePlace 是 AI 与人类之间的 Universal Outbox](assets/hero-universal-outbox.png)
 
 > 面向 AI-to-human attention 的 Universal Outbox。
 

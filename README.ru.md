@@ -2,7 +2,7 @@
 
 [English](README.md) · **Русский** · [中文](README.zh.md) · [Документация](docs/)
 
-![NoticePlace — Universal Outbox для связи AI с человеком](assets/hero-universal-inbox.png)
+![NoticePlace — Universal Outbox для связи AI с человеком](assets/hero-universal-outbox.png)
 
 > Universal Outbox для AI-to-human attention.
 

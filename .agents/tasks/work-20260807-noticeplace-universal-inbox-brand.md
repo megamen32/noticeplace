@@ -36,7 +36,7 @@ admin runtime remains active.
 
 ## Evidence (English)
 
-- Asset: `assets/hero-universal-inbox.png`.
+- Asset: `assets/hero-universal-outbox.png`.
 - Commit: `3db326d`, pushed to `main`.
 - Focused tests: 34 passed; `git diff --check` passed.
 - `notification-center.service` and `notification-center-admin.service` are active after admin source refresh.

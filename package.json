@@ -46,7 +46,7 @@
     "docs/",
     "deploy/",
     "assets/hero.svg",
-    "assets/hero-universal-inbox.png",
+    "assets/hero-universal-outbox.png",
     "skill/SKILL.md"
   ],
   "engines": {

@@ -2,7 +2,7 @@
 
 [Русский](README.ru.md) · [中文](README.zh.md) · [GitHub](https://github.com/megamen32/noticeplace) · [Docs](docs/)
 
-![NoticePlace is a Universal Outbox for AI-to-human attention](assets/hero-universal-inbox.png)
+![NoticePlace is a Universal Outbox for AI-to-human attention](assets/hero-universal-outbox.png)
 
 > Universal Outbox for AI-to-human attention.
 
