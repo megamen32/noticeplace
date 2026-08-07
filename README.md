@@ -2,6 +2,8 @@
 
 [Русский](README.ru.md) · [中文](README.zh.md) · [GitHub](https://github.com/megamen32/notify) · [Docs](docs/)
 
+![Notify Center routes durable events to human-facing adapters](assets/hero.svg)
+
 > Send a human ping from an agent, or publish a durable operational event to
 > Notify Center without giving every service delivery credentials.
 
