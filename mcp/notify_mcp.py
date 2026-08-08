@@ -700,8 +700,33 @@ def tool_specs() -> List[Dict[str, Any]]:
     return [{"name": name, "description": spec["description"], "inputSchema": spec["inputSchema"]} for name, spec in TOOLS.items()]
 
 
+def http_mcp_dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Forward MCP traffic to the central Notify HTTP transport when configured."""
+    url = os.environ.get("NOTIFY_MCP_HTTP_URL", "").strip()
+    token = os.environ.get("NOTIFY_MCP_HTTP_TOKEN", "").strip()
+    if not url:
+        return None
+    if not token:
+        raise RuntimeError("NOTIFY_MCP_HTTP_TOKEN must be configured with NOTIFY_MCP_HTTP_URL")
+    body = json.dumps(req, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+        request, timeout=float(os.environ.get("NOTIFY_MCP_HTTP_TIMEOUT_SECONDS", "15"))
+    ) as response:
+        if getattr(response, "status", None) == 204 or req.get("id") is None:
+            return None
+        return json.loads(response.read())
+
+
 def dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Execute one JSON-RPC request and return the wire payload or no-op."""
+    if os.environ.get("NOTIFY_MCP_HTTP_URL", "").strip():
+        return http_mcp_dispatch(req)
     method = req.get("method")
     req_id = req.get("id")
     try:

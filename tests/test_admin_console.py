@@ -10,6 +10,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+from unittest import mock
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -99,6 +100,18 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertTrue(self.store.snapshot()["automatic_calls_enabled"])
         self.assertFalse(self.calls_override.exists())
         self.assertEqual(0, self.restarts)
+
+    def test_operator_can_run_central_adapter_tests(self) -> None:
+        status, page = self._request("GET", "/admin/")
+        self.assertEqual(200, status)
+        csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
+        with mock.patch.object(self.store, "test_adapter", return_value={"ok": True, "channel": "phone"}) as test_adapter:
+            status, result = self._request("POST", "/admin/test-adapter", {
+                "csrf": csrf, "adapter": "phone", "message": "test call",
+            })
+        self.assertEqual(200, status)
+        self.assertIn(b"Adapter test accepted", result)
+        test_adapter.assert_called_once_with("phone", "test call", "sso:operator")
 
     def test_operator_can_change_live_delivery_timers_without_restart(self) -> None:
         values = {

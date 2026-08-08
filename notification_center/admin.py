@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -220,6 +222,64 @@ class AdminConfigStore:
         if not enabled:
             self._cancel_queued_calls()
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "automatic_calls_changed", "enabled": enabled})
+
+    def test_adapter(self, adapter: str, message: str, actor: str) -> dict[str, Any]:
+        """Exercise one central Notify adapter through its HTTP MCP boundary."""
+        adapter = adapter.strip().lower()
+        message = message.strip() or "NoticePlace adapter test"
+        if adapter not in {"phone", "message"}:
+            raise ValidationError("adapter must be phone or message")
+        env = parse_environment(self.primary_env)
+        token = env.get("NOTIFY_MCP_TOKEN", "").strip()
+        host = env.get("NOTIFY_CENTER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        port = env.get("NOTIFY_CENTER_PORT", "8091").strip() or "8091"
+        if not token:
+            raise ValidationError("NOTIFY_MCP_TOKEN is not configured")
+        if adapter == "message":
+            try:
+                scopes = json.loads(env.get("NOTIFY_CENTER_TOKENS_JSON", "{}"))
+            except json.JSONDecodeError as error:
+                raise ValidationError("NOTIFY_CENTER_TOKENS_JSON is invalid") from error
+            scope_token, scope = next(
+                ((candidate, value) for candidate, value in scopes.items() if isinstance(value, dict) and value.get("project")),
+                ("", {}),
+            )
+            if not scope_token:
+                raise ValidationError("no producer token is configured for adapter tests")
+            payload = json.dumps({
+                "schema": "notify.event.v1", "project": scope["project"], "recipient": "me",
+                "kind": "notification", "severity": "notice", "title": "NoticePlace adapter test",
+                "body": message, "dedup_key": f"admin-adapter-test:{secrets.token_hex(8)}",
+            }).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://{host}:{port}/v1/events", data=payload, method="POST",
+                headers={"Authorization": f"Bearer {scope_token}", "Content-Type": "application/json", "Idempotency-Key": f"admin-adapter-test:{secrets.token_hex(8)}"},
+            )
+        else:
+            payload = json.dumps({
+                "jsonrpc": "2.0", "id": f"admin-adapter-test-{secrets.token_hex(8)}",
+                "method": "tools/call", "params": {"name": "call", "arguments": {"channel": "phone", "message": message, "hangup_after": True, "connect_wait_seconds": 5}},
+            }).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://{host}:{port}/mcp", data=payload, method="POST",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+        try:
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=20) as response:
+                result = json.loads(response.read())
+        except (urllib.error.URLError, json.JSONDecodeError) as error:
+            raise ValidationError("central Notify MCP did not respond") from error
+        if result.get("error"):
+            raise ValidationError(str(result["error"].get("message") or "central Notify adapter test failed"))
+        value = result if adapter == "message" else (result.get("result", {}).get("structuredContent") or result.get("result", {}))
+        if adapter == "message":
+            accepted = response.status == 202 and isinstance(value, dict) and bool(value.get("event_id"))
+        else:
+            accepted = isinstance(value, dict) and value.get("ok") is True
+        if not accepted:
+            raise ValidationError("central Notify adapter test was not accepted")
+        self._audit({"timestamp": int(time.time()), "actor": actor, "action": "adapter_test", "adapter": adapter, "ok": True})
+        return value
 
     def _cancel_queued_calls(self) -> None:
         """Cancel future call work without touching an adapter already in flight."""
