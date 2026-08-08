@@ -15,7 +15,14 @@ NOTIFY_CENTER_EVENT_URL=https://notify.bezrabotnyi.com/v1/events
 NOTIFY_CENTER_TOKEN=producer-token-for-one-project
 NOTIFY_PROJECT=fail2ban.server-100
 NOTIFY_RECIPIENT=me
+# Optional context shown to the operator and retained as bounded incident metadata.
+NOTIFY_OPERATOR_NOTE=server-100 / ssh jail
 ```
+
+`notify-producer` also accepts `--operator-note`. The field is optional and
+must not contain secrets; it is included in the Telegram card as `Note:` and
+stored with the incident. Ingress audit separately records the project/profile
+and trusted source/proxy IP chain without storing Authorization headers.
 
 ## Fail2ban
 

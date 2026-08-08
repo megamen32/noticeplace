@@ -14,7 +14,7 @@ from notification_center.http_api import DeliveryWorker, MatrixCallSender
 class DeliveryWorkerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
-        self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"producer": {"project": "hermes", "max_severity": "emergency"}})
+        self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"producer": {"project": "hermes", "max_severity": "emergency"}}, default_quiet_hours=[])
         self.event = {
             "schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident",
             "severity": "critical", "title": "Gateway unavailable", "body": "three checks failed", "dedup_key": "gateway:100",

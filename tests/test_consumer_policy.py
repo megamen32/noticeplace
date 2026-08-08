@@ -73,6 +73,24 @@ class ConsumerPolicyTests(unittest.TestCase):
         self.center.acknowledge(created["incident_id"], "telegram:operator")
         self.assertEqual([], self.center.claim_due_deliveries(now_epoch=rows[1]["due_at"]))
 
+    def test_legacy_event_is_assigned_to_a_builtin_profile(self) -> None:
+        profiles = {
+            str(row["profile_key"]): str(row["id"])
+            for row in self.center._connection.execute(
+                "SELECT id, profile_key FROM consumers WHERE profile_type = 'builtin'"
+            ).fetchall()
+        }
+        self.assertEqual({"emergency", "important", "log"}, set(profiles))
+        created = self.center.create_event("legacy", "builtin-profile", self.event())
+        incident = self.center.get_incident(created["incident_id"])
+        self.assertEqual(profiles["log"], incident["consumer_id"])
+        profile = self.center.get_consumer(profiles["log"])
+        self.assertEqual("builtin", profile["profile_type"])
+        self.assertEqual("log", profile["profile_key"])
+        self.assertEqual("telegram.main", self.center._connection.execute(
+            "SELECT channel FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()["channel"])
+
     def test_producer_cannot_override_consumer_policy_or_legacy_route(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",

@@ -106,6 +106,34 @@ class HttpApiTests(unittest.TestCase):
         status, _ = self.request("POST", f"/v1/incidents/{incident_id}/ack", {"actor": "attacker"}, Authorization="Bearer wrong-token")
         self.assertEqual(401, status)
 
+    def test_event_audit_records_profile_and_trusted_ingress_without_auth_header(self) -> None:
+        event = {
+            "schema": "notify.event.v1", "project": "hermes", "recipient": "me",
+            "kind": "incident", "severity": "critical", "title": "Disk warning",
+            "body": "root usage high", "dedup_key": "disk:audit", "operator_note": "server-100 / vpn2",
+        }
+        status, created = self.request(
+            "POST", "/v1/events", event,
+            Authorization="Bearer secret-token", **{
+                "Idempotency-Key": "audit-event",
+                "X-Real-IP": "192.0.2.44",
+                "X-Forwarded-For": "192.0.2.44, 198.51.100.7",
+            },
+        )
+        self.assertEqual(202, status)
+        incident = self.center.get_incident(str(created["incident_id"]))
+        self.assertEqual("server-100 / vpn2", incident["operator_note"])
+        audit = self.center._connection.execute(
+            "SELECT payload_json FROM audit_events WHERE incident_id = ? AND type = 'event_ingress'",
+            (created["incident_id"],),
+        ).fetchone()
+        metadata = json.loads(audit["payload_json"])
+        self.assertEqual("192.0.2.44", metadata["source_ip"])
+        self.assertEqual("127.0.0.1", metadata["proxy_ip"])
+        self.assertEqual("192.0.2.44, 198.51.100.7", metadata["forwarded_for"])
+        self.assertEqual("profile_log", metadata["profile_id"])
+        self.assertNotIn("secret-token", audit["payload_json"])
+
     def test_reused_idempotency_key_with_different_payload_returns_conflict(self) -> None:
         """Expose accidental producer key reuse as an actionable HTTP 409."""
         event = {"schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident", "severity": "critical", "title": "Hermes unavailable", "dedup_key": "hermes:gateway"}

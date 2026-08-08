@@ -51,7 +51,7 @@ class NotificationCenter:
     failure, while stable delivery keys prevent routine duplicate scheduling.
     """
 
-    def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]]) -> None:
+    def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]], default_quiet_hours: list[Mapping[str, Any]] | None = None) -> None:
         """Open and initialize durable state; raises sqlite errors on storage failures."""
         path = Path(database_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -59,6 +59,7 @@ class NotificationCenter:
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._tokens = {str(key): dict(value) for key, value in tokens.items()}
+        self._default_quiet_hours = list(DEFAULT_CONSUMER_QUIET_HOURS) if default_quiet_hours is None else default_quiet_hours
         self._dispatcher_heartbeat = time.time()
         self._initialize_schema()
 
@@ -83,6 +84,7 @@ class NotificationCenter:
                     severity TEXT NOT NULL,
                     title TEXT NOT NULL,
                     body TEXT NOT NULL,
+                    operator_note TEXT,
                     dedup_key TEXT NOT NULL,
                     collapse_key TEXT,
                     state TEXT NOT NULL,
@@ -102,7 +104,10 @@ class NotificationCenter:
                     max_severity TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    quiet_hours_json TEXT
+                    quiet_hours_json TEXT,
+                    profile_type TEXT,
+                    profile_key TEXT,
+                    operator_note TEXT
                 );
                 CREATE TABLE IF NOT EXISTS consumer_policy_stages (
                     consumer_id TEXT NOT NULL REFERENCES consumers(id),
@@ -163,6 +168,8 @@ class NotificationCenter:
             incident_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(incidents)")}
             if "consumer_id" not in incident_columns:
                 self._connection.execute("ALTER TABLE incidents ADD COLUMN consumer_id TEXT REFERENCES consumers(id)")
+            if "operator_note" not in incident_columns:
+                self._connection.execute("ALTER TABLE incidents ADD COLUMN operator_note TEXT")
             delivery_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(deliveries)")}
             if "target_json" not in delivery_columns:
                 self._connection.execute("ALTER TABLE deliveries ADD COLUMN target_json TEXT NOT NULL DEFAULT '{}'")
@@ -176,10 +183,14 @@ class NotificationCenter:
             consumer_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(consumers)")}
             if "quiet_hours_json" not in consumer_columns:
                 self._connection.execute("ALTER TABLE consumers ADD COLUMN quiet_hours_json TEXT")
+            for column in ("profile_type", "profile_key", "operator_note"):
+                if column not in consumer_columns:
+                    self._connection.execute(f"ALTER TABLE consumers ADD COLUMN {column} TEXT")
             self._connection.execute(
                 "UPDATE consumers SET quiet_hours_json = ? WHERE quiet_hours_json IS NULL",
-                (json.dumps(list(DEFAULT_CONSUMER_QUIET_HOURS), sort_keys=True),),
+                (json.dumps(self._normalize_quiet_hours(self._default_quiet_hours), sort_keys=True),),
             )
+            self._connection.execute("UPDATE consumers SET profile_type = 'custom' WHERE profile_type IS NULL")
             for column, definition in (
                 ("step_id", "TEXT"),
                 ("platform", "TEXT"),
@@ -194,6 +205,17 @@ class NotificationCenter:
             self._connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS incidents_open_dedup_scope "
                 "ON incidents(project, recipient, IFNULL(consumer_id, ''), dedup_key) WHERE state != 'resolved'"
+            )
+            self._ensure_builtin_profiles()
+
+    def _ensure_builtin_profiles(self) -> None:
+        """Materialize the three built-in routes as ordinary delivery profiles."""
+        now = time.time()
+        quiet_hours = json.dumps(self._normalize_quiet_hours(self._default_quiet_hours), sort_keys=True)
+        for profile_key, max_severity in (("emergency", "emergency"), ("important", "important"), ("log", "critical")):
+            self._connection.execute(
+                "INSERT OR IGNORE INTO consumers(id, project, name, token_hash, token_fingerprint, max_severity, created_at, updated_at, quiet_hours_json, profile_type, profile_key, operator_note) VALUES (?, '*', ?, ?, ?, ?, ?, ?, ?, 'builtin', ?, NULL)",
+                (f"profile_{profile_key}", profile_key.title(), f"builtin:{profile_key}", f"builtin-{profile_key}", max_severity, now, now, quiet_hours, profile_key),
             )
 
     def _scope(self, token: str, project: str) -> Mapping[str, Any]:
@@ -247,6 +269,9 @@ class NotificationCenter:
             raise ValidationError("unsupported severity")
         if str(event["kind"]) not in ("incident", "notification", "audit", "log"):
             raise ValidationError("unsupported kind")
+        operator_note = event.get("operator_note")
+        if operator_note is not None and (not isinstance(operator_note, str) or len(operator_note.strip()) > 500):
+            raise ValidationError("operator_note must be a string of at most 500 characters")
         forbidden = sorted(
             set(event).intersection(
                 {"target", "platform", "phone_number", "command", "delay_seconds", "retry", "stage", "url", "harness", "cwd", "prompt", "tool", "mcp", "credential", "credentials", "token", "secret", "callback_url"}
@@ -380,10 +405,9 @@ class NotificationCenter:
             normalized.append({"stage": index, "kind": kind, "enabled": enabled, "target": target, "generic": False})
         return normalized
 
-    @staticmethod
-    def _normalize_quiet_hours(quiet_hours: list[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    def _normalize_quiet_hours(self, quiet_hours: list[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
         """Validate per-consumer quiet windows without introducing global policy."""
-        raw_rules = list(DEFAULT_CONSUMER_QUIET_HOURS) if quiet_hours is None else quiet_hours
+        raw_rules = list(self._default_quiet_hours) if quiet_hours is None else quiet_hours
         if not isinstance(raw_rules, list):
             raise ValidationError("consumer quiet_hours must be a list")
         normalized: list[dict[str, Any]] = []
@@ -406,7 +430,7 @@ class NotificationCenter:
         return normalized
 
     def create_consumer(
-        self, project: str, name: str, policy: list[Mapping[str, Any]], max_severity: str = "critical", quiet_hours: list[Mapping[str, Any]] | None = None
+        self, project: str, name: str, policy: list[Mapping[str, Any]], max_severity: str = "critical", quiet_hours: list[Mapping[str, Any]] | None = None, operator_note: str | None = None
     ) -> dict[str, Any]:
         """Persist an operator-owned consumer and reveal its intake token once."""
         project = project.strip()
@@ -417,6 +441,9 @@ class NotificationCenter:
             raise ValidationError("unsupported consumer maximum severity")
         normalized_policy = self._validate_consumer_policy(policy)
         normalized_quiet_hours = self._normalize_quiet_hours(quiet_hours)
+        normalized_note = str(operator_note or "").strip()
+        if len(normalized_note) > 500:
+            raise ValidationError("operator_note must be at most 500 characters")
         consumer_id = f"consumer_{uuid.uuid4().hex}"
         intake_token = f"nct_{uuid.uuid4().hex}{uuid.uuid4().hex}"
         token_hash = hashlib.sha256(intake_token.encode("utf-8")).hexdigest()
@@ -424,8 +451,8 @@ class NotificationCenter:
         now = time.time()
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO consumers(id, project, name, token_hash, token_fingerprint, max_severity, created_at, updated_at, quiet_hours_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (consumer_id, project, name, token_hash, fingerprint, max_severity, now, now, json.dumps(normalized_quiet_hours, sort_keys=True)),
+                "INSERT INTO consumers(id, project, name, token_hash, token_fingerprint, max_severity, created_at, updated_at, quiet_hours_json, profile_type, profile_key, operator_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'custom', NULL, ?)",
+                (consumer_id, project, name, token_hash, fingerprint, max_severity, now, now, json.dumps(normalized_quiet_hours, sort_keys=True), normalized_note or None),
             )
             self._connection.executemany(
                 "INSERT INTO consumer_policy_stages(consumer_id, stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, retry_interval_seconds, max_repeats) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -441,7 +468,7 @@ class NotificationCenter:
         """Return safe consumer metadata and its operator-owned delivery policy."""
         with self._lock:
             consumer = self._connection.execute(
-                "SELECT id, project, name, token_fingerprint, max_severity, created_at, updated_at, quiet_hours_json FROM consumers WHERE id = ?",
+                "SELECT id, project, name, token_fingerprint, max_severity, created_at, updated_at, quiet_hours_json, profile_type, profile_key, operator_note FROM consumers WHERE id = ?",
                 (consumer_id,),
             ).fetchone()
             if consumer is None:
@@ -450,7 +477,8 @@ class NotificationCenter:
             try:
                 result["quiet_hours"] = json.loads(result.pop("quiet_hours_json") or "[]")
             except json.JSONDecodeError:
-                result["quiet_hours"] = list(DEFAULT_CONSUMER_QUIET_HOURS)
+                result["quiet_hours"] = list(self._default_quiet_hours)
+            result["profile_type"] = result.get("profile_type") or "custom"
             stages = self._connection.execute(
                 "SELECT stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? ORDER BY stage",
                 (consumer_id,),
@@ -465,7 +493,7 @@ class NotificationCenter:
                 result["policy"].append(item)
             return result
 
-    def create_event(self, token: str, idempotency_key: str, event: Mapping[str, Any]) -> dict[str, Any]:
+    def create_event(self, token: str, idempotency_key: str, event: Mapping[str, Any], request_meta: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Accept one event and schedule its initial Telegram delivery.
 
         Args:
@@ -491,13 +519,13 @@ class NotificationCenter:
         now = time.time()
         with self._lock, self._connection:
             payload_json = json.dumps(dict(event), ensure_ascii=False, sort_keys=True)
-            consumer_id = str(scope.get("consumer_id") or "") or None
+            consumer_id = str(scope.get("consumer_id") or "") or self._builtin_profile_for_event(event)
             previous = self._connection.execute("SELECT event_id, incident_id, payload_json FROM events WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
             if previous is not None:
                 if previous["payload_json"] != payload_json:
                     raise IdempotencyConflict("Idempotency-Key was already used with different event content")
                 previous_incident = self.get_incident(str(previous["incident_id"]))
-                initial_channel = f"telegram.consumer:{previous_incident['consumer_id']}" if previous_incident and previous_incident.get("consumer_id") else "telegram.main"
+                initial_channel = self._initial_channel_for_profile(previous_incident.get("consumer_id") if previous_incident else None)
                 initial = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (f"{previous['incident_id']}:{initial_channel}:initial",)).fetchone()
                 previous_event = json.loads(previous["payload_json"])
                 previous_job = str(previous_event.get("agent_job") or "") if isinstance(previous_event, dict) else ""
@@ -512,22 +540,34 @@ class NotificationCenter:
             if existing is None:
                 incident_id = f"inc_{uuid.uuid4().hex}"
                 self._connection.execute(
-                    "INSERT INTO incidents(id, project, recipient, kind, severity, title, body, dedup_key, collapse_key, consumer_id, state, occurrences, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?)",
-                    (incident_id, project, recipient, str(event["kind"]), str(event["severity"]), str(event["title"]), str(event.get("body") or ""), dedup_key, event.get("collapse_key"), consumer_id, now, now),
+                    "INSERT INTO incidents(id, project, recipient, kind, severity, title, body, operator_note, dedup_key, collapse_key, consumer_id, state, occurrences, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?)",
+                    (incident_id, project, recipient, str(event["kind"]), str(event["severity"]), str(event["title"]), str(event.get("body") or ""), str(event.get("operator_note") or "").strip() or None, dedup_key, event.get("collapse_key"), consumer_id, now, now),
                 )
                 self._audit(incident_id, "incident_created", "producer", {"dedup_key": dedup_key})
             else:
                 incident_id = str(existing["id"])
-                self._connection.execute("UPDATE incidents SET occurrences = occurrences + 1, title = ?, body = ?, updated_at = ? WHERE id = ?", (str(event["title"]), str(event.get("body") or ""), now, incident_id))
+                self._connection.execute("UPDATE incidents SET occurrences = occurrences + 1, title = ?, body = ?, operator_note = ?, updated_at = ? WHERE id = ?", (str(event["title"]), str(event.get("body") or ""), str(event.get("operator_note") or "").strip() or None, now, incident_id))
                 self._audit(incident_id, "incident_repeated", "producer", {"dedup_key": dedup_key})
             event_id = f"evt_{uuid.uuid4().hex}"
             self._connection.execute("INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?)", (idempotency_key, event_id, incident_id, payload_json, now))
-            if consumer_id:
-                delivery_id = self._schedule_consumer_policy(incident_id, consumer_id, now)
-            else:
-                delivery_id = self._schedule_delivery(incident_id, "telegram.main", "initial", now)
+            ingress = {str(key): value for key, value in (request_meta or {}).items() if str(key) in {"peer_ip", "source_ip", "proxy_ip", "forwarded_for"}}
+            ingress.update({"project": project, "profile_id": consumer_id, "severity": str(event["severity"])})
+            self._audit(incident_id, "event_ingress", "producer", ingress)
+            delivery_id = self._schedule_consumer_policy(incident_id, consumer_id, now)
             agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", f"event:{event_id}", now) if agent_job else None
             return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id, "agent_job_delivery_id": agent_delivery_id}
+
+    def _builtin_profile_for_event(self, event: Mapping[str, Any]) -> str:
+        """Resolve a legacy event to the ordinary built-in mode profile."""
+        severity = str(event.get("severity") or "")
+        profile_key = severity if severity in {"emergency", "important"} else "log"
+        return f"profile_{profile_key}"
+
+    def _initial_channel_for_profile(self, profile_id: str | None) -> str:
+        if not profile_id:
+            return "telegram.main"
+        row = self._connection.execute("SELECT profile_type FROM consumers WHERE id = ?", (profile_id,)).fetchone()
+        return "telegram.main" if row is None or str(row["profile_type"]) == "builtin" else f"telegram.consumer:{profile_id}"
 
     def resolve_event(self, token: str, idempotency_key: str, event: Mapping[str, Any]) -> dict[str, Any]:
         """Resolve an active incident by stable producer identity, idempotently."""
@@ -589,6 +629,9 @@ class NotificationCenter:
 
     def _schedule_consumer_policy(self, incident_id: str, consumer_id: str, now: float) -> str:
         """Materialize only the root generic step, or preserve legacy scheduling."""
+        profile = self._connection.execute("SELECT profile_type FROM consumers WHERE id = ?", (consumer_id,)).fetchone()
+        if profile is not None and str(profile["profile_type"]) == "builtin":
+            return self._schedule_delivery(incident_id, "telegram.main", "initial", now)
         generic = self._connection.execute(
             "SELECT step_id, platform, action, target_json, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1 AND step_id IS NOT NULL AND previous_step_id IS NULL",
             (consumer_id,),
@@ -641,7 +684,10 @@ class NotificationCenter:
                 end_hour, end_minute = (int(part) for part in str(rule["end"]).split(":"))
             except (KeyError, TypeError, ValueError):
                 continue
-            local_now = datetime.fromtimestamp(now_epoch, timezone)
+            try:
+                local_now = datetime.fromtimestamp(now_epoch, timezone)
+            except (OverflowError, OSError, ValueError):
+                return None
             start = start_hour * 60 + start_minute
             end = end_hour * 60 + end_minute
             minute = local_now.hour * 60 + local_now.minute

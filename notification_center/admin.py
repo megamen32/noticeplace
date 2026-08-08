@@ -237,7 +237,7 @@ class AdminConfigStore:
     def _daemon_reload() -> None:
         subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=30)
 
-    def create_consumer(self, project: str, name: str, chat_id: str, topic_id: str, matrix_delay_seconds: str, phone_delay_seconds: str, max_severity: str, actor: str, policy_json: str = "") -> dict[str, Any]:
+    def create_consumer(self, project: str, name: str, chat_id: str, topic_id: str, matrix_delay_seconds: str, phone_delay_seconds: str, max_severity: str, actor: str, policy_json: str = "", operator_note: str = "") -> dict[str, Any]:
         """Create an operator-owned consumer policy and reveal its intake token once."""
         self._validate_project(project)
         self._validate_severity(max_severity)
@@ -269,6 +269,7 @@ class AdminConfigStore:
             name=name,
             max_severity=max_severity,
             policy=policy,
+            operator_note=operator_note,
         )
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "consumer_created", "subject": created["id"], "token_fingerprint": created["token_fingerprint"]})
         return created

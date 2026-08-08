@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import secrets
 import time
@@ -200,7 +201,9 @@ class TelegramSender:
         if not self._token or not self._chat_id:
             raise RuntimeError("Telegram sender is not configured")
         incident = payload["incident"]
-        text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nIncident: {incident['id']}"
+        note = str(incident.get("operator_note") or "").strip()
+        note_block = f"\n\nNote: {note}" if note else ""
+        text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{note_block}\n\nIncident: {incident['id']}"
         destination = telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes)
         if self._active_modes is not None and not destination:
             raise RuntimeError(f"Telegram mode is inactive: {telegram_mode(incident)}")
@@ -480,6 +483,27 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
             self.end_headers()
             self.wfile.write(body)
 
+        def _request_meta(self) -> dict[str, str]:
+            """Capture secret-safe ingress provenance behind explicitly trusted proxies."""
+            peer_ip = str(self.client_address[0])
+            trusted = {item.strip() for item in os.environ.get("NOTIFY_TRUSTED_PROXY_IPS", "127.0.0.1").split(",") if item.strip()}
+            source_ip = peer_ip
+            forwarded_for = self.headers.get("X-Forwarded-For", "").strip()
+            real_ip = self.headers.get("X-Real-IP", "").strip()
+            if peer_ip in trusted and real_ip:
+                try:
+                    ipaddress.ip_address(real_ip)
+                except ValueError:
+                    real_ip = ""
+                if real_ip:
+                    source_ip = real_ip
+            return {
+                "peer_ip": peer_ip,
+                "source_ip": source_ip,
+                "proxy_ip": peer_ip if source_ip != peer_ip else "",
+                "forwarded_for": forwarded_for[:512],
+            }
+
         def do_GET(self) -> None:
             """Serve authenticated health and incident reads."""
             if self.path == "/":
@@ -537,7 +561,7 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     if body.get("action") == "resolve":
                         self._reply(HTTPStatus.OK, center.resolve_event(token, key, body))
                         return
-                    self._reply(HTTPStatus.ACCEPTED, center.create_event(token, key, body))
+                    self._reply(HTTPStatus.ACCEPTED, center.create_event(token, key, body, request_meta=self._request_meta()))
                     return
                 parts = self.path.split("/")
                 if len(parts) == 5 and parts[:3] == ["", "v1", "incidents"]:

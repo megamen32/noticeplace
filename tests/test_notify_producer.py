@@ -118,6 +118,18 @@ class NotifyProducerTests(unittest.TestCase):
             _CaptureHandler.request["body"],
         )
 
+    def test_operator_note_is_optional_and_sent_as_metadata(self) -> None:
+        result = self.run_producer(
+            "--project", "fail2ban.100",
+            "--severity", "important",
+            "--dedupe-key", "fail2ban.100:ssh:note",
+            "--title", "Fail2ban ban",
+            "--operator-note", "server-100 / ssh jail",
+            "--idempotency-key", "event-note",
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("server-100 / ssh jail", _CaptureHandler.request["body"]["operator_note"])
+
     def test_missing_token_fails_without_printing_other_environment_values(self) -> None:
         environment = {**self.environment, "NOTIFY_CENTER_TOKEN": "", "UNRELATED_SECRET": "must-not-leak"}
         result = self.run_producer("--check-config", environment=environment)

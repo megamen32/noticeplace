@@ -22,7 +22,7 @@ class NotificationCenterTests(unittest.TestCase):
     def setUp(self) -> None:
         """Create a fresh durable store for every test."""
         self.tempdir = tempfile.TemporaryDirectory()
-        self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"producer-token": {"project": "hermes", "max_severity": "critical"}})
+        self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"producer-token": {"project": "hermes", "max_severity": "critical"}}, default_quiet_hours=[])
 
     def tearDown(self) -> None:
         """Remove isolated SQLite data after every test."""

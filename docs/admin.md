@@ -23,10 +23,20 @@ grant any of those tokens. See [the producer guide](producer-sdk.md) and the
 - automatic call enablement and live timing values for Matrix calls, Android
   Telegram calls, Android phone calls, and critical Telegram repeats;
 - scoped consumers through a visual adapter builder;
+- built-in delivery profiles `emergency`, `important`, and `log`, shown in the
+  same profile table as custom consumers;
 - per-consumer quiet hours. New and existing consumers currently default to
   `01:00–09:00 Europe/Moscow` for calls only: messages continue, while queued
   calls are deferred until 09:00. This is intentionally not a global quiet
   window; each consumer stores its own policy.
+
+Legacy producer tokens are assigned to one built-in profile by event mode:
+`emergency` and `important` keep their matching profiles; all other active
+events use `log`. Custom consumer tokens retain their explicit profile. Notify
+also records a secret-safe ingress audit event with project, profile, source
+IP, trusted proxy IP, and the forwarded-for chain. Optional `operator_note`
+metadata is shown in Telegram and the profile/incident views; bearer tokens,
+authorization headers, and full request bodies are never recorded.
 
 The consumer builder emits generic linked steps. Each step has a platform,
 action, target, retry interval, repeat limit, and optional predecessor. Generic

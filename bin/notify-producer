@@ -3,7 +3,7 @@
 set -eu
 
 usage() {
-    echo "usage: notify-producer --project PROJECT --dedupe-key KEY [--recipient RECIPIENT] [--severity SEVERITY --title TITLE [--body BODY]] [--idempotency-key KEY] [--resolve]" >&2
+    echo "usage: notify-producer --project PROJECT --dedupe-key KEY [--recipient RECIPIENT] [--severity SEVERITY --title TITLE [--body BODY]] [--operator-note NOTE] [--idempotency-key KEY] [--resolve]" >&2
     exit 64
 }
 
@@ -14,11 +14,12 @@ title=
 body=
 dedupe_key=
 idempotency_key=
+operator_note=${NOTIFY_OPERATOR_NOTE:-}
 resolve=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --project|--recipient|--severity|--title|--body|--dedupe-key|--idempotency-key)
+        --project|--recipient|--severity|--title|--body|--dedupe-key|--operator-note|--idempotency-key)
             [ "$#" -ge 2 ] || usage
             case "$1" in
                 --project) project=$2 ;;
@@ -27,6 +28,7 @@ while [ "$#" -gt 0 ]; do
                 --title) title=$2 ;;
                 --body) body=$2 ;;
                 --dedupe-key) dedupe_key=$2 ;;
+                --operator-note) operator_note=$2 ;;
                 --idempotency-key) idempotency_key=$2 ;;
             esac
             shift 2
@@ -68,10 +70,10 @@ PY
 else
     [ -n "$severity" ] && [ -n "$title" ] || usage
     case "$severity" in debug|info|notice|important|critical|emergency) ;; *) echo "unsupported severity" >&2; exit 64 ;; esac
-    payload=$(python3 - "$project" "$recipient" "$severity" "$title" "$body" "$dedupe_key" <<'PY'
+    payload=$(python3 - "$project" "$recipient" "$severity" "$title" "$body" "$dedupe_key" "$operator_note" <<'PY'
 import json
 import sys
-print(json.dumps({
+payload = {
     "schema": "notify.event.v1",
     "project": sys.argv[1],
     "recipient": sys.argv[2],
@@ -80,7 +82,10 @@ print(json.dumps({
     "title": sys.argv[4],
     "body": sys.argv[5],
     "dedup_key": sys.argv[6],
-}, ensure_ascii=False, separators=(",", ":")))
+}
+if sys.argv[7].strip():
+    payload["operator_note"] = sys.argv[7].strip()
+print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 PY
 )
 fi
