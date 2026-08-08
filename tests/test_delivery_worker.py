@@ -232,6 +232,24 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual(1, len(android.calls))
         self.assertEqual([], self.center.claim_due_deliveries(now_epoch=10**12))
 
+    def test_critical_phone_call_sends_context_before_call(self) -> None:
+        created = self.center.create_event("producer", "pre-call-context", self.event)
+        self.center.complete_delivery(created["initial_delivery_id"], "sent")
+        self.center.schedule_escalation(created["incident_id"], "android.phone.call", due_epoch=0)
+        order: list[str] = []
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                order.append("telegram")
+
+        class Android:
+            def phone_call(self, _payload: dict[str, object]) -> None:
+                order.append("phone")
+
+        due = self.center.claim_due_deliveries(now_epoch=0)
+        DeliveryWorker(self.center, Telegram(), android_phone=Android()).deliver(due[0])
+        self.assertEqual(["telegram", "phone"], order)
+
     def test_consumer_telegram_uses_policy_target_and_keeps_existing_phone_deadline(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
