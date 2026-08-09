@@ -21,6 +21,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+from notification_center.core import DEFAULT_CONSUMER_QUIET_HOURS
 
 SERVER_NAME = "notify-mcp"
 SERVER_VERSION = "1.2.0"
@@ -193,6 +196,31 @@ def split_notification_message(text: str, limit: int = 3900) -> List[str]:
     return parts
 
 
+def _quiet_hours_suppression(channel: str, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+    """Return the active default quiet-hours rule for direct voice calls."""
+    if channel not in {"phone", "matrix"}:
+        return None
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    for rule in DEFAULT_CONSUMER_QUIET_HOURS:
+        if "call" not in rule.get("suppress", []):
+            continue
+        try:
+            local = current.astimezone(ZoneInfo(str(rule["timezone"])))
+            start_hour, start_minute = (int(part) for part in str(rule["start"]).split(":", 1))
+            end_hour, end_minute = (int(part) for part in str(rule["end"]).split(":", 1))
+        except (KeyError, TypeError, ValueError):
+            continue
+        minutes = local.hour * 60 + local.minute
+        start = start_hour * 60 + start_minute
+        end = end_hour * 60 + end_minute
+        active = start <= minutes < end if start <= end else minutes >= start or minutes < end
+        if active:
+            return dict(rule)
+    return None
+
+
 def tool_send_message(args: Dict[str, Any]) -> Dict[str, Any]:
     message = str(args.get("message") or "").strip()
     if not message:
@@ -214,6 +242,15 @@ def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
     channel = str(args.get("channel") or "phone").strip().lower()
     if channel not in {"phone", "matrix"}:
         raise ValueError("channel must be one of: phone, matrix")
+    quiet_rule = _quiet_hours_suppression(channel)
+    if quiet_rule is not None:
+        return {
+            "ok": True,
+            "channel": channel,
+            "suppressed": True,
+            "reason": "quiet_hours",
+            "quiet_hours": quiet_rule,
+        }
     message = str(args.get("message") or "").strip()
     incident = {
         "id": f"direct-call-{uuid.uuid4().hex}",
