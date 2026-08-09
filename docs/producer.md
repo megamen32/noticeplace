@@ -43,7 +43,7 @@ file until a real ban/unban drill succeeds.
 
 ## Independent paths
 
-The `vpn2` notification-center watchdog and the ingress recovery watchdog
+The `vpn2` NoticePlace watchdog and the ingress recovery watchdog
 remain direct out-of-band delivery paths. They may use the same Telegram/Matrix
 identities, but they must not POST to the primary center when the primary center
 is the thing being monitored.

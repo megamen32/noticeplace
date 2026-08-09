@@ -1,0 +1,9 @@
+{
+  "mcp": {
+    "notify": {
+      "type": "local",
+      "command": ["/usr/bin/python3", "/opt/noticeplace/mcp/notify_mcp.py"],
+      "enabled": true
+    }
+  }
+}

@@ -350,6 +350,16 @@ class DeliveryWorker:
         if str(incident["severity"]) == "critical" and sequence is not None and repeat_delay > 0:
             self._center.schedule_telegram_repeat_if_active(incident_id, sequence + 1, time.time() + repeat_delay)
 
+    def _send_critical_pre_call_context(self, payload: dict[str, Any]) -> None:
+        """Send the incident context immediately before a critical phone call."""
+        incident = payload["incident"]
+        if str(incident["severity"]) != "critical":
+            return
+        active_modes = getattr(self._telegram, "active_modes", None)
+        if active_modes is not None and telegram_mode(incident) not in active_modes:
+            raise RuntimeError("Telegram mode is inactive for critical pre-call context")
+        self._telegram.send(payload)
+
     def deliver(self, delivery: dict[str, Any]) -> None:
         """Deliver one claimed job; callers may run this in a bounded worker pool."""
         try:
@@ -384,6 +394,7 @@ class DeliveryWorker:
             elif delivery["channel"] == "android.phone.call":
                 if self._android_phone is None:
                     raise RuntimeError("Android phone adapter is not configured")
+                self._send_critical_pre_call_context(payload)
                 self._android_phone.phone_call(payload)
             elif str(delivery["channel"]).startswith("gptadmin.agent:"):
                 job_name = str(delivery["channel"])[len("gptadmin.agent:"):]

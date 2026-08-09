@@ -1,5 +1,5 @@
 [Unit]
-Description=Independent vpn2 notification-center health watchdog
+Description=Independent vpn2 NoticePlace health watchdog
 After=network-online.target
 Wants=network-online.target
 

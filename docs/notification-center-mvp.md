@@ -1,4 +1,9 @@
-# Notification Center MVP
+# NoticePlace HTTP API
+
+`NoticePlace` is the product name. The legacy `notification-center` names
+remain only in environment variables, compatibility service paths, and the
+Python package namespace so existing producers and installed deployments keep
+working during the rename.
 
 NoticePlace is a low-RAM universal inbox for AI-to-human attention. It keeps
 AI work running while routing important requests through the configured human

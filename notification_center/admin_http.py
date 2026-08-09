@@ -107,6 +107,11 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
+                if self.path in ("/test-adapter", "/admin/test-adapter"):
+                    result = store.test_adapter(form.get("adapter", ""), form.get("message", ""), actor)
+                    adapter = "phone" if form.get("adapter") == "phone" else "message"
+                    self._reply(HTTPStatus.OK, _test_result_page(adapter, result))
+                    return
                 if self.path in ("/settings", "/admin/settings"):
                     store.set_runtime_settings(form, actor)
                     self.send_response(HTTPStatus.SEE_OTHER)
@@ -161,6 +166,12 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
 
 def _page(title: str, message: str) -> str:
     return f"<!doctype html><meta charset=utf-8><title>{html.escape(title)}</title><main><h1>{html.escape(title)}</h1><p>{html.escape(message)}</p></main>"
+
+
+def _test_result_page(adapter: str, result: dict[str, Any]) -> str:
+    """Show a display-safe result without exposing tokens or raw transport data."""
+    detail = "Phone call started." if adapter == "phone" else "Message accepted by Notify."
+    return f'<!doctype html><meta charset=utf-8><title>Adapter test</title><main><h1>Adapter test accepted</h1><p>{html.escape(detail)}</p><p><a href="/admin/">Back to admin</a></p></main>'
 
 
 def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
@@ -227,6 +238,7 @@ body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}
 <section><h2>Add producer</h2><form method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
 <section><h2>Producer projects</h2><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></section>
 <section><h2>Automatic call escalation</h2><p class="hint">{calls_label}. This controls future Android phone, Telegram-call, and Matrix-call escalations. Text notifications are unchanged; an already active phone call cannot be interrupted.</p><form method="post" action="/admin/calls"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="enabled" value="{calls_action}"><button>{calls_button}</button></form></section>
+<section><h2>Test adapters</h2><p class="hint">These buttons use the central Notify HTTP/MCP boundary. Phone starts one short test call; message sends one notice to the configured test recipient.</p><form method="post" action="/admin/test-adapter" onsubmit="return confirm('Start one test phone call now?')"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="adapter" value="phone"><input name="message" value="NoticePlace phone adapter test" maxlength="300"><button>Call me</button></form><form method="post" action="/admin/test-adapter"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="adapter" value="message"><input name="message" value="NoticePlace message adapter test" maxlength="300"><button>Send message</button></form></section>
 <section><h2>Live delivery timers</h2><p class="hint">Changes apply to newly scheduled/retried deliveries and do not restart Notify. Zero disables that timer. An already executing adapter call is unchanged.</p><form method="post" action="/admin/settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}">{setting_inputs}<button>Save live settings</button></form></section>
 <section><h2>Add scoped consumer</h2><p class="hint">Create the delivery chain visually. Choose platform, action, target, retry interval, repeats, optional predecessor, and an operator note.</p><form method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><input name="operator_note" maxlength="500" placeholder="Optional operator note"><select name="max_severity">{options}</select><input type="hidden" name="policy_json" id="policy-json"><div id="adapter-builder">{adapter_builder}</div><button type="submit" onclick="return buildPolicy()">Create consumer intake</button></form><p class="hint">Target example: <code>{{"chat_id":-100123,"topic_id":122}}</code> or <code>{{"phone_number":"+79990000000"}}</code>.</p></section>
 <section><h2>Delivery profiles</h2><table><tr><th>Name</th><th>Profile</th><th>Project</th><th>Token fingerprint</th><th>Ordered delivery policy</th><th>Quiet hours</th><th>Operator note</th></tr>{consumer_rows}</table></section>

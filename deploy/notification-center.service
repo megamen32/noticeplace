@@ -1,5 +1,5 @@
 [Unit]
-Description=Notification Center API and durable Telegram dispatcher
+Description=NoticePlace API and durable Telegram dispatcher
 After=network-online.target
 Wants=network-online.target
 
@@ -26,3 +26,4 @@ ReadWritePaths=/var/lib/notification-center
 
 [Install]
 WantedBy=multi-user.target
+Alias=noticeplace.service

@@ -19,6 +19,8 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/notification-center-admin
+ReadWritePaths=/var/lib/notification-center
 
 [Install]
 WantedBy=multi-user.target
+Alias=noticeplace-admin.service
