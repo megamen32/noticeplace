@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the low-RAM notification-center HTTP API and Telegram delivery worker."""
+"""Run the low-RAM NoticePlace HTTP API and Telegram delivery worker."""
 
 from __future__ import annotations
 

@@ -11,7 +11,7 @@ does not start another Herder or another adapter set. The same bridge is used
 by OpenCode, Codex, and Hermes.
 
 The OpenCode process never receives ADB or phone-adapter credentials. Only the
-central Notification Center owns delivery adapters.
+central NoticePlace owns delivery adapters.
 
 ## Install
 

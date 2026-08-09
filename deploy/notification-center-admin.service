@@ -23,3 +23,4 @@ ReadWritePaths=/var/lib/notification-center
 
 [Install]
 WantedBy=multi-user.target
+Alias=noticeplace-admin.service
