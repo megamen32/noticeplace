@@ -180,7 +180,7 @@ class AdminConsoleTests(unittest.TestCase):
             request_meta={"peer_ip": "127.0.0.1", "source_ip": "192.0.2.44", "proxy_ip": "127.0.0.1"},
         )
         center.complete_delivery(parent["initial_delivery_id"], "sent")
-        center.create_event(
+        child = center.create_event(
             "old-token",
             "admin-history-child",
             {
@@ -198,6 +198,7 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertIn(b"192.0.2.44", page)
         self.assertIn(b"lol-nginx", page)
         self.assertIn(b"service.stopped", page)
+        self.assertIn(f'/admin/?history={child["incident_id"]}#event-history'.encode(), page)
         self.assertIn(b"sent", page)
         self.assertNotIn(b"old-token", page)
 

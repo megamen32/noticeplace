@@ -188,6 +188,19 @@ def _history_time_display(value: Any) -> str:
         return "unknown time"
 
 
+def _history_incident_link(incident_id: Any) -> str:
+    safe_id = html.escape(str(incident_id or ""))
+    href = urllib.parse.quote(str(incident_id or ""), safe="")
+    return f'<a href="/admin/?history={href}#event-history"><code>{safe_id}</code></a>'
+
+
+def _history_children_display(item: dict[str, Any]) -> str:
+    children = item.get("children", [])
+    if not children:
+        return "none"
+    return "<br>".join(_history_incident_link(child.get("incident_id")) for child in children)
+
+
 def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
     options = "".join(f'<option value="{severity}">{severity}</option>' for severity in SEVERITIES)
     project_rows = "".join(
@@ -209,7 +222,7 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         for item in snapshot["consumers"]
     ) or '<tr><td colspan="7">No delivery profiles yet.</td></tr>'
     history_rows = "".join(
-        f'<tr><td><code>{html.escape(str(item["event_id"]))}</code><br><code>{html.escape(str(item["incident_id"]))}</code><br><span class="hint">{html.escape(_history_time_display(item.get("event_created_at")))}</span></td><td>{html.escape(str(item.get("event_type") or ""))}<br>{html.escape(str(item.get("title") or ""))}<br><span class="hint">{html.escape(str(item.get("project") or ""))}/{html.escape(str(item.get("recipient") or ""))}</span></td><td>{html.escape(str(item.get("producer") or ""))}<br>{html.escape(str(item.get("plugin") or ""))}</td><td>{html.escape(str(item.get("source_ip") or ""))}<br><span class="hint">proxy: {html.escape(str(item.get("proxy_ip") or "direct"))}</span></td><td>{html.escape(str(item.get("parent_incident_id") or "root"))}<br>children: {len(item.get("children", []))}</td><td>{html.escape(_history_notification_display(item))}</td><td>{html.escape(str(item.get("outcome", {}).get("incident_state") or item.get("state") or ""))}<br>{html.escape(str(item.get("correlation_id") or ""))}</td></tr>'
+        f'<tr><td><code>{html.escape(str(item["event_id"]))}</code><br>{_history_incident_link(item["incident_id"])}<br><span class="hint">{html.escape(_history_time_display(item.get("event_created_at")))}</span></td><td>{html.escape(str(item.get("event_type") or ""))}<br>{html.escape(str(item.get("title") or ""))}<br><span class="hint">{html.escape(str(item.get("project") or ""))}/{html.escape(str(item.get("recipient") or ""))}</span></td><td>{html.escape(str(item.get("producer") or ""))}<br>{html.escape(str(item.get("plugin") or ""))}</td><td>{html.escape(str(item.get("source_ip") or ""))}<br><span class="hint">proxy: {html.escape(str(item.get("proxy_ip") or "direct"))}</span></td><td>{_history_incident_link(item["parent_incident_id"]) if item.get("parent_incident_id") else "root"}<br>children:<br>{_history_children_display(item)}</td><td>{html.escape(_history_notification_display(item))}</td><td>{html.escape(str(item.get("outcome", {}).get("incident_state") or item.get("state") or ""))}<br>{html.escape(str(item.get("correlation_id") or ""))}</td></tr>'
         for item in snapshot.get("event_history", [])
     ) or '<tr><td colspan="7">No events recorded yet.</td></tr>'
     calls_enabled = bool(snapshot.get("automatic_calls_enabled", True))
