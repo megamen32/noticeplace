@@ -69,6 +69,7 @@ the event was stored; an optional wait ends only at `acknowledged` or
 - [Producer SDK: curl, Python, Node.js and systemd](docs/producer-sdk.md)
 - [Operator console](docs/admin.md)
 - [Allowlisted GPTAdmin agent jobs](docs/gptadmin-agent-jobs.md)
+- [Mandatory full-cycle supertest](docs/mandatory-e2e-supertest.md)
 - [MCP server](docs/mcp.md)
 - [Notify CLI and AI skill](https://github.com/megamen32/notify)
 - [AI skill](docs/skill.md)

@@ -26,4 +26,5 @@ codex mcp add notify -- npx -y github:megamen32/noticeplace
 3. 在 `/admin/` 配置 topics、adapters 和 live escalation。
 
 更多内容：[API](docs/notification-center-mvp.md)、[admin](docs/admin.md)、
+[完整链路强制测试](docs/mandatory-e2e-supertest.md)、
 [SDK](docs/producer-sdk.md)、[MCP](docs/mcp.zh.md)。

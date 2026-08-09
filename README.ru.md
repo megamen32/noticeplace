@@ -26,4 +26,5 @@ codex mcp add notify -- npx -y github:megamen32/noticeplace
 3. Настройте topics, adapters и live escalation в `/admin/`.
 
 Подробнее: [API](docs/notification-center-mvp.md), [админка](docs/admin.md),
+[обязательный супертест полного цикла](docs/mandatory-e2e-supertest.md),
 [SDK](docs/producer-sdk.md), [MCP](docs/mcp.ru.md).
