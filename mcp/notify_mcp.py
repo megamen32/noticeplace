@@ -33,6 +33,17 @@ JOBS_DIR = STATE_DIR / "jobs"
 MAX_TAIL_BYTES = int(os.environ.get("NOTIFY_MCP_MAX_TAIL_BYTES", "20000"))
 _RUNTIME_READY = False
 _RUNTIME_READY_LOCK = threading.Lock()
+PHONE_ENV_KEYS = (
+    "ANDROID_ADB_PATH",
+    "ANDROID_ADB_SERIAL",
+    "ANDROID_TELEGRAM_TARGET",
+    "ANDROID_PHONE_TARGET",
+    "ANDROID_TELEGRAM_CALL_LABELS",
+    "ANDROID_ADB_TIMEOUT_SECONDS",
+    "GPTADMIN_ANDROID_PHONE_CALL_URL",
+    "GPTADMIN_ANDROID_PHONE_CALL_TOKEN",
+    "GPTADMIN_ANDROID_PHONE_CALL_TIMEOUT_SECONDS",
+)
 
 
 def now_iso() -> str:
@@ -144,6 +155,27 @@ def parse_env_file(path: Path) -> Dict[str, str]:
         if key:
             env[key] = value
     return env
+
+
+def phone_adapter_from_environment() -> Any:
+    """Build the configured phone adapter using the MCP-scoped env file."""
+    from notification_center.http_api import android_phone_from_environment
+
+    phone_file_value = os.environ.get("NOTIFY_PHONE_SECRETS_FILE", "").strip()
+    phone_file = Path(phone_file_value).expanduser() if phone_file_value else None
+    file_env = parse_env_file(phone_file) if phone_file else {}
+    inherited = {key: os.environ.get(key) for key in PHONE_ENV_KEYS}
+    try:
+        for key in PHONE_ENV_KEYS:
+            if not os.environ.get(key) and file_env.get(key):
+                os.environ[key] = file_env[key]
+        return android_phone_from_environment()
+    finally:
+        for key, value in inherited.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def notify_center_config() -> Dict[str, str]:
@@ -268,9 +300,7 @@ def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
             raise RuntimeError("Matrix call adapter is not configured")
         return {"ok": True, "channel": channel, "receipt": adapter.send({"incident": incident})}
 
-    from notification_center.http_api import android_phone_from_environment
-
-    adapter = android_phone_from_environment()
+    adapter = phone_adapter_from_environment()
     if adapter is None or not getattr(adapter, "can_phone_call", False):
         raise RuntimeError("Android phone call adapter is not configured")
     payload: Dict[str, Any] = {"kind": "direct", "incident": incident}

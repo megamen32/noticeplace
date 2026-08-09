@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import mock
 
 from mcp import notify_mcp
@@ -24,6 +26,18 @@ class _Phone:
 
 
 class DirectCallToolTests(unittest.TestCase):
+    def test_phone_adapter_reads_only_mcp_scoped_phone_env_file(self):
+        with TemporaryDirectory() as tempdir:
+            phone_file = Path(tempdir) / "phone.env"
+            phone_file.write_text("ANDROID_ADB_SERIAL=R5CR702SRFP\nANDROID_TELEGRAM_TARGET=target\n")
+            fake_adapter = object()
+            with mock.patch.dict("os.environ", {"NOTIFY_PHONE_SECRETS_FILE": str(phone_file)}, clear=False), \
+                 mock.patch("notification_center.http_api.android_phone_from_environment", return_value=fake_adapter) as factory:
+                result = notify_mcp.phone_adapter_from_environment()
+
+        self.assertIs(fake_adapter, result)
+        factory.assert_called_once_with()
+
     def test_matrix_call_is_direct_and_returns_bridge_receipt(self):
         matrix = _Matrix()
         with mock.patch("mcp.notify_mcp._quiet_hours_suppression", return_value=None), \
