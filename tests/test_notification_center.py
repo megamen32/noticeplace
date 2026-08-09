@@ -131,6 +131,56 @@ class NotificationCenterTests(unittest.TestCase):
         self.assertTrue(health["storage_ready"])
         self.assertNotIn("producer-token", json.dumps(health))
 
+    def test_event_history_reconstructs_provenance_children_and_notifications(self) -> None:
+        """Expose one bounded operator story without returning producer secrets."""
+        parent = self.center.create_event(
+            "producer-token",
+            "history-parent",
+            self.event(
+                event_type="site.down",
+                producer="external-monitor",
+                plugin="lol-nginx",
+                correlation_id="corr-site-1",
+            ),
+            request_meta={
+                "peer_ip": "127.0.0.1",
+                "source_ip": "192.0.2.44",
+                "proxy_ip": "127.0.0.1",
+                "forwarded_for": "192.0.2.44, 198.51.100.7",
+            },
+        )
+        self.center.complete_delivery(parent["initial_delivery_id"], "sent")
+        child = self.center.create_event(
+            "producer-token",
+            "history-child",
+            self.event(
+                dedup_key="site:service-stopped",
+                event_type="service.stopped",
+                producer="site-monitor",
+                plugin="systemd",
+                correlation_id="corr-site-1",
+                parent_incident_id=parent["incident_id"],
+                parent_event_id=parent["event_id"],
+            ),
+            request_meta={"peer_ip": "127.0.0.1", "source_ip": "192.0.2.44", "proxy_ip": "127.0.0.1"},
+        )
+
+        history = self.center.list_event_history(limit=20)
+        parent_row = next(item for item in history if item["incident_id"] == parent["incident_id"])
+        child_row = next(item for item in history if item["incident_id"] == child["incident_id"])
+        self.assertEqual("site.down", parent_row["event_type"])
+        self.assertEqual("external-monitor", parent_row["producer"])
+        self.assertEqual("lol-nginx", parent_row["plugin"])
+        self.assertEqual("192.0.2.44", parent_row["source_ip"])
+        self.assertEqual("127.0.0.1", parent_row["proxy_ip"])
+        self.assertEqual("corr-site-1", child_row["correlation_id"])
+        self.assertEqual(parent["incident_id"], child_row["parent_incident_id"])
+        self.assertEqual(child["incident_id"], parent_row["children"][0]["incident_id"])
+        self.assertEqual("sent", parent_row["notifications"][0]["status"])
+        self.assertNotIn("producer-token", json.dumps(history))
+        filtered = self.center.list_event_history(limit=20, query="systemd")
+        self.assertEqual([child["incident_id"]], [item["incident_id"] for item in filtered])
+
 
 class HealthEndpointTests(unittest.TestCase):
     """Exercise the externally published readiness contract over real HTTP."""

@@ -75,10 +75,12 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
             if not self._authorized():
                 self._deny()
                 return
-            if self.path not in ("/", "/admin", "/admin/"):
+            parsed = urllib.parse.urlsplit(self.path)
+            if parsed.path not in ("/", "/admin", "/admin/"):
                 self._reply(HTTPStatus.NOT_FOUND, _page("Not found", "Unknown admin path."))
                 return
-            self._reply(HTTPStatus.OK, _dashboard(store.snapshot(), _csrf(csrf_secret)))
+            query = urllib.parse.parse_qs(parsed.query).get("history", [""])[-1][:128]
+            self._reply(HTTPStatus.OK, _dashboard(store.snapshot(query), _csrf(csrf_secret)))
 
         def do_POST(self) -> None:
             if not self._authorized():
@@ -174,6 +176,11 @@ def _test_result_page(adapter: str, result: dict[str, Any]) -> str:
     return f'<!doctype html><meta charset=utf-8><title>Adapter test</title><main><h1>Adapter test accepted</h1><p>{html.escape(detail)}</p><p><a href="/admin/">Back to admin</a></p></main>'
 
 
+def _history_notification_display(item: dict[str, Any]) -> str:
+    """Format delivery states without exposing adapter payloads or secrets."""
+    return ", ".join(f'{entry.get("channel")}={entry.get("status")}' for entry in item.get("notifications", []))
+
+
 def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
     options = "".join(f'<option value="{severity}">{severity}</option>' for severity in SEVERITIES)
     project_rows = "".join(
@@ -194,6 +201,10 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         f'<tr><td>{html.escape(item["name"])}</td><td>{html.escape(item.get("profile_key") or "custom")}</td><td>{html.escape(item["project"])}</td><td><code>{html.escape(item["token_fingerprint"])}</code></td><td>{html.escape(_policy_display(item["policy"]))}</td><td>{html.escape(_quiet_hours_display(item.get("quiet_hours", [])))}</td><td>{html.escape(item.get("operator_note") or "")}</td></tr>'
         for item in snapshot["consumers"]
     ) or '<tr><td colspan="7">No delivery profiles yet.</td></tr>'
+    history_rows = "".join(
+        f'<tr><td><code>{html.escape(str(item["event_id"]))}</code><br><code>{html.escape(str(item["incident_id"]))}</code></td><td>{html.escape(str(item.get("event_type") or ""))}<br>{html.escape(str(item.get("title") or ""))}</td><td>{html.escape(str(item.get("producer") or ""))}<br>{html.escape(str(item.get("plugin") or ""))}</td><td>{html.escape(str(item.get("source_ip") or ""))}<br><span class="hint">proxy: {html.escape(str(item.get("proxy_ip") or "direct"))}</span></td><td>{html.escape(str(item.get("parent_incident_id") or "root"))}<br>children: {len(item.get("children", []))}</td><td>{html.escape(_history_notification_display(item))}</td><td>{html.escape(str(item.get("outcome", {}).get("incident_state") or item.get("state") or ""))}<br>{html.escape(str(item.get("correlation_id") or ""))}</td></tr>'
+        for item in snapshot.get("event_history", [])
+    ) or '<tr><td colspan="7">No events recorded yet.</td></tr>'
     calls_enabled = bool(snapshot.get("automatic_calls_enabled", True))
     calls_label = "Enabled" if calls_enabled else "Disabled"
     calls_action = "false" if calls_enabled else "true"
@@ -242,6 +253,7 @@ body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}
 <section><h2>Live delivery timers</h2><p class="hint">Changes apply to newly scheduled/retried deliveries and do not restart Notify. Zero disables that timer. An already executing adapter call is unchanged.</p><form method="post" action="/admin/settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}">{setting_inputs}<button>Save live settings</button></form></section>
 <section><h2>Add scoped consumer</h2><p class="hint">Create the delivery chain visually. Choose platform, action, target, retry interval, repeats, optional predecessor, and an operator note.</p><form method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><input name="operator_note" maxlength="500" placeholder="Optional operator note"><select name="max_severity">{options}</select><input type="hidden" name="policy_json" id="policy-json"><div id="adapter-builder">{adapter_builder}</div><button type="submit" onclick="return buildPolicy()">Create consumer intake</button></form><p class="hint">Target example: <code>{{"chat_id":-100123,"topic_id":122}}</code> or <code>{{"phone_number":"+79990000000"}}</code>.</p></section>
 <section><h2>Delivery profiles</h2><table><tr><th>Name</th><th>Profile</th><th>Project</th><th>Token fingerprint</th><th>Ordered delivery policy</th><th>Quiet hours</th><th>Operator note</th></tr>{consumer_rows}</table></section>
+<section id="event-history"><h2>Event history</h2><p class="hint">Ingress, parent/child links, source/proxy metadata, notifications, and final state. Bearer tokens and secrets are never shown.</p><form method="get" action="/admin/"><input name="history" value="{html.escape(str(snapshot.get("event_history_query") or ""))}" placeholder="event type, producer, plugin, correlation, incident"><button>Filter</button><a href="/admin/#event-history">Reset</a></form><table><tr><th>Event / incident</th><th>Type / title</th><th>Producer / plugin</th><th>Source IP / proxy</th><th>Parent / children</th><th>Notifications</th><th>Outcome / correlation</th></tr>{history_rows}</table></section>
 <section><h2>Telegram topics</h2><p class="hint">All topics are equal. Some were created by the initial configuration, but they can be edited or deleted exactly like any other topic. Changes apply live without restarting Notify.</p><table><tr><th>Name</th><th>Key</th><th>Chat</th><th>Topic</th><th>Action</th></tr>{topic_rows}</table><div class="topic-forms">{topic_forms}</div></section></main><script>
 function buildPolicy() {{ const rows = [...document.querySelectorAll('#adapter-steps [data-step]')]; const policy = rows.map((row, index) => {{ let target; try {{ target = JSON.parse(row.querySelector('[data-target]').value); }} catch (_) {{ target = {{}}; }} return {{id:`step-${{index + 1}}`, platform:row.querySelector('[data-platform]').value, action:row.querySelector('[data-action]').value, target, retry_interval_seconds:Number(row.querySelector('[data-retry]').value), max_repeats:Number(row.querySelector('[data-repeats]').value), previous_step_id:row.querySelector('[data-previous]').value || null}}; }}); document.getElementById('policy-json').value = JSON.stringify(policy); return policy.length > 0; }}
 addStep();

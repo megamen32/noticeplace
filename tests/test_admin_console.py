@@ -166,6 +166,41 @@ class AdminConsoleTests(unittest.TestCase):
         reopened = NotificationCenter(self.database, {"old-token": {"project": "existing", "max_severity": "notice"}})
         self.assertNotIn("intake_token", reopened.get_consumer(consumer["id"]))
 
+    def test_history_page_shows_provenance_children_notifications_and_outcome(self) -> None:
+        center = self.store._consumer_notification_center()
+        parent = center.create_event(
+            "old-token",
+            "admin-history-parent",
+            {
+                "schema": "notify.event.v1", "project": "existing", "recipient": "me",
+                "kind": "incident", "severity": "notice", "title": "Site down",
+                "dedup_key": "site:down", "event_type": "site.down", "producer": "monitor",
+                "plugin": "lol-nginx", "correlation_id": "admin-history-1",
+            },
+            request_meta={"peer_ip": "127.0.0.1", "source_ip": "192.0.2.44", "proxy_ip": "127.0.0.1"},
+        )
+        center.complete_delivery(parent["initial_delivery_id"], "sent")
+        center.create_event(
+            "old-token",
+            "admin-history-child",
+            {
+                "schema": "notify.event.v1", "project": "existing", "recipient": "me",
+                "kind": "incident", "severity": "notice", "title": "Service stopped",
+                "dedup_key": "site:service-stopped", "event_type": "service.stopped",
+                "producer": "monitor", "plugin": "systemd", "correlation_id": "admin-history-1",
+                "parent_incident_id": parent["incident_id"], "parent_event_id": parent["event_id"],
+            },
+        )
+        status, page = self._request("GET", "/admin/")
+        self.assertEqual(200, status)
+        self.assertIn(b"Event history", page)
+        self.assertIn(b"site.down", page)
+        self.assertIn(b"192.0.2.44", page)
+        self.assertIn(b"lol-nginx", page)
+        self.assertIn(b"service.stopped", page)
+        self.assertIn(b"sent", page)
+        self.assertNotIn(b"old-token", page)
+
 
 if __name__ == "__main__":
     unittest.main()

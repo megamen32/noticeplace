@@ -29,6 +29,11 @@ grant any of those tokens. See [the producer guide](producer-sdk.md) and the
   `01:00–09:00 Europe/Moscow` for calls only: messages continue, while queued
   calls are deferred until 09:00. This is intentionally not a global quiet
   window; each consumer stores its own policy.
+- event history: the protected console shows event type, producer/plugin,
+  correlation, trusted source/proxy IP metadata, parent/child incident links,
+  every notification status/attempt/error, and the current outcome. The
+  history query field filters the bounded view; secret-like audit fields are
+  redacted.
 
 Legacy producer tokens are assigned to one built-in profile by event mode:
 `emergency` and `important` keep their matching profiles; all other active

@@ -98,7 +98,7 @@ class AdminConfigStore:
     def _restart_center() -> None:
         subprocess.run(["systemctl", "restart", "notification-center"], check=True, timeout=30)
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, history_query: str | None = None) -> dict[str, Any]:
         """Return display-safe configuration; raw producer tokens never leave here."""
         scopes = self._scopes()
         projects = []
@@ -113,6 +113,8 @@ class AdminConfigStore:
             "routes": self._topic_routes(),
             "topics": self.topics(),
             "consumers": self._consumers(),
+            "event_history": self._consumer_notification_center().list_event_history(limit=100, query=history_query),
+            "event_history_query": str(history_query or ""),
             "automatic_calls_enabled": self.automatic_calls_enabled(),
             "runtime_settings": self.runtime_settings(),
         }

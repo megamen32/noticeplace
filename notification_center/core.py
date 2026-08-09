@@ -74,7 +74,17 @@ class NotificationCenter:
                     event_id TEXT NOT NULL,
                     incident_id TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    event_type TEXT,
+                    producer TEXT,
+                    plugin TEXT,
+                    correlation_id TEXT,
+                    parent_event_id TEXT,
+                    parent_incident_id TEXT,
+                    peer_ip TEXT,
+                    source_ip TEXT,
+                    proxy_ip TEXT,
+                    forwarded_for TEXT
                 );
                 CREATE TABLE IF NOT EXISTS incidents (
                     id TEXT PRIMARY KEY,
@@ -93,7 +103,17 @@ class NotificationCenter:
                     updated_at REAL NOT NULL,
                     acknowledged_at REAL,
                     resolved_at REAL,
-                    snoozed_until REAL
+                    snoozed_until REAL,
+                    event_type TEXT,
+                    producer TEXT,
+                    plugin TEXT,
+                    correlation_id TEXT,
+                    parent_event_id TEXT,
+                    parent_incident_id TEXT,
+                    peer_ip TEXT,
+                    source_ip TEXT,
+                    proxy_ip TEXT,
+                    forwarded_for TEXT
                 );
                 CREATE TABLE IF NOT EXISTS consumers (
                     id TEXT PRIMARY KEY,
@@ -134,7 +154,8 @@ class NotificationCenter:
                     claimed_at REAL,
                     last_error TEXT,
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    result_json TEXT
                 );
                 CREATE TABLE IF NOT EXISTS audit_events (
                     id TEXT PRIMARY KEY,
@@ -166,16 +187,24 @@ class NotificationCenter:
                 """
             )
             incident_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(incidents)")}
+            event_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(events)")}
+            for column in ("event_type", "producer", "plugin", "correlation_id", "parent_event_id", "parent_incident_id", "peer_ip", "source_ip", "proxy_ip", "forwarded_for"):
+                if column not in event_columns:
+                    self._connection.execute(f"ALTER TABLE events ADD COLUMN {column} TEXT")
             if "consumer_id" not in incident_columns:
                 self._connection.execute("ALTER TABLE incidents ADD COLUMN consumer_id TEXT REFERENCES consumers(id)")
             if "operator_note" not in incident_columns:
                 self._connection.execute("ALTER TABLE incidents ADD COLUMN operator_note TEXT")
+            for column in ("event_type", "producer", "plugin", "correlation_id", "parent_event_id", "parent_incident_id", "peer_ip", "source_ip", "proxy_ip", "forwarded_for"):
+                if column not in incident_columns:
+                    self._connection.execute(f"ALTER TABLE incidents ADD COLUMN {column} TEXT")
             delivery_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(deliveries)")}
             if "target_json" not in delivery_columns:
                 self._connection.execute("ALTER TABLE deliveries ADD COLUMN target_json TEXT NOT NULL DEFAULT '{}'")
             for column, definition in (
                 ("policy_step_id", "TEXT"),
                 ("repeat_number", "INTEGER"),
+                ("result_json", "TEXT"),
             ):
                 if column not in delivery_columns:
                     self._connection.execute(f"ALTER TABLE deliveries ADD COLUMN {column} {definition}")
@@ -272,6 +301,10 @@ class NotificationCenter:
         operator_note = event.get("operator_note")
         if operator_note is not None and (not isinstance(operator_note, str) or len(operator_note.strip()) > 500):
             raise ValidationError("operator_note must be a string of at most 500 characters")
+        for field, limit in (("event_type", 128), ("producer", 128), ("plugin", 128), ("correlation_id", 256), ("parent_event_id", 128), ("parent_incident_id", 128)):
+            value = event.get(field)
+            if value is not None and (not isinstance(value, str) or len(value.strip()) > limit):
+                raise ValidationError(f"{field} must be a string of at most {limit} characters")
         forbidden = sorted(
             set(event).intersection(
                 {"target", "platform", "phone_number", "command", "delay_seconds", "retry", "stage", "url", "harness", "cwd", "prompt", "tool", "mcp", "credential", "credentials", "token", "secret", "callback_url"}
@@ -517,6 +550,13 @@ class NotificationCenter:
             if not isinstance(allowed_jobs, (list, tuple)) or agent_job not in {str(value) for value in allowed_jobs}:
                 raise AuthorizationError("token is not allowed to start this agent job")
         now = time.time()
+        event_type = str(event.get("event_type") or event.get("kind") or "")[:128]
+        producer = str(event.get("producer") or "")[:128] or None
+        plugin = str(event.get("plugin") or "")[:128] or None
+        correlation_id = str(event.get("correlation_id") or "")[:256] or None
+        parent_event_id = str(event.get("parent_event_id") or "")[:128] or None
+        parent_incident_id = str(event.get("parent_incident_id") or "")[:128] or None
+        ingress = {str(key): str(value)[:512] for key, value in (request_meta or {}).items() if str(key) in {"peer_ip", "source_ip", "proxy_ip", "forwarded_for"}}
         with self._lock, self._connection:
             payload_json = json.dumps(dict(event), ensure_ascii=False, sort_keys=True)
             consumer_id = str(scope.get("consumer_id") or "") or self._builtin_profile_for_event(event)
@@ -535,23 +575,38 @@ class NotificationCenter:
                 ).fetchone() if previous_job else None
                 return {"event_id": previous["event_id"], "incident_id": previous["incident_id"], "state": self.get_incident(previous["incident_id"])["state"], "deduplicated": False, "idempotent": True, "initial_delivery_id": initial["id"] if initial else None, "agent_job_delivery_id": agent_delivery["id"] if agent_delivery else None}
             project, recipient, dedup_key = str(event["project"]), str(event["recipient"]), str(event["dedup_key"])
+            parent = None
+            if parent_incident_id:
+                parent = self._connection.execute("SELECT id, project, recipient FROM incidents WHERE id = ?", (parent_incident_id,)).fetchone()
+                if parent is None or str(parent["project"]) != project or str(parent["recipient"]) != recipient:
+                    raise ValidationError("parent_incident_id must reference an incident in the same project and recipient")
+            if parent_event_id:
+                parent_event = self._connection.execute("SELECT event_id, incident_id FROM events WHERE event_id = ?", (parent_event_id,)).fetchone()
+                if parent_event is None or (parent is not None and str(parent_event["incident_id"]) != str(parent["id"])):
+                    raise ValidationError("parent_event_id must reference the selected parent incident")
+                if parent is None:
+                    parent = self._connection.execute("SELECT id, project, recipient FROM incidents WHERE id = ?", (parent_event["incident_id"],)).fetchone()
+                    if parent is None or str(parent["project"]) != project or str(parent["recipient"]) != recipient:
+                        raise ValidationError("parent_event_id must reference an incident in the same project and recipient")
+                parent_incident_id = str(parent["id"])
             existing = self._connection.execute("SELECT id FROM incidents WHERE project = ? AND recipient = ? AND IFNULL(consumer_id, '') = IFNULL(?, '') AND dedup_key = ? AND state != 'resolved'", (project, recipient, consumer_id, dedup_key)).fetchone()
             deduplicated = existing is not None
             if existing is None:
                 incident_id = f"inc_{uuid.uuid4().hex}"
                 self._connection.execute(
-                    "INSERT INTO incidents(id, project, recipient, kind, severity, title, body, operator_note, dedup_key, collapse_key, consumer_id, state, occurrences, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?)",
-                    (incident_id, project, recipient, str(event["kind"]), str(event["severity"]), str(event["title"]), str(event.get("body") or ""), str(event.get("operator_note") or "").strip() or None, dedup_key, event.get("collapse_key"), consumer_id, now, now),
+                    "INSERT INTO incidents(id, project, recipient, kind, severity, title, body, operator_note, dedup_key, collapse_key, consumer_id, state, occurrences, created_at, updated_at, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, proxy_ip, forwarded_for) VALUES (" + ", ".join(["?"] * 11) + ", 'open', 1, " + ", ".join(["?"] * 12) + ")",
+                    (incident_id, project, recipient, str(event["kind"]), str(event["severity"]), str(event["title"]), str(event.get("body") or ""), str(event.get("operator_note") or "").strip() or None, dedup_key, event.get("collapse_key"), consumer_id, now, now, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, ingress.get("peer_ip"), ingress.get("source_ip"), ingress.get("proxy_ip"), ingress.get("forwarded_for")),
                 )
                 self._audit(incident_id, "incident_created", "producer", {"dedup_key": dedup_key})
+                if parent_incident_id:
+                    self._audit(incident_id, "incident_child_linked", "producer", {"parent_incident_id": parent_incident_id, "parent_event_id": parent_event_id})
             else:
                 incident_id = str(existing["id"])
                 self._connection.execute("UPDATE incidents SET occurrences = occurrences + 1, title = ?, body = ?, operator_note = ?, updated_at = ? WHERE id = ?", (str(event["title"]), str(event.get("body") or ""), str(event.get("operator_note") or "").strip() or None, now, incident_id))
                 self._audit(incident_id, "incident_repeated", "producer", {"dedup_key": dedup_key})
             event_id = f"evt_{uuid.uuid4().hex}"
-            self._connection.execute("INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?)", (idempotency_key, event_id, incident_id, payload_json, now))
-            ingress = {str(key): value for key, value in (request_meta or {}).items() if str(key) in {"peer_ip", "source_ip", "proxy_ip", "forwarded_for"}}
-            ingress.update({"project": project, "profile_id": consumer_id, "severity": str(event["severity"])})
+            self._connection.execute("INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, proxy_ip, forwarded_for) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (idempotency_key, event_id, incident_id, payload_json, now, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, ingress.get("peer_ip"), ingress.get("source_ip"), ingress.get("proxy_ip"), ingress.get("forwarded_for")))
+            ingress.update({"project": project, "profile_id": consumer_id, "severity": str(event["severity"]), "event_type": event_type, "producer": producer, "plugin": plugin, "correlation_id": correlation_id, "parent_incident_id": parent_incident_id, "parent_event_id": parent_event_id})
             self._audit(incident_id, "event_ingress", "producer", ingress)
             delivery_id = self._schedule_consumer_policy(incident_id, consumer_id, now)
             agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", f"event:{event_id}", now) if agent_job else None
@@ -910,6 +965,109 @@ class NotificationCenter:
         """Return incidents newest first for the initial inbox/API implementation."""
         with self._lock:
             return [dict(row) for row in self._connection.execute("SELECT * FROM incidents ORDER BY updated_at DESC").fetchall()]
+
+    @classmethod
+    def _history_safe_value(cls, value: Any, depth: int = 0) -> Any:
+        """Bound and redact audit values before exposing them to the operator UI."""
+        if depth >= 5:
+            return "[truncated]"
+        if isinstance(value, Mapping):
+            return {
+                str(key): cls._history_safe_value(nested, depth + 1)
+                for key, nested in value.items()
+                if not any(word in str(key).lower() for word in ("secret", "token", "password", "credential", "authorization"))
+            }
+        if isinstance(value, list):
+            return [cls._history_safe_value(item, depth + 1) for item in value[:50]]
+        if isinstance(value, str):
+            return value[:2000]
+        return value
+
+    @classmethod
+    def _history_payload(cls, raw: str | None) -> Any:
+        try:
+            value = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            value = {"value": raw or ""}
+        return cls._history_safe_value(value)
+
+    def list_event_history(self, limit: int = 100, query: str | None = None) -> list[dict[str, Any]]:
+        """Return a bounded event-to-outcome history for the protected operator UI."""
+        bounded_limit = min(max(int(limit), 1), 500)
+        terms = [str(query or "").strip().lower()]
+        params: list[Any] = []
+        where = ""
+        if terms[0]:
+            where = "WHERE lower(COALESCE(e.event_type, i.kind, '')) LIKE ? OR lower(COALESCE(e.producer, '')) LIKE ? OR lower(COALESCE(e.plugin, '')) LIKE ? OR lower(COALESCE(e.correlation_id, '')) LIKE ? OR lower(i.id) LIKE ? OR lower(i.title) LIKE ?"
+            params = [f"%{terms[0]}%"] * 6
+        with self._lock:
+            rows = self._connection.execute(
+                f"SELECT e.event_id, e.incident_id, e.created_at AS event_created_at, e.event_type, e.producer, e.plugin, e.correlation_id, e.parent_event_id, e.parent_incident_id, e.peer_ip, e.source_ip, e.proxy_ip, e.forwarded_for, i.project, i.recipient, i.kind, i.severity, i.title, i.state, i.occurrences, i.updated_at FROM events e JOIN incidents i ON i.id = e.incident_id {where} ORDER BY e.created_at DESC LIMIT ?",
+                (*params, bounded_limit),
+            ).fetchall()
+            history: list[dict[str, Any]] = []
+            for row in rows:
+                incident_id = str(row["incident_id"])
+                children = self._connection.execute(
+                    "SELECT i.id AS incident_id, i.event_type, i.title, i.state, i.updated_at, e.event_id FROM incidents i LEFT JOIN events e ON e.incident_id = i.id WHERE i.parent_incident_id = ? GROUP BY i.id ORDER BY i.created_at",
+                    (incident_id,),
+                ).fetchall()
+                deliveries = self._connection.execute(
+                    "SELECT id, channel, status, attempt, last_error, due_at, created_at, updated_at, result_json FROM deliveries WHERE incident_id = ? ORDER BY created_at",
+                    (incident_id,),
+                ).fetchall()
+                audit = self._connection.execute(
+                    "SELECT type, actor, payload_json, created_at FROM audit_events WHERE incident_id = ? ORDER BY created_at",
+                    (incident_id,),
+                ).fetchall()
+                notification_rows = [
+                    {
+                        "delivery_id": str(delivery["id"]),
+                        "channel": str(delivery["channel"]),
+                        "status": str(delivery["status"]),
+                        "attempt": int(delivery["attempt"] or 0),
+                        "last_error": delivery["last_error"],
+                        "due_at": delivery["due_at"],
+                        "created_at": delivery["created_at"],
+                        "updated_at": delivery["updated_at"],
+                        "result": self._history_payload(delivery["result_json"]),
+                    }
+                    for delivery in deliveries
+                ]
+                counts: dict[str, int] = {}
+                for item in notification_rows:
+                    counts[item["status"]] = counts.get(item["status"], 0) + 1
+                history.append({
+                    "event_id": str(row["event_id"]),
+                    "incident_id": incident_id,
+                    "project": str(row["project"]),
+                    "recipient": str(row["recipient"]),
+                    "event_type": str(row["event_type"] or row["kind"]),
+                    "kind": str(row["kind"]),
+                    "severity": str(row["severity"]),
+                    "title": str(row["title"]),
+                    "producer": row["producer"],
+                    "plugin": row["plugin"],
+                    "correlation_id": row["correlation_id"],
+                    "parent_event_id": row["parent_event_id"],
+                    "parent_incident_id": row["parent_incident_id"],
+                    "peer_ip": row["peer_ip"],
+                    "source_ip": row["source_ip"],
+                    "proxy_ip": row["proxy_ip"],
+                    "forwarded_for": row["forwarded_for"],
+                    "state": str(row["state"]),
+                    "occurrences": int(row["occurrences"]),
+                    "event_created_at": row["event_created_at"],
+                    "updated_at": row["updated_at"],
+                    "children": [dict(child) for child in children],
+                    "notifications": notification_rows,
+                    "outcome": {"incident_state": str(row["state"]), "notification_counts": counts},
+                    "audit": [
+                        {"type": audit_row["type"], "actor": audit_row["actor"], "created_at": audit_row["created_at"], "payload": self._history_payload(audit_row["payload_json"])}
+                        for audit_row in audit
+                    ],
+                })
+            return history
 
     def delivery_payload(self, delivery: Mapping[str, Any]) -> dict[str, Any]:
         """Build the safe adapter payload for a previously claimed delivery."""
