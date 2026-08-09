@@ -202,6 +202,23 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertIn(b"sent", page)
         self.assertNotIn(b"old-token", page)
 
+    def test_generic_consumer_builder_does_not_require_legacy_fields(self) -> None:
+        status, page = self._request("GET", "/admin/")
+        self.assertEqual(200, status)
+        csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
+        policy = json.dumps([{
+            "id": "step-1", "platform": "telegram", "action": "message",
+            "target": {"chat_id": -100123}, "retry_interval_seconds": 60,
+            "max_repeats": 1, "previous_step_id": None,
+        }])
+        status, token_page = self._request("POST", "/admin/consumers", {
+            "csrf": csrf, "project": "existing", "name": "Generic builder",
+            "max_severity": "notice", "policy_json": policy,
+            "operator_note": "browser QA",
+        })
+        self.assertEqual(200, status)
+        self.assertIn(b"Copy this intake URL", token_page)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -303,16 +303,6 @@ class AdminConfigStore:
         """Create an operator-owned consumer policy and reveal its intake token once."""
         self._validate_project(project)
         self._validate_severity(max_severity)
-        try:
-            telegram_target: dict[str, Any] = {"kind": "telegram", "chat_id": int(chat_id)}
-            if topic_id.strip():
-                telegram_target["topic_id"] = int(topic_id)
-            matrix_delay = float(matrix_delay_seconds) if matrix_delay_seconds.strip() else None
-            if matrix_delay is not None and matrix_delay <= 0:
-                raise ValueError("matrix delay must be positive")
-            delay_seconds = float(phone_delay_seconds)
-        except (TypeError, ValueError) as error:
-            raise ValidationError("consumer Telegram target and delays must be numeric") from error
         if policy_json.strip():
             try:
                 policy = json.loads(policy_json)
@@ -321,6 +311,16 @@ class AdminConfigStore:
             if not isinstance(policy, list):
                 raise ValidationError("consumer policy JSON must be a list")
         else:
+            try:
+                telegram_target: dict[str, Any] = {"kind": "telegram", "chat_id": int(chat_id)}
+                if topic_id.strip():
+                    telegram_target["topic_id"] = int(topic_id)
+                matrix_delay = float(matrix_delay_seconds) if matrix_delay_seconds.strip() else None
+                if matrix_delay is not None and matrix_delay <= 0:
+                    raise ValueError("matrix delay must be positive")
+                delay_seconds = float(phone_delay_seconds)
+            except (TypeError, ValueError) as error:
+                raise ValidationError("consumer Telegram target and delays must be numeric") from error
             policy = [telegram_target]
             if matrix_delay is not None:
                 policy.append({"kind": "matrix", "delay_seconds": matrix_delay})
