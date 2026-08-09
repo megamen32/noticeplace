@@ -28,6 +28,148 @@ class _Response:
 
 
 class AgentJobHelperTests(unittest.TestCase):
+    def test_health_diagnosis_hands_off_to_orchestrator_and_attaches_three_plans(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir).resolve()
+            config = root / "agent-jobs.json"
+            callback = root / "health-callback.json"
+            config.write_text(json.dumps({"profiles": {"health-diagnosis": {
+                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+                "harness": "opencode", "name": "health_diagnosis_test", "cwd": str(root), "mode": "queue",
+                "model": "omniroute/subagent", "reasoning": "high", "topic": "health",
+                "callback_file": str(callback), "diagnosis_timeout_seconds": "5", "poll_seconds": "0.2",
+                "instruction": "Return exactly one diagnosis JSON object.",
+                "orchestrator_name": "health_orchestrator_test",
+                "orchestrator_requested_model": "omniroute/orchestrator",
+                "orchestrator_model": "omniroute/free-stack",
+            }}}), encoding="utf-8")
+            config.chmod(0o600)
+            callback.write_text(json.dumps({"url": "http://127.0.0.1:8091", "token": "health-callback-token"}), encoding="utf-8")
+            callback.chmod(0o600)
+            requests: list[object] = []
+            diagnosis = json.dumps({
+                "status": "diagnosis_complete",
+                "diagnosis": "bounded synthetic diagnosis",
+                "trace_refs": ["trace:omniroute:test"],
+                "evidence_refs": ["probe:synthetic"],
+            })
+            plans = json.dumps({
+                "status": "plans_ready",
+                "diagnosis": "bounded synthetic diagnosis",
+                "trace_refs": ["trace:orchestrator:test"],
+                "evidence_refs": ["probe:synthetic"],
+                "plans": [
+                    {"plan_id": "observe", "title": "Observe", "summary": "Capture a bounded snapshot", "step": "observe"},
+                    {"plan_id": "repair", "title": "Repair", "summary": "Apply the selected repair", "step": "repair"},
+                    {"plan_id": "verify", "title": "Verify", "summary": "Verify the original signal", "step": "verify"},
+                ],
+            })
+
+            session_calls = 0
+
+            def runner(request: object, **_kwargs: object) -> _Response:
+                nonlocal session_calls
+                requests.append(request)
+                url = str(getattr(request, "full_url", ""))
+                if url.endswith("/api/sessions/new-or-resume"):
+                    session_calls += 1
+                    if session_calls == 1:
+                        return _Response({"ok": True, "created": True, "sessionId": "opencode-health-diagnosis-1", "delivery": "accepted", "model": "omniroute/subagent"})
+                    body = json.loads(getattr(request, "data").decode())
+                    self.assertEqual("omniroute/free-stack", body["model"])
+                    self.assertIn("bounded synthetic diagnosis", body["message"])
+                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-orchestrator-1", "delivery": "accepted", "model": "omniroute/free-stack"})
+                if "/progress?" in url:
+                    fingerprint = "progress:diagnosis-1" if "opencode-health-diagnosis-1" in url else "progress:orchestrator-1"
+                    return _Response({"session": {"status": "idle"}, "fingerprint": fingerprint})
+                if "/details?" in url:
+                    text = diagnosis if "opencode-health-diagnosis-1" in url else plans
+                    return _Response({"messages": [{"role": "assistant", "text": text}]})
+                self.assertTrue(url.endswith("/v1/incidents/inc-health-1/health/plans"))
+                self.assertEqual("Bearer health-callback-token", getattr(request, "headers", {}).get("Authorization"))
+                body = json.loads(getattr(request, "data").decode())
+                self.assertEqual("omniroute/orchestrator", body["orchestration"]["orchestrator_requested_model"])
+                self.assertEqual("omniroute/free-stack", body["orchestration"]["orchestrator_effective_model"])
+                return _Response({"event_id": "evt-plans-1"})
+
+            result = run_profile(
+                "health-diagnosis",
+                {
+                    "schema": "notify.agent-job.v1",
+                    "job_id": "health-diagnosis",
+                    "incident": {"id": "inc-health-1", "project": "health-monitor", "severity": "critical", "title": "Disk degraded", "body": "bounded", "dedup_key": "health:disk", "occurrences": 1},
+                    "health": {"correlation_id": "corr-health-1", "trace_refs": ["trace:source-1"], "evidence_refs": ["probe:disk"]},
+                },
+                config,
+                runner=runner,
+            )
+            self.assertEqual("opencode-health-diagnosis-1", result["session_id"])
+            self.assertEqual("opencode-health-orchestrator-1", result["orchestrator_session_id"])
+            self.assertEqual(3, result["plans_count"])
+            self.assertEqual("plans_attached", result["callback_status"])
+            self.assertIn("trace:agent-herder:opencode-health-diagnosis-1", result["trace_refs"])
+            self.assertIn("trace:agent-herder:opencode-health-orchestrator-1", result["trace_refs"])
+            self.assertIn("trace:opencode:opencode-health-diagnosis-1", result["trace_refs"])
+            self.assertIn("trace:opencode:opencode-health-orchestrator-1", result["trace_refs"])
+            self.assertGreaterEqual(result["orchestration"]["diagnosis_elapsed_ms"], 0)
+            self.assertGreaterEqual(result["orchestration"]["orchestrator_elapsed_ms"], 0)
+            self.assertNotIn("health-callback-token", json.dumps(result))
+            self.assertEqual(7, len(requests))
+
+    def test_health_remediation_profile_requires_selected_plan_and_routes_to_hermes(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir).resolve()
+            config = root / "agent-jobs.json"
+            config.write_text(json.dumps({"profiles": {"health-remediation": {
+                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+                "harness": "hermes", "name": "health_remediation_100", "cwd": str(root), "mode": "queue",
+                "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "instruction": "Apply only the selected health remediation plan and report useful progress.",
+            }}}), encoding="utf-8")
+            config.chmod(0o600)
+            requests: list[object] = []
+
+            result = run_profile(
+                "health-remediation",
+                {
+                    "schema": "notify.agent-job.v1",
+                    "job_id": "health-remediation",
+                    "incident": {"id": "inc-health-1", "project": "health-monitor", "severity": "critical", "title": "Disk degraded", "body": "bounded", "dedup_key": "health:disk", "occurrences": 1},
+                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
+                },
+                config,
+                runner=lambda request, **_kwargs: requests.append(request) or _Response({"ok": True, "created": True, "sessionId": "hermes-health-1", "delivery": "accepted", "model": "gpt-5.6-luna"}),
+            )
+            self.assertEqual("hermes-health-1", result["session_id"])
+            self.assertEqual("gpt-5.6-luna", result["model"])
+            body = json.loads(requests[0].data)
+            self.assertEqual("hermes", body["harness"])
+            self.assertEqual("gpt-5.6-luna", body["model"])
+            self.assertIn("selected plan repair", body["message"])
+
+    def test_health_remediation_rejects_legacy_non_hermes_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir).resolve()
+            config = root / "agent-jobs.json"
+            config.write_text(json.dumps({"profiles": {"health-remediation": {
+                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+                "harness": "opencode", "name": "health_remediation_legacy", "cwd": str(root), "mode": "queue",
+                "model": "openai-codex/gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "instruction": "Apply only the selected health remediation plan.",
+            }}}), encoding="utf-8")
+            config.chmod(0o600)
+            with self.assertRaisesRegex(RuntimeError, "must pin hermes/gpt-5.6-luna"):
+                run_profile(
+                    "health-remediation",
+                    {
+                        "schema": "notify.agent-job.v1",
+                        "job_id": "health-remediation",
+                        "incident": {"id": "inc-health-legacy"},
+                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
+                    },
+                    config,
+                )
+
     def test_profile_owns_target_identity_and_event_is_only_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             cwd = Path(tempdir).resolve()

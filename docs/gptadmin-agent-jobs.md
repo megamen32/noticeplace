@@ -71,6 +71,33 @@ instruction. Agent Herder performs the canonical CWD/existence check in its own
 runtime boundary. Incident values are length-bounded and explicitly labeled as
 untrusted telemetry.
 
+The health workflow adds a second fixed profile, `health-remediation`. It is
+not selected by event data: the profile itself pins the remediation target and
+the exact execution contract, while the event is allowed to carry only the
+already signed plan choice and bounded health telemetry:
+
+```json
+{
+  "health-remediation": {
+    "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+    "harness": "hermes",
+    "name": "health_remediation_100",
+    "cwd": "/home/roomhacker/ServersAdministartion",
+    "mode": "queue",
+    "model": "gpt-5.6-luna",
+    "reasoning": "high",
+    "topic": "health",
+    "instruction": "Apply only the selected health remediation plan and report useful progress."
+  }
+}
+```
+
+For this profile the helper rejects a missing or altered selection and sends
+the model to Agent Herder before the first message. The durable NoticePlace
+selection creates exactly one `gptadmin.agent:health-remediation` delivery;
+the delivery worker must have the matching signed GPTAdmin webhook route
+configured before enabling the profile.
+
 Configure the GPTAdmin route with `"signature_version":"v2"`, HMAC
 authentication, the fixed
 `shell:<host>` target, `bounded_autonomous` approval, and this command:

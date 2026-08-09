@@ -1,0 +1,26 @@
+{
+  "profiles": {
+    "health-diagnosis": {
+      "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+      "harness": "opencode",
+      "name": "health_diagnosis_100",
+      "cwd": "/home/roomhacker/ServersAdministartion",
+      "mode": "queue",
+      "model": "omniroute/subagent",
+      "reasoning": "high",
+      "topic": "health",
+      "instruction": "Diagnose the bounded health telemetry read-only. Use OmniRoute for analysis, do not change infrastructure, and return exactly three reversible remediation plans."
+    },
+    "health-remediation": {
+      "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+      "harness": "hermes",
+      "name": "health_remediation_100",
+      "cwd": "/home/roomhacker/ServersAdministartion",
+      "mode": "queue",
+      "model": "gpt-5.6-luna",
+      "reasoning": "high",
+      "topic": "health",
+      "instruction": "Apply only the selected health remediation plan. Keep useful progress visible, preserve evidence, and do not delete data or reboot."
+    }
+  }
+}
