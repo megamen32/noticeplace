@@ -2,7 +2,13 @@
 
 This bundle keeps the demo path versioned without committing credentials:
 
-`GPTAdmin webhook → Agent Herder → OpenCode → Notify MCP shim → Notify HTTP → adapter`
+`GPTAdmin webhook → Agent Herder HTTP → harness stdio shim → harness`
+
+Agent Herder is one singleton HTTP control plane. Every harness keeps the
+`agent-herder` MCP capability, but its local stdio process is only the small
+[`http-mcp-stdio.js`](../../../agent-herder/src/http-mcp-stdio.ts) bridge; it
+does not start another Herder or another adapter set. The same bridge is used
+by OpenCode, Codex, and Hermes.
 
 The OpenCode process never receives ADB or phone-adapter credentials. Only the
 central Notification Center owns delivery adapters.
@@ -23,7 +29,8 @@ central Notification Center owns delivery adapters.
 3. Create `~/.config/agent-herder/opencode.env` with the local OpenCode
    server password and mode `0600`, then install
    `agent-herder.service.d.conf` into the Agent Herder user unit drop-in.
-4. Merge [`opencode.notify.jsonc`](opencode.notify.jsonc) into the existing
+4. Merge [`opencode.notify.jsonc`](opencode.notify.jsonc) and
+   [`agent-herder-http.jsonc`](agent-herder-http.jsonc) into the existing
    OpenCode config; do not replace the operator's full config.
 
 The snippets are intentionally secret-free. Roll back by reverting the commit
