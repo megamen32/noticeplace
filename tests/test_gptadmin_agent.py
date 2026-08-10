@@ -323,6 +323,9 @@ class GptAdminAgentJobTests(unittest.TestCase):
     def test_health_terminal_receipt_is_parsed_without_optional_session_id(self) -> None:
         parsed = GptAdminAgentJobAdapter._bounded_agent_receipt({
             "result": {
+                "session_id": "token:raw-session",
+                "profile": "api-key:raw-profile",
+                "trace_refs": ["secret:raw-trace"],
                 "plan_id": "repair",
                 "observed_state": "healthy",
                 "verification_id": "verification-1",
@@ -333,6 +336,9 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("repair", parsed["plan_id"])
         self.assertEqual("healthy", parsed["observed_state"])
         self.assertEqual("probe-b", parsed["verifier_id"])
+        self.assertEqual("token=[redacted]", parsed["session_id"])
+        self.assertEqual("api-key=[redacted]", parsed["profile"])
+        self.assertEqual(["secret=[redacted]"], parsed["trace_refs"])
 
     def test_worker_delivers_only_the_configured_agent_job_adapter(self) -> None:
         created = self.center.create_event("allowed", "disk-event-3", self.event)
@@ -506,6 +512,51 @@ class GptAdminAgentJobTests(unittest.TestCase):
         )
         self.assertFalse(result["accepted"])
         self.assertEqual("open", center.get_incident(created["incident_id"])["state"])
+
+    def test_heartbeat_only_terminal_receipt_cannot_resolve_incident(self) -> None:
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "health-remediation-heartbeat.sqlite3",
+            {"health-token": {"project": "health-monitor", "max_severity": "critical"}},
+            default_quiet_hours=[],
+        )
+        workflow = HealthWorkflow(center, callback_secret="x" * 32)
+        created = workflow.intake_signal(
+            "health-token",
+            "health-heartbeat-intake",
+            {
+                "project": "health-monitor", "recipient": "health", "severity": "critical",
+                "title": "Synthetic source degradation", "body": "The source fingerprint changed.",
+                "dedup_key": "health:source-a:heartbeat", "source_id": "source-a",
+                "source_fingerprint": "source-fp-1", "host_id": "host-a", "signal_type": "disk",
+            },
+        )
+        workflow.attach_plans(created["incident_id"], "health-heartbeat-plans", [
+            {"plan_id": "observe", "title": "Observe", "summary": "Capture", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Verify", "step": "verify"},
+        ], actor="omniroute")
+        workflow.select_plan(created["incident_id"], "health-heartbeat-selection", "repair", "telegram:42")
+
+        result = center.record_agent_job_result(
+            created["incident_id"],
+            "health-heartbeat-delivery",
+            "health-remediation",
+            {
+                "job_id": "hub-health-heartbeat",
+                "status": "completed",
+                "elapsed_ms": 100,
+                "agent_receipt": {
+                    "plan_id": "repair", "step": "heartbeat", "progress_fingerprint": "heartbeat-only",
+                    "evidence_refs": [], "source_id": "source-a", "source_fingerprint": "source-fp-1",
+                    "verification_id": "verification-heartbeat", "verifier_id": "probe-b",
+                    "observed_state": "healthy",
+                },
+            },
+            {"selection": {"plan_id": "repair"}, "source_id": "source-a", "source_fingerprint": "source-fp-1"},
+        )
+        self.assertFalse(result["accepted"])
+        self.assertEqual("open", center.get_incident(created["incident_id"])["state"])
+        self.assertIsNone(center.latest_health_event(created["incident_id"], "health.resolved"))
         self.assertIsNone(center.latest_health_event(created["incident_id"], "health.resolved"))
 
     def test_terminal_failed_job_is_recorded_once_without_retry(self) -> None:

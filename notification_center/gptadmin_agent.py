@@ -202,29 +202,29 @@ class GptAdminAgentJobAdapter:
         if parsed_stdout is None:
             return {}
         evidence_refs = parsed_stdout.get("evidence_refs")
-        bounded_evidence_refs = [str(item)[:128] for item in evidence_refs[:10]] if isinstance(evidence_refs, list) else []
+        bounded_evidence_refs = [_safe_health_ref(item, 128) for item in evidence_refs[:10]] if isinstance(evidence_refs, list) else []
         return {
-            "session_id": str(parsed_stdout.get("session_id") or parsed_stdout.get("sessionId") or "")[:128],
-            "profile": str(parsed_stdout.get("profile") or "")[:128],
-            "harness": str(parsed_stdout.get("harness") or "")[:32],
-            "name": str(parsed_stdout.get("name") or "")[:128],
-            "plan_id": str(parsed_stdout.get("plan_id") or "")[:64],
-            "model": str(parsed_stdout.get("model") or "")[:128],
-            "reasoning": str(parsed_stdout.get("reasoning") or "")[:16],
-            "topic": str(parsed_stdout.get("topic") or "")[:64],
+            "session_id": _safe_health_ref(parsed_stdout.get("session_id") or parsed_stdout.get("sessionId") or "", 128),
+            "profile": _safe_health_ref(parsed_stdout.get("profile") or "", 128),
+            "harness": _safe_health_ref(parsed_stdout.get("harness") or "", 32),
+            "name": _safe_health_ref(parsed_stdout.get("name") or "", 128),
+            "plan_id": _safe_health_ref(parsed_stdout.get("plan_id") or "", 64),
+            "model": _safe_health_ref(parsed_stdout.get("model") or "", 128),
+            "reasoning": _safe_health_ref(parsed_stdout.get("reasoning") or "", 16),
+            "topic": _safe_health_ref(parsed_stdout.get("topic") or "", 64),
             "created": parsed_stdout.get("created") is True,
-            "delivery": str(parsed_stdout.get("delivery") or "")[:32],
-            "step": str(parsed_stdout.get("step") or "")[:128],
-            "progress_fingerprint": str(parsed_stdout.get("progress_fingerprint") or "")[:128],
+            "delivery": _safe_health_ref(parsed_stdout.get("delivery") or "", 32),
+            "step": _safe_health_ref(parsed_stdout.get("step") or "", 128),
+            "progress_fingerprint": _safe_health_ref(parsed_stdout.get("progress_fingerprint") or "", 128),
             "evidence_refs": bounded_evidence_refs,
-            "trace_refs": [str(item)[:128] for item in parsed_stdout.get("trace_refs", [])[:16]] if isinstance(parsed_stdout.get("trace_refs"), list) else [],
-            "correlation_id": str(parsed_stdout.get("correlation_id") or "")[:128],
+            "trace_refs": [_safe_health_ref(item, 128) for item in parsed_stdout.get("trace_refs", [])[:16]] if isinstance(parsed_stdout.get("trace_refs"), list) else [],
+            "correlation_id": _safe_health_ref(parsed_stdout.get("correlation_id") or "", 128),
             "useful_progress": parsed_stdout.get("useful_progress") is True,
-            "verification_id": str(parsed_stdout.get("verification_id") or "")[:128],
-            "source_id": str(parsed_stdout.get("source_id") or "")[:128],
-            "source_fingerprint": str(parsed_stdout.get("source_fingerprint") or parsed_stdout.get("fingerprint") or "")[:128],
-            "verifier_id": str(parsed_stdout.get("verifier_id") or parsed_stdout.get("verification_source_id") or "")[:128],
-            "observed_state": str(parsed_stdout.get("observed_state") or "")[:32],
+            "verification_id": _safe_health_ref(parsed_stdout.get("verification_id") or "", 128),
+            "source_id": _safe_health_ref(parsed_stdout.get("source_id") or "", 128),
+            "source_fingerprint": _safe_health_ref(parsed_stdout.get("source_fingerprint") or parsed_stdout.get("fingerprint") or "", 128),
+            "verifier_id": _safe_health_ref(parsed_stdout.get("verifier_id") or parsed_stdout.get("verification_source_id") or "", 128),
+            "observed_state": _safe_health_ref(parsed_stdout.get("observed_state") or "", 32),
         }
 
     def _open(self, request: urllib.request.Request, timeout: float) -> dict[str, Any]:

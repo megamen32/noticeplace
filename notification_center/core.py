@@ -1098,7 +1098,7 @@ class NotificationCenter:
                     progress_step,
                     evidence_refs,
                     progress_fingerprint,
-                    False,
+                    progress_step.strip().lower() in {"heartbeat", "keepalive", "heartbeat-only"},
                     "agent-herder",
                 )
             observed_state = self._health_text(agent_receipt.get("observed_state") or "", 32).lower()
