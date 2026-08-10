@@ -175,7 +175,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         requests: list[object] = []
         responses = iter([
             _Response(202, {"route_id": "notify-repair-100", "job_id": "hub-job-1", "status": "accepted"}),
-            _Response(200, {"route_id": "notify-repair-100", "job_id": "hub-job-1", "status": "completed", "result": {"response": {"structuredContent": {"result": {"stdout": "log line\n{\"ok\":true,\"session_id\":\"codex-1\",\"profile\":\"repair_100\",\"harness\":\"codex\",\"name\":\"repair_100\",\"created\":false,\"delivery\":\"accepted\"}\n"}}}}}),
+            _Response(200, {"route_id": "notify-repair-100", "job_id": "hub-job-1", "status": "completed", "result": {"raw_output": "secret:raw-session", "response": {"structuredContent": {"result": {"stdout": "log line\n{\"ok\":true,\"session_id\":\"codex-1\",\"profile\":\"repair_100\",\"harness\":\"codex\",\"name\":\"repair_100\",\"created\":false,\"delivery\":\"accepted\"}\n"}}}}}),
         ])
 
         def runner(request: object, **_kwargs: object) -> _Response:
@@ -198,6 +198,8 @@ class GptAdminAgentJobTests(unittest.TestCase):
 
         self.assertEqual("completed", result["status"])
         self.assertEqual("codex-1", result["agent_receipt"]["session_id"])
+        self.assertNotIn("raw-session", json.dumps(result))
+        self.assertNotIn("raw_output", json.dumps(result))
         self.assertEqual(2, len(requests))
         post, poll = requests
         self.assertEqual("POST", post.get_method())
@@ -669,6 +671,18 @@ class GptAdminAgentJobTests(unittest.TestCase):
         })
         self.assertEqual("progressing", progressing["state"])
         self.assertTrue(progressing["useful_progress"])
+        heartbeat_only = supervisor.observe({
+            "status": "running",
+            "progress": [{
+                "received_at": 109,
+                "step": "heartbeat",
+                "fingerprint": "heartbeat-only",
+                "evidence_refs": [],
+                "useful_progress": True,
+            }],
+        })
+        self.assertEqual("waiting", heartbeat_only["state"])
+        self.assertFalse(heartbeat_only["useful_progress"])
         stalled = HealthProgressSupervisor(stale_after_seconds=10, now=lambda: 120).observe({
             "status": "running",
             "progress": [{"received_at": 100, "fingerprint": "fp-1", "evidence_refs": ["trace-1"], "useful_progress": True}],

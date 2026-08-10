@@ -41,6 +41,18 @@ def _bounded_health_execution(value: Any) -> dict[str, str]:
     return result
 
 
+def _is_useful_progress_entry(item: Mapping[str, Any]) -> bool:
+    """Require evidence for useful work and reject heartbeat-only labels."""
+    if item.get("useful_progress") is not True:
+        return False
+    step = _safe_health_ref(item.get("step"), 128).strip().lower()
+    evidence_refs = item.get("evidence_refs")
+    has_evidence = isinstance(evidence_refs, list) and any(
+        _safe_health_ref(ref, 128).strip() for ref in evidence_refs[:16]
+    )
+    return not (step in {"heartbeat", "keepalive", "heartbeat-only"} and not has_evidence)
+
+
 class HealthProgressSupervisor:
     """Classify useful work from durable receipts, ignoring heartbeat-only entries."""
 
@@ -52,7 +64,7 @@ class HealthProgressSupervisor:
         status = str(job.get("status") or "unknown")
         progress = job.get("progress")
         entries = [item for item in progress if isinstance(item, Mapping)] if isinstance(progress, list) else []
-        useful = [item for item in entries if item.get("useful_progress") is True]
+        useful = [item for item in entries if _is_useful_progress_entry(item)]
         if status in _TERMINAL_STATES:
             state = "terminal"
         elif not useful:
@@ -321,5 +333,31 @@ class GptAdminAgentJobAdapter:
                 progress_callback(current)
         current["agent_receipt"] = self._bounded_agent_receipt(current)
         current["supervision"] = self._supervisor.observe(current)
-        current["elapsed_ms"] = max(0, int((self._now() - started_at) * 1000))
-        return current
+        elapsed_ms = max(0, int((self._now() - started_at) * 1000))
+        return self._bounded_terminal_response(current, elapsed_ms)
+
+    @staticmethod
+    def _bounded_terminal_response(job: Mapping[str, Any], elapsed_ms: int) -> dict[str, Any]:
+        """Return only the stable terminal envelope; never expose raw Hub result data."""
+        response: dict[str, Any] = {
+            "job_id": _safe_health_ref(job.get("job_id"), 128),
+            "route_id": _safe_health_ref(job.get("route_id"), 128),
+            "status": _safe_health_ref(job.get("status"), 32),
+            "agent_receipt": job.get("agent_receipt") if isinstance(job.get("agent_receipt"), Mapping) else {},
+            "elapsed_ms": max(0, min(86_400_000, int(elapsed_ms))),
+        }
+        if job.get("error") is not None:
+            response["error"] = _safe_health_ref(job.get("error"), 256)
+        supervision = job.get("supervision")
+        if isinstance(supervision, Mapping):
+            response["supervision"] = {
+                "state": _safe_health_ref(supervision.get("state"), 32),
+                "useful_progress": supervision.get("useful_progress") is True,
+                "last_useful_at": _safe_health_ref(supervision.get("last_useful_at"), 64),
+                "progress_fingerprint": _safe_health_ref(supervision.get("progress_fingerprint"), 128),
+                "evidence_refs": [
+                    _safe_health_ref(ref, 128)
+                    for ref in supervision.get("evidence_refs", [])[:16]
+                ] if isinstance(supervision.get("evidence_refs"), list) else [],
+            }
+        return response
