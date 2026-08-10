@@ -557,6 +557,39 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertFalse(result["accepted"])
         self.assertEqual("open", center.get_incident(created["incident_id"])["state"])
         self.assertIsNone(center.latest_health_event(created["incident_id"], "health.resolved"))
+
+    def test_heartbeat_only_running_progress_is_not_recorded(self) -> None:
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "health-running-heartbeat.sqlite3",
+            {"health-token": {"project": "health-monitor", "max_severity": "critical"}},
+            default_quiet_hours=[],
+        )
+        workflow = HealthWorkflow(center, callback_secret="x" * 32)
+        created = workflow.intake_signal(
+            "health-token",
+            "health-running-heartbeat-intake",
+            {
+                "project": "health-monitor", "recipient": "health", "severity": "critical",
+                "title": "Synthetic source degradation", "body": "The source fingerprint changed.",
+                "dedup_key": "health:source-a:running-heartbeat", "source_id": "source-a",
+                "source_fingerprint": "source-fp-1", "host_id": "host-a", "signal_type": "disk",
+            },
+        )
+        workflow.attach_plans(created["incident_id"], "health-running-heartbeat-plans", [
+            {"plan_id": "observe", "title": "Observe", "summary": "Capture", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Verify", "step": "verify"},
+        ], actor="omniroute")
+        workflow.select_plan(created["incident_id"], "health-running-heartbeat-selection", "repair", "telegram:42")
+
+        recorded = center.record_health_agent_progress(
+            created["incident_id"],
+            "health-running-heartbeat-delivery",
+            {"health_selection": {"plan_id": "repair"}},
+            {"progress": [{"plan_id": "repair", "step": "heartbeat", "fingerprint": "heartbeat-only", "evidence_refs": [], "useful_progress": True}]},
+        )
+        self.assertEqual([], recorded)
+        self.assertIsNone(center.latest_health_event(created["incident_id"], "health.progress"))
         self.assertIsNone(center.latest_health_event(created["incident_id"], "health.resolved"))
 
     def test_terminal_failed_job_is_recorded_once_without_retry(self) -> None:

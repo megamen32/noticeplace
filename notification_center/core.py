@@ -1013,7 +1013,7 @@ class NotificationCenter:
                     step,
                     evidence_refs,
                     fingerprint,
-                    False,
+                    step.strip().lower() in {"heartbeat", "keepalive", "heartbeat-only"},
                     "agent-herder",
                 )
             except ValidationError as error:
