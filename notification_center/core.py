@@ -1870,6 +1870,27 @@ class NotificationCenter:
                 counts: dict[str, int] = {}
                 for item in notification_rows:
                     counts[item["status"]] = counts.get(item["status"], 0) + 1
+                audit_items = [
+                    {"type": audit_row["type"], "actor": audit_row["actor"], "created_at": audit_row["created_at"], "payload": self._history_payload(audit_row["payload_json"])}
+                    for audit_row in audit
+                ]
+                health_plans: list[dict[str, str]] = []
+                for audit_item in audit_items:
+                    if audit_item["type"] != "health.plans_attached" or not isinstance(audit_item["payload"], Mapping):
+                        continue
+                    raw_plans = audit_item["payload"].get("plans")
+                    if not isinstance(raw_plans, list):
+                        continue
+                    health_plans = [
+                        {
+                            "plan_id": str(plan.get("plan_id") or plan.get("id") or "")[:64],
+                            "title": str(plan.get("title") or plan.get("plan_id") or plan.get("id") or "")[:128],
+                        }
+                        for plan in raw_plans[:3]
+                        if isinstance(plan, Mapping)
+                    ]
+                    if health_plans:
+                        break
                 history.append({
                     "event_id": str(row["event_id"]),
                     "incident_id": incident_id,
@@ -1895,10 +1916,8 @@ class NotificationCenter:
                     "children": [dict(child) for child in children],
                     "notifications": notification_rows,
                     "outcome": {"incident_state": str(row["state"]), "notification_counts": counts},
-                    "audit": [
-                        {"type": audit_row["type"], "actor": audit_row["actor"], "created_at": audit_row["created_at"], "payload": self._history_payload(audit_row["payload_json"])}
-                        for audit_row in audit
-                    ],
+                    "health_plans": health_plans,
+                    "audit": audit_items,
                 })
             return history
 

@@ -17,6 +17,7 @@ from pathlib import Path
 from notification_center.admin import AdminConfigStore
 from notification_center.admin_http import build_admin_handler
 from notification_center.core import NotificationCenter
+from notification_center.health_workflow import HealthWorkflow
 
 
 class AdminConsoleTests(unittest.TestCase):
@@ -201,6 +202,41 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertIn(f'/admin/?history={child["incident_id"]}#event-history'.encode(), page)
         self.assertIn(b"sent", page)
         self.assertNotIn(b"old-token", page)
+
+    def test_health_history_shows_all_three_plan_names(self) -> None:
+        center = self.store._consumer_notification_center()
+        workflow = HealthWorkflow(center, callback_secret="x" * 32)
+        created = workflow.intake_signal(
+            "old-token",
+            "admin-health-intake",
+            {
+                "project": "existing",
+                "recipient": "me",
+                "severity": "notice",
+                "title": "Health degradation",
+                "body": "Disk pressure",
+                "dedup_key": "health:admin:disk",
+                "source_id": "node-admin",
+                "host_id": "node-admin",
+                "signal_type": "disk",
+            },
+        )
+        workflow.attach_plans(
+            created["incident_id"],
+            "admin-health-plans",
+            [
+                {"plan_id": "observe", "title": "Observe", "summary": "Observe", "step": "observe"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Repair", "step": "repair"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Verify", "step": "verify"},
+            ],
+            actor="omniroute",
+            correlation_id="corr:admin-health",
+        )
+        status, page = self._request("GET", f"/admin/?history={created['incident_id']}")
+        self.assertEqual(200, status)
+        self.assertIn(b"Health plans (3)", page)
+        for plan in (b"observe: Observe", b"repair: Repair", b"verify: Verify"):
+            self.assertIn(plan, page)
 
     def test_generic_consumer_builder_does_not_require_legacy_fields(self) -> None:
         status, page = self._request("GET", "/admin/")
