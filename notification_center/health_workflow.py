@@ -336,7 +336,8 @@ class HealthWorkflow:
         safe_fingerprint = _bounded_text(progress_fingerprint, 128)
         if not (safe_step or safe_refs or safe_fingerprint):
             raise ValidationError("health progress requires a non-empty step, evidence, or fingerprint")
-        if heartbeat_at is not None and not (safe_refs or safe_fingerprint):
+        heartbeat_label = safe_step.strip().lower() in {"heartbeat", "keepalive", "heartbeat-only"}
+        if heartbeat_at is not None and not safe_refs and heartbeat_label:
             raise ValidationError("heartbeat-only health progress is not accepted")
         result = self._center.record_health_progress(
             incident_id,

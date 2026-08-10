@@ -160,6 +160,20 @@ class HttpApiTests(unittest.TestCase):
             (incident_id,),
         ).fetchone()["count"])
 
+        status, heartbeat_with_fingerprint = self.request(
+            "POST",
+            f"/v1/incidents/{incident_id}/health/progress",
+            {"plan_id": "repair", "step": "heartbeat", "evidence_refs": [], "progress_fingerprint": "heartbeat-only", "heartbeat_at": 123},
+            **auth,
+            **{"Idempotency-Key": "health-heartbeat-fingerprint-only-1"},
+        )
+        self.assertEqual(400, status)
+        self.assertIn("heartbeat-only", str(heartbeat_with_fingerprint["error"]))
+        self.assertEqual(0, self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM events WHERE incident_id = ? AND event_type = 'health.progress'",
+            (incident_id,),
+        ).fetchone()["count"])
+
         progress = {"plan_id": "repair", "step": "capture", "evidence_refs": ["fresh:snapshot"], "progress_fingerprint": "fp-progress", "actor": "herder"}
         status, first_progress = self.request("POST", f"/v1/incidents/{incident_id}/health/progress", progress, **auth, **{"Idempotency-Key": "health-progress-1"})
         self.assertEqual(200, status)

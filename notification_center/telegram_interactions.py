@@ -44,6 +44,8 @@ class TelegramActionCodec:
             return None
         if len(parts) == 4:
             action, incident_id, signature = parts[1:]
+            if action == "health_plan":
+                return None
             expected = self.encode(action, incident_id).rsplit(":", 1)[1]
             if not hmac.compare_digest(signature, expected):
                 return None
@@ -125,7 +127,7 @@ class TelegramInteractionPoller:
                     self._answer(callback_id, "plan: selected")
                     return
             self._answer(callback_id, "Invalid action")
-        except ValidationError as error:
+        except (ValidationError, ValueError) as error:
             self._answer(callback_id, str(error)[:180])
 
     def _handle_message(self, message: dict[str, Any]) -> None:

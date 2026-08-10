@@ -164,6 +164,24 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertEqual(1, poller.poll_once())
         self.assertIn(("answerCallbackQuery", {"callback_query_id": "cb-malformed", "text": "Invalid action"}), calls)
 
+    def test_malformed_health_plan_callback_without_plan_is_answered_without_stopping_poller(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+        update = {"update_id": 12, "callback_query": {"id": "cb-health-malformed", "from": {"id": 42}, "data": "n:health_plan:incident:signature"}}
+
+        def api(method: str, payload: dict[str, object]) -> dict[str, object]:
+            calls.append((method, payload))
+            return {"ok": True, "result": [update] if method == "getUpdates" else True}
+
+        poller = TelegramInteractionPoller(
+            self.center,
+            "bot-token",
+            {"42"},
+            TelegramActionCodec("x" * 32),
+            api=api,
+        )
+        self.assertEqual(1, poller.poll_once())
+        self.assertIn(("answerCallbackQuery", {"callback_query_id": "cb-health-malformed", "text": "Invalid action"}), calls)
+
     def test_selected_plan_creates_one_remediation_request_with_execution_profile(self) -> None:
         self.workflow.attach_plans(self.created["incident_id"], "plans-remediation", self._plans(), actor="omniroute")
         selected = self.workflow.select_plan(self.created["incident_id"], "selection-remediation", "repair", "telegram:42")

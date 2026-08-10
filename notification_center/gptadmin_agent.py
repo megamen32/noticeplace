@@ -255,7 +255,7 @@ class GptAdminAgentJobAdapter:
         bounded_incident: dict[str, str] = {}
         for field in _INCIDENT_FIELDS:
             value = str(incident.get(field) if incident.get(field) is not None else "")
-            bounded_incident[field] = " ".join(value.replace("\x00", "").splitlines())[:_INCIDENT_LIMITS[field]]
+            bounded_incident[field] = sanitize_bounded_text(value, _INCIDENT_LIMITS[field])
         event = {
             "schema": "notify.agent-job.v1",
             "job_id": self.job_id,

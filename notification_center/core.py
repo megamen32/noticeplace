@@ -1162,14 +1162,14 @@ class NotificationCenter:
         except (TypeError, ValueError):
             elapsed_ms = 0
         summary = {
-            "delivery_id": delivery_id,
-            "agent_job": job_name,
-            "hub_job_id": str(receipt.get("job_id") or "")[:128],
-            "route_id": str(receipt.get("route_id") or "")[:128],
-            "status": str(receipt.get("status") or "")[:32],
-            "session_id": str(result.get("session_id") or result.get("sessionId") or "")[:128],
+            "delivery_id": self._health_text(delivery_id, 128),
+            "agent_job": self._health_text(job_name, 128),
+            "hub_job_id": self._health_text(receipt.get("job_id") or "", 128),
+            "route_id": self._health_text(receipt.get("route_id") or "", 128),
+            "status": self._health_text(receipt.get("status") or "", 32),
+            "session_id": self._health_text(result.get("session_id") or result.get("sessionId") or "", 128),
             "created": result.get("created") is True,
-            "delivery": str(result.get("delivery") or "")[:32],
+            "delivery": self._health_text(result.get("delivery") or "", 32),
             "elapsed_ms": elapsed_ms,
             "correlation_id": self._health_text(context.get("correlation_id") or result.get("correlation_id") or "", 128),
             "trace_refs": [self._health_text(item, 128) for item in (context.get("trace_refs") if isinstance(context.get("trace_refs"), list) else result.get("trace_refs", []))[:16]],
@@ -1538,7 +1538,8 @@ class NotificationCenter:
             evidence_refs = [bounded_evidence] if bounded_evidence else []
         safe_fingerprint = self._health_text(fingerprint or "", 128)
         has_progress_content = bool(safe_step or evidence_refs or safe_fingerprint)
-        heartbeat_only = bool(heartbeat) and not (evidence_refs or safe_fingerprint)
+        heartbeat_label = safe_step.strip().lower() in {"heartbeat", "keepalive", "heartbeat-only"}
+        heartbeat_only = bool(heartbeat) and not evidence_refs and heartbeat_label
         if not has_progress_content:
             raise ValidationError("health progress requires a non-empty step, evidence, or fingerprint")
         if heartbeat_only:

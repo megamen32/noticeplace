@@ -255,6 +255,71 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertNotIn("must-not-leak", json.dumps(outbound))
         self.assertNotIn("route-secret", json.dumps(outbound))
 
+    def test_adapter_sanitizes_secret_prefixes_in_incident_fields(self) -> None:
+        responses = iter([
+            _Response(202, {"route_id": "notify-repair-100", "job_id": "hub-job-secret", "status": "accepted"}),
+            _Response(200, {"route_id": "notify-repair-100", "job_id": "hub-job-secret", "status": "completed", "result": {"session_id": "codex-safe"}}),
+        ])
+        requests: list[object] = []
+
+        def runner(request: object, **_kwargs: object) -> _Response:
+            requests.append(request)
+            return next(responses)
+
+        adapter = GptAdminAgentJobAdapter(
+            "repair_100", "https://gptadmin.example/webhooks/v1/notify-repair-100", "route-secret",
+            runner=runner, now=lambda: 1_785_640_000, sleeper=lambda _seconds: None, poll_interval_seconds=0,
+        )
+        adapter.send(
+            {"incident": {
+                "id": "inc-secret",
+                "project": "infra",
+                "severity": "critical",
+                "title": "api-key:raw-title",
+                "body": "token:raw-body",
+                "dedup_key": "secret:raw-dedup",
+                "occurrences": 1,
+            }},
+            "secret-delivery",
+        )
+
+        outbound = json.loads(requests[0].data)
+        serialized = json.dumps(outbound)
+        self.assertNotIn("raw-title", serialized)
+        self.assertNotIn("raw-body", serialized)
+        self.assertNotIn("raw-dedup", serialized)
+        self.assertIn("api-key=[redacted]", serialized)
+        self.assertIn("token=[redacted]", serialized)
+
+    def test_terminal_agent_receipt_sanitizes_audit_fields(self) -> None:
+        created = self.center.create_event("allowed", "receipt-secret-event", self.event)
+        self.center.record_agent_job_result(
+            created["incident_id"],
+            "delivery-secret",
+            "repair_100",
+            {
+                "job_id": "api-key:raw-job",
+                "route_id": "token:raw-route",
+                "status": "completed",
+                "elapsed_ms": 1,
+                "agent_receipt": {
+                    "session_id": "secret:raw-session",
+                    "delivery": "Bearer raw-delivery-token",
+                },
+            },
+        )
+        audit = self.center._connection.execute(
+            "SELECT payload_json FROM audit_events WHERE incident_id = ? AND type = 'agent_job_completed'",
+            (created["incident_id"],),
+        ).fetchone()
+        serialized = str(audit["payload_json"])
+        self.assertNotIn("raw-job", serialized)
+        self.assertNotIn("raw-route", serialized)
+        self.assertNotIn("raw-session", serialized)
+        self.assertNotIn("raw-delivery-token", serialized)
+        self.assertIn("api-key=[redacted]", serialized)
+        self.assertIn("Bearer [redacted]", serialized)
+
     def test_health_terminal_receipt_is_parsed_without_optional_session_id(self) -> None:
         parsed = GptAdminAgentJobAdapter._bounded_agent_receipt({
             "result": {
