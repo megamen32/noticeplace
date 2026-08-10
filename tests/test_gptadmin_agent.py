@@ -461,7 +461,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         resolved = center.latest_health_event(created["incident_id"], "health.resolved")
         assert resolved is not None
         self.assertEqual(86_400_000, resolved["payload"]["elapsed_ms"])
-        self.assertEqual(["trace-remediation-1", "hub-health-remediation-1"], resolved["payload"]["trace_refs"])
+        self.assertEqual(["trace-remediation-1", "hub-health-remediation-1", "probe:source-a"], resolved["payload"]["trace_refs"])
         resolved_delivery = center._connection.execute(
             "SELECT status FROM deliveries WHERE delivery_key = ?",
             (f"{created['incident_id']}:telegram.main:health.resolved",),

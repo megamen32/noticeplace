@@ -433,7 +433,7 @@ class HealthWorkflowTests(unittest.TestCase):
         resolution = self.center.latest_health_event(self.created["incident_id"], "health.resolved")
         assert resolution is not None
         self.assertEqual(4200, resolution["payload"]["elapsed_ms"])
-        self.assertEqual(["trace-health-1"], resolution["payload"]["trace_refs"])
+        self.assertEqual(["trace-health-1", "independent probe"], resolution["payload"]["trace_refs"])
         self.assertEqual("source-a", resolution["payload"]["source_id"])
 
     def test_bounded_receipts_do_not_persist_raw_logs_or_secrets(self) -> None:

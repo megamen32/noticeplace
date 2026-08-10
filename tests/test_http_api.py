@@ -210,7 +210,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertIsNotNone(resolution)
         self.assertEqual("health:host-a:disk:1", resolution["payload"]["correlation_id"])
         self.assertEqual(3210, resolution["payload"]["elapsed_ms"])
-        self.assertEqual(["trace-http-1"], resolution["payload"]["trace_refs"])
+        self.assertEqual(["trace-http-1", "metric:disk", "independent:probe"], resolution["payload"]["trace_refs"])
 
     def test_event_audit_records_profile_and_trusted_ingress_without_auth_header(self) -> None:
         event = {

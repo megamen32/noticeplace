@@ -1705,12 +1705,21 @@ class NotificationCenter:
             return current
         original = self._health_original_event(incident_id) or {}
         correlation_id = self._health_text(original.get("correlation_id") or current.get("correlation_id") or "", 256)
+        resolved_trace_refs: list[str] = []
+        for values in (trace_refs, original.get("evidence_refs"), verification.get("evidence_refs")):
+            if not isinstance(values, list):
+                continue
+            for value in values[:16]:
+                bounded = self._health_text(value, 128)
+                if bounded and bounded not in resolved_trace_refs:
+                    resolved_trace_refs.append(bounded)
+        resolved_trace_refs = resolved_trace_refs[:16]
         resolved_payload = {
             "source_id": source_id,
             "verification_id": verification_id,
             "resolved_by": actor,
             "elapsed_ms": elapsed_ms if elapsed_ms is not None else 0,
-            "trace_refs": trace_refs or [],
+            "trace_refs": resolved_trace_refs,
         }
         if correlation_id:
             resolved_payload["correlation_id"] = correlation_id
