@@ -367,6 +367,21 @@ class HealthWorkflowTests(unittest.TestCase):
         resolved = self.center.resolve(self.created["incident_id"], "api")
         self.assertEqual("resolved", resolved["state"])
 
+    def test_remediation_actor_cannot_record_independent_verification(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "independent"):
+            self.center.record_health_verification(
+                self.created["incident_id"],
+                "agent-herder",
+                {
+                    "source_id": "source-a",
+                    "verifier_id": "agent-herder",
+                    "healthy": True,
+                    "fingerprint": "src-fp-1",
+                    "evidence": "self-check",
+                },
+                "agent-herder-verification",
+            )
+
     def test_workflow_verification_receipt_resolves_only_after_matching_source(self) -> None:
         self.workflow.attach_plans(self.created["incident_id"], "plans-workflow", self._plans(), actor="omniroute")
         self.workflow.select_plan(self.created["incident_id"], "selection-workflow", "verify", "telegram:42")

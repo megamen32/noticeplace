@@ -469,6 +469,30 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertIsNotNone(resolved_delivery)
         self.assertEqual("queued", resolved_delivery["status"])
 
+        mismatched = center.record_agent_job_result(
+            created["incident_id"],
+            delivery["id"],
+            "health-remediation",
+            {
+                "job_id": "hub-health-remediation-mismatch",
+                "status": "completed",
+                "elapsed_ms": 100,
+                "agent_receipt": {
+                    "plan_id": "repair",
+                    "step": "repair",
+                    "progress_fingerprint": "progress-fp-1",
+                    "evidence_refs": ["fresh:repair-receipt"],
+                    "source_id": "source-a",
+                    "source_fingerprint": "source-fp-1",
+                    "verification_id": "verification-1",
+                    "verifier_id": "evil-probe",
+                    "observed_state": "healthy",
+                },
+            },
+            center.delivery_payload(delivery)["health_context"],
+        )
+        self.assertFalse(mismatched["accepted"])
+
     def test_healthy_remediation_without_independent_verifier_stays_open(self) -> None:
         center = NotificationCenter(
             Path(self.tempdir.name) / "health-remediation-rejected.sqlite3",

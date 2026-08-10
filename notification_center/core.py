@@ -31,6 +31,7 @@ HEALTH_UPDATE_EVENT_TYPES = {
 }
 HEALTH_REMEDIATION_AGENT_JOB = "health-remediation"
 HEALTH_DIAGNOSIS_AGENT_JOB = "health-diagnosis"
+_HEALTH_REMEDIATION_ACTORS = {"agent-herder", "health-remediation"}
 
 
 class NotificationCenterError(Exception):
@@ -1110,7 +1111,7 @@ class NotificationCenter:
                     "reason": "an independent health verification receipt is required before remediation can resolve",
                     "progress": progress,
                 }
-            if verification_actor.lower() in {"agent-herder", "health-remediation"}:
+            if not self._health_verification_is_independent(verification):
                 raise ValidationError("health verification must come from an independent actor")
 
             source_id = self._health_text(verification.get("source_id") or "", 128)
@@ -1122,6 +1123,7 @@ class NotificationCenter:
             receipt_source_id = self._health_text(agent_receipt.get("source_id") or "", 128)
             receipt_fingerprint = self._health_text(agent_receipt.get("source_fingerprint") or agent_receipt.get("fingerprint") or "", 128)
             receipt_verification_id = self._health_text(agent_receipt.get("verification_id") or "", 128)
+            receipt_verifier_id = self._health_text(agent_receipt.get("verifier_id") or agent_receipt.get("verification_source_id") or "", 128)
             if not source_id or not verifier_id or not verification_id or not bool(verification.get("healthy")):
                 raise ValidationError("independent health verification receipt is incomplete or unhealthy")
             if receipt_source_id and receipt_source_id != source_id:
@@ -1130,6 +1132,8 @@ class NotificationCenter:
                 raise ValidationError("remediation receipt fingerprint does not match the independent verification")
             if receipt_verification_id and receipt_verification_id != verification_id:
                 raise ValidationError("remediation receipt verification does not match the independent verification")
+            if receipt_verifier_id and receipt_verifier_id != verifier_id:
+                raise ValidationError("remediation receipt verifier does not match the independent verification")
             if expected_source_id and source_id != expected_source_id:
                 raise ValidationError("health verification source must match the original source")
             if expected_fingerprint and source_fingerprint != expected_fingerprint:
@@ -1626,10 +1630,13 @@ class NotificationCenter:
             raise TypeError("record_health_verification expects either (actor, verification, idempotency_key) or (idempotency_key, source_id, verifier_id, observed_state, evidence_refs, actor)")
         source_id = self._health_text(source_id or "", 128)
         verifier_id = self._health_text(verifier_id or "", 128)
+        safe_actor = self._health_text(actor or "", 128)
         if not source_id or not verifier_id:
             raise ValidationError("health verification requires source and verifier identities")
         if source_id == verifier_id:
             raise ValidationError("health verification must be independent")
+        if not safe_actor or safe_actor.lower() in _HEALTH_REMEDIATION_ACTORS:
+            raise ValidationError("health verification must come from an independent actor")
         state = self._health_text(observed_state or "", 32).lower()
         if state not in {"healthy", "degraded"}:
             raise ValidationError("verification observed_state must be healthy or degraded")
@@ -1641,7 +1648,7 @@ class NotificationCenter:
         else:
             evidence_refs = [self._health_text(safe_evidence, 128)]
         payload = {
-            "actor": self._health_text(actor, 128),
+            "actor": safe_actor,
             "source_id": source_id,
             "verifier_id": verifier_id,
             "verification_id": self._health_text(verification_id or "", 128),
@@ -1690,6 +1697,8 @@ class NotificationCenter:
             raise ValidationError("health verification receipt does not match the requested verification")
         if not bool(verification.get("healthy")):
             raise ValidationError("health verification receipt must report healthy")
+        if not self._health_verification_is_independent(verification):
+            raise ValidationError("health verification receipt must come from an independent actor")
         if not self._healthy_verification_matches(incident_id):
             raise ValidationError("health verification receipt must match the original source fingerprint and remain independent")
         if current["state"] == "resolved":
@@ -1744,10 +1753,17 @@ class NotificationCenter:
                 continue
             if fingerprint and str(payload.get("fingerprint") or "").strip() != fingerprint:
                 continue
-            if str(payload.get("verifier_id") or "").strip() == source_id:
+            if not self._health_verification_is_independent(payload):
                 continue
             return True
         return False
+
+    def _health_verification_is_independent(self, verification: Mapping[str, Any]) -> bool:
+        """Apply one fail-closed authority predicate to every resolution path."""
+        source_id = self._health_text(verification.get("source_id") or "", 128)
+        verifier_id = self._health_text(verification.get("verifier_id") or "", 128)
+        actor = self._health_text(verification.get("actor") or "", 128)
+        return bool(source_id and verifier_id and actor) and source_id != verifier_id and actor.lower() not in _HEALTH_REMEDIATION_ACTORS
 
     def _require_health_resolution_gate(self, incident_id: str) -> None:
         incident = self.get_incident(incident_id)
