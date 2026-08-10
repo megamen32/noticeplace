@@ -382,6 +382,25 @@ class HealthWorkflowTests(unittest.TestCase):
                 "agent-herder-verification",
             )
 
+    def test_legacy_verification_without_identity_cannot_resolve(self) -> None:
+        self.workflow.attach_plans(self.created["incident_id"], "plans-legacy-verification", self._plans(), actor="gptadmin")
+        self.center.record_health_plan_selection(self.created["incident_id"], "observe", "telegram:42", "selection-legacy-verification")
+        self.center.record_health_progress(
+            self.created["incident_id"],
+            "worker",
+            {"plan_id": "observe", "step": "capture", "evidence_refs": ["snapshot"], "progress_fingerprint": "fp-legacy"},
+            "progress-legacy-verification",
+        )
+        self.center.record_health_update(
+            self.created["incident_id"],
+            "legacy-verification",
+            "health.verification_recorded",
+            {"source_id": "source-a", "verifier_id": "probe-b", "actor": "probe-b", "healthy": True, "evidence_refs": ["probe"]},
+            actor="probe-b",
+        )
+        with self.assertRaisesRegex(ValidationError, "verification"):
+            self.workflow.resolve(self.created["incident_id"], "source-a", "", "api")
+
     def test_workflow_verification_receipt_resolves_only_after_matching_source(self) -> None:
         self.workflow.attach_plans(self.created["incident_id"], "plans-workflow", self._plans(), actor="omniroute")
         self.workflow.select_plan(self.created["incident_id"], "selection-workflow", "verify", "telegram:42")

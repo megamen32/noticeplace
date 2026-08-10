@@ -1762,8 +1762,9 @@ class NotificationCenter:
         """Apply one fail-closed authority predicate to every resolution path."""
         source_id = self._health_text(verification.get("source_id") or "", 128)
         verifier_id = self._health_text(verification.get("verifier_id") or "", 128)
+        verification_id = self._health_text(verification.get("verification_id") or "", 128)
         actor = self._health_text(verification.get("actor") or "", 128)
-        return bool(source_id and verifier_id and actor) and source_id != verifier_id and actor.lower() not in _HEALTH_REMEDIATION_ACTORS
+        return bool(source_id and verifier_id and verification_id and actor) and source_id != verifier_id and actor.lower() not in _HEALTH_REMEDIATION_ACTORS
 
     def _require_health_resolution_gate(self, incident_id: str) -> None:
         incident = self.get_incident(incident_id)
