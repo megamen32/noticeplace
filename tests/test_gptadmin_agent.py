@@ -13,7 +13,8 @@ from pathlib import Path
 from unittest import mock
 
 from notification_center.core import AuthorizationError, NotificationCenter, ValidationError
-from notification_center.gptadmin_agent import GptAdminAgentJobAdapter
+from notification_center.health_workflow import HealthWorkflow
+from notification_center.gptadmin_agent import GptAdminAgentJobAdapter, HealthProgressSupervisor
 from notification_center.http_api import DeliveryWorker, gptadmin_agent_jobs_from_environment
 
 
@@ -88,6 +89,35 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual(first["agent_job_delivery_id"], second["agent_job_delivery_id"])
         rows = self.center._connection.execute(
             "SELECT COUNT(*) AS count FROM deliveries WHERE channel = 'gptadmin.agent:repair_100'"
+        ).fetchone()
+        self.assertEqual(1, rows["count"])
+
+    def test_health_diagnosis_is_once_per_open_deduplicated_incident(self) -> None:
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "health.sqlite3",
+            {"health-token": {"project": "health-monitor", "max_severity": "critical", "agent_jobs": ["health-diagnosis"]}},
+        )
+        event = {
+            "schema": "notify.event.v1",
+            "project": "health-monitor",
+            "recipient": "health",
+            "kind": "incident",
+            "severity": "critical",
+            "title": "Synthetic health degradation",
+            "body": "first observation",
+            "dedup_key": "health:host:server-100:cpu:fingerprint",
+            "event_type": "health.degraded",
+            "source_id": "host:server-100",
+            "host_id": "server-100",
+            "signal_type": "cpu",
+            "agent_job": "health-diagnosis",
+        }
+        first = center.create_event("health-token", "health-event-1", event)
+        second = center.create_event("health-token", "health-event-2", {**event, "body": "repeat observation"})
+        self.assertEqual(first["incident_id"], second["incident_id"])
+        self.assertEqual(first["agent_job_delivery_id"], second["agent_job_delivery_id"])
+        rows = center._connection.execute(
+            "SELECT COUNT(*) AS count FROM deliveries WHERE channel = 'gptadmin.agent:health-diagnosis'"
         ).fetchone()
         self.assertEqual(1, rows["count"])
 
@@ -186,6 +216,59 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual(set(("id", "project", "severity", "title", "body", "dedup_key", "occurrences")), set(outbound["incident"]))
         self.assertEqual(3000, len(outbound["incident"]["body"]))
 
+    def test_health_context_reaches_gptadmin_as_bounded_opaque_metadata(self) -> None:
+        responses = iter([
+            _Response(202, {"route_id": "notify-health", "job_id": "hub-health-1", "status": "accepted"}),
+            _Response(200, {"route_id": "notify-health", "job_id": "hub-health-1", "status": "completed", "result": {"session_id": "herder-1"}}),
+        ])
+        requests: list[object] = []
+
+        def runner(request: object, **_kwargs: object) -> _Response:
+            requests.append(request)
+            return next(responses)
+
+        adapter = GptAdminAgentJobAdapter(
+            "health-diagnosis", "https://gptadmin.example/webhooks/v1/notify-health", "route-secret",
+            runner=runner, now=lambda: 1_785_640_000, sleeper=lambda _seconds: None, poll_interval_seconds=0,
+        )
+        adapter.send(
+            {
+                "incident": {"id": "inc-health", "project": "infra", "severity": "critical", "title": "Disk", "body": "disk high", "dedup_key": "health:disk", "occurrences": 1},
+                "health_context": {"source_id": "host:100", "host_id": "100", "signal_type": "disk", "correlation_id": "corr-100", "trace_refs": ["trace-a", "secret=must-not-leak"]},
+                "health_plans": [{"plan_id": "observe", "title": "Observe", "summary": "bounded", "step": "observe"}],
+                "health_selection": {
+                    "plan_id": "repair",
+                    "actor": "telegram:42",
+                    "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"},
+                },
+            },
+            "health-delivery-1",
+        )
+        outbound = json.loads(requests[0].data)
+        self.assertEqual("corr-100", outbound["correlation_id"])
+        self.assertEqual(["trace-a", "secret=[redacted]"], outbound["trace_refs"])
+        self.assertEqual("host:100", outbound["health"]["source_id"])
+        self.assertEqual(1, len(outbound["health"]["plans"]))
+        self.assertEqual("repair", outbound["health"]["selection"]["plan_id"])
+        self.assertEqual("gpt-5.6-luna", outbound["health"]["selection"]["execution"]["model"])
+        self.assertEqual("high", outbound["health"]["selection"]["execution"]["reasoning"])
+        self.assertNotIn("must-not-leak", json.dumps(outbound))
+        self.assertNotIn("route-secret", json.dumps(outbound))
+
+    def test_health_terminal_receipt_is_parsed_without_optional_session_id(self) -> None:
+        parsed = GptAdminAgentJobAdapter._bounded_agent_receipt({
+            "result": {
+                "plan_id": "repair",
+                "observed_state": "healthy",
+                "verification_id": "verification-1",
+                "source_fingerprint": "source-fp-1",
+                "verifier_id": "probe-b",
+            },
+        })
+        self.assertEqual("repair", parsed["plan_id"])
+        self.assertEqual("healthy", parsed["observed_state"])
+        self.assertEqual("probe-b", parsed["verifier_id"])
+
     def test_worker_delivers_only_the_configured_agent_job_adapter(self) -> None:
         created = self.center.create_event("allowed", "disk-event-3", self.event)
         due = self.center.claim_due_deliveries(now_epoch=10**12)
@@ -207,6 +290,158 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         status = self.center._connection.execute("SELECT status FROM deliveries WHERE id = ?", (delivery["id"],)).fetchone()
         self.assertEqual("sent", status["status"])
+
+    def test_completed_health_remediation_closes_only_after_independent_verification(self) -> None:
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "health-remediation.sqlite3",
+            {"health-token": {"project": "health-monitor", "max_severity": "critical"}},
+            default_quiet_hours=[],
+        )
+        workflow = HealthWorkflow(center, callback_secret="x" * 32)
+        created = workflow.intake_signal(
+            "health-token",
+            "health-remediation-intake",
+            {
+                "project": "health-monitor",
+                "recipient": "health",
+                "severity": "critical",
+                "title": "Synthetic source degradation",
+                "body": "The source fingerprint changed.",
+                "dedup_key": "health:source-a:remediation",
+                "source_id": "source-a",
+                "source_fingerprint": "source-fp-1",
+                "host_id": "host-a",
+                "signal_type": "disk",
+            },
+        )
+        plans = [
+            {"plan_id": "observe", "title": "Observe", "summary": "Capture", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Verify", "step": "verify"},
+        ]
+        workflow.attach_plans(created["incident_id"], "health-remediation-plans", plans, actor="omniroute")
+        workflow.select_plan(created["incident_id"], "health-remediation-selection", "repair", "telegram:42")
+        due = center.claim_due_deliveries(now_epoch=10**12)
+        delivery = next(item for item in due if item["channel"] == "gptadmin.agent:health-remediation")
+
+        class Adapter:
+            def send_with_progress(self, _payload: dict[str, object], _idempotency_key: str, progress_callback: object) -> dict[str, object]:
+                assert callable(progress_callback)
+                progress_callback({
+                    "status": "running",
+                    "progress": [{
+                        "plan_id": "repair",
+                        "step": "repair",
+                        "fingerprint": "progress-fp-1",
+                        "evidence_refs": ["fresh:repair-receipt"],
+                        "useful_progress": True,
+                    }],
+                })
+                return {
+                    "job_id": "hub-health-remediation-1",
+                    "status": "completed",
+                    "elapsed_ms": 86_400_001,
+                    "agent_receipt": {
+                        "plan_id": "repair",
+                        "step": "repair",
+                        "progress_fingerprint": "progress-fp-1",
+                        "evidence_refs": ["fresh:repair-receipt"],
+                        "source_id": "source-a",
+                        "source_fingerprint": "source-fp-1",
+                        "verification_id": "verification-1",
+                        "verifier_id": "probe-b",
+                        "observed_state": "healthy",
+                        "trace_refs": ["trace-remediation-1"],
+                        "useful_progress": True,
+                    },
+                }
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                raise AssertionError("health remediation must not send Telegram in this test")
+
+        worker = DeliveryWorker(center, Telegram(), agent_jobs={"health-remediation": Adapter()})
+        worker.deliver(delivery)
+
+        event_types = [
+            row["event_type"]
+            for row in center._connection.execute(
+                "SELECT event_type FROM events WHERE incident_id = ? ORDER BY created_at, rowid",
+                (created["incident_id"],),
+            ).fetchall()
+        ]
+        self.assertIn("health.progress", event_types)
+        self.assertEqual(1, event_types.count("health.progress"))
+        self.assertIn("health.verification_recorded", event_types)
+        self.assertIn("health.resolved", event_types)
+        self.assertEqual("resolved", center.get_incident(created["incident_id"])["state"])
+        resolved = center.latest_health_event(created["incident_id"], "health.resolved")
+        assert resolved is not None
+        self.assertEqual(86_400_000, resolved["payload"]["elapsed_ms"])
+        self.assertEqual(["trace-remediation-1", "hub-health-remediation-1"], resolved["payload"]["trace_refs"])
+        resolved_delivery = center._connection.execute(
+            "SELECT status FROM deliveries WHERE delivery_key = ?",
+            (f"{created['incident_id']}:telegram.main:health.resolved",),
+        ).fetchone()
+        self.assertIsNotNone(resolved_delivery)
+        self.assertEqual("queued", resolved_delivery["status"])
+
+    def test_healthy_remediation_without_independent_verifier_stays_open(self) -> None:
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "health-remediation-rejected.sqlite3",
+            {"health-token": {"project": "health-monitor", "max_severity": "critical"}},
+            default_quiet_hours=[],
+        )
+        workflow = HealthWorkflow(center, callback_secret="x" * 32)
+        created = workflow.intake_signal(
+            "health-token",
+            "health-rejected-intake",
+            {
+                "project": "health-monitor",
+                "recipient": "health",
+                "severity": "critical",
+                "title": "Synthetic source degradation",
+                "body": "The source fingerprint changed.",
+                "dedup_key": "health:source-a:rejected",
+                "source_id": "source-a",
+                "source_fingerprint": "source-fp-1",
+                "host_id": "host-a",
+                "signal_type": "disk",
+            },
+        )
+        workflow.attach_plans(created["incident_id"], "health-rejected-plans", [
+            {"plan_id": "observe", "title": "Observe", "summary": "Capture", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Verify", "step": "verify"},
+        ], actor="omniroute")
+        workflow.select_plan(created["incident_id"], "health-rejected-selection", "repair", "telegram:42")
+        delivery = next(item for item in center.claim_due_deliveries(now_epoch=10**12) if item["channel"] == "gptadmin.agent:health-remediation")
+        payload = center.delivery_payload(delivery)
+        result = center.record_agent_job_result(
+            created["incident_id"],
+            delivery["id"],
+            "health-remediation",
+            {
+                "job_id": "hub-health-rejected-1",
+                "status": "completed",
+                "elapsed_ms": 1200,
+                "agent_receipt": {
+                    "plan_id": "repair",
+                    "step": "repair",
+                    "progress_fingerprint": "progress-fp-rejected",
+                    "evidence_refs": ["fresh:repair-receipt"],
+                    "source_id": "source-a",
+                    "source_fingerprint": "source-fp-1",
+                    "verification_id": "verification-missing-verifier",
+                    "observed_state": "healthy",
+                    "trace_refs": ["trace-rejected"],
+                },
+            },
+            payload["health_context"],
+        )
+        self.assertFalse(result["accepted"])
+        self.assertEqual("open", center.get_incident(created["incident_id"])["state"])
+        self.assertIsNone(center.latest_health_event(created["incident_id"], "health.resolved"))
 
     def test_terminal_failed_job_is_recorded_once_without_retry(self) -> None:
         created = self.center.create_event("allowed", "failed-agent-job", self.event)
@@ -273,6 +508,84 @@ class GptAdminAgentJobTests(unittest.TestCase):
             jobs = gptadmin_agent_jobs_from_environment()
         self.assertEqual(["repair_100"], list(jobs))
         self.assertEqual("repair_100", jobs["repair_100"].job_id)
+
+    def test_supervisor_classifies_useful_progress_and_ignores_heartbeat_only_updates(self) -> None:
+        supervisor = HealthProgressSupervisor(stale_after_seconds=10, now=lambda: 110)
+        progressing = supervisor.observe({
+            "status": "running",
+            "progress": [
+                {"received_at": 100, "step": "repair", "fingerprint": "fp-1", "evidence_refs": ["trace-1"], "useful_progress": True},
+                {"received_at": 105, "step": "repair", "fingerprint": "fp-1", "evidence_refs": ["trace-1"], "useful_progress": False},
+            ],
+        })
+        self.assertEqual("progressing", progressing["state"])
+        self.assertTrue(progressing["useful_progress"])
+        stalled = HealthProgressSupervisor(stale_after_seconds=10, now=lambda: 120).observe({
+            "status": "running",
+            "progress": [{"received_at": 100, "fingerprint": "fp-1", "evidence_refs": ["trace-1"], "useful_progress": True}],
+        })
+        self.assertEqual("stalled", stalled["state"])
+
+    def test_health_adapter_forwards_useful_progress_and_stops_when_it_stalls(self) -> None:
+        responses = iter([
+            _Response(202, {"route_id": "notify-health-remediation", "job_id": "hub-health-2", "status": "accepted"}),
+            _Response(200, {
+                "route_id": "notify-health-remediation",
+                "job_id": "hub-health-2",
+                "status": "running",
+                "progress": [{"received_at": 100, "step": "repair", "fingerprint": "fp-1", "evidence_refs": ["snapshot"], "useful_progress": True}],
+            }),
+            _Response(200, {
+                "route_id": "notify-health-remediation",
+                "job_id": "hub-health-2",
+                "status": "completed",
+                "result": {"session_id": "herder-health-2"},
+            }),
+        ])
+        observed: list[dict[str, object]] = []
+        adapter = GptAdminAgentJobAdapter(
+            "health-remediation",
+            "https://gptadmin.example/webhooks/v1/notify-health-remediation",
+            "route-secret",
+            runner=lambda *_args, **_kwargs: next(responses),
+            now=lambda: 100,
+            sleeper=lambda _seconds: None,
+            poll_interval_seconds=0,
+        )
+        adapter.send_with_progress(
+            {"incident": {"id": "inc-health", "project": "health-monitor", "severity": "critical", "title": "Disk", "body": "x", "dedup_key": "disk", "occurrences": 1}},
+            "health-delivery-2",
+            lambda job: observed.append(dict(job)),
+        )
+        self.assertTrue(any(item.get("progress") for item in observed))
+
+        stalled_responses = iter([
+            _Response(202, {"route_id": "notify-health-remediation", "job_id": "hub-health-3", "status": "accepted"}),
+            _Response(200, {
+                "route_id": "notify-health-remediation",
+                "job_id": "hub-health-3",
+                "status": "running",
+                "progress": [{"received_at": 100, "step": "repair", "fingerprint": "fp-old", "evidence_refs": ["snapshot"], "useful_progress": True}],
+            }),
+        ])
+        clock = iter([100])
+        def stalled_now() -> int:
+            return next(clock, 120)
+        stalled = GptAdminAgentJobAdapter(
+            "health-remediation",
+            "https://gptadmin.example/webhooks/v1/notify-health-remediation",
+            "route-secret",
+            stale_progress_seconds=10,
+            runner=lambda *_args, **_kwargs: next(stalled_responses),
+            now=stalled_now,
+            sleeper=lambda _seconds: None,
+            poll_interval_seconds=0,
+        )
+        with self.assertRaisesRegex(RuntimeError, "stalled without useful progress"):
+            stalled.send(
+                {"incident": {"id": "inc-health", "project": "health-monitor", "severity": "critical", "title": "Disk", "body": "x", "dedup_key": "disk", "occurrences": 1}},
+                "health-delivery-3",
+            )
 
 
 if __name__ == "__main__":

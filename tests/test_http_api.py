@@ -27,7 +27,7 @@ class HttpApiTests(unittest.TestCase):
         self.center = NotificationCenter(
             Path(self.tempdir.name) / "notify.sqlite3",
             {
-                "secret-token": {"project": "hermes", "max_severity": "critical", "agent_jobs": ["repair_100"]},
+                "secret-token": {"project": "hermes", "max_severity": "critical", "agent_jobs": ["repair_100", "health-diagnosis"]},
                 "notice-token": {"project": "hermes", "max_severity": "notice"},
             },
         )
@@ -105,6 +105,83 @@ class HttpApiTests(unittest.TestCase):
 
         status, _ = self.request("POST", f"/v1/incidents/{incident_id}/ack", {"actor": "attacker"}, Authorization="Bearer wrong-token")
         self.assertEqual(401, status)
+
+    def test_health_http_vertical_contract_has_one_incident_three_plans_useful_progress_and_verified_resolution(self) -> None:
+        signal = {
+            "schema": "notify.event.v1",
+            "project": "hermes",
+            "recipient": "me",
+            "kind": "incident",
+            "severity": "critical",
+            "title": "Disk pressure on host-a",
+            "body": "root filesystem is degraded",
+            "dedup_key": "health:host-a:disk:fp-1",
+            "event_type": "health.degraded",
+            "producer": "health-monitor",
+            "plugin": "health-incident-monitor",
+            "agent_job": "health-diagnosis",
+            "correlation_id": "health:host-a:disk:1",
+            "source_id": "host:host-a",
+            "host_id": "host-a",
+            "signal_type": "disk",
+            "evidence_refs": ["metric:disk"],
+            "health": {"source_id": "host:host-a", "host_id": "host-a", "signal_type": "disk"},
+        }
+        auth = {"Authorization": "Bearer secret-token"}
+        status, created = self.request("POST", "/v1/health/signals", signal, **auth, **{"Idempotency-Key": "health-signal-1"})
+        self.assertEqual(202, status)
+        incident_id = str(created["incident_id"])
+        self.assertEqual(1, len(self.center.list_incidents()))
+        self.assertEqual([], self.center.latest_health_plans(incident_id))
+
+        plans = [
+            {"plan_id": "observe", "title": "Observe", "summary": "Capture a fresh source snapshot", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Apply the selected reversible repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Independently confirm health", "step": "verify"},
+        ]
+        status, attached = self.request("POST", f"/v1/incidents/{incident_id}/health/plans", {"plans": plans, "actor": "omniroute"}, **auth, **{"Idempotency-Key": "health-plans-1"})
+        self.assertEqual(200, status)
+        self.assertEqual(3, len(self.center.latest_health_plans(incident_id)))
+        self.assertEqual(incident_id, attached["incident_id"])
+        self.assertEqual(1, len(self.center.list_incidents()))
+        self.center.record_health_plan_selection(incident_id, "repair", "telegram:42", "health-selection-1")
+
+        status, heartbeat_only = self.request(
+            "POST",
+            f"/v1/incidents/{incident_id}/health/progress",
+            {"plan_id": "repair", "step": "heartbeat", "evidence_refs": [], "progress_fingerprint": "", "heartbeat_at": 123},
+            **auth,
+            **{"Idempotency-Key": "health-heartbeat-only-1"},
+        )
+        self.assertEqual(400, status)
+        self.assertIn("heartbeat-only", str(heartbeat_only["error"]))
+        self.assertEqual(0, self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM events WHERE incident_id = ? AND event_type = 'health.progress'",
+            (incident_id,),
+        ).fetchone()["count"])
+
+        progress = {"plan_id": "repair", "step": "capture", "evidence_refs": ["fresh:snapshot"], "progress_fingerprint": "fp-progress", "actor": "herder"}
+        status, first_progress = self.request("POST", f"/v1/incidents/{incident_id}/health/progress", progress, **auth, **{"Idempotency-Key": "health-progress-1"})
+        self.assertEqual(200, status)
+        self.assertTrue(first_progress["useful_progress"])
+        status, heartbeat = self.request("POST", f"/v1/incidents/{incident_id}/health/progress", {**progress, "heartbeat_at": 123}, **auth, **{"Idempotency-Key": "health-progress-2"})
+        self.assertEqual(200, status)
+        self.assertFalse(heartbeat["useful_progress"])
+
+        status, blocked = self.request("POST", f"/v1/incidents/{incident_id}/health/resolve", {"source_id": "host:host-a", "verification_id": "verify-1", "actor": "api"}, **auth, **{"Idempotency-Key": "health-resolve-early"})
+        self.assertEqual(400, status)
+        self.assertIn("verification", str(blocked["error"]))
+        status, verification = self.request("POST", f"/v1/incidents/{incident_id}/health/verification", {"source_id": "host:host-a", "verification_id": "verify-1", "observed_state": "healthy", "evidence_refs": ["independent:probe"], "actor": "probe-b"}, **auth, **{"Idempotency-Key": "health-verification-1"})
+        self.assertEqual(200, status)
+        self.assertEqual("healthy", verification["observed_state"])
+        status, resolved = self.request("POST", f"/v1/incidents/{incident_id}/health/resolve", {"source_id": "host:host-a", "verification_id": "verify-1", "actor": "api", "elapsed_ms": 3210, "trace_refs": ["trace-http-1"]}, **auth, **{"Idempotency-Key": "health-resolve-1"})
+        self.assertEqual(200, status)
+        self.assertEqual("resolved", resolved["state"])
+        self.assertEqual(1, len(self.center.list_incidents()))
+        resolution = self.center.latest_health_event(incident_id, "health.resolved")
+        self.assertIsNotNone(resolution)
+        self.assertEqual(3210, resolution["payload"]["elapsed_ms"])
+        self.assertEqual(["trace-http-1"], resolution["payload"]["trace_refs"])
 
     def test_event_audit_records_profile_and_trusted_ingress_without_auth_header(self) -> None:
         event = {

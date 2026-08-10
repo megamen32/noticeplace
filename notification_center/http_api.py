@@ -11,16 +11,18 @@ import urllib.parse
 import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Mapping
 
 from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
 from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import GptAdminAgentJobAdapter
+from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
 ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log"))
+SUPPORTED_TELEGRAM_MODES = frozenset((*ACTIVE_TELEGRAM_MODES, "health"))
 
 
 def telegram_active_modes(raw: str) -> set[str]:
@@ -34,13 +36,15 @@ def telegram_active_modes(raw: str) -> set[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise RuntimeError("TELEGRAM_ACTIVE_MODES_JSON must be a JSON array")
     modes = {item.strip().lower() for item in value}
-    if not modes.issubset(ACTIVE_TELEGRAM_MODES):
+    if not modes.issubset(SUPPORTED_TELEGRAM_MODES):
         raise RuntimeError("unsupported active Telegram mode")
     return modes
 
 
 def telegram_mode(incident: dict[str, Any]) -> str:
     """Map an incident to the operator-facing forum mode."""
+    if str(incident.get("event_type") or "").startswith("health."):
+        return "health"
     severity = str(incident["severity"])
     return severity if severity in {"emergency", "important"} else "log"
 
@@ -209,13 +213,31 @@ class TelegramSender:
         incident = payload["incident"]
         note = str(incident.get("operator_note") or "").strip()
         note_block = f"\n\nNote: {note}" if note else ""
-        text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{note_block}\n\nIncident: {incident['id']}"
+        health_plans = payload.get("health_plans")
+        plan_block = ""
+        if isinstance(health_plans, list) and health_plans:
+            plan_lines = [
+                f"{index}. {str(plan.get('title') or plan.get('plan_id') or '')[:128]} — {str(plan.get('summary') or '')[:256]}"
+                for index, plan in enumerate(health_plans[:3], 1)
+                if isinstance(plan, dict)
+            ]
+            if plan_lines:
+                plan_block = "\n\nPlans:\n" + "\n".join(plan_lines)
+        text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nIncident: {incident['id']}"
         destination = telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes)
-        if self._active_modes is not None and not destination:
-            raise RuntimeError(f"Telegram mode is inactive: {telegram_mode(incident)}")
+        mode = telegram_mode(incident)
+        if self._active_modes is not None and mode not in self._active_modes:
+            raise RuntimeError(f"Telegram mode is inactive: {mode}")
+        if not destination:
+            if mode == "health":
+                raise RuntimeError("Telegram health topic route is not configured")
+            raise RuntimeError(f"Telegram destination is not configured: {mode}")
         request_data: dict[str, str] = {**destination, "text": text, "disable_web_page_preview": "true"}
         if self._action_codec is not None:
-            request_data["reply_markup"] = json.dumps(telegram_inline_keyboard(self._action_codec, incident), separators=(",", ":"))
+            if isinstance(health_plans, list) and health_plans:
+                request_data["reply_markup"] = json.dumps(health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans), separators=(",", ":"))
+            else:
+                request_data["reply_markup"] = json.dumps(telegram_inline_keyboard(self._action_codec, incident), separators=(",", ":"))
         data = urllib.parse.urlencode(request_data).encode()
         request = urllib.request.Request(f"https://api.telegram.org/bot{self._token}/sendMessage", data=data, method="POST")
         with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
@@ -415,8 +437,29 @@ class DeliveryWorker:
                 adapter = self._agent_jobs.get(job_name)
                 if adapter is None:
                     raise RuntimeError(f"GPTAdmin agent job adapter is not configured: {job_name}")
-                receipt = adapter.send(payload, str(delivery["delivery_key"]))
-                self._center.record_agent_job_result(str(delivery["incident_id"]), str(delivery["id"]), job_name, receipt)
+                if job_name == "health-remediation" and callable(getattr(adapter, "send_with_progress", None)):
+                    receipt = adapter.send_with_progress(
+                        payload,
+                        str(delivery["delivery_key"]),
+                        lambda job: self._center.record_health_agent_progress(
+                            str(delivery["incident_id"]),
+                            str(delivery["id"]),
+                            payload,
+                            job,
+                        ),
+                    )
+                else:
+                    receipt = adapter.send(payload, str(delivery["delivery_key"]))
+                workflow_result = self._center.record_agent_job_result(
+                    str(delivery["incident_id"]),
+                    str(delivery["id"]),
+                    job_name,
+                    receipt,
+                    payload.get("health_context") if isinstance(payload.get("health_context"), dict) else None,
+                )
+                if job_name == "health-remediation" and str(receipt.get("status") or "") == "completed" and workflow_result.get("health_workflow") is not False and workflow_result.get("accepted") is not True:
+                    self._center.complete_delivery(delivery["id"], "failed", "Health remediation did not produce a resolved receipt")
+                    return
                 if str(receipt.get("status") or "") == "failed":
                     self._center.complete_delivery(delivery["id"], "failed", "GPTAdmin agent job reported terminal failure")
                     return
@@ -467,6 +510,7 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
     configured_mcp_token = mcp_token if mcp_token is not None else os.environ.get("NOTIFY_MCP_TOKEN", "")
     if not configured_mcp_token:
         raise RuntimeError("NOTIFY_MCP_TOKEN must be configured")
+    health_workflow = HealthWorkflow(center, os.environ.get("TELEGRAM_CALLBACK_SECRET", "").strip() or None)
 
     class ApiHandler(BaseHTTPRequestHandler):
         """Expose the v1 event and incident state-transition endpoints."""
@@ -589,6 +633,10 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     self._reply(HTTPStatus.ACCEPTED, center.create_event(token, key, body, request_meta=self._request_meta()))
                     return
                 parts = self.path.split("/")
+                if len(parts) == 4 and parts[:3] == ["", "v1", "health"] and parts[3] == "signals":
+                    key = self.headers.get("Idempotency-Key") or ""
+                    self._reply(HTTPStatus.ACCEPTED, health_workflow.intake_signal(token, key, body, request_meta=self._request_meta()))
+                    return
                 if len(parts) == 5 and parts[:3] == ["", "v1", "incidents"]:
                     incident_id, action = parts[3], parts[4]
                     center.authorize_incident(token, incident_id)
@@ -601,6 +649,63 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         self._reply(HTTPStatus.OK, center.snooze(incident_id, float(body.get("until_epoch") or 0), actor))
                     else:
                         self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown action"})
+                    return
+                if len(parts) == 6 and parts[:3] == ["", "v1", "incidents"] and parts[4] == "health":
+                    incident_id, action = parts[3], parts[5]
+                    center.authorize_incident(token, incident_id)
+                    key = self.headers.get("Idempotency-Key") or ""
+                    actor = str(body.get("actor") or "api")
+                    if action == "plans":
+                        plans = body.get("plans")
+                        if not isinstance(plans, list):
+                            raise ValidationError("health plans must be a JSON array")
+                        result = health_workflow.attach_plans(
+                            incident_id,
+                            key,
+                            plans,
+                            actor=actor,
+                            correlation_id=str(body.get("correlation_id") or "") or None,
+                            trace_refs=body.get("trace_refs") if isinstance(body.get("trace_refs"), list) else [],
+                            evidence_refs=body.get("evidence_refs") if isinstance(body.get("evidence_refs"), list) else [],
+                            orchestration=body.get("orchestration") if isinstance(body.get("orchestration"), Mapping) else None,
+                        )
+                    elif action == "select":
+                        result = health_workflow.select_plan(incident_id, key, str(body.get("plan_id") or ""), actor)
+                    elif action == "progress":
+                        result = health_workflow.record_progress(
+                            incident_id,
+                            key,
+                            plan_id=str(body.get("plan_id") or ""),
+                            step=str(body.get("step") or ""),
+                            evidence_refs=body.get("evidence_refs") if isinstance(body.get("evidence_refs"), list) else [],
+                            progress_fingerprint=str(body.get("progress_fingerprint") or body.get("fingerprint") or ""),
+                            heartbeat_at=float(body["heartbeat_at"]) if body.get("heartbeat_at") is not None else None,
+                            actor=actor,
+                        )
+                    elif action == "verification":
+                        result = health_workflow.record_verification(
+                            incident_id,
+                            key,
+                            source_id=str(body.get("source_id") or ""),
+                            verification_id=str(body.get("verification_id") or ""),
+                            observed_state=str(body.get("observed_state") or ""),
+                            evidence_refs=body.get("evidence_refs") if isinstance(body.get("evidence_refs"), list) else [],
+                            fingerprint=str(body.get("fingerprint") or body.get("source_fingerprint") or "") or None,
+                            actor=actor,
+                        )
+                    elif action == "resolve":
+                        result = health_workflow.resolve(
+                            incident_id,
+                            str(body.get("source_id") or ""),
+                            str(body.get("verification_id") or ""),
+                            actor,
+                            elapsed_ms=int(body.get("elapsed_ms") or 0),
+                            trace_refs=body.get("trace_refs") if isinstance(body.get("trace_refs"), list) else [],
+                        )
+                    else:
+                        self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown health action"})
+                        return
+                    self._reply(HTTPStatus.OK, result)
                     return
                 self._reply(HTTPStatus.NOT_FOUND, {"error": "not found"})
             except AuthorizationError as error:
@@ -686,7 +791,7 @@ def telegram_interactions_from_environment(center: NotificationCenter, codec: Te
         return None
     allowed = {part.strip() for part in os.environ.get("TELEGRAM_CALLBACK_ALLOWED_USER_IDS", os.environ.get("TELEGRAM_CHAT_ID", "")).split(",") if part.strip()}
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    return TelegramInteractionPoller(center, token, allowed, codec) if token and allowed else None
+    return TelegramInteractionPoller(center, token, allowed, codec, health_plan_codec=TelegramHealthPlanCodec(codec.secret)) if token and allowed else None
 
 
 def matrix_call_from_environment() -> MatrixCallSender | None:
@@ -717,6 +822,7 @@ def gptadmin_agent_jobs_from_environment() -> dict[str, GptAdminAgentJobAdapter]
             str(value.get("hmac_secret") or ""),
             float(value.get("timeout_seconds") or 90),
             float(value.get("poll_interval_seconds") or 1),
+            float(value.get("stale_progress_seconds") or 120),
         )
     return result
 

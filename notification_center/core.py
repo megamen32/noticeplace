@@ -21,6 +21,16 @@ DELIVERABLE_STATES = ("open", "snoozed")
 DEFAULT_CONSUMER_QUIET_HOURS = (
     {"start": "01:00", "end": "09:00", "timezone": "Europe/Moscow", "suppress": ["call"]},
 )
+HEALTH_PLAN_IDS = ("observe", "repair", "verify")
+HEALTH_UPDATE_EVENT_TYPES = {
+    "plans": "health.plans_attached",
+    "plan_selection": "health.plan_selected",
+    "remediation": "health.remediation_requested",
+    "progress": "health.progress",
+    "verification": "health.verification_recorded",
+}
+HEALTH_REMEDIATION_AGENT_JOB = "health-remediation"
+HEALTH_DIAGNOSIS_AGENT_JOB = "health-diagnosis"
 
 
 class NotificationCenterError(Exception):
@@ -175,6 +185,13 @@ class NotificationCenter:
                     incident_id TEXT,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS health_plan_selections (
+                    incident_id TEXT PRIMARY KEY REFERENCES incidents(id),
+                    plan_id TEXT NOT NULL,
+                    event_id TEXT,
+                    idempotency_key TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS telegram_updates (
                     update_id INTEGER PRIMARY KEY,
                     created_at REAL NOT NULL
@@ -208,6 +225,22 @@ class NotificationCenter:
             ):
                 if column not in delivery_columns:
                     self._connection.execute(f"ALTER TABLE deliveries ADD COLUMN {column} {definition}")
+            # Older databases stored health selections only as events. Seed the
+            # durable single-winner guard without rewriting or deleting history.
+            existing_health_selections = self._connection.execute(
+                "SELECT incident_id, event_id, idempotency_key, payload_json, created_at FROM events WHERE event_type = 'health.plan_selected' ORDER BY created_at"
+            ).fetchall()
+            for row in existing_health_selections:
+                try:
+                    payload = json.loads(str(row["payload_json"]) or "{}")
+                except (TypeError, ValueError):
+                    payload = {}
+                plan_id = str(payload.get("plan_id") or "")[:64]
+                if plan_id:
+                    self._connection.execute(
+                        "INSERT OR IGNORE INTO health_plan_selections(incident_id, plan_id, event_id, idempotency_key, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (row["incident_id"], plan_id, row["event_id"], row["idempotency_key"], row["created_at"]),
+                    )
             policy_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(consumer_policy_stages)")}
             consumer_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(consumers)")}
             if "quiet_hours_json" not in consumer_columns:
@@ -573,6 +606,11 @@ class NotificationCenter:
                     "SELECT id FROM deliveries WHERE delivery_key = ?",
                     (f"{previous['incident_id']}:gptadmin.agent:{previous_job}:event:{previous['event_id']}",),
                 ).fetchone() if previous_job else None
+                if previous_job == HEALTH_DIAGNOSIS_AGENT_JOB:
+                    agent_delivery = self._connection.execute(
+                        "SELECT id FROM deliveries WHERE delivery_key = ?",
+                        (f"{previous['incident_id']}:gptadmin.agent:{previous_job}:incident",),
+                    ).fetchone() or agent_delivery
                 return {"event_id": previous["event_id"], "incident_id": previous["incident_id"], "state": self.get_incident(previous["incident_id"])["state"], "deduplicated": False, "idempotent": True, "initial_delivery_id": initial["id"] if initial else None, "agent_job_delivery_id": agent_delivery["id"] if agent_delivery else None}
             project, recipient, dedup_key = str(event["project"]), str(event["recipient"]), str(event["dedup_key"])
             parent = None
@@ -609,7 +647,8 @@ class NotificationCenter:
             ingress.update({"project": project, "profile_id": consumer_id, "severity": str(event["severity"]), "event_type": event_type, "producer": producer, "plugin": plugin, "correlation_id": correlation_id, "parent_incident_id": parent_incident_id, "parent_event_id": parent_event_id})
             self._audit(incident_id, "event_ingress", "producer", ingress)
             delivery_id = self._schedule_consumer_policy(incident_id, consumer_id, now)
-            agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", f"event:{event_id}", now) if agent_job else None
+            agent_step = "incident" if agent_job == HEALTH_DIAGNOSIS_AGENT_JOB else f"event:{event_id}"
+            agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", agent_step, now) if agent_job else None
             return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id, "agent_job_delivery_id": agent_delivery_id}
 
     def _builtin_profile_for_event(self, event: Mapping[str, Any]) -> str:
@@ -657,6 +696,7 @@ class NotificationCenter:
             incident_id = str(row["id"]) if row is not None else None
             if incident_id is not None:
                 self._require_severity(self._scope(token, project), str(row["severity"]))
+                self._require_health_resolution_gate(incident_id)
                 self._transition(incident_id, "resolved", "producer")
             self._connection.execute(
                 "INSERT INTO resolution_events(idempotency_key, event_id, project, recipient, dedup_key, payload_json, incident_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -890,6 +930,7 @@ class NotificationCenter:
 
     def resolve(self, incident_id: str, actor: str) -> dict[str, Any]:
         """Resolve an incident and prevent future delivery from its prior state."""
+        self._require_health_resolution_gate(incident_id)
         return self._transition(incident_id, "resolved", actor)
 
     def snooze(self, incident_id: str, until_epoch: float, actor: str) -> dict[str, Any]:
@@ -937,11 +978,189 @@ class NotificationCenter:
         with self._lock, self._connection:
             self._audit(incident_id, "telegram_ask_recorded", actor, {"question": normalized})
 
-    def record_agent_job_result(self, incident_id: str, delivery_id: str, job_name: str, receipt: Mapping[str, Any]) -> None:
+    def record_health_agent_progress(self, incident_id: str, delivery_id: str, payload: Mapping[str, Any], job: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Persist useful progress snapshots observed while a remediation runs."""
+        selection = payload.get("health_selection") if isinstance(payload.get("health_selection"), Mapping) else {}
+        selected_plan = self._health_text(selection.get("plan_id") or "", 64)
+        entries = job.get("progress")
+        if not selected_plan or not isinstance(entries, list):
+            return []
+        recorded: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping) or entry.get("useful_progress") is not True:
+                continue
+            plan_id = self._health_text(entry.get("plan_id") or selected_plan, 64)
+            if plan_id != selected_plan:
+                continue
+            step = self._health_text(entry.get("step") or "", 128)
+            evidence_refs = [
+                self._health_text(item, 128)
+                for item in (entry.get("evidence_refs") if isinstance(entry.get("evidence_refs"), list) else [])[:16]
+                if self._health_text(item, 128)
+            ]
+            fingerprint = self._health_text(entry.get("progress_fingerprint") or entry.get("fingerprint") or "", 128)
+            if not (step or evidence_refs or fingerprint):
+                continue
+            if not fingerprint:
+                fingerprint = hashlib.sha256(
+                    json.dumps({"plan_id": plan_id, "step": step, "evidence_refs": evidence_refs}, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()[:64]
+            try:
+                result = self.record_health_progress(
+                    incident_id,
+                    f"{delivery_id}:health.progress:{fingerprint}",
+                    plan_id,
+                    step,
+                    evidence_refs,
+                    fingerprint,
+                    False,
+                    "agent-herder",
+                )
+            except ValidationError as error:
+                with self._lock, self._connection:
+                    self._audit(
+                        incident_id,
+                        "health.progress_rejected",
+                        "worker",
+                        {"delivery_id": delivery_id, "reason": self._health_text(error, 256)},
+                    )
+                continue
+            recorded.append(result)
+        return recorded
+
+    def _record_health_remediation_receipt(
+        self,
+        incident_id: str,
+        delivery_id: str,
+        receipt: Mapping[str, Any],
+        health_context: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Turn one completed remediation receipt into durable health outcomes.
+
+        The agent's terminal message is not itself a resolution claim.  The
+        source fingerprint, a distinct verifier identity, useful progress, and
+        the matching verification receipt are all required before resolving.
+        Stable keys make a worker retry safe after a crash between any step.
+        """
+        agent_receipt = receipt.get("agent_receipt")
+        if not isinstance(agent_receipt, Mapping):
+            return {"accepted": False, "resolved": False, "reason": "agent remediation receipt is missing"}
+        selection = health_context.get("selection") if isinstance(health_context.get("selection"), Mapping) else {}
+        selected_plan = self._health_text(selection.get("plan_id") or "", 64)
+        receipt_plan = self._health_text(agent_receipt.get("plan_id") or "", 64)
+        if not selected_plan or not receipt_plan or selected_plan != receipt_plan:
+            return {"accepted": False, "resolved": False, "reason": "remediation receipt plan does not match the selected plan"}
+
+        def refs(value: Any) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            result: list[str] = []
+            for item in value[:16]:
+                bounded = self._health_text(item, 128)
+                if bounded and bounded not in result:
+                    result.append(bounded)
+            return result
+
+        trace_refs: list[str] = []
+        for value in (health_context.get("trace_refs"), agent_receipt.get("trace_refs")):
+            for trace_ref in refs(value):
+                if trace_ref not in trace_refs:
+                    trace_refs.append(trace_ref)
+        for value in (receipt.get("job_id"), agent_receipt.get("session_id")):
+            bounded = self._health_text(value, 128)
+            if bounded and bounded not in trace_refs:
+                trace_refs.append(bounded)
+
+        evidence_refs = refs(agent_receipt.get("evidence_refs"))
+        progress_fingerprint = self._health_text(agent_receipt.get("progress_fingerprint") or "", 128)
+        if not progress_fingerprint:
+            progress_fingerprint = hashlib.sha256(
+                json.dumps({"plan_id": selected_plan, "step": agent_receipt.get("step") or selected_plan, "evidence_refs": evidence_refs}, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:64]
+        progress_key = f"{delivery_id}:health.progress:{progress_fingerprint}"
+        try:
+            progress_step = self._health_text(agent_receipt.get("step") or selected_plan, 128)
+            previous_progress = self.latest_health_progress(incident_id, selected_plan)
+            if previous_progress is not None and all(
+                previous_progress.get(field) == expected
+                for field, expected in (
+                    ("step", progress_step),
+                    ("evidence_refs", evidence_refs),
+                    ("progress_fingerprint", progress_fingerprint),
+                )
+            ):
+                progress = {"idempotent": True, "payload": previous_progress}
+            else:
+                progress = self.record_health_progress(
+                    incident_id,
+                    progress_key,
+                    selected_plan,
+                    progress_step,
+                    evidence_refs,
+                    progress_fingerprint,
+                    False,
+                    "agent-herder",
+                )
+            observed_state = self._health_text(agent_receipt.get("observed_state") or "", 32).lower()
+            if observed_state != "healthy":
+                return {
+                    "accepted": False,
+                    "resolved": False,
+                    "reason": "remediation completed without an independently healthy state",
+                    "progress": progress,
+                }
+
+            source_id = self._health_text(agent_receipt.get("source_id") or health_context.get("source_id") or "", 128)
+            expected_source_id = self._health_text(health_context.get("source_id") or "", 128)
+            source_fingerprint = self._health_text(agent_receipt.get("source_fingerprint") or agent_receipt.get("fingerprint") or "", 128)
+            expected_fingerprint = self._health_text(health_context.get("source_fingerprint") or "", 128)
+            verifier_id = self._health_text(agent_receipt.get("verifier_id") or agent_receipt.get("verification_source_id") or "", 128)
+            verification_id = self._health_text(agent_receipt.get("verification_id") or "", 128)
+            if not source_id or not verifier_id or not verification_id:
+                raise ValidationError("healthy remediation receipt is missing source, verifier, or verification identity")
+            if expected_source_id and source_id != expected_source_id:
+                raise ValidationError("healthy remediation receipt source does not match the original source")
+            if expected_fingerprint and source_fingerprint != expected_fingerprint:
+                raise ValidationError("healthy remediation receipt fingerprint does not match the original source")
+            verification = self.record_health_verification(
+                incident_id,
+                "agent-herder",
+                {
+                    "source_id": source_id,
+                    "verifier_id": verifier_id,
+                    "verification_id": verification_id,
+                    "healthy": True,
+                    "fingerprint": source_fingerprint,
+                    "evidence_refs": evidence_refs,
+                },
+                f"{delivery_id}:health.verification:{verification_id}",
+            )
+            try:
+                elapsed_ms = max(0, min(86_400_000, int(receipt.get("elapsed_ms") or 0)))
+            except (TypeError, ValueError):
+                elapsed_ms = 0
+            resolved = self.resolve_health_incident(
+                incident_id,
+                source_id,
+                verification_id,
+                "agent-herder",
+                elapsed_ms=elapsed_ms,
+                trace_refs=trace_refs,
+            )
+            return {"accepted": True, "resolved": True, "progress": progress, "verification": verification, "resolved_incident": resolved}
+        except ValidationError as error:
+            return {"accepted": False, "resolved": False, "reason": self._health_text(error, 256), "progress": locals().get("progress")}
+
+    def record_agent_job_result(self, incident_id: str, delivery_id: str, job_name: str, receipt: Mapping[str, Any], health_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Persist a bounded terminal agent-job receipt without raw command output."""
         if self.get_incident(incident_id) is None:
             raise ValidationError("incident not found")
         result = receipt.get("agent_receipt") if isinstance(receipt.get("agent_receipt"), Mapping) else {}
+        context = health_context if isinstance(health_context, Mapping) else {}
+        try:
+            elapsed_ms = max(0, min(86_400_000, int(receipt.get("elapsed_ms") or 0)))
+        except (TypeError, ValueError):
+            elapsed_ms = 0
         summary = {
             "delivery_id": delivery_id,
             "agent_job": job_name,
@@ -951,10 +1170,592 @@ class NotificationCenter:
             "session_id": str(result.get("session_id") or result.get("sessionId") or "")[:128],
             "created": result.get("created") is True,
             "delivery": str(result.get("delivery") or "")[:32],
+            "elapsed_ms": elapsed_ms,
+            "correlation_id": self._health_text(context.get("correlation_id") or result.get("correlation_id") or "", 128),
+            "trace_refs": [self._health_text(item, 128) for item in (context.get("trace_refs") if isinstance(context.get("trace_refs"), list) else result.get("trace_refs", []))[:16]],
+            "evidence_refs": [self._health_text(item, 128) for item in (result.get("evidence_refs") if isinstance(result.get("evidence_refs"), list) else [])[:16]],
+            "source_id": self._health_text(result.get("source_id") or "", 128),
+            "source_fingerprint": self._health_text(result.get("source_fingerprint") or "", 128),
+            "verifier_id": self._health_text(result.get("verifier_id") or "", 128),
+            "verification_id": self._health_text(result.get("verification_id") or "", 128),
+            "observed_state": self._health_text(result.get("observed_state") or "", 32),
         }
+        selection = context.get("selection") if isinstance(context.get("selection"), Mapping) else {}
+        execution = selection.get("execution") if isinstance(selection, Mapping) else {}
+        if isinstance(selection, Mapping):
+            summary["plan_id"] = self._health_text(selection.get("plan_id") or result.get("plan_id") or "", 64)
+        if isinstance(execution, Mapping):
+            summary["model"] = self._health_text(execution.get("model") or result.get("model") or "", 128)
+            summary["reasoning"] = self._health_text(execution.get("reasoning") or result.get("reasoning") or "", 16)
+            summary["topic"] = self._health_text(execution.get("topic") or result.get("topic") or "", 64)
         with self._lock, self._connection:
             event_type = "agent_job_failed" if summary["status"] == "failed" else "agent_job_completed"
             self._audit(incident_id, event_type, "worker", summary)
+        if job_name == HEALTH_REMEDIATION_AGENT_JOB and summary["status"] == "completed" and isinstance(health_context, Mapping):
+            workflow_result = self._record_health_remediation_receipt(incident_id, delivery_id, receipt, health_context)
+            if not workflow_result.get("accepted"):
+                with self._lock, self._connection:
+                    self._audit(
+                        incident_id,
+                        "health.remediation_receipt_rejected",
+                        "worker",
+                        {"delivery_id": delivery_id, "reason": self._health_text(workflow_result.get("reason") or "unknown", 256)},
+                    )
+            return workflow_result
+        return {"accepted": True, "resolved": False, "health_workflow": False}
+
+    @staticmethod
+    def _health_text(value: Any, limit: int = 256) -> str:
+        from .health_workflow import sanitize_bounded_text
+
+        return sanitize_bounded_text(value, limit)
+
+    @classmethod
+    def _health_execution(cls, value: Any) -> dict[str, str]:
+        """Return only the canonical, bounded remediation execution profile."""
+        from .health_workflow import normalize_health_execution
+
+        try:
+            execution = normalize_health_execution(value)
+        except ValidationError:
+            return {}
+        return {key: cls._health_text(item, 64) for key, item in execution.items()}
+
+    @classmethod
+    def _health_value(cls, value: Any, depth: int = 0) -> Any:
+        if depth >= 4:
+            return "[truncated]"
+        if isinstance(value, Mapping):
+            return {str(key): cls._health_value(nested, depth + 1) for key, nested in value.items() if not any(term in str(key).lower() for term in ("secret", "token", "password", "credential", "authorization"))}
+        if isinstance(value, list):
+            return [cls._health_value(item, depth + 1) for item in value[:10]]
+        if isinstance(value, str):
+            return cls._health_text(value, 256)
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        return cls._health_text(value, 256)
+
+    @classmethod
+    def _health_payload(cls, payload: Mapping[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in payload.items():
+            safe_key = str(key)
+            if safe_key == "execution":
+                result[safe_key] = cls._health_execution(value)
+            elif safe_key == "plans" and isinstance(value, list):
+                result[safe_key] = [
+                    {
+                        "plan_id": cls._health_text(item.get("plan_id") or item.get("id") or "", 64),
+                        "title": cls._health_text(item.get("title") or "", 128),
+                        "summary": cls._health_text(item.get("summary") or item.get("body") or "", 256),
+                        "step": cls._health_text(item.get("step") or "", 64),
+                        "execution": cls._health_execution(item.get("execution")),
+                    }
+                    for item in value[:3]
+                    if isinstance(item, Mapping)
+                ]
+            else:
+                result[safe_key] = cls._health_value(value)
+        return result
+
+    def _health_event_row(self, incident_id: str, event_type: str) -> sqlite3.Row | None:
+        return self._connection.execute(
+            "SELECT * FROM events WHERE incident_id = ? AND event_type = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (incident_id, event_type),
+        ).fetchone()
+
+    def _health_event_payload(self, incident_id: str, event_type: str) -> dict[str, Any] | None:
+        row = self._health_event_row(incident_id, event_type)
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _health_original_event(self, incident_id: str) -> dict[str, Any] | None:
+        incident = self.get_incident(incident_id)
+        if incident is None:
+            return None
+        if not str(incident.get("event_type") or "").startswith("health."):
+            return None
+        row = self._connection.execute(
+            "SELECT payload_json FROM events WHERE incident_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1",
+            (incident_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _health_plan_candidates(self, incident_id: str) -> list[str]:
+        attached = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["plans"])
+        if attached is not None:
+            plans = attached.get("plans")
+            if isinstance(plans, list):
+                result: list[str] = []
+                for plan in plans:
+                    if isinstance(plan, Mapping):
+                        candidate = str(plan.get("plan_id") or plan.get("id") or "").strip()
+                        if candidate:
+                            result.append(candidate)
+                if result:
+                    return result
+        # Plans are a post-diagnosis artifact.  Never let a caller select one
+        # of the old generic defaults before OmniRoute attached the diagnosis.
+        return []
+
+    def _health_plan_details(self, incident_id: str, plan_id: str) -> dict[str, Any]:
+        attached = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["plans"])
+        plans = attached.get("plans") if isinstance(attached, Mapping) else None
+        if isinstance(plans, list):
+            for plan in plans:
+                if isinstance(plan, Mapping) and str(plan.get("plan_id") or plan.get("id") or "").strip() == plan_id:
+                    return {
+                        "plan_id": plan_id,
+                        "execution": self._health_execution(plan.get("execution")),
+                    }
+        raise ValidationError("unknown health plan")
+
+    def _health_remediation_delivery_id(self, incident_id: str, plan_id: str) -> str | None:
+        row = self._connection.execute(
+            "SELECT id FROM deliveries WHERE delivery_key = ?",
+            (f"{incident_id}:gptadmin.agent:{HEALTH_REMEDIATION_AGENT_JOB}:plan:{plan_id}",),
+        ).fetchone()
+        return str(row["id"]) if row is not None else None
+
+    def _health_selected_plan(self, incident_id: str) -> str | None:
+        payload = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["plan_selection"])
+        if payload is None:
+            return None
+        plan_id = str(payload.get("plan_id") or "").strip()
+        return plan_id or None
+
+    def latest_health_progress(self, incident_id: str, plan_id: str) -> dict[str, Any] | None:
+        """Return the latest health progress receipt for one plan."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT payload_json FROM events WHERE incident_id = ? AND event_type = ? ORDER BY created_at DESC, rowid DESC",
+                (incident_id, HEALTH_UPDATE_EVENT_TYPES["progress"]),
+            ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"]))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and str(payload.get("plan_id") or "").strip() == plan_id:
+                return payload
+        return None
+
+    def _health_progress_useful(self, incident_id: str, plan_id: str, step: str, evidence_refs: list[str], progress_fingerprint: str) -> bool:
+        previous = self.latest_health_progress(incident_id, plan_id)
+        if previous is None:
+            return True
+        return any(previous.get(field) != value for field, value in (("step", step), ("evidence_refs", evidence_refs), ("progress_fingerprint", progress_fingerprint))
+        )
+
+    def _record_health_event(
+        self,
+        incident_id: str,
+        idempotency_key: str,
+        event_type: str,
+        payload: Mapping[str, Any],
+        actor: str,
+        *,
+        useful: bool | None = None,
+    ) -> dict[str, Any]:
+        if not idempotency_key.strip():
+            raise ValidationError("Idempotency-Key is required")
+        incident = self.get_incident(incident_id)
+        if incident is None:
+            raise ValidationError("incident not found")
+        now = time.time()
+        safe_payload = self._health_payload(payload)
+        payload_json = json.dumps(safe_payload, ensure_ascii=False, sort_keys=True)
+        with self._lock, self._connection:
+            previous = self._connection.execute(
+                "SELECT event_id, payload_json FROM events WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if previous is not None:
+                if previous["payload_json"] != payload_json:
+                    raise IdempotencyConflict("Idempotency-Key was already used with different event content")
+                previous_payload = self._health_payload(json.loads(str(previous["payload_json"])) if str(previous["payload_json"]) else {})
+                return {"event_id": previous["event_id"], "incident_id": incident_id, "idempotent": True, "useful": bool(previous_payload.get("useful")) if isinstance(previous_payload, dict) else False, "payload": previous_payload}
+            event_id = f"evt_{uuid.uuid4().hex}"
+            event_type_value = event_type[:128]
+            self._connection.execute(
+                "INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, proxy_ip, forwarded_for) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (idempotency_key, event_id, incident_id, payload_json, now, event_type_value, safe_payload.get("producer"), safe_payload.get("plugin"), safe_payload.get("correlation_id"), safe_payload.get("parent_event_id"), safe_payload.get("parent_incident_id"), safe_payload.get("peer_ip"), safe_payload.get("source_ip"), safe_payload.get("proxy_ip"), safe_payload.get("forwarded_for")),
+            )
+            audit_payload = dict(safe_payload)
+            if useful is not None:
+                audit_payload["useful"] = useful
+            self._audit(incident_id, event_type_value, actor, audit_payload)
+            result = {"event_id": event_id, "incident_id": incident_id, "idempotent": False, "payload": safe_payload}
+            if useful is not None:
+                result["useful"] = useful
+            return result
+
+    def record_health_update(self, incident_id: str, idempotency_key: str, event_type: str, payload: Mapping[str, Any], actor: str = "worker") -> dict[str, Any]:
+        """Persist a bounded health update in the existing event and audit tables."""
+        return self._record_health_event(incident_id, idempotency_key, event_type, payload, actor, useful=payload.get("useful_progress") if isinstance(payload, Mapping) else None)
+
+    def record_health_plan_selection(self, incident_id: str, plan_id: str, actor: str, idempotency_key: str) -> dict[str, Any]:
+        """Persist one choice and queue one bounded remediation request."""
+        with self._lock:
+            safe_plan = self._health_text(plan_id, 64)
+            if safe_plan not in self._health_plan_candidates(incident_id):
+                raise ValidationError("unknown health plan")
+            plan_details = self._health_plan_details(incident_id, safe_plan)
+            selected = self._health_selected_plan(incident_id)
+            if selected is not None:
+                if selected != safe_plan:
+                    raise ValidationError("health plan already selected")
+                payload = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["plan_selection"]) or {"plan_id": safe_plan}
+                return {
+                    "event_id": None,
+                    "incident_id": incident_id,
+                    "idempotent": True,
+                    "plan_id": safe_plan,
+                    "useful": False,
+                    "payload": payload,
+                    "remediation_delivery_id": self._health_remediation_delivery_id(incident_id, safe_plan),
+                }
+            try:
+                # The process lock is not enough when two HTTP workers have
+                # separate NotificationCenter instances.  The primary key is
+                # the durable single-winner gate across those processes.
+                with self._connection:
+                    self._connection.execute(
+                        "INSERT INTO health_plan_selections(incident_id, plan_id, idempotency_key, created_at) VALUES (?, ?, ?, ?)",
+                        (incident_id, safe_plan, idempotency_key, time.time()),
+                    )
+                    result = self._record_health_event(
+                        incident_id,
+                        idempotency_key,
+                        HEALTH_UPDATE_EVENT_TYPES["plan_selection"],
+                        {"plan_id": safe_plan, "actor": actor, "execution": plan_details["execution"]},
+                        actor,
+                        useful=True,
+                    )
+                    remediation = self._record_health_event(
+                        incident_id,
+                        f"{idempotency_key}:remediation",
+                        HEALTH_UPDATE_EVENT_TYPES["remediation"],
+                        {
+                            "plan_id": safe_plan,
+                            "actor": actor,
+                            "agent_job": HEALTH_REMEDIATION_AGENT_JOB,
+                            "execution": plan_details["execution"],
+                        },
+                        actor,
+                        useful=True,
+                    )
+                    remediation_delivery_id = self._schedule_delivery(
+                        incident_id,
+                        f"gptadmin.agent:{HEALTH_REMEDIATION_AGENT_JOB}",
+                        f"plan:{safe_plan}",
+                        time.time(),
+                    )
+                    self._connection.execute(
+                        "UPDATE health_plan_selections SET event_id = ? WHERE incident_id = ?",
+                        (result.get("event_id"), incident_id),
+                    )
+            except sqlite3.IntegrityError as error:
+                winner = self._connection.execute(
+                    "SELECT plan_id FROM health_plan_selections WHERE incident_id = ?",
+                    (incident_id,),
+                ).fetchone()
+                winning_plan = str(winner["plan_id"] if winner is not None else "")
+                if winning_plan == safe_plan:
+                    payload = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["plan_selection"]) or {"plan_id": safe_plan}
+                    return {
+                        "event_id": None,
+                        "incident_id": incident_id,
+                        "idempotent": True,
+                        "plan_id": safe_plan,
+                        "useful": False,
+                        "payload": payload,
+                        "remediation_delivery_id": self._health_remediation_delivery_id(incident_id, safe_plan),
+                    }
+                raise ValidationError("health plan already selected") from error
+            result["plan_id"] = safe_plan
+            result["useful"] = True
+            result["remediation_event_id"] = remediation.get("event_id")
+            result["remediation_delivery_id"] = remediation_delivery_id
+            return result
+
+    def select_health_plan(self, incident_id: str, idempotency_key: str, plan_id: str, actor: str) -> dict[str, Any]:
+        """Alias for canonical idempotency-key-first callers."""
+        return self.record_health_plan_selection(incident_id, plan_id, actor, idempotency_key)
+
+    def record_health_progress(self, incident_id: str, *args: Any) -> dict[str, Any]:
+        """Persist only useful health progress receipts.
+
+        Supported call patterns:
+        - (actor, progress_mapping, idempotency_key)
+        - (idempotency_key, plan_id, step, evidence_refs, progress_fingerprint, heartbeat_at, actor)
+        """
+        if len(args) == 3 and isinstance(args[1], Mapping):
+            actor = str(args[0])
+            progress = dict(args[1])
+            idempotency_key = str(args[2])
+            plan_id = progress.get("plan_id") or ""
+            step = progress.get("step") or ""
+            evidence_value = progress.get("evidence") or progress.get("evidence_refs") or []
+            fingerprint = progress.get("fingerprint") or progress.get("progress_fingerprint") or ""
+            heartbeat = bool(progress.get("heartbeat") or progress.get("heartbeat_at"))
+        elif len(args) == 7:
+            idempotency_key = str(args[0])
+            plan_id = args[1]
+            step = args[2]
+            evidence_value = args[3]
+            fingerprint = args[4]
+            heartbeat = args[5]
+            actor = str(args[6])
+        else:
+            raise TypeError("record_health_progress expects either (actor, progress, idempotency_key) or (idempotency_key, plan_id, step, evidence_refs, progress_fingerprint, heartbeat_at, actor)")
+        if not idempotency_key.strip():
+            raise ValidationError("Idempotency-Key is required")
+        safe_plan = self._health_text(plan_id or "", 64)
+        if safe_plan not in self._health_plan_candidates(incident_id):
+            raise ValidationError("unknown health plan")
+        if self._health_selected_plan(incident_id) != safe_plan:
+            raise ValidationError("health progress requires the selected plan")
+        safe_step = self._health_text(step or "", 128)
+        safe_evidence = self._health_value(evidence_value or [])
+        if isinstance(safe_evidence, str):
+            evidence_refs = [self._health_text(safe_evidence, 128)] if self._health_text(safe_evidence, 128) else []
+        elif isinstance(safe_evidence, list):
+            evidence_refs = [self._health_text(item, 128) for item in safe_evidence[:10] if self._health_text(item, 128)]
+        else:
+            bounded_evidence = self._health_text(safe_evidence, 128)
+            evidence_refs = [bounded_evidence] if bounded_evidence else []
+        safe_fingerprint = self._health_text(fingerprint or "", 128)
+        has_progress_content = bool(safe_step or evidence_refs or safe_fingerprint)
+        heartbeat_only = bool(heartbeat) and not (evidence_refs or safe_fingerprint)
+        if not has_progress_content:
+            raise ValidationError("health progress requires a non-empty step, evidence, or fingerprint")
+        if heartbeat_only:
+            raise ValidationError("heartbeat-only health progress is not accepted")
+        with self._lock:
+            existing = self._connection.execute(
+                "SELECT event_id, event_type, payload_json FROM events WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        if existing is not None:
+            try:
+                existing_payload = json.loads(str(existing["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                existing_payload = {}
+            if (
+                existing["event_type"] != HEALTH_UPDATE_EVENT_TYPES["progress"]
+                or not isinstance(existing_payload, dict)
+                or str(existing_payload.get("plan_id") or "") != safe_plan
+                or str(existing_payload.get("step") or "") != safe_step
+                or list(existing_payload.get("evidence_refs") or []) != evidence_refs
+                or str(existing_payload.get("progress_fingerprint") or existing_payload.get("fingerprint") or "") != safe_fingerprint
+                or bool(existing_payload.get("heartbeat") in (True, 1, "true", "True", "1")) != bool(heartbeat)
+            ):
+                raise IdempotencyConflict("Idempotency-Key was already used with different health progress content")
+            stored_useful = existing_payload.get("useful") in (True, 1, "true", "True", "1") or existing_payload.get("useful_progress") in (True, 1, "true", "True", "1")
+            return {
+                "event_id": existing["event_id"],
+                "incident_id": incident_id,
+                "idempotent": True,
+                "payload": existing_payload,
+                "useful": stored_useful,
+                "useful_progress": stored_useful,
+            }
+        useful = self._health_progress_useful(incident_id, safe_plan, safe_step, evidence_refs, safe_fingerprint)
+        payload = {
+            "plan_id": safe_plan,
+            "step": safe_step,
+            "evidence": evidence_refs[0] if len(evidence_refs) == 1 else evidence_refs,
+            "evidence_refs": evidence_refs,
+            "fingerprint": safe_fingerprint,
+            "progress_fingerprint": safe_fingerprint,
+            "heartbeat": bool(heartbeat),
+            "useful": useful,
+            "useful_progress": useful,
+        }
+        result = self._record_health_event(
+            incident_id,
+            idempotency_key,
+            HEALTH_UPDATE_EVENT_TYPES["progress"],
+            payload,
+            actor,
+            useful=useful,
+        )
+        result["useful"] = useful
+        result["useful_progress"] = useful
+        return result
+
+    def record_health_verification(self, incident_id: str, *args: Any) -> dict[str, Any]:
+        """Persist an independent source verification receipt.
+
+        Supported call patterns:
+        - (actor, verification_mapping, idempotency_key)
+        - (idempotency_key, source_id, verifier_id, observed_state, evidence_refs, actor)
+        """
+        if len(args) == 3 and isinstance(args[1], Mapping):
+            actor = str(args[0])
+            verification = dict(args[1])
+            idempotency_key = str(args[2])
+            source_id = verification.get("source_id") or ""
+            verifier_id = verification.get("verifier_id") or verification.get("source_id") or ""
+            verification_id = verification.get("verification_id") or verifier_id
+            observed_state = "healthy" if verification.get("healthy") else "degraded"
+            fingerprint = verification.get("fingerprint") or verification.get("progress_fingerprint") or ""
+            evidence_value = verification.get("evidence") or verification.get("evidence_refs") or []
+        elif len(args) == 6:
+            idempotency_key = str(args[0])
+            source_id = args[1]
+            verifier_id = args[2]
+            observed_state = args[3]
+            evidence_value = args[4]
+            actor = str(args[5])
+            fingerprint = ""
+            verification_id = verifier_id
+        else:
+            raise TypeError("record_health_verification expects either (actor, verification, idempotency_key) or (idempotency_key, source_id, verifier_id, observed_state, evidence_refs, actor)")
+        source_id = self._health_text(source_id or "", 128)
+        verifier_id = self._health_text(verifier_id or "", 128)
+        if not source_id or not verifier_id:
+            raise ValidationError("health verification requires source and verifier identities")
+        if source_id == verifier_id:
+            raise ValidationError("health verification must be independent")
+        state = self._health_text(observed_state or "", 32).lower()
+        if state not in {"healthy", "degraded"}:
+            raise ValidationError("verification observed_state must be healthy or degraded")
+        safe_evidence = self._health_value(evidence_value or [])
+        if isinstance(safe_evidence, str):
+            evidence_refs = [self._health_text(safe_evidence, 128)]
+        elif isinstance(safe_evidence, list):
+            evidence_refs = [self._health_text(item, 128) for item in safe_evidence[:10]]
+        else:
+            evidence_refs = [self._health_text(safe_evidence, 128)]
+        payload = {
+            "source_id": source_id,
+            "verifier_id": verifier_id,
+            "verification_id": self._health_text(verification_id or "", 128),
+            "healthy": state == "healthy",
+            "observed_state": state,
+            "fingerprint": self._health_text(fingerprint or "", 128),
+            "evidence": evidence_refs[0] if len(evidence_refs) == 1 else evidence_refs,
+            "evidence_refs": evidence_refs,
+        }
+        result = self._record_health_event(
+            incident_id,
+            idempotency_key,
+            HEALTH_UPDATE_EVENT_TYPES["verification"],
+            payload,
+            actor,
+            useful=state == "healthy",
+        )
+        result["healthy"] = state == "healthy"
+        result["observed_state"] = state
+        result["source_id"] = source_id
+        result["verifier_id"] = verifier_id
+        return result
+
+    def resolve_health_incident(self, incident_id: str, source_id: str, verification_id: str, actor: str, elapsed_ms: int | None = None, trace_refs: list[str] | None = None) -> dict[str, Any]:
+        """Resolve only when the original source has a matching healthy receipt."""
+        current = self.get_incident(incident_id)
+        if current is None:
+            raise ValidationError("incident not found")
+        if self._health_original_event(incident_id) is None:
+            raise ValidationError("health intake receipt is required before resolution")
+        selected_plan = self._health_selected_plan(incident_id)
+        if not selected_plan:
+            raise ValidationError("health incident requires explicit plan selection before resolution")
+        if not self._health_useful_progress_exists(incident_id, selected_plan):
+            raise ValidationError("health incident requires useful progress for the selected plan before resolution")
+        original = self._health_original_event(incident_id) or {}
+        original_source = self._health_text(original.get("source_id") or original.get("producer") or "", 128)
+        if original_source and self._health_text(source_id or "", 128) != original_source:
+            raise ValidationError("health verification source must match the original source")
+        verification = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["verification"])
+        if verification is None:
+            raise ValidationError("health verification receipt is required before resolution")
+        if self._health_text(verification.get("source_id") or "", 128) != self._health_text(source_id or "", 128):
+            raise ValidationError("health verification receipt must match the original source")
+        if self._health_text(verification.get("verification_id") or "", 128) != self._health_text(verification_id or "", 128):
+            raise ValidationError("health verification receipt does not match the requested verification")
+        if not bool(verification.get("healthy")):
+            raise ValidationError("health verification receipt must report healthy")
+        if not self._healthy_verification_matches(incident_id):
+            raise ValidationError("health verification receipt must match the original source fingerprint and remain independent")
+        if current["state"] == "resolved":
+            return current
+        self._record_health_event(
+            incident_id,
+            f"{incident_id}:health.resolved:{verification_id}",
+            "health.resolved",
+            {
+                "source_id": source_id,
+                "verification_id": verification_id,
+                "resolved_by": actor,
+                "elapsed_ms": elapsed_ms if elapsed_ms is not None else 0,
+                "trace_refs": trace_refs or [],
+            },
+            actor,
+            useful=True,
+        )
+        resolved = self._transition(incident_id, "resolved", actor)
+        with self._lock, self._connection:
+            resolved_delivery_id = self._schedule_delivery(incident_id, "telegram.main", "health.resolved", time.time())
+        return {**resolved, "resolved_delivery_id": resolved_delivery_id}
+
+    def _healthy_verification_matches(self, incident_id: str) -> bool:
+        incident = self.get_incident(incident_id)
+        if incident is None or not str(incident.get("event_type") or "").startswith("health."):
+            return True
+        original = self._health_original_event(incident_id)
+        if not isinstance(original, dict):
+            return False
+        source_id = str(original.get("source_id") or original.get("producer") or "").strip()
+        fingerprint = str(original.get("source_fingerprint") or "").strip()
+        rows = self._connection.execute(
+            "SELECT payload_json FROM events WHERE incident_id = ? AND event_type = ? ORDER BY created_at DESC, rowid DESC",
+            (incident_id, HEALTH_UPDATE_EVENT_TYPES["verification"]),
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"]))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if not bool(payload.get("healthy")):
+                continue
+            if source_id and str(payload.get("source_id") or "").strip() != source_id:
+                continue
+            if fingerprint and str(payload.get("fingerprint") or "").strip() != fingerprint:
+                continue
+            if str(payload.get("verifier_id") or "").strip() == source_id:
+                continue
+            return True
+        return False
+
+    def _require_health_resolution_gate(self, incident_id: str) -> None:
+        incident = self.get_incident(incident_id)
+        if incident is None:
+            raise ValidationError("incident not found")
+        if not str(incident.get("event_type") or "").startswith("health."):
+            return
+        selected_plan = self._health_selected_plan(incident_id)
+        if not selected_plan:
+            raise ValidationError("health incident requires explicit plan selection before resolution")
+        if not self._health_useful_progress_exists(incident_id, selected_plan):
+            raise ValidationError("health incident requires useful progress for the selected plan before resolution")
+        if not self._healthy_verification_matches(incident_id):
+            raise ValidationError("health incident requires independent healthy verification before resolution")
 
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
         """Return the current incident record, or None when it has never existed."""
@@ -1083,6 +1884,64 @@ class NotificationCenter:
                 target = None
             if isinstance(target, dict):
                 payload["target"] = target
+        if str(incident.get("event_type") or "").startswith("health."):
+            original = self._health_original_event(str(incident["id"]))
+            if isinstance(original, dict):
+                payload["health_context"] = {
+                    "source_id": self._health_text(original.get("source_id") or original.get("producer") or "", 128),
+                    "host_id": self._health_text(original.get("host_id") or original.get("plugin") or "", 128),
+                    "signal_type": self._health_text(original.get("signal_type") or original.get("event_type") or "", 64),
+                    "correlation_id": self._health_text(original.get("correlation_id") or "", 256),
+                    "source_fingerprint": self._health_text(original.get("source_fingerprint") or "", 128),
+                    "trace_refs": [
+                        self._health_text(ref, 128)
+                        for ref in (original.get("evidence_refs") if isinstance(original.get("evidence_refs"), list) else [])[:10]
+                        if self._health_text(ref, 128)
+                    ],
+                }
+            latest_plans = self.latest_health_event(str(incident["id"]), "health.plans_attached")
+            if latest_plans is not None:
+                plan_payload = latest_plans["payload"]
+                plans = plan_payload.get("plans")
+                if isinstance(plans, list):
+                    payload["health_plans"] = [
+                        {
+                            "plan_id": self._health_text(plan.get("plan_id") or plan.get("id") or "", 64),
+                            "title": self._health_text(plan.get("title") or "", 128),
+                            "summary": self._health_text(plan.get("summary") or "", 256),
+                            "step": self._health_text(plan.get("step") or "", 64),
+                        }
+                        for plan in plans[:3]
+                        if isinstance(plan, Mapping)
+                    ]
+                if isinstance(payload.get("health_context"), dict):
+                    context = payload["health_context"]
+                    if plan_payload.get("correlation_id"):
+                        context["correlation_id"] = self._health_text(plan_payload.get("correlation_id"), 256)
+                    trace_refs = list(context.get("trace_refs") or []) if isinstance(context.get("trace_refs"), list) else []
+                    for trace_ref in plan_payload.get("trace_refs", []) if isinstance(plan_payload.get("trace_refs"), list) else []:
+                        bounded = self._health_text(trace_ref, 128)
+                        if bounded and bounded not in trace_refs:
+                            trace_refs.append(bounded)
+                    orchestration = plan_payload.get("orchestration")
+                    if isinstance(orchestration, Mapping):
+                        context["orchestration"] = self._health_value(orchestration)
+                        for field in ("diagnosis_session_id", "orchestrator_session_id"):
+                            bounded = self._health_text(orchestration.get(field), 128)
+                            if bounded and bounded not in trace_refs:
+                                trace_refs.append(bounded)
+                    context["trace_refs"] = trace_refs[:16]
+            latest_selection = self.latest_health_event(str(incident["id"]), HEALTH_UPDATE_EVENT_TYPES["plan_selection"])
+            if latest_selection is not None:
+                selection = latest_selection["payload"]
+                execution = selection.get("execution") if isinstance(selection, Mapping) else None
+                payload["health_selection"] = {
+                    "plan_id": self._health_text(selection.get("plan_id") if isinstance(selection, Mapping) else "", 64),
+                    "actor": self._health_text(selection.get("actor") if isinstance(selection, Mapping) else "", 128),
+                    "execution": self._health_execution(execution),
+                }
+                if isinstance(payload.get("health_context"), dict):
+                    payload["health_context"]["selection"] = payload["health_selection"]
         return payload
 
     def mark_dispatcher_healthy(self) -> None:
@@ -1128,3 +1987,149 @@ class NotificationCenter:
             "queued_deliveries": queued,
             "version": "0.1.0",
         }
+
+    @staticmethod
+    def _health_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Bound health workflow payloads before they are persisted."""
+        from .health_workflow import _bounded_refs, _bounded_summary, _bounded_text, normalize_health_execution
+
+        result: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key in {"step", "progress_fingerprint", "plan_id", "source_id", "verification_id", "observed_state", "selected_plan_id", "selected_by", "event_type", "correlation_id", "actor", "source_state"} and value is not None:
+                result[key] = _bounded_text(value, 128)
+            elif key in {"title", "summary", "body", "reason"} and value is not None:
+                result[key] = _bounded_summary(value)
+            elif key in {"evidence_refs", "trace_refs"}:
+                result[key] = _bounded_refs(value)
+            elif key == "execution":
+                try:
+                    result[key] = normalize_health_execution(value)
+                except ValidationError:
+                    result[key] = {}
+            elif key == "plans" and isinstance(value, list):
+                result[key] = [
+                    {
+                        "plan_id": _bounded_text(item.get("plan_id"), 64),
+                        "title": _bounded_summary(item.get("title")),
+                        "summary": _bounded_summary(item.get("summary")),
+                        "step": _bounded_text(item.get("step"), 64),
+                        "execution": normalize_health_execution(item.get("execution")),
+                    }
+                    for item in value
+                    if isinstance(item, Mapping)
+                ]
+            elif key == "orchestration" and isinstance(value, Mapping):
+                result[key] = {
+                    field: _bounded_text(value.get(field), 128)
+                    for field in (
+                        "diagnosis_session_id",
+                        "diagnosis_model",
+                        "orchestrator_session_id",
+                        "orchestrator_requested_model",
+                        "orchestrator_effective_model",
+                        "harness",
+                    )
+                    if value.get(field) is not None
+                }
+                for field in ("diagnosis_elapsed_ms", "orchestrator_elapsed_ms", "total_elapsed_ms"):
+                    try:
+                        result[key][field] = max(0, min(86_400_000, int(value.get(field) or 0)))
+                    except (TypeError, ValueError):
+                        result[key][field] = 0
+            elif key == "heartbeat_at":
+                result[key] = value
+            elif key == "elapsed_ms":
+                try:
+                    result[key] = max(0, min(86_400_000, int(value)))
+                except (TypeError, ValueError):
+                    result[key] = 0
+            elif value is not None:
+                result[key] = _bounded_text(value, 128)
+        return result
+
+    def record_health_update(self, incident_id: str, idempotency_key: str, event_type: str, payload: Mapping[str, Any], actor: str | None = None) -> dict[str, Any]:
+        """Persist a bounded health workflow update without creating a second incident."""
+        if not idempotency_key.strip():
+            raise ValidationError("Idempotency-Key is required")
+        if self.get_incident(incident_id) is None:
+            raise ValidationError("incident not found")
+        bounded_payload = self._health_payload(payload)
+        payload_json = json.dumps(bounded_payload, ensure_ascii=False, sort_keys=True)
+        now = time.time()
+        safe_event_type = str(event_type or "").strip()[:128]
+        safe_actor = str(actor or "").strip()[:128] or None
+        with self._lock, self._connection:
+            previous = self._connection.execute(
+                "SELECT event_id, payload_json FROM events WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if previous is not None:
+                if previous["payload_json"] != payload_json:
+                    raise IdempotencyConflict("Idempotency-Key was already used with different health update content")
+                return {"event_id": previous["event_id"], "incident_id": incident_id, "idempotent": True, **bounded_payload}
+            event_id = f"evt_{uuid.uuid4().hex}"
+            self._connection.execute(
+                "INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, proxy_ip, forwarded_for) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (idempotency_key, event_id, incident_id, payload_json, now, safe_event_type, safe_actor, "health-workflow", bounded_payload.get("correlation_id"), None, None, None, None, None, None),
+            )
+            self._audit(incident_id, safe_event_type or "health_update", safe_actor, bounded_payload)
+            if safe_event_type == "health.plans_attached":
+                self._schedule_delivery(incident_id, "telegram.main", "health.plans", now)
+            return {"event_id": event_id, "incident_id": incident_id, "idempotent": False, **bounded_payload}
+
+    def _health_events(self, incident_id: str, event_type: str | None = None) -> list[dict[str, Any]]:
+        """Return bounded health events newest first."""
+        query = "SELECT event_id, payload_json, created_at, event_type FROM events WHERE incident_id = ?"
+        params: list[Any] = [incident_id]
+        if event_type is not None:
+            query += " AND event_type = ?"
+            params.append(event_type)
+        query += " ORDER BY created_at DESC, event_id DESC"
+        rows = self._connection.execute(query, params).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            result.append({"event_id": row["event_id"], "payload": payload, "created_at": row["created_at"], "event_type": row["event_type"]})
+        return result
+
+    def latest_health_event(self, incident_id: str, event_type: str) -> dict[str, Any] | None:
+        """Return the newest health event payload for one incident and type."""
+        events = self._health_events(incident_id, event_type)
+        return events[0] if events else None
+
+    def latest_health_plans(self, incident_id: str) -> list[dict[str, Any]]:
+        """Return the newest attached plan bundle, or an empty list."""
+        latest = self.latest_health_event(incident_id, "health.plans_attached")
+        plans = latest["payload"].get("plans") if latest else []
+        return [dict(plan) for plan in plans] if isinstance(plans, list) else []
+
+    def latest_health_selection(self, incident_id: str) -> dict[str, Any] | None:
+        """Return the newest durable plan selection, if one exists."""
+        latest = self.latest_health_event(incident_id, "health.plan_selected")
+        return latest["payload"] if latest else None
+
+    def latest_health_progress(self, incident_id: str, plan_id: str | None = None) -> dict[str, Any] | None:
+        """Return the newest progress receipt, optionally narrowed to one plan."""
+        for event in self._health_events(incident_id, HEALTH_UPDATE_EVENT_TYPES["progress"]):
+            payload = event["payload"]
+            if plan_id is None or str(payload.get("plan_id") or "") == plan_id:
+                return payload
+        return None
+
+    def _health_useful_progress_exists(self, incident_id: str, plan_id: str) -> bool:
+        """Return true when any durable receipt for the selected plan was useful."""
+        for event in self._health_events(incident_id, HEALTH_UPDATE_EVENT_TYPES["progress"]):
+            payload = event["payload"]
+            if str(payload.get("plan_id") or "") == plan_id and bool(payload.get("useful") or payload.get("useful_progress")):
+                return True
+        return False
+
+    def latest_health_verification(self, incident_id: str) -> dict[str, Any] | None:
+        """Return the newest independent verification receipt, if any."""
+        latest = self.latest_health_event(incident_id, HEALTH_UPDATE_EVENT_TYPES["verification"])
+        return latest["payload"] if latest else None
