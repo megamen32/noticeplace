@@ -1879,7 +1879,7 @@ class NotificationCenter:
                     if audit_item["type"] != "health.plans_attached" or not isinstance(audit_item["payload"], Mapping):
                         continue
                     raw_plans = audit_item["payload"].get("plans")
-                    if not isinstance(raw_plans, list):
+                    if not isinstance(raw_plans, list) or len(raw_plans) != 3:
                         break
                     projected_plans = [
                         {
@@ -1889,7 +1889,11 @@ class NotificationCenter:
                         for plan in raw_plans[:3]
                         if isinstance(plan, Mapping)
                     ]
-                    if len(projected_plans) == 3 and all(plan["plan_id"] and plan["title"] for plan in projected_plans):
+                    if (
+                        len(projected_plans) == 3
+                        and all(plan["plan_id"] and plan["title"] for plan in projected_plans)
+                        and len({plan["plan_id"] for plan in projected_plans}) == 3
+                    ):
                         health_plans = projected_plans
                     break
                 history.append({

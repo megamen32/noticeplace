@@ -280,6 +280,55 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertNotIn(b"Health plans (3)", page)
         self.assertNotIn(b"only: Only", page)
 
+    def test_health_history_rejects_duplicate_and_extra_plan_entries(self) -> None:
+        center = self.store._consumer_notification_center()
+        workflow = HealthWorkflow(center, callback_secret="x" * 32)
+        created = workflow.intake_signal(
+            "old-token",
+            "admin-health-malformed",
+            {
+                "project": "existing",
+                "recipient": "me",
+                "severity": "notice",
+                "title": "Health degradation",
+                "body": "Disk pressure",
+                "dedup_key": "health:admin:malformed",
+                "source_id": "node-admin",
+                "host_id": "node-admin",
+                "signal_type": "disk",
+            },
+        )
+        cases = (
+            (
+                "duplicate",
+                [
+                    {"plan_id": "observe", "title": "Observe"},
+                    {"plan_id": "observe", "title": "Observe again"},
+                    {"plan_id": "verify", "title": "Verify"},
+                ],
+            ),
+            (
+                "extra",
+                [
+                    {"plan_id": "observe", "title": "Observe"},
+                    {"plan_id": "repair", "title": "Repair"},
+                    {"plan_id": "verify", "title": "Verify"},
+                    {"plan_id": "extra", "title": "Extra"},
+                ],
+            ),
+        )
+        for suffix, plans in cases:
+            center.record_health_update(
+                created["incident_id"],
+                f"admin-health-malformed-{suffix}",
+                "health.plans_attached",
+                {"plans": plans},
+                actor="legacy",
+            )
+            status, page = self._request("GET", f"/admin/?history={created['incident_id']}")
+            self.assertEqual(200, status)
+            self.assertNotIn(b"Health plans (3)", page)
+
     def test_generic_consumer_builder_does_not_require_legacy_fields(self) -> None:
         status, page = self._request("GET", "/admin/")
         self.assertEqual(200, status)
