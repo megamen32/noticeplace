@@ -1875,7 +1875,7 @@ class NotificationCenter:
                     for audit_row in audit
                 ]
                 health_plans: list[dict[str, str]] = []
-                for audit_item in audit_items:
+                for audit_item in reversed(audit_items):
                     if audit_item["type"] != "health.plans_attached" or not isinstance(audit_item["payload"], Mapping):
                         continue
                     raw_plans = audit_item["payload"].get("plans")

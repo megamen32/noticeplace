@@ -232,10 +232,21 @@ class AdminConsoleTests(unittest.TestCase):
             actor="omniroute",
             correlation_id="corr:admin-health",
         )
+        workflow.attach_plans(
+            created["incident_id"],
+            "admin-health-plans-latest",
+            [
+                {"plan_id": "observe", "title": "Observe latest", "summary": "Observe", "step": "observe"},
+                {"plan_id": "repair", "title": "Repair latest", "summary": "Repair", "step": "repair"},
+                {"plan_id": "verify", "title": "Verify latest", "summary": "Verify", "step": "verify"},
+            ],
+            actor="omniroute",
+            correlation_id="corr:admin-health-latest",
+        )
         status, page = self._request("GET", f"/admin/?history={created['incident_id']}")
         self.assertEqual(200, status)
         self.assertIn(b"Health plans (3)", page)
-        for plan in (b"observe: Observe", b"repair: Repair", b"verify: Verify"):
+        for plan in (b"observe: Observe latest", b"repair: Repair latest", b"verify: Verify latest"):
             self.assertIn(plan, page)
 
     def test_generic_consumer_builder_does_not_require_legacy_fields(self) -> None:
