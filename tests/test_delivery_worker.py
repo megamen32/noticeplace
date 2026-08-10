@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from notification_center.core import NotificationCenter
-from notification_center.http_api import DeliveryWorker, MatrixCallSender
+from notification_center.http_api import DeliveryWorker, MatrixCallSender, TelegramSender
 
 
 class DeliveryWorkerTests(unittest.TestCase):
@@ -38,6 +38,24 @@ class DeliveryWorkerTests(unittest.TestCase):
             "SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
         ).fetchone()["status"]
         self.assertEqual("cancelled", status)
+
+    def test_health_delivery_waits_for_a_topic_instead_of_being_cancelled(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-topic-missing",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        telegram = TelegramSender("bot-token", "-100123", active_modes={"log"}, center=self.center)
+        worker = DeliveryWorker(self.center, telegram)
+
+        self.assertEqual(1, worker.run_once())
+        row = self.center._connection.execute(
+            "SELECT status, last_error, due_at FROM deliveries WHERE id = ?",
+            (created["initial_delivery_id"],),
+        ).fetchone()
+        self.assertEqual("queued", row["status"])
+        self.assertEqual("Telegram health topic route is not active", row["last_error"])
+        self.assertGreater(row["due_at"], 0)
 
     def test_confirmed_matrix_answer_acknowledges_only_that_incident(self) -> None:
         created = self.center.create_event("producer", "create", self.event)

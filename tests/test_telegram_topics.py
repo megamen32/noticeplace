@@ -23,6 +23,17 @@ class TelegramTopicTests(unittest.TestCase):
         self.assertEqual({"emergency", "important", "log"}, telegram_active_modes(""))
         self.assertEqual({"important"}, telegram_active_modes(json.dumps(["important"])))
 
+    def test_health_incidents_can_use_an_explicit_health_topic(self) -> None:
+        routes = {"health": {"chat_id": "-1001", "message_thread_id": 77}}
+        incident = {"kind": "incident", "severity": "critical", "event_type": "health.degraded"}
+        self.assertEqual("77", telegram_destination("-1001", routes, incident, {"health"})["message_thread_id"])
+        self.assertEqual({}, telegram_destination("-1001", routes, incident, {"log"}))
+
+    def test_health_incidents_never_fall_back_to_the_general_chat(self) -> None:
+        incident = {"kind": "incident", "severity": "critical", "event_type": "health.degraded"}
+        self.assertEqual({}, telegram_destination("-1001", {}, incident, {"health"}))
+        self.assertEqual({}, telegram_destination("-1001", {"health": {"chat_id": "-1001"}}, incident, {"health"}))
+
     def test_reconcile_creates_only_missing_active_topics(self) -> None:
         calls: list[tuple[str, str]] = []
 

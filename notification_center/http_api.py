@@ -72,6 +72,12 @@ def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[s
     configured = severity_routes.get(mode, {})
     if configured.get("enabled") is False:
         return {}
+    # Health cards contain actionable plan callbacks.  Never fall back to the
+    # general chat when the dedicated operator topic is absent: that would
+    # make a real user miss the required Health surface and could expose
+    # controls in the wrong conversation.
+    if mode == "health" and (not str(configured.get("chat_id") or "").strip() or not configured.get("message_thread_id")):
+        return {}
     destination = {"chat_id": str(configured.get("chat_id") or default_chat_id)}
     thread_id = configured.get("message_thread_id")
     if thread_id is not None:
@@ -371,7 +377,15 @@ class DeliveryWorker:
                 if delivery["channel"] == "telegram.main":
                     active_modes = getattr(self._telegram, "active_modes", None)
                     if active_modes is not None and telegram_mode(payload["incident"]) not in active_modes:
-                        self._center.complete_delivery(delivery["id"], "cancelled", "Telegram mode is inactive")
+                        if telegram_mode(payload["incident"]) == "health":
+                            self._center.complete_delivery(
+                                delivery["id"],
+                                "retry",
+                                "Telegram health topic route is not active",
+                                retry_after_seconds=300,
+                            )
+                        else:
+                            self._center.complete_delivery(delivery["id"], "cancelled", "Telegram mode is inactive")
                         return
                 self._telegram.send(payload)
                 incident = payload["incident"]
