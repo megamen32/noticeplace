@@ -394,6 +394,16 @@ class GptAdminAgentJobTests(unittest.TestCase):
         ]
         workflow.attach_plans(created["incident_id"], "health-remediation-plans", plans, actor="omniroute")
         workflow.select_plan(created["incident_id"], "health-remediation-selection", "repair", "telegram:42")
+        workflow.record_verification(
+            created["incident_id"],
+            "health-independent-verification",
+            source_id="source-a",
+            verification_id="verification-1",
+            observed_state="healthy",
+            evidence_refs=["probe:source-a"],
+            fingerprint="source-fp-1",
+            actor="probe-b",
+        )
         due = center.claim_due_deliveries(now_epoch=10**12)
         delivery = next(item for item in due if item["channel"] == "gptadmin.agent:health-remediation")
 
@@ -445,7 +455,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         ]
         self.assertIn("health.progress", event_types)
         self.assertEqual(1, event_types.count("health.progress"))
-        self.assertIn("health.verification_recorded", event_types)
+        self.assertEqual(1, event_types.count("health.verification_recorded"))
         self.assertIn("health.resolved", event_types)
         self.assertEqual("resolved", center.get_incident(created["incident_id"])["state"])
         resolved = center.latest_health_event(created["incident_id"], "health.resolved")
@@ -506,6 +516,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
                     "source_id": "source-a",
                     "source_fingerprint": "source-fp-1",
                     "verification_id": "verification-missing-verifier",
+                    "verifier_id": "probe-b",
                     "observed_state": "healthy",
                     "trace_refs": ["trace-rejected"],
                 },

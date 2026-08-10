@@ -160,6 +160,20 @@ class HttpApiTests(unittest.TestCase):
             (incident_id,),
         ).fetchone()["count"])
 
+        status, heartbeat_without_timestamp = self.request(
+            "POST",
+            f"/v1/incidents/{incident_id}/health/progress",
+            {"plan_id": "repair", "step": "heartbeat", "evidence_refs": [], "progress_fingerprint": "heartbeat-only"},
+            **auth,
+            **{"Idempotency-Key": "health-heartbeat-fingerprint-without-timestamp-1"},
+        )
+        self.assertEqual(400, status)
+        self.assertIn("heartbeat-only", str(heartbeat_without_timestamp["error"]))
+        self.assertEqual(0, self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM events WHERE incident_id = ? AND event_type = 'health.progress'",
+            (incident_id,),
+        ).fetchone()["count"])
+
         status, heartbeat_with_fingerprint = self.request(
             "POST",
             f"/v1/incidents/{incident_id}/health/progress",
@@ -194,6 +208,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(1, len(self.center.list_incidents()))
         resolution = self.center.latest_health_event(incident_id, "health.resolved")
         self.assertIsNotNone(resolution)
+        self.assertEqual("health:host-a:disk:1", resolution["payload"]["correlation_id"])
         self.assertEqual(3210, resolution["payload"]["elapsed_ms"])
         self.assertEqual(["trace-http-1"], resolution["payload"]["trace_refs"])
 

@@ -1101,40 +1101,39 @@ class NotificationCenter:
                     progress_step.strip().lower() in {"heartbeat", "keepalive", "heartbeat-only"},
                     "agent-herder",
                 )
-            observed_state = self._health_text(agent_receipt.get("observed_state") or "", 32).lower()
-            if observed_state != "healthy":
+            verification = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["verification"])
+            verification_actor = self._health_text(verification.get("actor") or "", 128) if isinstance(verification, Mapping) else ""
+            if not isinstance(verification, Mapping) or not verification_actor:
                 return {
                     "accepted": False,
                     "resolved": False,
-                    "reason": "remediation completed without an independently healthy state",
+                    "reason": "an independent health verification receipt is required before remediation can resolve",
                     "progress": progress,
                 }
+            if verification_actor.lower() in {"agent-herder", "health-remediation"}:
+                raise ValidationError("health verification must come from an independent actor")
 
-            source_id = self._health_text(agent_receipt.get("source_id") or health_context.get("source_id") or "", 128)
+            source_id = self._health_text(verification.get("source_id") or "", 128)
             expected_source_id = self._health_text(health_context.get("source_id") or "", 128)
-            source_fingerprint = self._health_text(agent_receipt.get("source_fingerprint") or agent_receipt.get("fingerprint") or "", 128)
+            source_fingerprint = self._health_text(verification.get("fingerprint") or "", 128)
             expected_fingerprint = self._health_text(health_context.get("source_fingerprint") or "", 128)
-            verifier_id = self._health_text(agent_receipt.get("verifier_id") or agent_receipt.get("verification_source_id") or "", 128)
-            verification_id = self._health_text(agent_receipt.get("verification_id") or "", 128)
-            if not source_id or not verifier_id or not verification_id:
-                raise ValidationError("healthy remediation receipt is missing source, verifier, or verification identity")
+            verifier_id = self._health_text(verification.get("verifier_id") or "", 128)
+            verification_id = self._health_text(verification.get("verification_id") or "", 128)
+            receipt_source_id = self._health_text(agent_receipt.get("source_id") or "", 128)
+            receipt_fingerprint = self._health_text(agent_receipt.get("source_fingerprint") or agent_receipt.get("fingerprint") or "", 128)
+            receipt_verification_id = self._health_text(agent_receipt.get("verification_id") or "", 128)
+            if not source_id or not verifier_id or not verification_id or not bool(verification.get("healthy")):
+                raise ValidationError("independent health verification receipt is incomplete or unhealthy")
+            if receipt_source_id and receipt_source_id != source_id:
+                raise ValidationError("remediation receipt source does not match the independent verification")
+            if receipt_fingerprint and receipt_fingerprint != source_fingerprint:
+                raise ValidationError("remediation receipt fingerprint does not match the independent verification")
+            if receipt_verification_id and receipt_verification_id != verification_id:
+                raise ValidationError("remediation receipt verification does not match the independent verification")
             if expected_source_id and source_id != expected_source_id:
-                raise ValidationError("healthy remediation receipt source does not match the original source")
+                raise ValidationError("health verification source must match the original source")
             if expected_fingerprint and source_fingerprint != expected_fingerprint:
-                raise ValidationError("healthy remediation receipt fingerprint does not match the original source")
-            verification = self.record_health_verification(
-                incident_id,
-                "agent-herder",
-                {
-                    "source_id": source_id,
-                    "verifier_id": verifier_id,
-                    "verification_id": verification_id,
-                    "healthy": True,
-                    "fingerprint": source_fingerprint,
-                    "evidence_refs": evidence_refs,
-                },
-                f"{delivery_id}:health.verification:{verification_id}",
-            )
+                raise ValidationError("health verification fingerprint must match the original source")
             try:
                 elapsed_ms = max(0, min(86_400_000, int(receipt.get("elapsed_ms") or 0)))
             except (TypeError, ValueError):
@@ -1539,7 +1538,7 @@ class NotificationCenter:
         safe_fingerprint = self._health_text(fingerprint or "", 128)
         has_progress_content = bool(safe_step or evidence_refs or safe_fingerprint)
         heartbeat_label = safe_step.strip().lower() in {"heartbeat", "keepalive", "heartbeat-only"}
-        heartbeat_only = bool(heartbeat) and not evidence_refs and heartbeat_label
+        heartbeat_only = not evidence_refs and heartbeat_label
         if not has_progress_content:
             raise ValidationError("health progress requires a non-empty step, evidence, or fingerprint")
         if heartbeat_only:
@@ -1642,6 +1641,7 @@ class NotificationCenter:
         else:
             evidence_refs = [self._health_text(safe_evidence, 128)]
         payload = {
+            "actor": self._health_text(actor, 128),
             "source_id": source_id,
             "verifier_id": verifier_id,
             "verification_id": self._health_text(verification_id or "", 128),
@@ -1694,17 +1694,22 @@ class NotificationCenter:
             raise ValidationError("health verification receipt must match the original source fingerprint and remain independent")
         if current["state"] == "resolved":
             return current
+        original = self._health_original_event(incident_id) or {}
+        correlation_id = self._health_text(original.get("correlation_id") or current.get("correlation_id") or "", 256)
+        resolved_payload = {
+            "source_id": source_id,
+            "verification_id": verification_id,
+            "resolved_by": actor,
+            "elapsed_ms": elapsed_ms if elapsed_ms is not None else 0,
+            "trace_refs": trace_refs or [],
+        }
+        if correlation_id:
+            resolved_payload["correlation_id"] = correlation_id
         self._record_health_event(
             incident_id,
             f"{incident_id}:health.resolved:{verification_id}",
             "health.resolved",
-            {
-                "source_id": source_id,
-                "verification_id": verification_id,
-                "resolved_by": actor,
-                "elapsed_ms": elapsed_ms if elapsed_ms is not None else 0,
-                "trace_refs": trace_refs or [],
-            },
+            resolved_payload,
             actor,
             useful=True,
         )

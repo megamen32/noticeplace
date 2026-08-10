@@ -317,6 +317,21 @@ class HealthWorkflowTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual(3, len(rows))
 
+    def test_heartbeat_with_fingerprint_without_timestamp_is_rejected(self) -> None:
+        self.workflow.attach_plans(self.created["incident_id"], "plans-heartbeat-fingerprint", self._plans(), actor="gptadmin")
+        self.center.record_health_plan_selection(self.created["incident_id"], "observe", "telegram:42", "selection-heartbeat-fingerprint")
+        with self.assertRaisesRegex(ValidationError, "heartbeat-only"):
+            self.workflow.record_progress(
+                self.created["incident_id"],
+                "heartbeat-fingerprint-without-timestamp",
+                plan_id="observe",
+                step="heartbeat",
+                evidence_refs=[],
+                progress_fingerprint="heartbeat-only",
+                actor="herder",
+            )
+        self.assertIsNone(self.center.latest_health_event(self.created["incident_id"], "health.progress"))
+
     def test_repeated_progress_with_the_same_idempotency_key_is_idempotent(self) -> None:
         self.workflow.attach_plans(self.created["incident_id"], "plans-progress-retry", self._plans(), actor="gptadmin")
         self.center.record_health_plan_selection(self.created["incident_id"], "observe", "telegram:42", "selection-progress-retry")
@@ -385,6 +400,7 @@ class HealthWorkflowTests(unittest.TestCase):
         assert resolution is not None
         self.assertEqual(4200, resolution["payload"]["elapsed_ms"])
         self.assertEqual(["trace-health-1"], resolution["payload"]["trace_refs"])
+        self.assertEqual("source-a", resolution["payload"]["source_id"])
 
     def test_bounded_receipts_do_not_persist_raw_logs_or_secrets(self) -> None:
         self.workflow.attach_plans(self.created["incident_id"], "plans-6", self._plans(), actor="gptadmin")
