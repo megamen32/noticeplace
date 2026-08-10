@@ -1880,17 +1880,18 @@ class NotificationCenter:
                         continue
                     raw_plans = audit_item["payload"].get("plans")
                     if not isinstance(raw_plans, list):
-                        continue
-                    health_plans = [
+                        break
+                    projected_plans = [
                         {
-                            "plan_id": str(plan.get("plan_id") or plan.get("id") or "")[:64],
-                            "title": str(plan.get("title") or plan.get("plan_id") or plan.get("id") or "")[:128],
+                            "plan_id": str(plan.get("plan_id") or plan.get("id") or "").strip()[:64],
+                            "title": str(plan.get("title") or plan.get("plan_id") or plan.get("id") or "").strip()[:128],
                         }
                         for plan in raw_plans[:3]
                         if isinstance(plan, Mapping)
                     ]
-                    if health_plans:
-                        break
+                    if len(projected_plans) == 3 and all(plan["plan_id"] and plan["title"] for plan in projected_plans):
+                        health_plans = projected_plans
+                    break
                 history.append({
                     "event_id": str(row["event_id"]),
                     "incident_id": incident_id,

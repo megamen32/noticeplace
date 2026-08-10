@@ -214,7 +214,7 @@ def _history_health_plans_display(item: dict[str, Any]) -> str:
         labels.append(f"<span>{plan_id}: {title}</span>")
     if not labels:
         return ""
-    return '<div class="health-plans"><span class="hint">Health plans (3):</span><br>' + "<br>".join(labels) + "</div>"
+    return f'<div class="health-plans"><span class="hint">Health plans ({len(labels)}):</span><br>' + "<br>".join(labels) + "</div>"
 
 
 def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:

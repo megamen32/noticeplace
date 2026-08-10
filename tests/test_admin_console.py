@@ -249,6 +249,37 @@ class AdminConsoleTests(unittest.TestCase):
         for plan in (b"observe: Observe latest", b"repair: Repair latest", b"verify: Verify latest"):
             self.assertIn(plan, page)
 
+    def test_health_history_does_not_claim_three_plans_for_incomplete_audit(self) -> None:
+        center = self.store._consumer_notification_center()
+        workflow = HealthWorkflow(center, callback_secret="x" * 32)
+        created = workflow.intake_signal(
+            "old-token",
+            "admin-health-incomplete",
+            {
+                "project": "existing",
+                "recipient": "me",
+                "severity": "notice",
+                "title": "Health degradation",
+                "body": "Disk pressure",
+                "dedup_key": "health:admin:incomplete",
+                "source_id": "node-admin",
+                "host_id": "node-admin",
+                "signal_type": "disk",
+            },
+        )
+        center.record_health_update(
+            created["incident_id"],
+            "admin-health-incomplete-plans",
+            "health.plans_attached",
+            {"plans": [{"plan_id": "only", "title": "Only"}]},
+            actor="legacy",
+        )
+
+        status, page = self._request("GET", f"/admin/?history={created['incident_id']}")
+        self.assertEqual(200, status)
+        self.assertNotIn(b"Health plans (3)", page)
+        self.assertNotIn(b"only: Only", page)
+
     def test_generic_consumer_builder_does_not_require_legacy_fields(self) -> None:
         status, page = self._request("GET", "/admin/")
         self.assertEqual(200, status)
