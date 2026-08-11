@@ -2106,7 +2106,8 @@ class NotificationCenter:
                 choice_id = choice_ids[int(choice_id)]
             if choice_id not in choice_ids:
                 raise ValidationError("choice does not belong to incident")
-            return {"request_id": str(presentation["choice_request_id"]), "choice_id": choice_id}
+            label = next(str(item["label"]) for item in presentation["choices"] if str(item["choice_id"]) == choice_id)
+            return {"request_id": str(presentation["choice_request_id"]), "choice_id": choice_id, "label": label}
 
     def record_telegram_choice(self, incident_id: str, choice_id: str, actor: str, request_id: str, status: str) -> None:
         """Audit a choice callback without persisting executable goal text."""

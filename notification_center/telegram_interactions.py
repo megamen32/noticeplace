@@ -125,6 +125,34 @@ class TelegramInteractionPoller:
     def _allowed(self, user_id: Any) -> bool:
         return str(user_id) in self._allowed_user_ids
 
+    def _dismiss_choice_message(self, callback: dict[str, Any], label: str) -> None:
+        """Remove choice buttons and leave a visible selected marker."""
+        message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+        chat_id = str(message.get("chat", {}).get("id") or "") if isinstance(message.get("chat"), dict) else ""
+        message_id = message.get("message_id")
+        if not chat_id or not isinstance(message_id, int) or message_id <= 0:
+            return
+        current_text = str(message.get("text") or "").rstrip()
+        marker = f"✓ Выбрано: {label[:128]}"
+        text = f"{current_text}\n\n{marker}" if current_text else marker
+        payload = {
+            "chat_id": chat_id,
+            "message_id": str(message_id),
+            "text": text[:4096],
+            "reply_markup": json.dumps({"inline_keyboard": []}, ensure_ascii=False, separators=(",", ":")),
+        }
+        try:
+            self._api("editMessageText", payload)
+        except Exception:
+            # The choice already resumed the session. If text editing is
+            # rejected (for example because Telegram has a stale message
+            # snapshot), still make a best-effort keyboard-only removal.
+            self._api("editMessageReplyMarkup", {
+                "chat_id": chat_id,
+                "message_id": str(message_id),
+                "reply_markup": payload["reply_markup"],
+            })
+
     def _handle_callback(self, callback: dict[str, Any]) -> None:
         callback_id = str(callback.get("id") or "")
         actor_id = callback.get("from", {}).get("id")
@@ -172,6 +200,8 @@ class TelegramInteractionPoller:
                         str(selection["request_id"]),
                         str(result.get("status") or "accepted"),
                     )
+                    if result.get("duplicate") is not True:
+                        self._dismiss_choice_message(callback, str(selection["label"]))
                     self._answer(callback_id, f"choice: {str(result.get('status') or 'accepted')}")
                     return
             self._answer(callback_id, "Invalid action")

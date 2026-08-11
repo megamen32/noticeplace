@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -68,11 +69,14 @@ class AgentHerderChoiceTests(unittest.TestCase):
                 "id": "callback-501",
                 "from": {"id": 42},
                 "data": callback_data,
-                "message": {"chat": {"id": 42}},
+                "message": {"chat": {"id": 42}, "message_id": 332, "text": "Choose next step"},
             },
         }]
 
+        api_calls: list[tuple[str, dict[str, object]]] = []
+
         def api(method: str, _payload: dict[str, object]) -> dict[str, object]:
+            api_calls.append((method, _payload))
             return {"ok": True, "result": updates if method == "getUpdates" else True}
 
         poller = TelegramInteractionPoller(
@@ -87,6 +91,11 @@ class AgentHerderChoiceTests(unittest.TestCase):
         self.assertEqual([
             ("11111111-1111-4111-8111-111111111111", "correlate", "telegram:42"),
         ], calls)
+        edit_payload = next(payload for method, payload in api_calls if method == "editMessageText")
+        self.assertEqual("42", edit_payload["chat_id"])
+        self.assertEqual("332", edit_payload["message_id"])
+        self.assertIn("✓ Выбрано: Correlate failure timing", str(edit_payload["text"]))
+        self.assertEqual({"inline_keyboard": []}, json.loads(str(edit_payload["reply_markup"])))
 
     def test_choice_event_rejects_authority_goal_data(self) -> None:
         with self.assertRaises(ValidationError):
