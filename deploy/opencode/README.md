@@ -36,3 +36,9 @@ central NoticePlace owns delivery adapters.
 The snippets are intentionally secret-free. Roll back by reverting the commit
 and removing only these two drop-ins; do not delete the user's credential
 files.
+
+The Agent Herder choice callback is stateful. Keep the
+`AGENT_HERDER_AUTOPILOT_STATE_DIR` line from the drop-in: the Codex Stop hook
+and the HTTP callback endpoint must read the same `choices.json`, otherwise
+Telegram buttons can be delivered successfully but their callbacks cannot
+find the pending request.
