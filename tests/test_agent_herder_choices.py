@@ -53,7 +53,8 @@ class AgentHerderChoiceTests(unittest.TestCase):
         )
         callback_data = keyboard["inline_keyboard"][1][0]["callback_data"]
         self.assertNotIn("nextGoal", callback_data)
-        self.assertEqual(("choice", created["incident_id"], "correlate"), codec.decode(callback_data))
+        self.assertLessEqual(len(callback_data.encode()), 64)
+        self.assertEqual(("choice", created["incident_id"], "1"), codec.decode(callback_data))
 
         calls: list[tuple[str, str, str]] = []
 

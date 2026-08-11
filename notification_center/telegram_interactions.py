@@ -40,7 +40,10 @@ class TelegramActionCodec:
                 raise ValueError("only health_plan and choice callbacks may carry a value")
             unsigned = f"n:{action}:{incident_id}"
         signature = hmac.new(self._secret, unsigned.encode(), hashlib.sha256).hexdigest()[:12]
-        return f"{unsigned}:{signature}"
+        encoded = f"{unsigned}:{signature}"
+        if len(encoded.encode()) > 64:
+            raise ValueError("Telegram callback data exceeds 64 bytes")
+        return encoded
 
     def decode(self, value: str) -> tuple[str, str] | tuple[str, str, str] | None:
         parts = value.split(":")
@@ -156,14 +159,15 @@ class TelegramInteractionPoller:
                     if self._choice_callback is None:
                         raise ValidationError("Agent Herder choice callback is not configured")
                     selection = self._center.get_telegram_choice(incident_id, plan_id)
+                    selected_choice_id = str(selection["choice_id"])
                     result = self._choice_callback(
                         str(selection["request_id"]),
-                        plan_id,
+                        selected_choice_id,
                         f"telegram:{actor_id}",
                     )
                     self._center.record_telegram_choice(
                         incident_id,
-                        plan_id,
+                        selected_choice_id,
                         f"telegram:{actor_id}",
                         str(selection["request_id"]),
                         str(result.get("status") or "accepted"),

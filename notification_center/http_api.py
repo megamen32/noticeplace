@@ -58,13 +58,16 @@ def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[s
     incident_id = str(incident["id"])
     if isinstance(choices, list) and choices:
         buttons = []
-        for choice in choices[:4]:
+        for index, choice in enumerate(choices[:4]):
             if not isinstance(choice, dict):
                 continue
             choice_id = str(choice.get("choice_id") or "").strip()
             label = str(choice.get("label") or "").strip()
             if choice_id and label:
-                buttons.append([{"text": label[:128], "callback_data": action_codec.encode("choice", incident_id, choice_id=choice_id)}])
+                # Keep callback_data below Telegram's 64-byte limit.  The
+                # incident-local index is signed; NoticePlace resolves it
+                # back to the opaque Agent Herder choice_id server-side.
+                buttons.append([{"text": label[:128], "callback_data": action_codec.encode("choice", incident_id, choice_id=str(index))}])
         if buttons:
             return {"inline_keyboard": buttons}
     ask = {"text": "Ask", "callback_data": action_codec.encode("ask", incident_id)}
