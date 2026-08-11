@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from notification_center.core import NotificationCenter, ValidationError
-from notification_center.http_api import telegram_inline_keyboard
+from notification_center.http_api import telegram_inline_keyboard, telegram_interactions_from_environment
 from notification_center.telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 
 
@@ -93,6 +95,20 @@ class AgentHerderChoiceTests(unittest.TestCase):
                     {"choice_id": "verify", "label": "Verify"},
                 ],
             ))
+
+    def test_remote_choice_callback_requires_a_token_but_loopback_may_be_local(self) -> None:
+        codec = TelegramActionCodec("x" * 32)
+        common = {
+            "TELEGRAM_BOT_TOKEN": "bot-token",
+            "TELEGRAM_CALLBACK_ALLOWED_USER_IDS": "42",
+            "AGENT_HERDER_AUTOPILOT_CHOICE_CALLBACK_TOKEN": "",
+        }
+        with patch.dict(os.environ, {**common, "AGENT_HERDER_AUTOPILOT_CHOICE_CALLBACK_URL": "https://herder.example/internal/autopilot/choices/select"}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "requires a token"):
+                telegram_interactions_from_environment(self.center, codec)
+
+        with patch.dict(os.environ, {**common, "AGENT_HERDER_AUTOPILOT_CHOICE_CALLBACK_URL": "http://127.0.0.1:18790/internal/autopilot/choices/select"}, clear=False):
+            self.assertIsNotNone(telegram_interactions_from_environment(self.center, codec))
 
 
 if __name__ == "__main__":

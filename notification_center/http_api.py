@@ -1040,7 +1040,9 @@ def telegram_interactions_from_environment(center: NotificationCenter, codec: Te
     callback_url = os.environ.get("AGENT_HERDER_AUTOPILOT_CHOICE_CALLBACK_URL", "").strip()
     callback_token = os.environ.get("AGENT_HERDER_AUTOPILOT_CHOICE_CALLBACK_TOKEN", "").strip()
     choice_callback = None
-    if callback_url and callback_token:
+    if callback_url and not callback_token and urllib.parse.urlparse(callback_url).hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError("Agent Herder choice callback requires a token outside loopback")
+    if callback_url:
         choice_callback = lambda request_id, choice_id, actor: agent_herder_choice_callback(callback_url, callback_token, request_id, choice_id, actor)
     return TelegramInteractionPoller(center, token, allowed, codec, health_plan_codec=TelegramHealthPlanCodec(codec.secret), choice_callback=choice_callback) if token and allowed else None
 
