@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from notification_center.agent_job_helper import event_from_environment, run_profile
+from notification_center.agent_job_helper import _extract_health_remediation, event_from_environment, run_profile
 
 
 class _Response:
@@ -124,10 +124,26 @@ class AgentJobHelperTests(unittest.TestCase):
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "hermes", "name": "health_remediation_100", "cwd": str(root), "mode": "queue",
                 "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
             config.chmod(0o600)
             requests: list[object] = []
+
+            def runner(request: object, **_kwargs: object) -> _Response:
+                requests.append(request)
+                url = str(getattr(request, "full_url", ""))
+                if url.endswith("/api/sessions/new-or-resume"):
+                    return _Response({"ok": True, "created": True, "sessionId": "hermes-health-1", "delivery": "accepted", "model": "gpt-5.6-luna"})
+                if "/progress?" in url:
+                    return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
+                if "/details?" in url:
+                    return _Response({"messages": [{"role": "assistant", "text": json.dumps({
+                        "status": "completed", "plan_id": "repair", "step": "inspect", "observed_state": "unknown",
+                        "verification_id": "verify-1", "source_id": "source-a", "source_fingerprint": "fp-1",
+                        "verifier_id": "probe-b", "evidence_refs": ["probe:1"], "trace_refs": ["trace:1"],
+                    })}]})
+                self.fail(f"unexpected Agent Herder URL: {url}")
 
             result = run_profile(
                 "health-remediation",
@@ -138,7 +154,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
                 },
                 config,
-                runner=lambda request, **_kwargs: requests.append(request) or _Response({"ok": True, "created": True, "sessionId": "hermes-health-1", "delivery": "accepted", "model": "gpt-5.6-luna"}),
+                runner=runner,
             )
             self.assertEqual("hermes-health-1", result["session_id"])
             self.assertEqual("gpt-5.6-luna", result["model"])
@@ -146,6 +162,75 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertEqual("hermes", body["harness"])
             self.assertEqual("gpt-5.6-luna", body["model"])
             self.assertIn("selected plan repair", body["message"])
+
+    def test_health_remediation_waits_for_terminal_receipt_and_returns_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir).resolve()
+            config = root / "agent-jobs.json"
+            config.write_text(json.dumps({"profiles": {"health-remediation": {
+                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+                "harness": "hermes", "name": "health_remediation_test", "cwd": str(root), "mode": "queue",
+                "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5",
+                "instruction": "Apply only the selected health remediation plan and report useful progress.",
+            }}}), encoding="utf-8")
+            config.chmod(0o600)
+            requests: list[object] = []
+            completion = json.dumps({
+                "status": "completed",
+                "plan_id": "repair",
+                "step": "validate keywords",
+                "observed_state": "healthy",
+                "verification_id": "verify-health-1",
+                "source_id": "host:vusa",
+                "source_fingerprint": "source-fingerprint-1",
+                "verifier_id": "health-monitor-independent",
+                "evidence_refs": ["probe:keywords-after"],
+                "trace_refs": ["trace:hermes:repair-1"],
+            })
+
+            def runner(request: object, **_kwargs: object) -> _Response:
+                requests.append(request)
+                url = str(getattr(request, "full_url", ""))
+                if url.endswith("/api/sessions/new-or-resume"):
+                    return _Response({"ok": True, "created": True, "sessionId": "hermes-health-1", "delivery": "accepted", "model": "gpt-5.6-luna"})
+                if "/progress?" in url:
+                    return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
+                if "/details?" in url:
+                    return _Response({"messages": [{"role": "assistant", "text": completion}]})
+                self.fail(f"unexpected Agent Herder URL: {url}")
+
+            result = run_profile(
+                "health-remediation",
+                {
+                    "schema": "notify.agent-job.v1",
+                    "job_id": "health-remediation",
+                    "incident": {"id": "inc-health-1", "project": "health-monitor", "severity": "critical", "title": "Keyword degraded", "body": "bounded", "dedup_key": "health:keywords", "occurrences": 1},
+                    "health": {
+                        "source_id": "host:vusa",
+                        "source_fingerprint": "source-fingerprint-1",
+                        "selection": {"plan_id": "repair", "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}},
+                    },
+                },
+                config,
+                runner=runner,
+            )
+
+            self.assertEqual("completed", result["status"])
+            self.assertEqual("repair", result["plan_id"])
+            self.assertEqual("verify-health-1", result["verification_id"])
+            self.assertEqual("host:vusa", result["source_id"])
+            self.assertEqual("source-fingerprint-1", result["source_fingerprint"])
+            self.assertEqual("health-monitor-independent", result["verifier_id"])
+            self.assertTrue(result["useful_progress"])
+            self.assertEqual("progress:repair-1", result["progress_fingerprint"])
+            self.assertEqual(3, len(requests))
+
+    def test_health_remediation_rejects_terminal_receipt_without_independent_proof(self) -> None:
+        details = {"messages": [{"role": "assistant", "text": json.dumps({
+            "status": "completed", "plan_id": "repair", "step": "inspect", "observed_state": "healthy",
+        })}]}
+        self.assertIsNone(_extract_health_remediation(details, "repair"))
 
     def test_health_remediation_rejects_legacy_non_hermes_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

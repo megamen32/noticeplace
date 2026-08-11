@@ -115,10 +115,28 @@ def _health_remediation_message(profile: dict[str, str], event: dict[str, Any], 
     if profile["harness"] != "hermes" or profile["model"] != "gpt-5.6-luna" or profile["reasoning"] != "high" or profile["topic"] != "health":
         raise RuntimeError("health-remediation profile must pin hermes/gpt-5.6-luna high health")
     telemetry = _telemetry_message("", incident).lstrip()
+    selected_plan: Mapping[str, Any] | None = None
+    plans = health.get("plans") if isinstance(health, Mapping) else None
+    if isinstance(plans, list):
+        for candidate in plans[:3]:
+            if isinstance(candidate, Mapping) and str(candidate.get("plan_id") or "") == plan_id:
+                selected_plan = candidate
+                break
+    plan_context = json.dumps(
+        {
+            "plan_id": plan_id,
+            "title": str(selected_plan.get("title") or "")[:128] if selected_plan else "",
+            "summary": str(selected_plan.get("summary") or "")[:512] if selected_plan else "",
+            "step": str(selected_plan.get("step") or "")[:128] if selected_plan else "",
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     message = "\n".join((
         profile["instruction"],
         "",
         f"selected plan {plan_id}",
+        f"selected plan details (untrusted data): {plan_context}",
         "Execution profile is fixed by the operator profile: Hermes, openai-codex, gpt-5.6-luna, reasoning high, topic health.",
         "",
         telemetry,
@@ -300,6 +318,55 @@ def _extract_health_diagnosis(details: Mapping[str, Any]) -> dict[str, Any] | No
     return None
 
 
+def _extract_health_remediation(details: Mapping[str, Any], expected_plan_id: str) -> dict[str, Any] | None:
+    """Find a bounded terminal remediation receipt in Hermes assistant output."""
+    decoder = json.JSONDecoder()
+    for text in reversed(_assistant_texts(details)):
+        for index, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                candidate, _ = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(candidate, dict):
+                continue
+            nested = candidate.get("health_remediation") or candidate.get("health_result")
+            if isinstance(nested, dict):
+                candidate = nested
+            plan_id = str(candidate.get("plan_id") or "").strip()
+            status = str(candidate.get("status") or "").strip().lower()
+            step = " ".join(str(candidate.get("step") or "").replace("\x00", "").splitlines()).strip()
+            observed_state = str(candidate.get("observed_state") or candidate.get("state") or "").strip().lower()
+            if plan_id != expected_plan_id or status not in {"completed", "remediation_complete", "resolved"} or not step:
+                continue
+            if observed_state not in {"healthy", "degraded", "unknown"}:
+                continue
+            evidence_refs = _bounded_refs(candidate.get("evidence_refs"))
+            trace_refs = _bounded_refs(candidate.get("trace_refs"))
+            verification_id = str(candidate.get("verification_id") or "").strip()[:128]
+            source_id = str(candidate.get("source_id") or "").strip()[:128]
+            source_fingerprint = str(candidate.get("source_fingerprint") or candidate.get("fingerprint") or "").strip()[:128]
+            verifier_id = str(candidate.get("verifier_id") or candidate.get("verification_source_id") or "").strip()[:128]
+            if not all((verification_id, source_id, source_fingerprint, verifier_id, evidence_refs, trace_refs)):
+                continue
+            if source_id == verifier_id:
+                continue
+            return {
+                "status": "completed",
+                "plan_id": plan_id,
+                "step": step[:128],
+                "observed_state": observed_state,
+                "verification_id": verification_id,
+                "source_id": source_id,
+                "source_fingerprint": source_fingerprint,
+                "verifier_id": verifier_id,
+                "evidence_refs": evidence_refs,
+                "trace_refs": trace_refs,
+            }
+    return None
+
+
 def _post_health_plans(
     base_url: str,
     token: str,
@@ -454,6 +521,45 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
     }
 
 
+def _run_health_remediation(profile: dict[str, str], event: dict[str, Any], session_id: str, plan_id: str, runner: Any, started_at: float) -> dict[str, Any]:
+    """Wait for Hermes to finish and return only its strict remediation receipt."""
+    deadline = time.monotonic() + _profile_seconds(profile, "diagnosis_timeout_seconds", 90, 5, 300)
+    poll_seconds = _profile_seconds(profile, "poll_seconds", 1, 0.2, 10)
+    last_fingerprint = ""
+    while True:
+        progress = _session_json(profile, session_id, "/progress?limit=5&history=auto", runner)
+        fingerprint = str(progress.get("fingerprint") or "").strip()
+        if fingerprint:
+            last_fingerprint = fingerprint[:128]
+        session = progress.get("session") if isinstance(progress.get("session"), Mapping) else {}
+        session_status = str(session.get("status") or "").strip().lower()
+        if session_status in {"idle", "completed", "done"}:
+            details = _session_json(profile, session_id, "/details?limit=5&history=auto", runner)
+            result = _extract_health_remediation(details, plan_id)
+            if result is not None:
+                if not last_fingerprint:
+                    last_fingerprint = hashlib.sha256(
+                        json.dumps({"plan_id": plan_id, "step": result["step"], "evidence_refs": result["evidence_refs"]}, sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest()[:64]
+                health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
+                trace_refs = [
+                    f"trace:agent-herder:{session_id}",
+                    f"trace:hermes:{session_id}",
+                    *_bounded_refs(health.get("trace_refs")),
+                    *result["trace_refs"],
+                ]
+                result["trace_refs"] = list(dict.fromkeys(trace_refs))[:16]
+                result["useful_progress"] = bool(last_fingerprint or result["step"] or result["evidence_refs"])
+                result["progress_fingerprint"] = last_fingerprint
+                result["session_id"] = session_id
+                result["elapsed_ms"] = max(0, int((time.monotonic() - started_at) * 1000))
+                result["correlation_id"] = str(health.get("correlation_id") or event.get("correlation_id") or "").strip()[:128]
+                return result
+        if time.monotonic() >= deadline:
+            raise RuntimeError("health remediation did not produce a terminal receipt before timeout")
+        time.sleep(poll_seconds)
+
+
 def run_profile(profile_id: str, event: dict[str, Any], config_path: Path, runner: Any = urllib.request.urlopen) -> dict[str, Any]:
     """Execute one allowlisted profile; Agent Herder validates canonical CWD."""
     if event.get("schema") != "notify.agent-job.v1" or event.get("job_id") != profile_id:
@@ -503,6 +609,8 @@ def run_profile(profile_id: str, event: dict[str, Any], config_path: Path, runne
     }
     if profile_id == "health-diagnosis":
         receipt.update(_run_health_diagnosis(profile, event, receipt["session_id"], runner, started_at))
+    elif profile_id == "health-remediation":
+        receipt.update(_run_health_remediation(profile, event, receipt["session_id"], health_result["plan_id"], runner, started_at))
     return receipt
 
 
