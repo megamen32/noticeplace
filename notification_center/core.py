@@ -2101,7 +2101,10 @@ class NotificationCenter:
             presentation = self._latest_choice_event(incident_id)
             if presentation is None:
                 raise ValidationError("choice request not found")
-            if choice_id not in {str(item["choice_id"]) for item in presentation["choices"]}:
+            choice_ids = [str(item["choice_id"]) for item in presentation["choices"]]
+            if choice_id.isdigit() and int(choice_id) < len(choice_ids):
+                choice_id = choice_ids[int(choice_id)]
+            if choice_id not in choice_ids:
                 raise ValidationError("choice does not belong to incident")
             return {"request_id": str(presentation["choice_request_id"]), "choice_id": choice_id}
 
@@ -2272,7 +2275,9 @@ class NotificationCenter:
                     ) AS reconciliation"""
                 ).fetchall()
                 reconciliation_incidents = {
-                    str(row["incident_id"]) for row in reconciliation_rows
+                    str(row["incident_id"])
+                    for row in reconciliation_rows
+                    if not self.health_incident_is_synthetic(str(row["incident_id"]))
                 }
                 # The aggregate SQL above covers lifecycle collisions.  A
                 # sent card is only safe when its receipt proves the exact
@@ -2285,13 +2290,16 @@ class NotificationCenter:
                 ).fetchall()
                 invalid_sent_incidents: set[str] = set()
                 for row in sent_rows:
+                    incident_id = str(row["incident_id"])
+                    if self.health_incident_is_synthetic(incident_id):
+                        continue
                     attached_plan_ids = tuple(
                         str(plan.get("plan_id") or plan.get("id") or "").strip()
-                        for plan in self.latest_health_plans(str(row["incident_id"]))
+                        for plan in self.latest_health_plans(incident_id)
                         if isinstance(plan, Mapping) and str(plan.get("plan_id") or plan.get("id") or "").strip()
                     )
                     if not self._sent_health_delivery_matches_plans(row, attached_plan_ids):
-                        invalid_sent_incidents.add(str(row["incident_id"]))
+                        invalid_sent_incidents.add(incident_id)
                 reconciliation_required = len(
                     set(reconciliation_incidents) | invalid_sent_incidents
                 )

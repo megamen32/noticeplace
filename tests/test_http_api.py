@@ -157,6 +157,30 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual("degraded", health["status"])
         self.assertEqual(1, health["reconciliation_required"])
 
+    def test_health_readiness_ignores_non_user_facing_synthetic_legacy_card(self) -> None:
+        created = self.center.create_event(
+            "secret-token",
+            "health-readiness-synthetic-legacy",
+            {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "operator",
+                "kind": "incident",
+                "severity": "critical",
+                "event_type": "health.degraded",
+                "title": "Synthetic canary",
+                "body": "not user-facing",
+                "dedup_key": "health:synthetic:readiness",
+                "correlation_id": "corr:live-health-canary:readiness",
+            },
+        )
+        delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        self.center.claim_due_deliveries(now_epoch=10**12)
+        self.center.complete_delivery(delivery_id, "sent")
+        health = self.center.health()
+        self.assertEqual("ok", health["status"])
+        self.assertEqual(0, health["reconciliation_required"])
+
     def test_health_readiness_blocks_late_queued_telegram_duplicate_after_sent_card(self) -> None:
         created = self.center.create_event(
             "secret-token",
