@@ -45,17 +45,865 @@ class DeliveryWorkerTests(unittest.TestCase):
             "health-topic-missing",
             {**self.event, "event_type": "health.degraded"},
         )
+        self.assertIsNone(created["initial_delivery_id"])
+        legacy_delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
         telegram = TelegramSender("bot-token", "-100123", active_modes={"log"}, center=self.center)
         worker = DeliveryWorker(self.center, telegram)
 
         self.assertEqual(1, worker.run_once())
         row = self.center._connection.execute(
             "SELECT status, last_error, due_at FROM deliveries WHERE id = ?",
-            (created["initial_delivery_id"],),
+            (legacy_delivery_id,),
         ).fetchone()
         self.assertEqual("queued", row["status"])
         self.assertEqual("Telegram health topic route is not active", row["last_error"])
         self.assertGreater(row["due_at"], 0)
+
+    def test_health_delivery_waits_for_exactly_three_plans_before_sending(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-plans-missing",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        self.assertIsNone(created["initial_delivery_id"])
+        legacy_delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        sent: list[dict[str, object]] = []
+
+        class Telegram:
+            active_modes = {"health"}
+
+            def send(self, payload: dict[str, object]) -> None:
+                sent.append(payload)
+
+        worker = DeliveryWorker(self.center, Telegram())
+
+        self.assertEqual(1, worker.run_once())
+        row = self.center._connection.execute(
+            "SELECT status, last_error FROM deliveries WHERE id = ?",
+            (legacy_delivery_id,),
+        ).fetchone()
+        self.assertEqual("queued", row["status"])
+        self.assertEqual("Health plans are not attached", row["last_error"])
+        self.assertEqual([], sent)
+
+    def test_attaching_plans_releases_one_plan_card_from_the_existing_slot(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-plans-attached",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        self.assertIsNone(created["initial_delivery_id"])
+        legacy_delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        plans = [
+            {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Apply the selected fix"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Check the original signal"},
+        ]
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-plans-attached-1",
+            "health.plans_attached",
+            {"plans": plans},
+            actor="omniroute",
+        )
+        initial = self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (legacy_delivery_id,)
+        ).fetchone()
+        self.assertEqual("queued", initial["status"])
+
+        sent: list[dict[str, object]] = []
+
+        class Telegram:
+            active_modes = {"health"}
+
+            def send(self, payload: dict[str, object]) -> None:
+                sent.append(payload)
+
+        worker = DeliveryWorker(self.center, Telegram(), critical_repeat_seconds=600)
+        self.assertEqual(1, worker.run_once())
+        self.assertEqual(1, len(sent))
+        self.assertEqual(3, len(sent[0]["health_plans"]))
+        remaining = self.center._connection.execute(
+            "SELECT delivery_key, status FROM deliveries WHERE incident_id = ? AND status = 'queued'",
+            (created["incident_id"],),
+        ).fetchall()
+        self.assertEqual([], remaining)
+
+    def test_claimed_initial_health_delivery_is_not_sent_after_plans_supersede_it(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-claimed-race",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        self.assertIsNone(created["initial_delivery_id"])
+        legacy_delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual([legacy_delivery_id], [item["id"] for item in claimed])
+        plans = [
+            {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Apply the selected fix"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Check the original signal"},
+        ]
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-claimed-race-plans",
+            "health.plans_attached",
+            {"plans": plans},
+            actor="omniroute",
+        )
+        sent: list[dict[str, object]] = []
+
+        class Telegram:
+            active_modes = {"health"}
+
+            def send(self, payload: dict[str, object]) -> None:
+                sent.append(payload)
+
+        worker = DeliveryWorker(self.center, Telegram())
+        worker.deliver(claimed[0])
+        for delivery in self.center.claim_due_deliveries(now_epoch=10**12):
+            worker.deliver(delivery)
+        self.assertEqual(1, len(sent))
+
+    def test_synthetic_health_canary_does_not_create_a_user_facing_card(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-synthetic-canary",
+            {**self.event, "event_type": "health.degraded", "correlation_id": "corr:live-health-canary:test"},
+        )
+        plans = [
+            {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Apply the selected fix"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Check the original signal"},
+        ]
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-synthetic-canary-plans",
+            "health.plans_attached",
+            {"plans": plans, "correlation_id": "health:real-looking-callback"},
+            actor="omniroute",
+        )
+        rows = self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id = ? AND channel = 'telegram.main'",
+            (created["incident_id"],),
+        ).fetchall()
+        self.assertEqual([], rows)
+
+    def test_health_plan_gate_also_covers_custom_telegram_consumers(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-consumer-gate",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        delivery_id = self.center._schedule_delivery(
+            created["incident_id"],
+            "telegram.consumer:custom",
+            "initial",
+            0,
+        )
+        sent: list[dict[str, object]] = []
+
+        class Telegram:
+            active_modes = {"health"}
+
+            def send(self, payload: dict[str, object]) -> None:
+                sent.append(payload)
+
+        worker = DeliveryWorker(self.center, Telegram())
+        self.assertEqual(1, worker.run_once())
+        row = self.center._connection.execute(
+            "SELECT status, last_error FROM deliveries WHERE id = ?", (delivery_id,)
+        ).fetchone()
+        self.assertEqual("queued", row["status"])
+        self.assertEqual("Health plans are not attached", row["last_error"])
+        self.assertEqual([], sent)
+
+    def test_sent_legacy_initial_does_not_schedule_a_second_health_card(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-sent-legacy",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        legacy_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual([legacy_id], [item["id"] for item in claimed])
+        self.center.complete_delivery(legacy_id, "sent")
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-sent-legacy-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        rows = self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id = ? AND channel = 'telegram.main' AND delivery_key LIKE ?",
+            (created["incident_id"], f"{created['incident_id']}:%:health.plans"),
+        ).fetchall()
+        self.assertEqual([], rows)
+        self.assertIsNotNone(self.center._connection.execute(
+            "SELECT 1 FROM audit_events WHERE incident_id = ? AND type = 'health.legacy_card_migration_required'",
+            (created["incident_id"],),
+        ).fetchone())
+        self.assertEqual("degraded", self.center.health()["status"])
+
+    def test_compliant_sent_health_card_is_retained_without_migration_gate(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-sent-compliant",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        legacy_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual([legacy_id], [item["id"] for item in claimed])
+        self.center.complete_delivery(
+            legacy_id,
+            "sent",
+            result={
+                "message_id": 77,
+                "chat_id": "-100123",
+                "health_plan_ids": ["observe", "repair", "verify"],
+                "health_button_count": 3,
+                "health_signed_callback_count": 3,
+            },
+        )
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-sent-compliant-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        self.assertIsNone(self.center._connection.execute(
+            "SELECT 1 FROM audit_events WHERE incident_id = ? AND type = 'health.legacy_card_migration_required'",
+            (created["incident_id"],),
+        ).fetchone())
+
+    def test_legacy_sent_card_with_message_identity_is_edited_in_place(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-legacy-edit",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        source_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.center.complete_delivery(source_id, "sent", result={"message_id": 88, "chat_id": "-100123"})
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-legacy-edit-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        edit = self.center._connection.execute(
+            "SELECT id, target_json, status FROM deliveries WHERE incident_id = ? AND channel = 'telegram.edit'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertIsNotNone(edit)
+        self.assertEqual("queued", edit["status"])
+        self.assertIn('"source_delivery_id": "' + source_id + '"', edit["target_json"])
+        self.assertEqual([source_id], [item["id"] for item in claimed])
+
+        edited: list[tuple[int, str]] = []
+
+        class Telegram:
+            def edit_health_card(self, _payload: dict[str, object], message_id: int, chat_id: str) -> dict[str, object]:
+                edited.append((message_id, chat_id))
+                return {
+                    "message_id": message_id,
+                    "chat_id": chat_id,
+                    "health_plan_ids": ["observe", "repair", "verify"],
+                    "health_button_count": 3,
+                    "health_signed_callback_count": 3,
+                    "edited_in_place": True,
+                }
+
+        worker = DeliveryWorker(self.center, Telegram())
+        self.assertEqual(1, worker.run_once())
+        self.assertEqual([(88, "-100123")], edited)
+        source_result = self.center._connection.execute(
+            "SELECT result_json FROM deliveries WHERE id = ?", (source_id,)
+        ).fetchone()["result_json"]
+        self.assertIn('"edited_in_place": true', source_result)
+        self.assertEqual("superseded", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (edit["id"],)
+        ).fetchone()["status"])
+
+    def test_repeated_plan_attachment_reuses_queued_legacy_edit(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-legacy-edit-idempotent",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        source_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        self.center.claim_due_deliveries(now_epoch=10**12)
+        self.center.complete_delivery(source_id, "sent", result={"message_id": 89, "chat_id": "-100123"})
+        plans = {"plans": [
+            {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+        ]}
+        self.center.record_health_update(created["incident_id"], "health-legacy-edit-idempotent-1", "health.plans_attached", plans, actor="omniroute")
+        first_edit = self.center._connection.execute(
+            "SELECT id, status FROM deliveries WHERE incident_id = ? AND channel = 'telegram.edit'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.center.record_health_update(created["incident_id"], "health-legacy-edit-idempotent-2", "health.plans_attached", plans, actor="omniroute")
+        second_edit = self.center._connection.execute(
+            "SELECT id, status FROM deliveries WHERE incident_id = ? AND channel = 'telegram.edit'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertEqual((first_edit["id"], "queued"), (second_edit["id"], second_edit["status"]))
+
+    def test_successor_persistence_failure_does_not_requeue_sent_delivery(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Successor persistence failure",
+            policy=[
+                {"id": "matrix-root-failure", "platform": "matrix", "action": "call", "target": {"room_id": "!ops:example.org"}, "retry_interval_seconds": 30, "max_repeats": 1},
+                {"id": "phone-successor-failure", "platform": "phone", "action": "call", "target": {"device": "operator"}, "retry_interval_seconds": 30, "max_repeats": 1, "previous_step_id": "matrix-root-failure"},
+            ],
+        )
+        created = self.center.create_event(consumer["intake_token"], "successor-persistence-failure", self.event)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        original_schedule = self.center._schedule_delivery
+
+        def fail_schedule(*_args: object, **_kwargs: object) -> str:
+            raise RuntimeError("successor persistence failed")
+
+        self.center._schedule_delivery = fail_schedule
+        try:
+            self.center.complete_delivery(claimed[0]["id"], "sent")
+        finally:
+            self.center._schedule_delivery = original_schedule
+        self.assertEqual("sent", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (claimed[0]["id"],)
+        ).fetchone()["status"])
+
+    def test_sent_legacy_row_quarantines_an_existing_queued_plan_row(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-sent-legacy-with-plan-row",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        legacy_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual([legacy_id], [item["id"] for item in claimed])
+        self.center.complete_delivery(legacy_id, "sent")
+        queued_plan_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "health.plans", 0)
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-sent-legacy-with-plan-row-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        status = self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (queued_plan_id,)
+        ).fetchone()["status"]
+        self.assertEqual("cancelled", status)
+
+    def test_claimed_initial_coalesces_with_an_existing_queued_plan_row(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-claimed-with-plan-row",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        initial_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual([initial_id], [item["id"] for item in claimed])
+        plan_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "health.plans", 0)
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-claimed-with-plan-row-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        self.assertEqual("cancelled", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (initial_id,)
+        ).fetchone()["status"])
+        self.assertEqual("queued", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (plan_id,)
+        ).fetchone()["status"])
+
+    def test_sent_main_coalesces_with_a_claimed_custom_telegram_row(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-sent-with-custom-row",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        main_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        main_claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual([main_id], [item["id"] for item in main_claimed])
+        self.center.complete_delivery(main_id, "sent")
+        custom_id = self.center._schedule_delivery(created["incident_id"], "telegram.consumer:custom", "initial", 0)
+        custom_claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual([custom_id], [item["id"] for item in custom_claimed])
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-sent-with-custom-row-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        self.assertEqual("cancelled", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (custom_id,)
+        ).fetchone()["status"])
+
+    def test_generic_telegram_root_coalesces_with_health_plan_delivery(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-generic-telegram-root",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        generic_id = self.center._schedule_delivery(created["incident_id"], "telegram.message", "step:custom:repeat:1", 0)
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-generic-telegram-root-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        self.assertEqual("queued", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (generic_id,)
+        ).fetchone()["status"])
+        self.assertEqual([], self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id = ? AND channel = 'telegram.main'",
+            (created["incident_id"],),
+        ).fetchall())
+
+    def test_stale_lease_generation_cannot_send_after_reclaim(self) -> None:
+        created = self.center.create_event("producer", "stale-lease-generation", self.event)
+        first = self.center.claim_due_deliveries(now_epoch=10**12, lease_seconds=30)
+        reclaimed = self.center.claim_due_deliveries(now_epoch=10**12 + 30, lease_seconds=30)
+        self.assertEqual([created["initial_delivery_id"]], [item["id"] for item in first])
+        self.assertEqual([created["initial_delivery_id"]], [item["id"] for item in reclaimed])
+        sent: list[dict[str, object]] = []
+
+        class Telegram:
+            def send(self, payload: dict[str, object]) -> None:
+                sent.append(payload)
+
+        worker = DeliveryWorker(self.center, Telegram())
+        worker.deliver(first[0])
+        self.assertEqual([], sent)
+        self.assertEqual("claimed", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()["status"])
+        worker.deliver(reclaimed[0])
+        self.assertEqual(1, len(sent))
+        self.assertEqual("sent", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()["status"])
+
+    def test_stale_lease_exception_cannot_requeue_reclaimed_delivery(self) -> None:
+        created = self.center.create_event("producer", "stale-lease-exception", self.event)
+        first = self.center.claim_due_deliveries(now_epoch=10**12, lease_seconds=180)
+        self.assertEqual([created["initial_delivery_id"]], [item["id"] for item in first])
+        center = self.center
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                center.claim_due_deliveries(now_epoch=10**12 + 180, lease_seconds=180)
+                raise RuntimeError("transport failed after lease reclaim")
+
+        worker = DeliveryWorker(self.center, Telegram())
+        worker.deliver(first[0])
+        row = self.center._connection.execute(
+            "SELECT status, attempt FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()
+        self.assertEqual("uncertain", row["status"])
+        self.assertEqual(1, row["attempt"])
+
+    def test_send_reservation_is_not_reclaimed_after_worker_crash(self) -> None:
+        created = self.center.create_event("producer", "send-reservation", self.event)
+        first = self.center.claim_due_deliveries(now_epoch=10**12, lease_seconds=30)
+        self.assertEqual([created["initial_delivery_id"]], [item["id"] for item in first])
+        self.assertTrue(self.center.reserve_delivery_send(
+            first[0]["id"], claimed_at=first[0]["claimed_at"], attempt=first[0]["attempt"]
+        ))
+        reopened = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"producer": {"project": "hermes", "max_severity": "emergency"}}, default_quiet_hours=[])
+        self.assertEqual([], reopened.claim_due_deliveries(now_epoch=10**12 + 30, lease_seconds=30))
+        self.assertEqual("sending", reopened._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()["status"])
+        reopened._connection.close()
+
+    def test_post_send_failure_cannot_requeue_a_sent_delivery(self) -> None:
+        created = self.center.create_event("producer", "post-send-failure", self.event)
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> dict[str, object]:
+                return {"message_id": 91, "chat_id": "-100123"}
+
+        worker = DeliveryWorker(self.center, Telegram())
+
+        def fail_after_send(_delivery: dict[str, object], _incident: dict[str, object]) -> None:
+            raise RuntimeError("follow-up scheduling failed")
+
+        worker._after_telegram_delivery = fail_after_send
+        worker.run_once()
+        self.assertEqual("sent", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()["status"])
+
+    def test_health_plans_do_not_cancel_an_inflight_send_or_schedule_a_second_card(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-inflight-send",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual([delivery_id], [item["id"] for item in claimed])
+        self.assertTrue(self.center.reserve_delivery_send(
+            delivery_id, claimed_at=claimed[0]["claimed_at"], attempt=claimed[0]["attempt"]
+        ))
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-inflight-send-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        rows = self.center._connection.execute(
+            "SELECT status, delivery_key FROM deliveries WHERE incident_id = ? ORDER BY created_at",
+            (created["incident_id"],),
+        ).fetchall()
+        self.assertEqual([("sending", f"{created['incident_id']}:telegram.main:initial")], [(row["status"], row["delivery_key"]) for row in rows])
+
+    def test_uncertain_health_send_blocks_plan_card_until_reconciled(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-uncertain-send",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.center.reserve_delivery_send(delivery_id, claimed[0]["claimed_at"], claimed[0]["attempt"])
+        self.center.complete_delivery(
+            delivery_id,
+            "uncertain",
+            "external outcome unknown",
+            claimed_at=claimed[0]["claimed_at"],
+            attempt=claimed[0]["attempt"],
+        )
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-uncertain-send-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        self.assertEqual([], self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id = ? AND delivery_key LIKE ?",
+            (created["incident_id"], f"{created['incident_id']}:%:health.plans"),
+        ).fetchall())
+        self.assertIsNotNone(self.center._connection.execute(
+            "SELECT 1 FROM audit_events WHERE incident_id = ? AND type = 'health.uncertain_delivery_reconciliation_required'",
+            (created["incident_id"],),
+        ).fetchone())
+
+    def test_multiple_sent_health_cards_block_new_plan_delivery(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-multiple-sent",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        first_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        second_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "health.plans", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual({first_id, second_id}, {item["id"] for item in claimed})
+        result = {
+            "message_id": 101,
+            "chat_id": "-100123",
+            "health_plan_ids": ["observe", "repair", "verify"],
+            "health_button_count": 3,
+            "health_signed_callback_count": 3,
+        }
+        for delivery in claimed:
+            self.center.complete_delivery(delivery["id"], "sent", result=result)
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-multiple-sent-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        plan_rows = self.center._connection.execute(
+            "SELECT id, status FROM deliveries WHERE incident_id = ? AND delivery_key LIKE ?",
+            (created["incident_id"], f"{created['incident_id']}:%:health.plans"),
+        ).fetchall()
+        self.assertEqual([(second_id, "sent")], [(row["id"], row["status"]) for row in plan_rows])
+        self.assertIsNotNone(self.center._connection.execute(
+            "SELECT 1 FROM audit_events WHERE incident_id = ? AND type = 'health.multiple_sent_delivery_reconciliation_required'",
+            (created["incident_id"],),
+        ).fetchone())
+        self.assertEqual("degraded", self.center.health()["status"])
+
+    def test_sent_and_sending_health_cards_block_new_plan_delivery(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-sent-and-sending",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        sent_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        sending_id = self.center._schedule_delivery(created["incident_id"], "telegram.consumer:custom", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual({sent_id, sending_id}, {item["id"] for item in claimed})
+        sending_claim = next(item for item in claimed if item["id"] == sending_id)
+        self.center.complete_delivery(sent_id, "sent", result={
+            "message_id": 102,
+            "chat_id": "-100123",
+            "health_plan_ids": ["observe", "repair", "verify"],
+            "health_button_count": 3,
+            "health_signed_callback_count": 3,
+        })
+        self.center.reserve_delivery_send(sending_id, sending_claim["claimed_at"], sending_claim["attempt"])
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-sent-and-sending-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        statuses = self.center._connection.execute(
+            "SELECT id, status FROM deliveries WHERE incident_id = ? ORDER BY id", (created["incident_id"],)
+        ).fetchall()
+        self.assertEqual({sent_id: "sent", sending_id: "sending"}, {row["id"]: row["status"] for row in statuses})
+        self.assertIsNotNone(self.center._connection.execute(
+            "SELECT 1 FROM audit_events WHERE incident_id = ? AND type = 'health.sent_and_sending_reconciliation_required'",
+            (created["incident_id"],),
+        ).fetchone())
+
+    def test_health_generic_telegram_policy_does_not_schedule_repeats(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Health generic Telegram",
+            policy=[
+                {
+                    "id": "telegram-health-root",
+                    "platform": "telegram",
+                    "action": "message",
+                    "target": {"chat_id": -100123},
+                    "retry_interval_seconds": 60,
+                    "max_repeats": 2,
+                },
+            ],
+        )
+        created = self.center.create_event(
+            consumer["intake_token"],
+            "health-generic-repeat",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-generic-repeat-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        sent: list[dict[str, object]] = []
+
+        class Telegram:
+            active_modes = {"health"}
+
+            def send(self, payload: dict[str, object]) -> None:
+                sent.append(payload)
+
+        worker = DeliveryWorker(self.center, Telegram())
+        self.assertEqual(1, worker.run_once())
+        self.assertEqual(1, len(sent))
+        queued = self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id = ? AND status IN ('queued', 'claimed')",
+            (created["incident_id"],),
+        ).fetchall()
+        self.assertEqual([], queued)
+
+    def test_health_skips_telegram_repeat_but_keeps_matrix_successor(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Health Telegram then Matrix",
+            policy=[
+                {
+                    "id": "telegram-health-root-successor",
+                    "platform": "telegram",
+                    "action": "message",
+                    "target": {"chat_id": -100123},
+                    "retry_interval_seconds": 60,
+                    "max_repeats": 2,
+                },
+                {
+                    "id": "telegram-health-middle",
+                    "platform": "telegram",
+                    "action": "message",
+                    "target": {"chat_id": -100123},
+                    "retry_interval_seconds": 30,
+                    "max_repeats": 1,
+                    "previous_step_id": "telegram-health-root-successor",
+                },
+                {
+                    "id": "matrix-health-successor",
+                    "platform": "matrix",
+                    "action": "call",
+                    "target": {"room_id": "!ops:example.org"},
+                    "retry_interval_seconds": 30,
+                    "max_repeats": 1,
+                    "previous_step_id": "telegram-health-middle",
+                },
+            ],
+        )
+        created = self.center.create_event(
+            consumer["intake_token"],
+            "health-telegram-matrix-successor",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-telegram-matrix-successor-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+
+        class Telegram:
+            active_modes = {"health"}
+
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        self.assertEqual(1, DeliveryWorker(self.center, Telegram()).run_once())
+        rows = self.center._connection.execute(
+            "SELECT channel, status FROM deliveries WHERE incident_id = ? ORDER BY created_at",
+            (created["incident_id"],),
+        ).fetchall()
+        self.assertEqual([("telegram.message", "sent"), ("matrix.call", "queued")], [(row["channel"], row["status"]) for row in rows])
+
+    def test_health_phone_pre_call_does_not_send_a_second_telegram_card(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-phone-precall",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        initial_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-phone-precall-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        phone_id = self.center._schedule_delivery(created["incident_id"], "android.phone.call", "escalation", 0)
+        sent: list[dict[str, object]] = []
+        calls: list[dict[str, object]] = []
+
+        class Telegram:
+            active_modes = {"health"}
+
+            def send(self, payload: dict[str, object]) -> None:
+                sent.append(payload)
+
+        class Android:
+            can_phone_call = True
+
+            def phone_call(self, payload: dict[str, object]) -> None:
+                calls.append(payload)
+
+        worker = DeliveryWorker(self.center, Telegram(), android_phone=Android())
+        self.assertEqual(2, worker.run_once())
+        self.assertEqual(1, len(sent))
+        self.assertEqual(1, len(calls))
+        self.assertEqual("sent", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (initial_id,)
+        ).fetchone()["status"])
+        self.assertEqual("sent", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (phone_id,)
+        ).fetchone()["status"])
+
+    def test_custom_health_initial_coalesces_with_plan_card(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-custom-coalesce",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        custom_id = self.center._schedule_delivery(
+            created["incident_id"], "telegram.consumer:custom", "initial", 0,
+        )
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-custom-coalesce-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        main_rows = self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id = ? AND channel = 'telegram.main'",
+            (created["incident_id"],),
+        ).fetchall()
+        self.assertEqual([], main_rows)
+        self.assertEqual("queued", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (custom_id,)
+        ).fetchone()["status"])
 
     def test_confirmed_matrix_answer_acknowledges_only_that_incident(self) -> None:
         created = self.center.create_event("producer", "create", self.event)

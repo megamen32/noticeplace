@@ -17,7 +17,7 @@ from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
 from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import GptAdminAgentJobAdapter
-from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards
+from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, validate_health_plans
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
@@ -66,6 +66,15 @@ def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[s
         ],
         [ask],
     ]}
+
+
+def _health_plans_ready(payload: Mapping[str, Any]) -> bool:
+    """Require the exact three validated plans before a health card can send."""
+    try:
+        validate_health_plans(payload.get("health_plans"))
+    except ValidationError:
+        return False
+    return True
 
 
 def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[str, Any]], incident: dict[str, Any], active_modes: set[str] | None = None) -> dict[str, str]:
@@ -206,8 +215,8 @@ class TelegramSender:
             return self._severity_routes
         return value if isinstance(value, dict) else self._severity_routes
 
-    def send(self, payload: dict[str, Any]) -> None:
-        """Deliver one card; raises transport errors so the core can retry it."""
+    def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Deliver one card and retain the Bot API message identity for audits."""
         if not self._token or not self._chat_id:
             raise RuntimeError("Telegram sender is not configured")
         incident = payload["incident"]
@@ -233,16 +242,107 @@ class TelegramSender:
                 raise RuntimeError("Telegram health topic route is not configured")
             raise RuntimeError(f"Telegram destination is not configured: {mode}")
         request_data: dict[str, str] = {**destination, "text": text, "disable_web_page_preview": "true"}
+        health_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
         if self._action_codec is not None:
             if isinstance(health_plans, list) and health_plans:
-                request_data["reply_markup"] = json.dumps(health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans), separators=(",", ":"))
+                health_keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
+                request_data["reply_markup"] = json.dumps(health_keyboard, separators=(",", ":"))
             else:
                 request_data["reply_markup"] = json.dumps(telegram_inline_keyboard(self._action_codec, incident), separators=(",", ":"))
+        elif mode == "health":
+            raise RuntimeError("Telegram health delivery requires signed plan callback configuration")
         data = urllib.parse.urlencode(request_data).encode()
         request = urllib.request.Request(f"https://api.telegram.org/bot{self._token}/sendMessage", data=data, method="POST")
         with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
             if not 200 <= response.status < 300:
                 raise RuntimeError(f"Telegram returned HTTP {response.status}")
+            try:
+                result = json.loads(response.read())
+            except (TypeError, json.JSONDecodeError) as error:
+                raise RuntimeError("Telegram returned invalid JSON") from error
+        message = result.get("result") if isinstance(result, dict) else None
+        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(message, dict):
+            raise RuntimeError("Telegram returned an invalid sendMessage response")
+        message_id = message.get("message_id")
+        if not isinstance(message_id, int) or message_id <= 0:
+            raise RuntimeError("Telegram sendMessage response has no valid message_id")
+        receipt: dict[str, Any] = {
+            "message_id": message_id,
+            "chat_id": str(message.get("chat", {}).get("id") or destination["chat_id"]) if isinstance(message.get("chat"), dict) else destination["chat_id"],
+        }
+        if isinstance(health_plans, list):
+            receipt["health_plan_ids"] = [
+                str(plan.get("plan_id") or "").strip()
+                for plan in health_plans[:3]
+                if isinstance(plan, dict) and str(plan.get("plan_id") or "").strip()
+            ]
+            buttons = [
+                button
+                for row in (health_keyboard or {}).get("inline_keyboard", [])
+                for button in row
+                if isinstance(button, dict)
+            ]
+            codec = TelegramHealthPlanCodec(self._action_codec.secret) if self._action_codec is not None else None
+            receipt["health_button_count"] = len(buttons)
+            receipt["health_signed_callback_count"] = sum(
+                1
+                for button in buttons
+                if codec is not None and codec.decode(str(button.get("callback_data") or "")) is not None
+            )
+        return receipt
+
+    def edit_health_card(self, payload: dict[str, Any], message_id: int, chat_id: str) -> dict[str, Any]:
+        """Edit an existing Health card in place with the signed three-plan keyboard."""
+        if not self._token or not self._chat_id:
+            raise RuntimeError("Telegram sender is not configured")
+        if not self._action_codec:
+            raise RuntimeError("Telegram health migration requires signed plan callback configuration")
+        incident = payload["incident"]
+        health_plans = payload.get("health_plans")
+        if not _health_plans_ready(payload):
+            raise RuntimeError("Health plans are not attached")
+        plan_lines = [
+            f"{index}. {str(plan.get('title') or plan.get('plan_id') or '')[:128]} — {str(plan.get('summary') or '')[:256]}"
+            for index, plan in enumerate(health_plans[:3], 1)
+            if isinstance(plan, dict)
+        ]
+        note = str(incident.get("operator_note") or "").strip()
+        note_block = f"\n\nNote: {note}" if note else ""
+        text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nPlans:\n" + "\n".join(plan_lines) + f"{note_block}\n\nIncident: {incident['id']}"
+        keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
+        request_data = {
+            "chat_id": str(chat_id),
+            "message_id": str(message_id),
+            "text": text,
+            "disable_web_page_preview": "true",
+            "reply_markup": json.dumps(keyboard, separators=(",", ":")),
+        }
+        request = urllib.request.Request(
+            f"https://api.telegram.org/bot{self._token}/editMessageText",
+            data=urllib.parse.urlencode(request_data).encode(),
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f"Telegram returned HTTP {response.status}")
+            try:
+                result = json.loads(response.read())
+            except (TypeError, json.JSONDecodeError) as error:
+                raise RuntimeError("Telegram returned invalid JSON") from error
+        message = result.get("result") if isinstance(result, dict) else None
+        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(message, dict):
+            raise RuntimeError("Telegram returned an invalid editMessageText response")
+        edited_message_id = message.get("message_id")
+        if not isinstance(edited_message_id, int) or edited_message_id <= 0:
+            edited_message_id = message_id
+        return {
+            "message_id": edited_message_id,
+            "chat_id": str(message.get("chat", {}).get("id") or chat_id) if isinstance(message.get("chat"), dict) else str(chat_id),
+            "health_plan_ids": [str(plan.get("plan_id") or "").strip() for plan in health_plans[:3] if isinstance(plan, dict)],
+            "health_button_count": 3,
+            "health_signed_callback_count": 3,
+            "edited_in_place": True,
+        }
 
     @property
     def active_modes(self) -> set[str] | None:
@@ -355,6 +455,8 @@ class DeliveryWorker:
     def _after_telegram_delivery(self, delivery: dict[str, Any], incident: dict[str, Any]) -> None:
         """Durably schedule policy follow-ups only after Telegram delivery succeeded."""
         incident_id = str(delivery["incident_id"])
+        if telegram_mode(incident) == "health":
+            return
         if str(delivery["delivery_key"]).endswith(":initial") and self._matrix_call is not None:
             delay = self._matrix_delay_seconds(str(incident["severity"]))
             if delay > 0:
@@ -381,6 +483,8 @@ class DeliveryWorker:
     def _send_critical_pre_call_context(self, payload: dict[str, Any]) -> None:
         """Send the incident context immediately before a critical phone call."""
         incident = payload["incident"]
+        if telegram_mode(incident) == "health":
+            return
         if str(incident["severity"]) != "critical":
             return
         active_modes = getattr(self._telegram, "active_modes", None)
@@ -395,23 +499,128 @@ class DeliveryWorker:
             if delivery["channel"] in {"matrix.call", "android.telegram.call", "android.phone.call"} and not self._automatic_calls_enabled():
                 self._center.complete_delivery(delivery["id"], "cancelled", "automatic calls disabled by operator")
                 return
-            if delivery["channel"] == "telegram.main" or str(delivery["channel"]).startswith("telegram.consumer:"):
-                if delivery["channel"] == "telegram.main":
-                    active_modes = getattr(self._telegram, "active_modes", None)
-                    if active_modes is not None and telegram_mode(payload["incident"]) not in active_modes:
-                        if telegram_mode(payload["incident"]) == "health":
-                            self._center.complete_delivery(
-                                delivery["id"],
-                                "retry",
-                                "Telegram health topic route is not active",
-                                retry_after_seconds=300,
-                            )
-                        else:
-                            self._center.complete_delivery(delivery["id"], "cancelled", "Telegram mode is inactive")
+            if delivery["channel"] == "telegram.edit":
+                with self._center.delivery_send_lock():
+                    payload = self._center.delivery_payload(delivery)
+                    if not self._center.delivery_is_claimed(
+                        str(delivery["id"]),
+                        claimed_at=delivery.get("claimed_at"),
+                        attempt=delivery.get("attempt"),
+                    ):
                         return
-                self._telegram.send(payload)
-                incident = payload["incident"]
-                self._center.complete_delivery(delivery["id"], "sent")
+                    target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
+                    try:
+                        message_id = int(target.get("message_id"))
+                        chat_id = str(target.get("chat_id") or "")
+                        source_delivery_id = str(target.get("source_delivery_id") or "")
+                    except (TypeError, ValueError):
+                        raise RuntimeError("Telegram health migration target is invalid")
+                    if message_id <= 0 or not chat_id or not source_delivery_id:
+                        raise RuntimeError("Telegram health migration target is incomplete")
+                    if not self._center.reserve_delivery_send(
+                        str(delivery["id"]),
+                        claimed_at=float(delivery["claimed_at"]),
+                        attempt=int(delivery["attempt"]),
+                    ):
+                        return
+                    try:
+                        receipt = self._telegram.edit_health_card(payload, message_id, chat_id)
+                        self._center.record_health_delivery_migrated(source_delivery_id, receipt)
+                    except Exception as error:
+                        self._center.complete_delivery(
+                            delivery["id"],
+                            "uncertain",
+                            f"Telegram health migration outcome is uncertain: {error}",
+                            claimed_at=delivery.get("claimed_at"),
+                            attempt=delivery.get("attempt"),
+                        )
+                        return
+                    self._center.complete_delivery(
+                        delivery["id"],
+                        "superseded",
+                        "legacy Health card edited in place",
+                        claimed_at=delivery.get("claimed_at"),
+                        attempt=delivery.get("attempt"),
+                        result=receipt,
+                    )
+                return
+            if delivery["channel"] == "telegram.main" or str(delivery["channel"]).startswith("telegram."):
+                with self._center.delivery_send_lock():
+                    # Rebuild the payload and validate the exact lease while the
+                    # coalescer/claim-reclaimer is excluded from the final send.
+                    payload = self._center.delivery_payload(delivery)
+                    is_health = telegram_mode(payload["incident"]) == "health"
+                    if not self._center.delivery_is_claimed(
+                        str(delivery["id"]),
+                        claimed_at=delivery.get("claimed_at"),
+                        attempt=delivery.get("attempt"),
+                    ):
+                        return
+                    if is_health and self._center.health_incident_is_synthetic(str(payload["incident"]["id"])):
+                        self._center.complete_delivery(
+                            delivery["id"],
+                            "cancelled",
+                            "synthetic health canary is not user-facing",
+                            claimed_at=delivery.get("claimed_at"),
+                            attempt=delivery.get("attempt"),
+                        )
+                        return
+                    if delivery["channel"] == "telegram.main":
+                        active_modes = getattr(self._telegram, "active_modes", None)
+                        if active_modes is not None and telegram_mode(payload["incident"]) not in active_modes:
+                            if telegram_mode(payload["incident"]) == "health":
+                                self._center.complete_delivery(
+                                    delivery["id"],
+                                    "retry",
+                                    "Telegram health topic route is not active",
+                                    retry_after_seconds=300,
+                                    claimed_at=delivery.get("claimed_at"),
+                                    attempt=delivery.get("attempt"),
+                                )
+                            else:
+                                self._center.complete_delivery(
+                                    delivery["id"],
+                                    "cancelled",
+                                    "Telegram mode is inactive",
+                                    claimed_at=delivery.get("claimed_at"),
+                                    attempt=delivery.get("attempt"),
+                                )
+                            return
+                    if is_health and not _health_plans_ready(payload):
+                        self._center.complete_delivery(
+                            delivery["id"],
+                            "retry",
+                            "Health plans are not attached",
+                            retry_after_seconds=300,
+                            claimed_at=delivery.get("claimed_at"),
+                            attempt=delivery.get("attempt"),
+                        )
+                        return
+                    if not self._center.reserve_delivery_send(
+                        str(delivery["id"]),
+                        claimed_at=float(delivery["claimed_at"]),
+                        attempt=int(delivery["attempt"]),
+                    ):
+                        return
+                    try:
+                        send_result = self._telegram.send(payload)
+                    except Exception as error:
+                        self._center.complete_delivery(
+                            delivery["id"],
+                            "uncertain",
+                            f"Telegram send outcome is uncertain: {error}",
+                            claimed_at=delivery.get("claimed_at"),
+                            attempt=delivery.get("attempt"),
+                        )
+                        return
+                    incident = payload["incident"]
+                    self._center.complete_delivery(
+                        delivery["id"],
+                        "sent",
+                        claimed_at=delivery.get("claimed_at"),
+                        attempt=delivery.get("attempt"),
+                        result=send_result if isinstance(send_result, dict) else None,
+                    )
                 if delivery["channel"] == "telegram.main":
                     self._after_telegram_delivery(delivery, incident)
                 return
@@ -470,7 +679,14 @@ class DeliveryWorker:
             self._center.complete_delivery(delivery["id"], "sent")
         except Exception as error:
             delay = min(300, 5 * (2 ** min(int(delivery["attempt"]), 6)))
-            self._center.complete_delivery(delivery["id"], "retry", str(error), delay)
+            self._center.complete_delivery(
+                delivery["id"],
+                "retry",
+                str(error),
+                delay,
+                claimed_at=delivery.get("claimed_at"),
+                attempt=delivery.get("attempt"),
+            )
 
     def run_once(self) -> int:
         """Deliver a bounded batch and retry failures; returns claims processed."""

@@ -89,6 +89,123 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(401, status)
         self.assertIn("error", response)
 
+    def test_health_readiness_blocks_reconciliation_states(self) -> None:
+        created = self.center.create_event(
+            "secret-token",
+            "health-readiness-reconciliation",
+            {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "operator",
+                "kind": "incident",
+                "severity": "critical",
+                "event_type": "health.degraded",
+                "title": "Health readiness test",
+                "body": "send boundary",
+                "dedup_key": "health:readiness-reconciliation",
+            },
+        )
+        delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.center.reserve_delivery_send(delivery_id, claimed[0]["claimed_at"], claimed[0]["attempt"])
+        health = self.center.health()
+        self.assertEqual("degraded", health["status"])
+        self.assertEqual(1, health["sending_deliveries"])
+        self.assertEqual(1, health["reconciliation_required"])
+
+    def test_health_readiness_rejects_sent_card_without_exact_attached_plan_ids(self) -> None:
+        created = self.center.create_event(
+            "secret-token",
+            "health-readiness-invalid-plan-receipt",
+            {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "operator",
+                "kind": "incident",
+                "severity": "critical",
+                "event_type": "health.degraded",
+                "title": "Invalid health receipt",
+                "body": "plan-set proof is required",
+                "dedup_key": "health:readiness-invalid-plan-receipt",
+            },
+        )
+        delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.center.complete_delivery(
+            delivery_id,
+            "sent",
+            result={
+                "message_id": 91,
+                "chat_id": "-100123",
+                "health_plan_ids": ["stale-a", "stale-b", "stale-c"],
+                "health_button_count": 3,
+                "health_signed_callback_count": 3,
+            },
+        )
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-readiness-invalid-plan-receipt-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        health = self.center.health()
+        self.assertEqual("degraded", health["status"])
+        self.assertEqual(1, health["reconciliation_required"])
+
+    def test_health_readiness_blocks_late_queued_telegram_duplicate_after_sent_card(self) -> None:
+        created = self.center.create_event(
+            "secret-token",
+            "health-readiness-late-duplicate",
+            {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "operator",
+                "kind": "incident",
+                "severity": "critical",
+                "event_type": "health.degraded",
+                "title": "Late duplicate health card",
+                "body": "a second card must block readiness",
+                "dedup_key": "health:readiness-late-duplicate",
+            },
+        )
+        delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        self.center.claim_due_deliveries(now_epoch=10**12)
+        self.center.complete_delivery(
+            delivery_id,
+            "sent",
+            result={
+                "message_id": 92,
+                "chat_id": "-100123",
+                "health_plan_ids": ["observe", "repair", "verify"],
+                "health_button_count": 3,
+                "health_signed_callback_count": 3,
+            },
+        )
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-readiness-late-duplicate-plans",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+            ]},
+            actor="omniroute",
+        )
+        duplicate_id = self.center._schedule_delivery(created["incident_id"], "telegram.consumer:legacy", "late-duplicate", 0)
+        self.assertEqual("queued", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (duplicate_id,)
+        ).fetchone()["status"])
+        health = self.center.health()
+        self.assertEqual("degraded", health["status"])
+        self.assertEqual(1, health["queued_deliveries"])
+        self.assertEqual(1, health["reconciliation_required"])
+
     def test_event_ack_and_resolve_follow_the_public_contract(self) -> None:
         """Create a durable incident, ACK it, and resolve it through HTTP."""
         event = {"schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident", "severity": "critical", "title": "Hermes unavailable", "dedup_key": "hermes:gateway", "ack": {"required": True}}

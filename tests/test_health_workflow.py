@@ -111,13 +111,64 @@ class HealthWorkflowTests(unittest.TestCase):
             return FakeResponse()
 
         with patch("notification_center.http_api.urllib.request.urlopen", fake_urlopen):
-            sender.send({"incident": self._incident(), "delivery": {"delivery_key": "dlv-1"}, "health_plans": self.center.latest_health_plans(self.created["incident_id"])})
+            receipt = sender.send({"incident": self._incident(), "delivery": {"delivery_key": "dlv-1"}, "health_plans": self.center.latest_health_plans(self.created["incident_id"])})
 
         reply_markup = json.loads(captured["reply_markup"])
         buttons = [button for row in reply_markup["inline_keyboard"] for button in row]
         self.assertEqual(3, len(buttons))
         self.assertEqual({"observe", "repair", "verify"}, {self.workflow.codec.decode(button["callback_data"])[1] for button in buttons})
         self.assertEqual("77", captured["message_thread_id"])
+        self.assertEqual({"observe", "repair", "verify"}, set(receipt["health_plan_ids"]))
+        self.assertEqual(3, receipt["health_button_count"])
+        self.assertEqual(3, receipt["health_signed_callback_count"])
+
+    def test_telegram_sender_fails_closed_without_health_callback_codec(self) -> None:
+        sender = TelegramSender(
+            "bot-token",
+            "-100123",
+            severity_routes={"health": {"chat_id": "-100123", "message_thread_id": 77}},
+            active_modes={"health"},
+        )
+        with self.assertRaisesRegex(RuntimeError, "signed plan callback"):
+            sender.send({
+                "incident": self._incident(),
+                "delivery": {"delivery_key": "dlv-no-codec"},
+                "health_plans": self.center.latest_health_plans(self.created["incident_id"]),
+            })
+
+    def test_telegram_sender_edits_legacy_health_card_in_place(self) -> None:
+        codec = TelegramActionCodec("x" * 32)
+        sender = TelegramSender("bot-token", "-100123", action_codec=codec, active_modes={"health"})
+        captured: dict[str, str] = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_exc: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"ok": True, "result": {"message_id": 88, "chat": {"id": -100123}}}).encode()
+
+        def fake_urlopen(request: object, timeout: float = 0) -> FakeResponse:
+            captured["url"] = getattr(request, "full_url")
+            captured.update({key: values[0] for key, values in urllib.parse.parse_qs(getattr(request, "data").decode()).items()})
+            return FakeResponse()
+
+        self.workflow.attach_plans(self.created["incident_id"], "plans-edit", self._plans(), actor="gptadmin")
+        with patch("notification_center.http_api.urllib.request.urlopen", fake_urlopen):
+            receipt = sender.edit_health_card(
+                {"incident": self._incident(), "health_plans": self.center.latest_health_plans(self.created["incident_id"])},
+                88,
+                "-100123",
+            )
+        self.assertTrue(captured["url"].endswith("/editMessageText"))
+        buttons = [button for row in json.loads(captured["reply_markup"])["inline_keyboard"] for button in row]
+        self.assertEqual(3, len(buttons))
+        self.assertEqual(3, receipt["health_signed_callback_count"])
 
     def test_plan_selection_is_signed_and_idempotent(self) -> None:
         codec = TelegramActionCodec("x" * 32)

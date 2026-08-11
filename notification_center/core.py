@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
@@ -32,6 +33,7 @@ HEALTH_UPDATE_EVENT_TYPES = {
 HEALTH_REMEDIATION_AGENT_JOB = "health-remediation"
 HEALTH_DIAGNOSIS_AGENT_JOB = "health-diagnosis"
 _HEALTH_REMEDIATION_ACTORS = {"agent-herder", "health-remediation"}
+_SYNTHETIC_HEALTH_CORRELATION_PREFIX = "corr:live-health-canary:"
 
 
 class NotificationCenterError(Exception):
@@ -723,10 +725,16 @@ class NotificationCenter:
         self._audit(incident_id, "delivery_scheduled", "policy", {"delivery_id": delivery_id, "channel": channel, "step": step, "due_at": due_epoch})
         return delivery_id
 
-    def _schedule_consumer_policy(self, incident_id: str, consumer_id: str, now: float) -> str:
-        """Materialize only the root generic step, or preserve legacy scheduling."""
+    def _schedule_consumer_policy(self, incident_id: str, consumer_id: str, now: float) -> str | None:
+        """Materialize a root step, keeping health Telegram delivery plan-gated."""
+        incident = self.get_incident(incident_id)
+        is_health = incident is not None and str(incident.get("event_type") or "").startswith("health.")
         profile = self._connection.execute("SELECT profile_type FROM consumers WHERE id = ?", (consumer_id,)).fetchone()
         if profile is not None and str(profile["profile_type"]) == "builtin":
+            if is_health:
+                # Built-in health incidents become user-facing only after
+                # GPTAdmin/OmniRoute attaches the validated three-plan bundle.
+                return None
             return self._schedule_delivery(incident_id, "telegram.main", "initial", now)
         generic = self._connection.execute(
             "SELECT step_id, platform, action, target_json, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1 AND step_id IS NOT NULL AND previous_step_id IS NULL",
@@ -848,48 +856,145 @@ class NotificationCenter:
                 result.append(dict(claimed))
             return result
 
-    def complete_delivery(self, delivery_id: str, outcome: str, error: str | None = None, retry_after_seconds: float = 30) -> None:
+    @contextmanager
+    def delivery_send_lock(self):
+        """Serialize claim reconciliation with the final external delivery reservation."""
+        with self._lock:
+            yield
+
+    def delivery_is_claimed(self, delivery_id: str, claimed_at: float | None = None, attempt: int | None = None) -> bool:
+        """Return whether the worker still owns the exact durable lease generation."""
+        with self._lock:
+            row = self._connection.execute("SELECT status, claimed_at, attempt FROM deliveries WHERE id = ?", (delivery_id,)).fetchone()
+            if row is None or str(row["status"]) != "claimed":
+                return False
+            if claimed_at is not None and float(row["claimed_at"] or 0) != float(claimed_at):
+                return False
+            if attempt is not None and int(row["attempt"] or 0) != int(attempt):
+                return False
+            return True
+
+    def reserve_delivery_send(self, delivery_id: str, claimed_at: float, attempt: int) -> bool:
+        """Durably reserve one lease generation before crossing an external send boundary."""
+        now = time.time()
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE deliveries SET status = 'sending', last_error = NULL, updated_at = ? WHERE id = ? AND status = 'claimed' AND claimed_at = ? AND attempt = ?",
+                (now, delivery_id, claimed_at, attempt),
+            )
+            return cursor.rowcount == 1
+
+    def _schedule_next_policy_successor(self, incident_id: str, consumer_id: str, previous_step_id: str, now: float, health: bool) -> bool:
+        """Schedule the first non-Telegram successor when Health skips message repeats."""
+        current_step = previous_step_id
+        visited: set[str] = set()
+        for _ in range(32):
+            if current_step in visited:
+                return False
+            visited.add(current_step)
+            successor = self._connection.execute(
+                "SELECT step_id, platform, action, target_json FROM consumer_policy_stages WHERE consumer_id = ? AND previous_step_id = ? AND enabled = 1",
+                (consumer_id, current_step),
+            ).fetchone()
+            if successor is None:
+                return False
+            channel = f"{successor['platform']}.{successor['action']}"
+            if health and channel.startswith("telegram."):
+                current_step = str(successor["step_id"])
+                continue
+            self._schedule_delivery(
+                incident_id,
+                channel,
+                f"step:{successor['step_id']}:repeat:1",
+                now,
+                json.loads(successor["target_json"]),
+                str(successor["step_id"]),
+                1,
+            )
+            return True
+        return False
+
+    def complete_delivery(self, delivery_id: str, outcome: str, error: str | None = None, retry_after_seconds: float = 30, claimed_at: float | None = None, attempt: int | None = None, result: Mapping[str, Any] | None = None) -> None:
         """Mark one claim sent, cancelled, or safely queued for a future retry."""
-        if outcome not in ("sent", "failed", "cancelled", "retry"):
-            raise ValidationError("delivery outcome must be sent, failed, cancelled, or retry")
+        if outcome not in ("sent", "failed", "cancelled", "retry", "uncertain", "superseded"):
+            raise ValidationError("delivery outcome must be sent, failed, cancelled, retry, uncertain, or superseded")
         now = time.time()
         safe_error = " ".join((error or "").replace("\x00", "").splitlines())[-1000:] or None
+        result_json = json.dumps(dict(result), ensure_ascii=False, sort_keys=True)[:4000] if isinstance(result, Mapping) else None
         with self._lock, self._connection:
-            row = self._connection.execute("SELECT d.incident_id, d.policy_step_id, d.repeat_number, i.state, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
+            row = self._connection.execute("SELECT d.status, d.claimed_at, d.attempt, d.incident_id, d.channel, d.policy_step_id, d.repeat_number, i.state, i.consumer_id, i.event_type FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
             if row is None:
                 raise ValidationError("delivery not found")
+            if str(row["status"]) == "cancelled":
+                return
+            if outcome == "retry" and str(row["status"]) not in {"claimed", "sending"}:
+                return
+            if (claimed_at is not None or attempt is not None) and str(row["status"]) not in {"claimed", "sending"}:
+                return
+            if claimed_at is not None and float(row["claimed_at"] or 0) != float(claimed_at):
+                return
+            if attempt is not None and int(row["attempt"] or 0) != int(attempt):
+                return
             if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES:
                 outcome = "cancelled"
                 safe_error = safe_error or "incident is no longer active"
             if outcome == "retry":
                 self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), safe_error, now, delivery_id))
             else:
-                self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, updated_at = ? WHERE id = ?", (outcome, safe_error, now, delivery_id))
+                self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, result_json = COALESCE(?, result_json), updated_at = ? WHERE id = ?", (outcome, safe_error, result_json, now, delivery_id))
             if outcome == "sent" and row["policy_step_id"] is not None and str(row["state"]) in DELIVERABLE_STATES:
-                step = self._connection.execute(
-                    "SELECT platform, action, target_json, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? AND step_id = ? AND enabled = 1",
-                    (row["consumer_id"], row["policy_step_id"]),
-                ).fetchone()
-                repeat_number = int(row["repeat_number"] or 1)
-                if step is not None and repeat_number < int(step["max_repeats"]):
-                    self._schedule_delivery(
-                        str(row["incident_id"]), f"{step['platform']}.{step['action']}",
-                        f"step:{row['policy_step_id']}:repeat:{repeat_number + 1}",
-                        now + float(step["retry_interval_seconds"]), json.loads(step["target_json"]),
-                        str(row["policy_step_id"]), repeat_number + 1,
-                    )
-                elif step is not None:
-                    successor = self._connection.execute(
-                        "SELECT step_id, platform, action, target_json FROM consumer_policy_stages WHERE consumer_id = ? AND previous_step_id = ? AND enabled = 1",
+                try:
+                    step = self._connection.execute(
+                        "SELECT platform, action, target_json, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? AND step_id = ? AND enabled = 1",
                         (row["consumer_id"], row["policy_step_id"]),
                     ).fetchone()
-                    if successor is not None:
-                        self._schedule_delivery(
-                            str(row["incident_id"]), f"{successor['platform']}.{successor['action']}",
-                            f"step:{successor['step_id']}:repeat:1", now, json.loads(successor["target_json"]),
-                            str(successor["step_id"]), 1,
-                        )
+                    repeat_number = int(row["repeat_number"] or 1)
+                    is_health = str(row["event_type"] or "").startswith("health.")
+                    if step is not None and repeat_number < int(step["max_repeats"]):
+                        next_channel = f"{step['platform']}.{step['action']}"
+                        if is_health and next_channel.startswith("telegram."):
+                            self._schedule_next_policy_successor(str(row["incident_id"]), str(row["consumer_id"]), str(row["policy_step_id"]), now, is_health)
+                        else:
+                            self._schedule_delivery(
+                                str(row["incident_id"]), next_channel,
+                                f"step:{row['policy_step_id']}:repeat:{repeat_number + 1}",
+                                now + float(step["retry_interval_seconds"]), json.loads(step["target_json"]),
+                                str(row["policy_step_id"]), repeat_number + 1,
+                            )
+                    elif step is not None:
+                        self._schedule_next_policy_successor(str(row["incident_id"]), str(row["consumer_id"]), str(row["policy_step_id"]), now, is_health)
+                except Exception as followup_error:
+                    self._audit(
+                        str(row["incident_id"]),
+                        "delivery_followup_failed",
+                        "worker",
+                        {"delivery_id": delivery_id, "error": str(followup_error)[:1000]},
+                    )
             self._audit(str(row["incident_id"]), f"delivery_{outcome}", "worker", {"delivery_id": delivery_id, "error": safe_error})
+
+    def record_health_delivery_migrated(self, source_delivery_id: str, receipt: Mapping[str, Any], actor: str = "health-workflow") -> None:
+        """Persist proof that an existing Telegram Health message was edited in place."""
+        result_json = json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True)[:4000]
+        now = time.time()
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT incident_id, status, channel FROM deliveries WHERE id = ?",
+                (source_delivery_id,),
+            ).fetchone()
+            if row is None:
+                raise ValidationError("source delivery not found")
+            if str(row["status"]) != "sent" or not str(row["channel"]).startswith("telegram."):
+                raise ValidationError("source delivery is not a sent Telegram delivery")
+            self._connection.execute(
+                "UPDATE deliveries SET result_json = ?, last_error = NULL, updated_at = ? WHERE id = ? AND status = 'sent'",
+                (result_json, now, source_delivery_id),
+            )
+            self._audit(
+                str(row["incident_id"]),
+                "health.legacy_card_migrated",
+                actor,
+                {"source_delivery_id": source_delivery_id, "receipt": dict(receipt)},
+            )
 
     def _transition(self, incident_id: str, state: str, actor: str, snoozed_until: float | None = None) -> dict[str, Any]:
         """Apply an incident transition and cancel future alerts when appropriate."""
@@ -900,10 +1005,10 @@ class NotificationCenter:
             now = time.time()
             if state == "acknowledged":
                 self._connection.execute("UPDATE incidents SET state = ?, acknowledged_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
-                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed')", (now, incident_id))
+                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending')", (now, incident_id))
             elif state == "resolved":
                 self._connection.execute("UPDATE incidents SET state = ?, resolved_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
-                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed')", (now, incident_id))
+                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending')", (now, incident_id))
             else:
                 self._connection.execute("UPDATE incidents SET state = ?, snoozed_until = ?, updated_at = ? WHERE id = ?", (state, snoozed_until, now, incident_id))
             self._audit(incident_id, f"incident_{state}", actor, {"snoozed_until": snoozed_until})
@@ -1294,6 +1399,11 @@ class NotificationCenter:
         except json.JSONDecodeError:
             return None
         return payload if isinstance(payload, dict) else None
+
+    def health_incident_is_synthetic(self, incident_id: str) -> bool:
+        """Classify synthetic health incidents from their persisted source event."""
+        original = self._health_original_event(incident_id)
+        return isinstance(original, Mapping) and str(original.get("correlation_id") or "").startswith(_SYNTHETIC_HEALTH_CORRELATION_PREFIX)
 
     def _health_plan_candidates(self, incident_id: str) -> list[str]:
         attached = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["plans"])
@@ -2025,15 +2135,87 @@ class NotificationCenter:
         """Probe durable dependencies and return only safe externally visible state."""
         storage_ready = False
         queued: int | None = None
+        sending: int | None = None
+        uncertain: int | None = None
+        reconciliation_required: int | None = None
         try:
             with self._lock:
                 self._connection.execute("SELECT 1").fetchone()
                 queued = self._connection.execute("SELECT COUNT(*) AS count FROM deliveries WHERE status = 'queued'").fetchone()["count"]
+                sending = self._connection.execute("SELECT COUNT(*) AS count FROM deliveries WHERE status = 'sending'").fetchone()["count"]
+                uncertain = self._connection.execute("SELECT COUNT(*) AS count FROM deliveries WHERE status = 'uncertain'").fetchone()["count"]
+                reconciliation_rows = self._connection.execute(
+                    """SELECT incident_id FROM (
+                        SELECT d.incident_id
+                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                        WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status IN ('sending', 'uncertain')
+                        GROUP BY d.incident_id
+                        UNION
+                        SELECT d.incident_id
+                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                        WHERE i.event_type LIKE 'health.%' AND d.channel = 'telegram.edit' AND d.status IN ('queued', 'claimed', 'sending', 'uncertain')
+                        GROUP BY d.incident_id
+                        UNION
+                        SELECT d.incident_id
+                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                        WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status IN ('queued', 'claimed')
+                          AND EXISTS (
+                              SELECT 1
+                              FROM deliveries sent
+                              WHERE sent.incident_id = d.incident_id
+                                AND sent.channel LIKE 'telegram.%'
+                                AND sent.status = 'sent'
+                          )
+                        UNION
+                        SELECT d.incident_id
+                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                        WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status = 'sent'
+                        GROUP BY d.incident_id
+                        HAVING COUNT(*) > 1
+                        UNION
+                        SELECT d.incident_id
+                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                        WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status = 'sent'
+                          AND (
+                              json_valid(COALESCE(d.result_json, '{}')) = 0
+                              OR NOT (
+                              COALESCE(CAST(json_extract(d.result_json, '$.message_id') AS INTEGER), 0) > 0
+                              AND COALESCE(CAST(json_extract(d.result_json, '$.health_button_count') AS INTEGER), 0) = 3
+                              AND COALESCE(CAST(json_extract(d.result_json, '$.health_signed_callback_count') AS INTEGER), 0) = 3
+                              )
+                          )
+                        GROUP BY d.incident_id
+                    ) AS reconciliation"""
+                ).fetchall()
+                reconciliation_incidents = {
+                    str(row["incident_id"]) for row in reconciliation_rows
+                }
+                # The aggregate SQL above covers lifecycle collisions.  A
+                # sent card is only safe when its receipt proves the exact
+                # latest three-plan bundle; otherwise re-enabling Health
+                # could expose a stale or non-actionable card.
+                sent_rows = self._connection.execute(
+                    """SELECT d.incident_id, d.id, d.result_json
+                       FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                       WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status = 'sent'"""
+                ).fetchall()
+                invalid_sent_incidents: set[str] = set()
+                for row in sent_rows:
+                    attached_plan_ids = tuple(
+                        str(plan.get("plan_id") or plan.get("id") or "").strip()
+                        for plan in self.latest_health_plans(str(row["incident_id"]))
+                        if isinstance(plan, Mapping) and str(plan.get("plan_id") or plan.get("id") or "").strip()
+                    )
+                    if not self._sent_health_delivery_matches_plans(row, attached_plan_ids):
+                        invalid_sent_incidents.add(str(row["incident_id"]))
+                reconciliation_required = len(
+                    set(reconciliation_incidents) | invalid_sent_incidents
+                )
                 storage_ready = True
         except sqlite3.Error:
             pass
         dispatcher_ready = time.time() - self._dispatcher_heartbeat <= 30
-        ready = storage_ready and dispatcher_ready
+        ready = storage_ready and dispatcher_ready and sending == 0 and uncertain == 0 and reconciliation_required == 0
         return {
             "schema": "notify.health.v1",
             "service": "notification-center",
@@ -2041,6 +2223,9 @@ class NotificationCenter:
             "storage_ready": storage_ready,
             "dispatcher_ready": dispatcher_ready,
             "queued_deliveries": queued,
+            "sending_deliveries": sending,
+            "uncertain_deliveries": uncertain,
+            "reconciliation_required": reconciliation_required,
             "version": "0.1.0",
         }
 
@@ -2130,8 +2315,235 @@ class NotificationCenter:
             )
             self._audit(incident_id, safe_event_type or "health_update", safe_actor, bounded_payload)
             if safe_event_type == "health.plans_attached":
-                self._schedule_delivery(incident_id, "telegram.main", "health.plans", now)
+                if not self.health_incident_is_synthetic(incident_id):
+                    telegram_rows = self._connection.execute(
+                        "SELECT id, channel, delivery_key, status, result_json FROM deliveries WHERE incident_id = ? AND channel LIKE 'telegram.%' ORDER BY created_at, rowid",
+                        (incident_id,),
+                    ).fetchall()
+                    active = [row for row in telegram_rows if str(row["status"]) in {"queued", "claimed", "sending", "sent", "uncertain"}]
+                    if active:
+                        uncertain_rows = [row for row in active if str(row["status"]) == "uncertain"]
+                        sending_rows = [row for row in active if str(row["status"]) == "sending"]
+                        sent_rows = [row for row in active if str(row["status"]) == "sent"]
+                        attached_plan_ids = tuple(
+                            str(plan.get("plan_id") or plan.get("id") or "").strip()
+                            for plan in (bounded_payload.get("plans") if isinstance(bounded_payload.get("plans"), list) else [])
+                            if isinstance(plan, Mapping)
+                        )
+                        sent_rows_are_compliant = bool(attached_plan_ids) and all(
+                            self._sent_health_delivery_matches_plans(row, attached_plan_ids)
+                            for row in sent_rows
+                        )
+                        if len(sent_rows) > 1:
+                            for duplicate in active:
+                                if str(duplicate["status"]) in {"sent", "sending", "uncertain"}:
+                                    continue
+                                self._connection.execute(
+                                    "UPDATE deliveries SET status = 'cancelled', last_error = ?, updated_at = ? WHERE id = ?",
+                                    ("multiple sent Health cards require message reconciliation", now, duplicate["id"]),
+                                )
+                                self._audit(
+                                    incident_id,
+                                    "delivery_cancelled",
+                                    "health-workflow",
+                                    {"delivery_id": duplicate["id"], "reason": "health.multiple_sent_delivery_reconciliation_required"},
+                                )
+                            self._audit(
+                                incident_id,
+                                "health.multiple_sent_delivery_reconciliation_required",
+                                "health-workflow",
+                                {"sent_delivery_ids": [str(row["id"]) for row in sent_rows]},
+                            )
+                        elif sent_rows and sending_rows:
+                            for duplicate in active:
+                                if str(duplicate["status"]) in {"sent", "sending", "uncertain"}:
+                                    continue
+                                self._connection.execute(
+                                    "UPDATE deliveries SET status = 'cancelled', last_error = ?, updated_at = ? WHERE id = ?",
+                                    ("sent and in-flight Health cards require message reconciliation", now, duplicate["id"]),
+                                )
+                                self._audit(
+                                    incident_id,
+                                    "delivery_cancelled",
+                                    "health-workflow",
+                                    {"delivery_id": duplicate["id"], "reason": "health.sent_and_sending_reconciliation_required"},
+                                )
+                            self._audit(
+                                incident_id,
+                                "health.sent_and_sending_reconciliation_required",
+                                "health-workflow",
+                                {"sent_delivery_ids": [str(row["id"]) for row in sent_rows], "sending_delivery_ids": [str(row["id"]) for row in sending_rows]},
+                            )
+                        elif uncertain_rows:
+                            for duplicate in active:
+                                if str(duplicate["status"]) in {"sent", "sending", "uncertain"}:
+                                    continue
+                                self._connection.execute(
+                                    "UPDATE deliveries SET status = 'cancelled', last_error = ?, updated_at = ? WHERE id = ?",
+                                    ("uncertain Telegram send requires reconciliation before plan delivery", now, duplicate["id"]),
+                                )
+                                self._audit(
+                                    incident_id,
+                                    "delivery_cancelled",
+                                    "health-workflow",
+                                    {"delivery_id": duplicate["id"], "reason": "health.uncertain_delivery_reconciliation_required"},
+                                )
+                            self._audit(
+                                incident_id,
+                                "health.uncertain_delivery_reconciliation_required",
+                                "health-workflow",
+                                {"delivery_ids": [str(row["id"]) for row in uncertain_rows]},
+                            )
+                        elif sending_rows:
+                            for duplicate in active:
+                                if str(duplicate["status"]) in {"sent", "sending"}:
+                                    continue
+                                self._connection.execute(
+                                    "UPDATE deliveries SET status = 'cancelled', last_error = ?, updated_at = ? WHERE id = ?",
+                                    ("Telegram send is in progress; plan delivery is deferred", now, duplicate["id"]),
+                                )
+                                self._audit(
+                                    incident_id,
+                                    "delivery_cancelled",
+                                    "health-workflow",
+                                    {"delivery_id": duplicate["id"], "reason": "health.send_in_progress"},
+                                )
+                            self._audit(
+                                incident_id,
+                                "health.send_in_progress",
+                                "health-workflow",
+                                {"delivery_ids": [str(row["id"]) for row in sending_rows]},
+                            )
+                        elif sent_rows and not sent_rows_are_compliant:
+                            migration_target = self._health_message_migration_target(sent_rows[0]) if len(sent_rows) == 1 else None
+                            if migration_target is not None:
+                                existing_edit = next(
+                                    (
+                                        row for row in active
+                                        if str(row["channel"]) == "telegram.edit"
+                                        and str(row["status"]) in {"queued", "claimed", "sending"}
+                                    ),
+                                    None,
+                                )
+                                for duplicate in active:
+                                    if str(duplicate["status"]) == "sent" or (existing_edit is not None and duplicate["id"] == existing_edit["id"]):
+                                        continue
+                                    self._connection.execute(
+                                        "UPDATE deliveries SET status = 'cancelled', last_error = ?, updated_at = ? WHERE id = ?",
+                                        ("legacy health card is being edited in place", now, duplicate["id"]),
+                                    )
+                                    self._audit(
+                                        incident_id,
+                                        "delivery_cancelled",
+                                        "health-workflow",
+                                        {"delivery_id": duplicate["id"], "reason": "health.legacy_card_edit_scheduled"},
+                                    )
+                                edit_id = existing_edit["id"] if existing_edit is not None else self._schedule_delivery(incident_id, "telegram.edit", "health.migration", now, migration_target)
+                                if existing_edit is not None and str(existing_edit["status"]) == "queued":
+                                    self._connection.execute(
+                                        "UPDATE deliveries SET due_at = ?, last_error = NULL, updated_at = ? WHERE id = ?",
+                                        (now, now, edit_id),
+                                    )
+                                self._audit(
+                                    incident_id,
+                                    "health.legacy_card_edit_scheduled",
+                                    "health-workflow",
+                                    {"source_delivery_id": str(sent_rows[0]["id"]), "edit_delivery_id": edit_id},
+                                )
+                            else:
+                                for duplicate in active:
+                                    if str(duplicate["status"]) == "sent":
+                                        continue
+                                    self._connection.execute(
+                                        "UPDATE deliveries SET status = 'cancelled', last_error = ?, updated_at = ? WHERE id = ?",
+                                        ("legacy health card requires message migration before plan delivery", now, duplicate["id"]),
+                                    )
+                                    self._audit(
+                                        incident_id,
+                                        "delivery_cancelled",
+                                        "health-workflow",
+                                        {"delivery_id": duplicate["id"], "reason": "health.legacy_card_migration_required"},
+                                    )
+                                self._audit(
+                                    incident_id,
+                                    "health.legacy_card_migration_required",
+                                    "health-workflow",
+                                    {"sent_delivery_ids": [str(row["id"]) for row in sent_rows], "plan_ids": list(attached_plan_ids)},
+                                )
+                        elif sent_rows:
+                            for duplicate in active:
+                                if str(duplicate["status"]) == "sent":
+                                    continue
+                                self._connection.execute(
+                                    "UPDATE deliveries SET status = 'cancelled', last_error = ?, updated_at = ? WHERE id = ?",
+                                    ("superseded by an already sent health delivery", now, duplicate["id"]),
+                                )
+                                self._audit(
+                                    incident_id,
+                                    "delivery_cancelled",
+                                    "health-workflow",
+                                    {"delivery_id": duplicate["id"], "reason": "health.delivery_already_sent"},
+                                )
+                        else:
+                            non_sent = [row for row in active if str(row["status"]) != "sent"]
+                            plan_rows = [row for row in non_sent if str(row["delivery_key"]).endswith(":health.plans")]
+                            custom_rows = [row for row in non_sent if str(row["channel"]).startswith("telegram.consumer:")]
+                            canonical = (custom_rows or plan_rows or non_sent or active)[0]
+                            for duplicate in active:
+                                if duplicate["id"] == canonical["id"]:
+                                    continue
+                                self._connection.execute(
+                                    "UPDATE deliveries SET status = 'cancelled', last_error = ?, updated_at = ? WHERE id = ?",
+                                    ("superseded by health plan delivery", now, duplicate["id"]),
+                                )
+                                self._audit(
+                                    incident_id,
+                                    "delivery_cancelled",
+                                    "health-workflow",
+                                    {"delivery_id": duplicate["id"], "reason": "health.plans_attached"},
+                                )
+                            if str(canonical["status"]) == "queued":
+                                self._connection.execute(
+                                    "UPDATE deliveries SET due_at = ?, last_error = NULL, updated_at = ? WHERE id = ?",
+                                    (now, now, canonical["id"]),
+                                )
+                    else:
+                        self._schedule_delivery(incident_id, "telegram.main", "health.plans", now)
             return {"event_id": event_id, "incident_id": incident_id, "idempotent": False, **bounded_payload}
+
+    @staticmethod
+    def _sent_health_delivery_matches_plans(row: Mapping[str, Any], attached_plan_ids: tuple[str, ...]) -> bool:
+        """Prove a sent Health card carried the exact plan set now attached."""
+        try:
+            result = json.loads(str(row["result_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(result, Mapping):
+            return False
+        message_id = result.get("message_id")
+        if not isinstance(message_id, int) or message_id <= 0:
+            return False
+        if result.get("health_button_count") != 3 or result.get("health_signed_callback_count") != 3:
+            return False
+        sent_plan_ids = result.get("health_plan_ids")
+        if not isinstance(sent_plan_ids, list):
+            return False
+        return tuple(str(plan_id).strip() for plan_id in sent_plan_ids) == attached_plan_ids and len(set(attached_plan_ids)) == 3
+
+    @staticmethod
+    def _health_message_migration_target(row: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Return the persisted Bot API identity needed for an in-place edit."""
+        try:
+            result = json.loads(str(row["result_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(result, Mapping):
+            return None
+        message_id = result.get("message_id")
+        chat_id = str(result.get("chat_id") or "").strip()
+        if not isinstance(message_id, int) or message_id <= 0 or not chat_id:
+            return None
+        return {"chat_id": chat_id, "message_id": message_id, "source_delivery_id": str(row["id"])}
 
     def _health_events(self, incident_id: str, event_type: str | None = None) -> list[dict[str, Any]]:
         """Return bounded health events newest first."""
