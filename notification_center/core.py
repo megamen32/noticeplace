@@ -2600,7 +2600,31 @@ class NotificationCenter:
                                     (now, now, canonical["id"]),
                                 )
                     else:
-                        self._schedule_delivery(incident_id, "telegram.main", "health.plans", now)
+                        # A previous activation may have cancelled the stable
+                        # plan slot while Health Telegram was disabled.  Keep
+                        # the slot identity for history, but make a new
+                        # validated three-plan bundle eligible for delivery
+                        # again.  Sent/uncertain rows are intentionally not
+                        # revived here; those still require message-level
+                        # reconciliation.
+                        delivery_key = f"{incident_id}:telegram.main:health.plans"
+                        existing = self._connection.execute(
+                            "SELECT id, status FROM deliveries WHERE delivery_key = ?",
+                            (delivery_key,),
+                        ).fetchone()
+                        if existing is not None and str(existing["status"]) == "cancelled":
+                            self._connection.execute(
+                                "UPDATE deliveries SET status = 'queued', due_at = ?, claimed_at = NULL, last_error = NULL, updated_at = ? WHERE id = ?",
+                                (now, now, existing["id"]),
+                            )
+                            self._audit(
+                                incident_id,
+                                "delivery_rescheduled",
+                                "health-workflow",
+                                {"delivery_id": str(existing["id"]), "reason": "health.plans_attached"},
+                            )
+                        else:
+                            self._schedule_delivery(incident_id, "telegram.main", "health.plans", now)
             return {"event_id": event_id, "incident_id": incident_id, "idempotent": False, **bounded_payload}
 
     @staticmethod

@@ -129,6 +129,34 @@ class DeliveryWorkerTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual([], remaining)
 
+    def test_attaching_plans_revives_cancelled_plan_slot_after_mode_activation(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-plans-revive-cancelled-slot",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        delivery_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "health.plans", 0)
+        self.center._connection.execute(
+            "UPDATE deliveries SET status = 'cancelled', last_error = 'Telegram mode was inactive' WHERE id = ?",
+            (delivery_id,),
+        )
+        self.center.record_health_update(
+            created["incident_id"],
+            "health-plans-revive-cancelled-slot-1",
+            "health.plans_attached",
+            {"plans": [
+                {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+                {"plan_id": "repair", "title": "Repair", "summary": "Apply the selected fix"},
+                {"plan_id": "verify", "title": "Verify", "summary": "Check the original signal"},
+            ]},
+            actor="omniroute",
+        )
+        row = self.center._connection.execute(
+            "SELECT status, last_error FROM deliveries WHERE id = ?", (delivery_id,)
+        ).fetchone()
+        self.assertEqual("queued", row["status"])
+        self.assertIsNone(row["last_error"])
+
     def test_claimed_initial_health_delivery_is_not_sent_after_plans_supersede_it(self) -> None:
         created = self.center.create_event(
             "producer",
