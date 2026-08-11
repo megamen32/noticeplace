@@ -226,6 +226,52 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertEqual("progress:repair-1", result["progress_fingerprint"])
             self.assertEqual(3, len(requests))
 
+    def test_health_remediation_uses_its_own_deadline_not_diagnosis_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir).resolve()
+            config = root / "agent-jobs.json"
+            config.write_text(json.dumps({"profiles": {"health-remediation": {
+                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+                "harness": "hermes", "name": "health_remediation_timeout", "cwd": str(root), "mode": "queue",
+                "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5", "remediation_timeout_seconds": "1200",
+                "instruction": "Apply only the selected health remediation plan and report useful progress.",
+            }}}), encoding="utf-8")
+            config.chmod(0o600)
+            progress_calls = 0
+            completion = json.dumps({
+                "status": "completed", "plan_id": "repair", "step": "verify source",
+                "observed_state": "healthy", "verification_id": "verify-1", "source_id": "source-a",
+                "source_fingerprint": "fp-1", "verifier_id": "source-b",
+                "evidence_refs": ["probe:after"], "trace_refs": ["trace:hermes:timeout"],
+            })
+
+            def runner(request: object, **_kwargs: object) -> _Response:
+                nonlocal progress_calls
+                url = str(getattr(request, "full_url", ""))
+                if url.endswith("/api/sessions/new-or-resume"):
+                    return _Response({"ok": True, "created": True, "sessionId": "hermes-timeout-1", "delivery": "accepted"})
+                if "/progress?" in url:
+                    progress_calls += 1
+                    return _Response({"session": {"status": "running" if progress_calls == 1 else "idle"}, "fingerprint": f"progress:{progress_calls}"})
+                if "/details?" in url:
+                    return _Response({"messages": [{"role": "assistant", "text": completion}]})
+                self.fail(f"unexpected Agent Herder URL: {url}")
+
+            with (
+                mock.patch("notification_center.agent_job_helper.time.monotonic", side_effect=[0, 0, 6, 7]),
+                mock.patch("notification_center.agent_job_helper.time.sleep"),
+            ):
+                result = run_profile(
+                    "health-remediation",
+                    {"schema": "notify.agent-job.v1", "job_id": "health-remediation", "incident": {"id": "inc-timeout"},
+                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}}},
+                    config,
+                    runner=runner,
+                )
+            self.assertEqual("completed", result["status"])
+            self.assertEqual(2, progress_calls)
+
     def test_health_remediation_rejects_terminal_receipt_without_independent_proof(self) -> None:
         details = {"messages": [{"role": "assistant", "text": json.dumps({
             "status": "completed", "plan_id": "repair", "step": "inspect", "observed_state": "healthy",

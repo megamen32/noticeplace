@@ -20,6 +20,7 @@
       "model": "gpt-5.6-luna",
       "reasoning": "high",
       "topic": "health",
+      "remediation_timeout_seconds": 1200,
       "instruction": "Apply only the selected health remediation plan. Keep useful progress visible, preserve evidence, and do not delete data or reboot."
     }
   }

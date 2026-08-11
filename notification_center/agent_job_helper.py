@@ -58,7 +58,7 @@ def _load_profile(profile_id: str, config_path: Path) -> dict[str, Any]:
 
 
 def _validate_profile(profile: dict[str, Any]) -> dict[str, str]:
-    normalized = {key: str(profile.get(key) or "").strip() for key in ("url", "harness", "name", "cwd", "mode", "instruction", "model", "reasoning", "topic", "callback_file", "diagnosis_timeout_seconds", "poll_seconds", "orchestrator_name", "orchestrator_requested_model", "orchestrator_model")}
+    normalized = {key: str(profile.get(key) or "").strip() for key in ("url", "harness", "name", "cwd", "mode", "instruction", "model", "reasoning", "topic", "callback_file", "diagnosis_timeout_seconds", "remediation_timeout_seconds", "poll_seconds", "orchestrator_name", "orchestrator_requested_model", "orchestrator_model")}
     parsed = urllib.parse.urlsplit(normalized["url"])
     if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "::1", "localhost") or parsed.path != "/api/sessions/new-or-resume":
         raise RuntimeError("agent job profile URL must be the loopback Agent Herder new-or-resume endpoint")
@@ -523,7 +523,10 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
 
 def _run_health_remediation(profile: dict[str, str], event: dict[str, Any], session_id: str, plan_id: str, runner: Any, started_at: float) -> dict[str, Any]:
     """Wait for Hermes to finish and return only its strict remediation receipt."""
-    deadline = time.monotonic() + _profile_seconds(profile, "diagnosis_timeout_seconds", 90, 5, 300)
+    # Diagnosis has a short interactive deadline. Remediation must instead
+    # cover the separately bounded Hermes CLI job, otherwise a useful repair
+    # is misclassified as a terminal failure at the diagnosis deadline.
+    deadline = time.monotonic() + _profile_seconds(profile, "remediation_timeout_seconds", 1200, 5, 1800)
     poll_seconds = _profile_seconds(profile, "poll_seconds", 1, 0.2, 10)
     last_fingerprint = ""
     while True:
