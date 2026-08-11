@@ -679,6 +679,16 @@ class DeliveryWorker:
                 adapter = self._agent_jobs.get(job_name)
                 if adapter is None:
                     raise RuntimeError(f"GPTAdmin agent job adapter is not configured: {job_name}")
+                # Agent jobs can run much longer than the ordinary claim
+                # lease. Reserve this exact generation before crossing the
+                # GPTAdmin/Hermes boundary so a second worker cannot reclaim
+                # and launch the same remediation again.
+                if not self._center.reserve_delivery_send(
+                    str(delivery["id"]),
+                    claimed_at=float(delivery["claimed_at"]),
+                    attempt=int(delivery["attempt"]),
+                ):
+                    return
                 if job_name == "health-remediation" and callable(getattr(adapter, "send_with_progress", None)):
                     receipt = adapter.send_with_progress(
                         payload,
@@ -700,16 +710,25 @@ class DeliveryWorker:
                     payload.get("health_context") if isinstance(payload.get("health_context"), dict) else None,
                 )
                 if job_name == "health-remediation" and str(receipt.get("status") or "") == "completed" and workflow_result.get("health_workflow") is not False and workflow_result.get("accepted") is not True:
-                    self._center.complete_delivery(delivery["id"], "failed", "Health remediation did not produce a resolved receipt")
+                    self._center.complete_delivery(
+                        delivery["id"], "failed", "Health remediation did not produce a resolved receipt",
+                        claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    )
                     return
                 if str(receipt.get("status") or "") == "failed":
-                    self._center.complete_delivery(delivery["id"], "failed", "GPTAdmin agent job reported terminal failure")
+                    self._center.complete_delivery(
+                        delivery["id"], "failed", "GPTAdmin agent job reported terminal failure",
+                        claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    )
                     return
                 if str(receipt.get("status") or "") != "completed":
                     raise RuntimeError("GPTAdmin agent job returned a non-terminal result")
             else:
                 raise RuntimeError(f"channel adapter is not configured: {delivery['channel']}")
-            self._center.complete_delivery(delivery["id"], "sent")
+            self._center.complete_delivery(
+                delivery["id"], "sent",
+                claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+            )
         except Exception as error:
             delay = min(300, 5 * (2 ** min(int(delivery["attempt"]), 6)))
             self._center.complete_delivery(

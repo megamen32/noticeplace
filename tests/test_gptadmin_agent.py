@@ -350,6 +350,15 @@ class GptAdminAgentJobTests(unittest.TestCase):
 
         class Adapter:
             def send(self, payload: dict[str, object], idempotency_key: str) -> dict[str, object]:
+                inflight = self_center._connection.execute(
+                    "SELECT status FROM deliveries WHERE id = ?", (delivery["id"],)
+                ).fetchone()
+                self_center_test.assertEqual("sending", inflight["status"])
+                reclaimed = self_center.claim_due_deliveries(
+                    now_epoch=float(delivery["claimed_at"]) + 61,
+                    lease_seconds=60,
+                )
+                self_center_test.assertNotIn(delivery["id"], {item["id"] for item in reclaimed})
                 calls.append((payload, idempotency_key))
                 return {"job_id": "hub-job-2", "status": "completed", "result": {"session_id": "codex-1"}}
 
@@ -357,6 +366,8 @@ class GptAdminAgentJobTests(unittest.TestCase):
             def send(self, _payload: dict[str, object]) -> None:
                 raise AssertionError("agent delivery must not use Telegram")
 
+        self_center = self.center
+        self_center_test = self
         worker = DeliveryWorker(self.center, Telegram(), agent_jobs={"repair_100": Adapter()})
         worker.deliver(delivery)
 
