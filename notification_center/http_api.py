@@ -18,7 +18,7 @@ from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, N
 from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import GptAdminAgentJobAdapter
 from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, validate_health_plans
-from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
+from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
 ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log"))
@@ -49,13 +49,24 @@ def telegram_mode(incident: dict[str, Any]) -> str:
     return severity if severity in {"emergency", "important"} else "log"
 
 
-def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[str, Any]) -> dict[str, list[list[dict[str, str]]]]:
+def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[str, Any], choices: list[dict[str, Any]] | None = None) -> dict[str, list[list[dict[str, str]]]]:
     """Return the narrow interactive contract for this incident severity.
 
     Only exact critical incidents ask the recipient to acknowledge or snooze;
     every notification retains the non-blocking Ask action.
     """
     incident_id = str(incident["id"])
+    if isinstance(choices, list) and choices:
+        buttons = []
+        for choice in choices[:4]:
+            if not isinstance(choice, dict):
+                continue
+            choice_id = str(choice.get("choice_id") or "").strip()
+            label = str(choice.get("label") or "").strip()
+            if choice_id and label:
+                buttons.append([{"text": label[:128], "callback_data": action_codec.encode("choice", incident_id, choice_id=choice_id)}])
+        if buttons:
+            return {"inline_keyboard": buttons}
     ask = {"text": "Ask", "callback_data": action_codec.encode("ask", incident_id)}
     if str(incident["severity"]) != "critical":
         return {"inline_keyboard": [[ask]]}
@@ -223,6 +234,7 @@ class TelegramSender:
         note = str(incident.get("operator_note") or "").strip()
         note_block = f"\n\nNote: {note}" if note else ""
         health_plans = payload.get("health_plans")
+        choice_options = payload.get("choices")
         plan_block = ""
         if isinstance(health_plans, list) and health_plans:
             plan_lines = [
@@ -248,7 +260,7 @@ class TelegramSender:
                 health_keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
                 request_data["reply_markup"] = json.dumps(health_keyboard, separators=(",", ":"))
             else:
-                request_data["reply_markup"] = json.dumps(telegram_inline_keyboard(self._action_codec, incident), separators=(",", ":"))
+                request_data["reply_markup"] = json.dumps(telegram_inline_keyboard(self._action_codec, incident, choice_options if isinstance(choice_options, list) else None), separators=(",", ":"))
         elif mode == "health":
             raise RuntimeError("Telegram health delivery requires signed plan callback configuration")
         data = urllib.parse.urlencode(request_data).encode()
@@ -288,6 +300,24 @@ class TelegramSender:
                 1
                 for button in buttons
                 if codec is not None and codec.decode(str(button.get("callback_data") or "")) is not None
+            )
+        if isinstance(choice_options, list) and choice_options:
+            buttons = [
+                button
+                for row in telegram_inline_keyboard(self._action_codec, incident, choice_options).get("inline_keyboard", [])
+                for button in row
+                if isinstance(button, dict)
+            ] if self._action_codec is not None else []
+            receipt["choice_ids"] = [
+                str(choice.get("choice_id") or "").strip()
+                for choice in choice_options[:4]
+                if isinstance(choice, dict) and str(choice.get("choice_id") or "").strip()
+            ]
+            receipt["choice_button_count"] = len(buttons)
+            receipt["choice_signed_callback_count"] = sum(
+                1
+                for button in buttons
+                if self._action_codec is not None and self._action_codec.decode(str(button.get("callback_data") or "")) is not None
             )
         return receipt
 
@@ -1007,7 +1037,12 @@ def telegram_interactions_from_environment(center: NotificationCenter, codec: Te
         return None
     allowed = {part.strip() for part in os.environ.get("TELEGRAM_CALLBACK_ALLOWED_USER_IDS", os.environ.get("TELEGRAM_CHAT_ID", "")).split(",") if part.strip()}
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    return TelegramInteractionPoller(center, token, allowed, codec, health_plan_codec=TelegramHealthPlanCodec(codec.secret)) if token and allowed else None
+    callback_url = os.environ.get("AGENT_HERDER_AUTOPILOT_CHOICE_CALLBACK_URL", "").strip()
+    callback_token = os.environ.get("AGENT_HERDER_AUTOPILOT_CHOICE_CALLBACK_TOKEN", "").strip()
+    choice_callback = None
+    if callback_url and callback_token:
+        choice_callback = lambda request_id, choice_id, actor: agent_herder_choice_callback(callback_url, callback_token, request_id, choice_id, actor)
+    return TelegramInteractionPoller(center, token, allowed, codec, health_plan_codec=TelegramHealthPlanCodec(codec.secret), choice_callback=choice_callback) if token and allowed else None
 
 
 def matrix_call_from_environment() -> MatrixCallSender | None:

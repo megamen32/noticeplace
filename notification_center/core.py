@@ -34,6 +34,8 @@ HEALTH_REMEDIATION_AGENT_JOB = "health-remediation"
 HEALTH_DIAGNOSIS_AGENT_JOB = "health-diagnosis"
 _HEALTH_REMEDIATION_ACTORS = {"agent-herder", "health-remediation"}
 _SYNTHETIC_HEALTH_CORRELATION_PREFIX = "corr:live-health-canary:"
+_CHOICE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_CHOICE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 class NotificationCenterError(Exception):
@@ -337,6 +339,26 @@ class NotificationCenter:
         operator_note = event.get("operator_note")
         if operator_note is not None and (not isinstance(operator_note, str) or len(operator_note.strip()) > 500):
             raise ValidationError("operator_note must be a string of at most 500 characters")
+        choice_request_id = event.get("choice_request_id")
+        choices = event.get("choices")
+        if choice_request_id is not None or choices is not None:
+            if not isinstance(choice_request_id, str) or not _CHOICE_REQUEST_ID_RE.fullmatch(choice_request_id.strip()):
+                raise ValidationError("choice_request_id must be a bounded safe identifier")
+            if not isinstance(choices, list) or not 2 <= len(choices) <= 4:
+                raise ValidationError("choices must contain between two and four entries")
+            seen_choice_ids: set[str] = set()
+            for choice in choices:
+                if not isinstance(choice, Mapping) or set(choice) != {"choice_id", "label"}:
+                    raise ValidationError("choices may contain only choice_id and label")
+                choice_id = str(choice.get("choice_id") or "").strip()
+                label = choice.get("label")
+                if not _CHOICE_ID_RE.fullmatch(choice_id):
+                    raise ValidationError("choice_id must be a bounded safe identifier")
+                if not isinstance(label, str) or not 1 <= len(label.strip()) <= 128:
+                    raise ValidationError("choice label must be between 1 and 128 characters")
+                if choice_id in seen_choice_ids:
+                    raise ValidationError("choice_id values must be unique")
+                seen_choice_ids.add(choice_id)
         for field, limit in (("event_type", 128), ("producer", 128), ("plugin", 128), ("correlation_id", 256), ("parent_event_id", 128), ("parent_incident_id", 128)):
             value = event.get(field)
             if value is not None and (not isinstance(value, str) or len(value.strip()) > limit):
@@ -2036,12 +2058,74 @@ class NotificationCenter:
                 })
             return history
 
+    def _latest_choice_event(self, incident_id: str) -> dict[str, Any] | None:
+        """Return the newest validated opaque choice presentation for an incident."""
+        rows = self._connection.execute(
+            "SELECT payload_json FROM events WHERE incident_id = ? ORDER BY created_at DESC",
+            (incident_id,),
+        ).fetchall()
+        for row in rows:
+            try:
+                event = json.loads(str(row["payload_json"] or "{}"))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(event, Mapping):
+                continue
+            request_id = str(event.get("choice_request_id") or "").strip()
+            choices = event.get("choices")
+            if not _CHOICE_REQUEST_ID_RE.fullmatch(request_id) or not isinstance(choices, list) or not 2 <= len(choices) <= 4:
+                continue
+            normalized: list[dict[str, str]] = []
+            seen: set[str] = set()
+            valid = True
+            for choice in choices:
+                if not isinstance(choice, Mapping) or set(choice) != {"choice_id", "label"}:
+                    valid = False
+                    break
+                choice_id = str(choice.get("choice_id") or "").strip()
+                label = choice.get("label")
+                if not _CHOICE_ID_RE.fullmatch(choice_id) or not isinstance(label, str) or not 1 <= len(label.strip()) <= 128 or choice_id in seen:
+                    valid = False
+                    break
+                seen.add(choice_id)
+                normalized.append({"choice_id": choice_id, "label": label.strip()})
+            if valid:
+                return {"choice_request_id": request_id, "choices": normalized}
+        return None
+
+    def get_telegram_choice(self, incident_id: str, choice_id: str) -> dict[str, str]:
+        """Resolve an opaque Telegram choice to its pending request identity."""
+        with self._lock:
+            if self.get_incident(incident_id) is None:
+                raise ValidationError("incident not found")
+            presentation = self._latest_choice_event(incident_id)
+            if presentation is None:
+                raise ValidationError("choice request not found")
+            if choice_id not in {str(item["choice_id"]) for item in presentation["choices"]}:
+                raise ValidationError("choice does not belong to incident")
+            return {"request_id": str(presentation["choice_request_id"]), "choice_id": choice_id}
+
+    def record_telegram_choice(self, incident_id: str, choice_id: str, actor: str, request_id: str, status: str) -> None:
+        """Audit a choice callback without persisting executable goal text."""
+        if not _CHOICE_REQUEST_ID_RE.fullmatch(request_id) or not _CHOICE_ID_RE.fullmatch(choice_id):
+            raise ValidationError("choice callback identity is invalid")
+        with self._lock, self._connection:
+            self._audit(
+                incident_id,
+                "telegram_choice_selected",
+                actor,
+                {"choice_id": choice_id, "request_id": request_id, "status": status[:64]},
+            )
+
     def delivery_payload(self, delivery: Mapping[str, Any]) -> dict[str, Any]:
         """Build the safe adapter payload for a previously claimed delivery."""
         incident = self.get_incident(str(delivery["incident_id"]))
         if incident is None:
             raise ValidationError("delivery references missing incident")
         payload = {"delivery": dict(delivery), "incident": incident}
+        choice_presentation = self._latest_choice_event(str(incident["id"]))
+        if choice_presentation is not None:
+            payload.update(choice_presentation)
         target_json = delivery.get("target_json")
         if isinstance(target_json, str):
             try:

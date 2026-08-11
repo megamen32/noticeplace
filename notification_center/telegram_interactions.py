@@ -7,7 +7,7 @@ import hmac
 import json
 import urllib.parse
 import urllib.request
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .core import NotificationCenter, ValidationError
 from .health_workflow import TelegramHealthPlanCodec
@@ -26,14 +26,18 @@ class TelegramActionCodec:
         """Expose the callback secret for same-process helper codecs."""
         return self._secret.decode()
 
-    def encode(self, action: str, incident_id: str, plan_id: str | None = None) -> str:
+    def encode(self, action: str, incident_id: str, plan_id: str | None = None, choice_id: str | None = None) -> str:
         if action == "health_plan":
-            if not plan_id:
+            if not plan_id or choice_id is not None:
                 raise ValueError("health_plan callback requires a plan_id")
             unsigned = f"n:{action}:{incident_id}:{plan_id}"
+        elif action == "choice":
+            if plan_id is not None or not choice_id or ":" in choice_id:
+                raise ValueError("choice callback requires a safe choice_id")
+            unsigned = f"n:{action}:{incident_id}:{choice_id}"
         else:
-            if plan_id is not None:
-                raise ValueError("only health_plan callbacks may carry a plan_id")
+            if plan_id is not None or choice_id is not None:
+                raise ValueError("only health_plan and choice callbacks may carry a value")
             unsigned = f"n:{action}:{incident_id}"
         signature = hmac.new(self._secret, unsigned.encode(), hashlib.sha256).hexdigest()[:12]
         return f"{unsigned}:{signature}"
@@ -51,15 +55,36 @@ class TelegramActionCodec:
                 return None
             return action, incident_id
         action, incident_id, plan_id, signature = parts[1:]
-        if action != "health_plan":
+        if action not in {"health_plan", "choice"}:
             return None
-        expected = self.encode(action, incident_id, plan_id).rsplit(":", 1)[1]
+        expected = (
+            self.encode(action, incident_id, plan_id)
+            if action == "health_plan"
+            else self.encode(action, incident_id, choice_id=plan_id)
+        ).rsplit(":", 1)[1]
         if not hmac.compare_digest(signature, expected):
             return None
         return action, incident_id, plan_id
 
 
 TelegramApi = Callable[[str, dict[str, Any]], dict[str, Any]]
+ChoiceCallback = Callable[[str, str, str], Mapping[str, Any]]
+
+
+def agent_herder_choice_callback(url: str, token: str, request_id: str, choice_id: str, _actor: str) -> dict[str, Any]:
+    """POST only opaque choice identity to the bound Agent Herder session."""
+    body = json.dumps({"request_id": request_id, "choice_id": choice_id}, separators=(",", ":")).encode()
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"Agent Herder choice callback returned HTTP {response.status}")
+        result = json.loads(response.read())
+    if not isinstance(result, dict):
+        raise RuntimeError("Agent Herder choice callback returned invalid JSON")
+    return result
 
 
 def telegram_api(token: str, method: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -79,13 +104,14 @@ def telegram_api(token: str, method: str, payload: dict[str, Any]) -> dict[str, 
 class TelegramInteractionPoller:
     """Poll Bot API callbacks in-process; no public webhook or second daemon exists."""
 
-    def __init__(self, center: NotificationCenter, token: str, allowed_user_ids: set[str], codec: TelegramActionCodec, health_plan_codec: TelegramHealthPlanCodec | None = None, api: TelegramApi | None = None) -> None:
+    def __init__(self, center: NotificationCenter, token: str, allowed_user_ids: set[str], codec: TelegramActionCodec, health_plan_codec: TelegramHealthPlanCodec | None = None, api: TelegramApi | None = None, choice_callback: ChoiceCallback | None = None) -> None:
         self._center = center
         self._token = token
         self._allowed_user_ids = allowed_user_ids
         self._codec = codec
         self._health_plan_codec = health_plan_codec
         self._api = api or (lambda method, payload: telegram_api(token, method, payload))
+        self._choice_callback = choice_callback
 
     def _answer(self, callback_id: str, text: str) -> None:
         self._api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:180]})
@@ -125,6 +151,24 @@ class TelegramInteractionPoller:
                 if action == "health_plan":
                     self._center.record_health_plan_selection(incident_id, plan_id, f"telegram:{actor_id}", f"{incident_id}:health.plan:{plan_id}")
                     self._answer(callback_id, "plan: selected")
+                    return
+                if action == "choice":
+                    if self._choice_callback is None:
+                        raise ValidationError("Agent Herder choice callback is not configured")
+                    selection = self._center.get_telegram_choice(incident_id, plan_id)
+                    result = self._choice_callback(
+                        str(selection["request_id"]),
+                        plan_id,
+                        f"telegram:{actor_id}",
+                    )
+                    self._center.record_telegram_choice(
+                        incident_id,
+                        plan_id,
+                        f"telegram:{actor_id}",
+                        str(selection["request_id"]),
+                        str(result.get("status") or "accepted"),
+                    )
+                    self._answer(callback_id, f"choice: {str(result.get('status') or 'accepted')}")
                     return
             self._answer(callback_id, "Invalid action")
         except (ValidationError, ValueError) as error:
