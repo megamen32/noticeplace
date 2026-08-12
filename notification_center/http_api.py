@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
 from .gptadmin_phone import GptAdminPhoneAdapter
-from .gptadmin_agent import DirectHealthRemediationAdapter, GptAdminAgentJobAdapter
+from .gptadmin_agent import DirectHealthRemediationAdapter, DurableHealthRemediationAdapter, GptAdminAgentJobAdapter
 from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, validate_health_plans
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
@@ -1184,7 +1184,10 @@ def gptadmin_agent_jobs_from_environment() -> dict[str, Any]:
             float(value.get("stale_progress_seconds") or 120),
         )
     if "health-remediation" in result:
-        result["health-remediation"] = DirectHealthRemediationAdapter()
+        result["health-remediation"] = DurableHealthRemediationAdapter(
+            result["health-remediation"],
+            DirectHealthRemediationAdapter(),
+        )
     return result
 
 

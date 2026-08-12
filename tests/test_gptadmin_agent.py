@@ -8,13 +8,20 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
 from notification_center.core import AuthorizationError, NotificationCenter, ValidationError
 from notification_center.health_workflow import HealthWorkflow
-from notification_center.gptadmin_agent import DirectHealthRemediationAdapter, GptAdminAgentJobAdapter, HealthProgressSupervisor
+from notification_center.gptadmin_agent import (
+    DirectHealthRemediationAdapter,
+    DurableHealthRemediationAdapter,
+    GptAdminAdmissionUnavailable,
+    GptAdminAgentJobAdapter,
+    HealthProgressSupervisor,
+)
 from notification_center.http_api import DeliveryWorker, gptadmin_agent_jobs_from_environment
 
 
@@ -747,7 +754,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual(["repair_100"], list(jobs))
         self.assertEqual("repair_100", jobs["repair_100"].job_id)
 
-    def test_environment_bypasses_hub_only_for_health_remediation(self) -> None:
+    def test_environment_uses_durable_hub_first_for_health_remediation(self) -> None:
         configured = {
             "health-diagnosis": {"url": "http://127.0.0.1:9001/webhooks/v1/health-diagnosis", "hmac_secret": "diagnosis-secret"},
             "health-remediation": {"url": "http://127.0.0.1:9001/webhooks/v1/health-remediation", "hmac_secret": "remediation-secret"},
@@ -755,7 +762,47 @@ class GptAdminAgentJobTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"NOTIFY_GPTADMIN_AGENT_JOBS_JSON": json.dumps(configured)}, clear=True):
             jobs = gptadmin_agent_jobs_from_environment()
         self.assertIsInstance(jobs["health-diagnosis"], GptAdminAgentJobAdapter)
-        self.assertIsInstance(jobs["health-remediation"], DirectHealthRemediationAdapter)
+        self.assertIsInstance(jobs["health-remediation"], DurableHealthRemediationAdapter)
+
+    def test_durable_remediation_falls_back_only_before_hub_admission(self) -> None:
+        primary = mock.Mock()
+        primary.send_with_progress.side_effect = GptAdminAdmissionUnavailable("connection refused")
+        fallback = mock.Mock()
+        fallback.send_with_progress.return_value = {"status": "completed", "job_id": "direct"}
+        adapter = DurableHealthRemediationAdapter(primary, fallback)
+        progress = mock.Mock()
+
+        result = adapter.send_with_progress({"incident": {"id": "inc-1"}}, "delivery-1", progress)
+
+        self.assertEqual("direct", result["job_id"])
+        fallback.send_with_progress.assert_called_once_with({"incident": {"id": "inc-1"}}, "delivery-1", progress)
+
+    def test_durable_remediation_never_falls_back_after_hub_admission(self) -> None:
+        responses = iter([
+            _Response(202, {"job_id": "job-1", "route_id": "health-remediation", "status": "accepted"}),
+            urllib.error.URLError(TimeoutError("response lost after admission")),
+        ])
+
+        def runner(*_args: object, **_kwargs: object) -> _Response:
+            response = next(responses)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        primary = GptAdminAgentJobAdapter(
+            "health-remediation",
+            "http://127.0.0.1:3013/webhooks/v1/health-remediation",
+            "route-secret",
+            timeout_seconds=2,
+            poll_interval_seconds=0,
+            runner=runner,
+        )
+        fallback = mock.Mock()
+        adapter = DurableHealthRemediationAdapter(primary, fallback)
+
+        with self.assertRaisesRegex(RuntimeError, "unreachable"):
+            adapter.send({"incident": {"id": "inc-1"}}, "delivery-1")
+        fallback.send_with_progress.assert_not_called()
 
     def test_direct_remediation_does_not_read_gptadmin_profile_file(self) -> None:
         adapter = DirectHealthRemediationAdapter(config_path=Path("/definitely/unreadable/gptadmin.json"))

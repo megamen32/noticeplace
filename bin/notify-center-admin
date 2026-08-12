@@ -13,6 +13,11 @@ from notification_center.admin import AdminConfigStore
 from notification_center.admin_http import run_admin_http
 
 
+def _start_health_monitor() -> None:
+    import subprocess
+    subprocess.run(["systemctl", "start", "health-incident-fleet.service"], check=True, timeout=120)
+
+
 def main() -> None:
     secret = os.environ.get("NOTIFY_ADMIN_CSRF_SECRET", "")
     store = AdminConfigStore(
@@ -20,6 +25,8 @@ def main() -> None:
         Path(os.environ.get("NOTIFY_ADMIN_ROUTES_ENV", "/etc/notification-center-telegram-routes.env")),
         Path(os.environ.get("NOTIFY_ADMIN_STATE_DIR", "/var/lib/notification-center-admin")),
         apply_service=os.environ.get("NOTIFY_ADMIN_APPLY_SERVICE", "notification-center-admin-apply"),
+        health_config_path=Path(os.environ.get("NOTIFY_ADMIN_HEALTH_CONFIG", "/etc/health-incident-fleet.json")),
+        start_health_monitor=_start_health_monitor,
     )
     run_admin_http(store, secret, os.environ.get("NOTIFY_ADMIN_HOST", "127.0.0.1"), int(os.environ.get("NOTIFY_ADMIN_PORT", "8092")))
 

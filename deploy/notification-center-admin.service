@@ -20,6 +20,7 @@ ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/notification-center-admin
 ReadWritePaths=/var/lib/notification-center
+ReadWritePaths=/etc/health-incident-fleet.json
 
 [Install]
 WantedBy=multi-user.target

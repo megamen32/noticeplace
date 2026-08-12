@@ -30,6 +30,10 @@ _HEALTH_EXECUTION_PROFILE = {
 }
 
 
+class GptAdminAdmissionUnavailable(RuntimeError):
+    """The Hub did not durably accept the job, so a fallback is still safe."""
+
+
 def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Build the bounded helper event shared by Hub and direct execution."""
     incident = payload.get("incident")
@@ -144,6 +148,30 @@ class DirectHealthRemediationAdapter:
                 "evidence_refs": receipt.get("evidence_refs", [])[:16],
             },
         }
+
+
+class DurableHealthRemediationAdapter:
+    """Prefer GPTAdmin durability and fall back only before durable admission."""
+
+    job_id = "health-remediation"
+
+    def __init__(self, primary: Any, fallback: Any) -> None:
+        self.primary = primary
+        self.fallback = fallback
+
+    def send(self, payload: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
+        return self.send_with_progress(payload, idempotency_key)
+
+    def send_with_progress(
+        self,
+        payload: dict[str, Any],
+        idempotency_key: str,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return self.primary.send_with_progress(payload, idempotency_key, progress_callback)
+        except GptAdminAdmissionUnavailable:
+            return self.fallback.send_with_progress(payload, idempotency_key, progress_callback)
 
 
 def _safe_health_ref(value: Any, limit: int = 128) -> str:
@@ -382,7 +410,10 @@ class GptAdminAgentJobAdapter:
         event = _agent_job_event(self.job_id, payload)
         body = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         started_at = self._now()
-        accepted = self._open(self._signed_request(self._url, "POST", body, idempotency_key), min(20, self._timeout_seconds))
+        try:
+            accepted = self._open(self._signed_request(self._url, "POST", body, idempotency_key), min(20, self._timeout_seconds))
+        except RuntimeError as error:
+            raise GptAdminAdmissionUnavailable(str(error)) from error
         hub_job_id = str(accepted.get("job_id") or "").strip()
         if not hub_job_id or str(accepted.get("status") or "") not in ("accepted", "running", "completed", "failed"):
             raise RuntimeError("GPTAdmin agent job did not return a durable job identity")

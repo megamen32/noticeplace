@@ -22,6 +22,8 @@ from .http_api import telegram_create_forum_topic, telegram_edit_forum_topic
 PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
 ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency", "log")
 DEFAULT_CALLS_OVERRIDE_PATH = Path("/etc/systemd/system/notification-center.service.d/zzzz-disable-automatic-calls.conf")
+DEFAULT_HEALTH_CONFIG_PATH = Path("/etc/health-incident-fleet.json")
+HEALTH_THRESHOLD_KEYS = ("cpu_warn_percent", "ram_warn_percent", "disk_warn_percent")
 RUNTIME_SETTING_ENV = {
     "matrix_call_critical_escalation_seconds": "MATRIX_CALL_CRITICAL_ESCALATION_SECONDS",
     "matrix_call_emergency_escalation_seconds": "MATRIX_CALL_EMERGENCY_ESCALATION_SECONDS",
@@ -70,6 +72,24 @@ def _atomic_environment_update(path: Path, updates: Mapping[str, str]) -> None:
             os.unlink(temporary)
 
 
+def _atomic_json_update(path: Path, value: Mapping[str, Any]) -> None:
+    """Durably replace one operator-owned JSON file without a partial-write window."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o640
+    handle, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            json.dump(value, file, ensure_ascii=False, indent=2, sort_keys=True)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 class AdminConfigStore:
     """Manage only producer scopes and Telegram topic routing with rollback."""
 
@@ -82,6 +102,8 @@ class AdminConfigStore:
         apply_service: str | None = None,
         calls_override_path: Path | None = None,
         daemon_reload: Callable[[], None] | None = None,
+        health_config_path: Path | None = None,
+        start_health_monitor: Callable[[], None] | None = None,
     ) -> None:
         self.primary_env = primary_env
         self.routes_env = routes_env
@@ -92,6 +114,8 @@ class AdminConfigStore:
         self.apply_service = apply_service
         self.calls_override_path = calls_override_path or DEFAULT_CALLS_OVERRIDE_PATH
         self.daemon_reload = daemon_reload or self._daemon_reload
+        self.health_config_path = health_config_path or DEFAULT_HEALTH_CONFIG_PATH
+        self.start_health_monitor = start_health_monitor
         self._consumer_center: NotificationCenter | None = None
 
     @staticmethod
@@ -117,7 +141,129 @@ class AdminConfigStore:
             "event_history_query": str(history_query or ""),
             "automatic_calls_enabled": self.automatic_calls_enabled(),
             "runtime_settings": self.runtime_settings(),
+            "health": self.health_dashboard(),
         }
+
+    def health_dashboard(self) -> dict[str, Any]:
+        """Project the live fleet config and durable health workflow for operators."""
+        config: dict[str, Any] = {"targets": []}
+        config_status = "Monitor config missing"
+        try:
+            raw = self.health_config_path.read_text(encoding="utf-8")
+            config = self._validate_health_config(json.loads(raw))
+            config_status = "Monitor config loaded"
+        except (OSError, json.JSONDecodeError, ValidationError) as error:
+            config_status = f"Monitor config unavailable: {str(error)[:160]}"
+        center = self._consumer_notification_center()
+        incidents = []
+        for incident in center.list_incidents():
+            if str(incident.get("state") or "") == "resolved":
+                continue
+            incident_id = str(incident["id"])
+            plans = center.latest_health_plans(incident_id)
+            selection = center.latest_health_selection(incident_id)
+            progress = center.latest_health_progress(incident_id)
+            verification = center.latest_health_verification(incident_id)
+            if not any((plans, selection, progress, verification)) and "health:" not in str(incident.get("dedup_key") or ""):
+                continue
+            incidents.append({
+                "incident": incident,
+                "plans": plans,
+                "selection": selection,
+                "progress": progress,
+                "verification": verification,
+            })
+        return {
+            "config": config,
+            "config_json": json.dumps(config, ensure_ascii=False, indent=2),
+            "config_path": str(self.health_config_path),
+            "config_status": config_status,
+            "incidents": incidents,
+            "integration": {
+                "noticeplace": "connected",
+                "fleet_monitor": "configured" if config.get("targets") else "not configured",
+                "targets": len(config.get("targets", [])),
+            },
+        }
+
+    def save_health_config(self, value: Mapping[str, Any], actor: str, run_monitor: bool = False) -> None:
+        normalized = self._validate_health_config(value)
+        rendered = json.dumps(normalized, ensure_ascii=False)
+        if len(rendered.encode("utf-8")) > 65536:
+            raise ValidationError("health monitor config exceeds 64 KiB")
+        _atomic_json_update(self.health_config_path, normalized)
+        self._audit({"action": "health_config_saved", "actor": actor, "subject": str(self.health_config_path), "target_count": len(normalized["targets"])})
+        if run_monitor:
+            if self.start_health_monitor is None:
+                raise ValidationError("health monitor start is not configured")
+            self.start_health_monitor()
+
+    @staticmethod
+    def _validate_health_config(value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping) or set(value) != {"targets"} or not isinstance(value.get("targets"), list):
+            raise ValidationError("health config must contain only a targets list")
+        if len(value["targets"]) > 64:
+            raise ValidationError("health config supports at most 64 targets")
+        targets: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        allowed_target = {"target", "project", "recipient", "host_id", "source_id", "cpu_warn_percent", "ram_warn_percent", "disk_warn_percent", "log_rules"}
+        for raw_target in value["targets"]:
+            if not isinstance(raw_target, Mapping) or not set(raw_target).issubset(allowed_target):
+                raise ValidationError("health target contains unsupported fields")
+            target = str(raw_target.get("target") or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9._@:-]{1,128}", target) or target in seen:
+                raise ValidationError("health target must be unique and bounded")
+            seen.add(target)
+            normalized = {key: str(raw_target[key]).strip() for key in ("target", "project", "recipient", "host_id", "source_id") if key in raw_target}
+            normalized["target"] = target
+            for key, text in normalized.items():
+                if not text or len(text) > 128 or any(character in text for character in "\r\n\x00"):
+                    raise ValidationError(f"health target {key} must be bounded text")
+            for key in HEALTH_THRESHOLD_KEYS:
+                if key not in raw_target:
+                    continue
+                try:
+                    threshold = float(raw_target[key])
+                except (TypeError, ValueError) as error:
+                    raise ValidationError(f"health threshold {key} must be numeric") from error
+                if threshold < 0 or threshold > 100:
+                    raise ValidationError(f"health threshold {key} must be between 0 and 100")
+                normalized[key] = threshold
+            rules = raw_target.get("log_rules", [])
+            if not isinstance(rules, list) or len(rules) > 16:
+                raise ValidationError("health target supports at most 16 log rules")
+            normalized_rules = []
+            for raw_rule in rules:
+                if not isinstance(raw_rule, Mapping) or not set(raw_rule).issubset({"path", "backend", "keywords", "max_bytes", "max_lines"}):
+                    raise ValidationError("health log rule contains unsupported fields")
+                source_key = "path" if raw_rule.get("path") else "backend"
+                source = str(raw_rule.get(source_key) or "").strip()
+                if len(source) < 1 or len(source) > 256 or (source_key == "backend" and source not in {"journalctl", "logread"}):
+                    raise ValidationError("health log rule source is invalid")
+                keywords = raw_rule.get("keywords")
+                if not isinstance(keywords, list) or not 1 <= len(keywords) <= 32:
+                    raise ValidationError("health log rule keywords must contain 1 to 32 entries")
+                clean_keywords = []
+                for keyword in keywords:
+                    text = str(keyword).strip()
+                    if not text or len(text) > 96 or any(character in text for character in "\r\n\x00"):
+                        raise ValidationError("health log keywords must be bounded text")
+                    clean_keywords.append(text)
+                rule: dict[str, Any] = {source_key: source, "keywords": clean_keywords}
+                limit_key = "max_bytes" if source_key == "path" else "max_lines"
+                if limit_key in raw_rule:
+                    try:
+                        limit = int(raw_rule[limit_key])
+                    except (TypeError, ValueError) as error:
+                        raise ValidationError(f"health {limit_key} must be an integer") from error
+                    maximum = 1_048_576 if limit_key == "max_bytes" else 2000
+                    if not 1 <= limit <= maximum:
+                        raise ValidationError(f"health {limit_key} is outside the allowed bound")
+                    rule[limit_key] = limit
+                normalized_rules.append(rule)
+            normalized["log_rules"] = normalized_rules
+            targets.append(normalized)
+        return {"targets": targets}
 
     def topics(self) -> list[dict[str, Any]]:
         """Return preset and custom Telegram topics through one admin model."""

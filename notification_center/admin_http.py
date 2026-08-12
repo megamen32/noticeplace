@@ -121,6 +121,14 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
+                if self.path in ("/health-settings", "/admin/health-settings"):
+                    try:
+                        health_config = json.loads(form.get("config_json", ""))
+                    except json.JSONDecodeError as error:
+                        raise ValidationError("health monitor config must be valid JSON") from error
+                    store.save_health_config(health_config, actor, run_monitor=form.get("run_monitor") == "true")
+                    self._reply(HTTPStatus.OK, _page("Health monitor updated", "The bounded fleet config was saved atomically."))
+                    return
                 if self.path in ("/topics/save", "/admin/topics/save"):
                     store.save_topic(
                         form.get("topic_id", ""), form.get("name", ""), form.get("chat_id", ""),
@@ -217,7 +225,42 @@ def _history_health_plans_display(item: dict[str, Any]) -> str:
     return f'<div class="health-plans"><span class="hint">Health plans ({len(labels)}):</span><br>' + "<br>".join(labels) + "</div>"
 
 
+def _health_value(value: Any, *keys: str) -> str:
+    if not isinstance(value, dict):
+        return "—"
+    for key in keys:
+        candidate = value.get(key)
+        if candidate not in (None, "", []):
+            if isinstance(candidate, bool):
+                return "healthy" if candidate else "degraded"
+            if isinstance(candidate, list):
+                return ", ".join(str(item) for item in candidate[:4]) or "—"
+            return str(candidate)
+    return "—"
+
+
+def _health_dashboard(health: dict[str, Any], csrf: str) -> str:
+    config = health.get("config", {}) if isinstance(health, dict) else {}
+    targets = []
+    for target in config.get("targets", []) if isinstance(config, dict) else []:
+        if not isinstance(target, dict):
+            continue
+        keywords = [str(keyword) for rule in target.get("log_rules", []) if isinstance(rule, dict) for keyword in rule.get("keywords", [])[:32]]
+        targets.append(f'<tr><td><strong>{html.escape(str(target.get("host_id") or target.get("target") or ""))}</strong><br><span class="hint">{html.escape(str(target.get("target") or ""))}</span></td><td>{html.escape(str(target.get("cpu_warn_percent", 85)))}</td><td>{html.escape(str(target.get("ram_warn_percent", 85)))}</td><td>{html.escape(str(target.get("disk_warn_percent", 90)))}</td><td>{html.escape(", ".join(keywords) or "none")}</td></tr>')
+    incidents = []
+    for item in health.get("incidents", []) if isinstance(health, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        incident = item.get("incident") if isinstance(item.get("incident"), dict) else {}
+        plans = item.get("plans") if isinstance(item.get("plans"), list) else []
+        plan_titles = ", ".join(str(plan.get("title") or plan.get("plan_id") or "") for plan in plans[:3] if isinstance(plan, dict))
+        incidents.append(f'<tr><td>{_history_incident_link(incident.get("id"))}<br><strong>{html.escape(str(incident.get("title") or "Health incident"))}</strong><br><span class="pill">{html.escape(str(incident.get("state") or "open"))}</span></td><td>{html.escape(plan_titles or "—")}</td><td>{html.escape(_health_value(item.get("selection"), "plan_id"))}</td><td>{html.escape(_health_value(item.get("progress"), "step", "observed_state", "status"))}<br><span class="hint">{html.escape(_health_value(item.get("progress"), "evidence_refs", "evidence"))}</span></td><td>{html.escape(_health_value(item.get("verification"), "observed_state", "status", "healthy"))}<br><span class="hint">{html.escape(_health_value(item.get("verification"), "verification_id", "evidence"))}</span></td></tr>')
+    integration = health.get("integration", {}) if isinstance(health, dict) else {}
+    return f'''<section id="health-dashboard" class="health-hero"><div class="health-heading"><div><span class="eyebrow">Fleet operations</span><h2>Health dashboard</h2><p class="hint">Targets, active incidents, remediation receipts, and independent verification from the live NoticePlace store.</p></div><div class="status-card"><span class="pulse"></span>{html.escape(str(health.get("config_status") or "Monitor config unavailable"))}<br><small>NoticePlace {html.escape(str(integration.get("noticeplace") or "unknown"))} · monitor {html.escape(str(integration.get("fleet_monitor") or "unknown"))} · {html.escape(str(integration.get("targets") or 0))} targets</small></div></div><h3>Fleet targets</h3><table><tr><th>Target</th><th>CPU %</th><th>RAM %</th><th>Disk %</th><th>Log keywords</th></tr>{''.join(targets) or '<tr><td colspan="5">No fleet targets configured.</td></tr>'}</table><h3>Open health incidents</h3><table><tr><th>Incident</th><th>Latest plans</th><th>Selected</th><th>Progress</th><th>Verification</th></tr>{''.join(incidents) or '<tr><td colspan="5">No open health incidents.</td></tr>'}</table><details><summary>Edit monitor thresholds and log keywords</summary><p class="hint">Operator-owned file: <code>{html.escape(str(health.get("config_path") or ""))}</code>. Only bounded fleet targets, thresholds, and explicit log rules are accepted.</p><form class="health-config" method="post" action="/admin/health-settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><textarea name="config_json" rows="18" spellcheck="false">{html.escape(str(health.get("config_json") or '{"targets": []}'))}</textarea><label><input type="checkbox" name="run_monitor" value="true"> Run health monitor once after save</label><button>Save health settings</button></form></details></section>'''
+
+
 def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
+    health_dashboard = _health_dashboard(snapshot.get("health", {}), csrf)
     options = "".join(f'<option value="{severity}">{severity}</option>' for severity in SEVERITIES)
     project_rows = "".join(
         f'<tr><td>{html.escape(item["project"])}</td><td>{html.escape(item["max_severity"])}</td><td><code>{html.escape(item["fingerprint"])}</code></td><td><form method="post" action="/admin/projects/{urllib.parse.quote(item["project"], safe="")}/severity"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><select name="max_severity">{options}</select><button>Save level</button></form><form method="post" action="/admin/projects/{urllib.parse.quote(item["project"], safe="")}/revoke"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><button class="danger">Revoke</button></form></td></tr>'
@@ -280,8 +323,9 @@ function addStep() {
 document.getElementById('add-adapter-step').onclick = addStep;
 </script>"""
     return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NoticePlace Admin</title><style>
-body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:1100px;margin:auto;padding:42px 20px 80px}}h1{{font-size:2.4rem;margin:0 0 8px}}p,.hint{{color:#aeb9cf}}section{{margin-top:24px;padding:24px;border:1px solid #31466f;border-radius:18px;background:#101d33}}h2{{margin-top:0}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px 8px;border-top:1px solid #31466f;text-align:left;vertical-align:top}}input,select,button{{padding:9px;border-radius:8px;border:1px solid #405a88;background:#0b172b;color:#e9edf7}}button{{background:#796ef0;border:0;cursor:pointer}}.danger{{background:#8a3647}}form{{display:inline-flex;gap:7px;margin:3px 5px 3px 0;flex-wrap:wrap}}code{{color:#c4bcff}}@media(max-width:760px){{table{{display:block;overflow:auto}}}}
+body{{margin:0;background:radial-gradient(circle at 15% 0,#1c3152 0,#091222 38%);color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:1180px;margin:auto;padding:42px 20px 80px}}h1{{font-size:2.4rem;margin:0 0 8px}}p,.hint{{color:#aeb9cf}}section{{margin-top:24px;padding:24px;border:1px solid #31466f;border-radius:18px;background:#101d33}}h2{{margin-top:0}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px 8px;border-top:1px solid #31466f;text-align:left;vertical-align:top}}input,select,button,textarea{{padding:9px;border-radius:8px;border:1px solid #405a88;background:#0b172b;color:#e9edf7}}button{{background:#796ef0;border:0;cursor:pointer}}.danger{{background:#8a3647}}form{{display:inline-flex;gap:7px;margin:3px 5px 3px 0;flex-wrap:wrap}}code{{color:#c4bcff}}.health-hero{{border-color:#5577ad;background:linear-gradient(145deg,#172b47,#101d33)}}.health-heading{{display:flex;justify-content:space-between;gap:24px;align-items:start}}.eyebrow{{color:#8ddbd1;text-transform:uppercase;letter-spacing:.14em;font-size:.75rem}}.status-card{{padding:14px 18px;border:1px solid #42688a;border-radius:14px;background:#0b172b;min-width:260px}}.pulse{{display:inline-block;width:9px;height:9px;margin-right:8px;border-radius:50%;background:#56d6a3;box-shadow:0 0 14px #56d6a3}}.pill{{display:inline-block;padding:3px 8px;border-radius:999px;font-size:.75rem;background:#703645;color:#ffd7de}}details{{margin-top:20px;border-top:1px solid #31466f;padding-top:18px}}summary{{cursor:pointer;color:#c4bcff}}.health-config{{display:grid}}.health-config textarea{{width:min(100%,900px);font:13px ui-monospace,monospace}}@media(max-width:760px){{table{{display:block;overflow:auto}}.health-heading{{display:block}}.status-card{{margin-top:12px;min-width:0}}}}
 </style><body><main><div class="hint">Protected operator console</div><h1>NoticePlace</h1><p>Producer scopes, delivery chains, and Telegram topics. Delivery credentials remain server-only.</p>
+{health_dashboard}
 <section><h2>Add producer</h2><form method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
 <section><h2>Producer projects</h2><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></section>
 <section><h2>Automatic call escalation</h2><p class="hint">{calls_label}. This controls future Android phone, Telegram-call, and Matrix-call escalations. Text notifications are unchanged; an already active phone call cannot be interrupted.</p><form method="post" action="/admin/calls"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="enabled" value="{calls_action}"><button>{calls_button}</button></form></section>

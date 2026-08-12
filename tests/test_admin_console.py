@@ -31,7 +31,18 @@ class AdminConsoleTests(unittest.TestCase):
         self.routes.write_text("TELEGRAM_SEVERITY_ROUTES_JSON={}\n", encoding="utf-8")
         self.restarts = 0
         self.calls_override = root / "notification-center-calls.conf"
-        self.store = AdminConfigStore(self.primary, self.routes, root / "state", restart=self._restart, calls_override_path=self.calls_override, daemon_reload=lambda: None)
+        self.health_config = root / "health-incident-fleet.json"
+        self.health_config.write_text(json.dumps({"targets": [{
+            "target": "local", "host_id": "roomhacker-server-100", "source_id": "host:roomhacker-server-100",
+            "cpu_warn_percent": 85, "ram_warn_percent": 86, "disk_warn_percent": 90,
+            "log_rules": [{"backend": "journalctl", "keywords": ["ERROR", "timeout"], "max_lines": 200}],
+        }]}), encoding="utf-8")
+        self.monitor_starts = 0
+        self.store = AdminConfigStore(
+            self.primary, self.routes, root / "state", restart=self._restart,
+            calls_override_path=self.calls_override, daemon_reload=lambda: None,
+            health_config_path=self.health_config, start_health_monitor=self._start_health_monitor,
+        )
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), build_admin_handler(self.store, "test-csrf-secret"))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -45,6 +56,9 @@ class AdminConsoleTests(unittest.TestCase):
 
     def _restart(self) -> None:
         self.restarts += 1
+
+    def _start_health_monitor(self) -> None:
+        self.monitor_starts += 1
 
     def _request(self, method: str, path: str, form: dict[str, str] | None = None, *, admin: bool = True) -> tuple[int, bytes]:
         data = urllib.parse.urlencode(form).encode() if form is not None else None
@@ -86,6 +100,60 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertEqual("important", created["max_severity"])
         self.assertNotIn(token.encode(), json.dumps(snapshot).encode())
         self.assertNotIn(token, self.store.audit_path.read_text(encoding="utf-8"))
+
+    def test_health_dashboard_is_first_and_projects_live_workflow_state(self) -> None:
+        center = self.store._consumer_notification_center()
+        workflow = HealthWorkflow(center, callback_secret="x" * 32)
+        created = workflow.intake_signal("old-token", "dashboard-health", {
+            "project": "existing", "recipient": "me", "severity": "notice",
+            "title": "Disk pressure", "body": "Disk is high", "dedup_key": "health:dashboard:disk",
+            "source_id": "host:roomhacker-server-100", "host_id": "roomhacker-server-100", "signal_type": "disk",
+        })
+        workflow.attach_plans(created["incident_id"], "dashboard-plans", [
+            {"plan_id": "observe", "title": "Observe", "summary": "Observe", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Verify", "step": "verify"},
+        ])
+        workflow.select_plan(created["incident_id"], "dashboard-select", "repair", "operator")
+        workflow.record_progress(created["incident_id"], "dashboard-progress", plan_id="repair", step="restart worker", evidence_refs=["unit:worker"], progress_fingerprint="progress-1", actor="worker")
+        workflow.record_verification(created["incident_id"], "dashboard-verification", source_id="host:independent", verification_id="verify-1", observed_state="healthy", evidence_refs=["probe:https"], actor="verifier")
+
+        status, page = self._request("GET", "/admin/")
+        self.assertEqual(200, status)
+        self.assertLess(page.index(b'id="health-dashboard"'), page.index(b"Add producer"))
+        for expected in (b"roomhacker-server-100", b"Disk pressure", b"Repair", b"restart worker", b"healthy", b"ERROR", b"Monitor config loaded"):
+            self.assertIn(expected, page)
+
+    def test_health_settings_require_csrf_save_atomically_and_optionally_start_monitor(self) -> None:
+        status, page = self._request("GET", "/admin/")
+        self.assertEqual(200, status)
+        csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
+        original_inode = self.health_config.stat().st_ino
+        update = json.dumps({"targets": [{
+            "target": "local", "host_id": "roomhacker-server-100", "source_id": "host:roomhacker-server-100",
+            "cpu_warn_percent": 75, "ram_warn_percent": 76, "disk_warn_percent": 80,
+            "log_rules": [{"backend": "journalctl", "keywords": ["PANIC", "timeout"], "max_lines": 150}],
+        }]})
+        status, _ = self._request("POST", "/admin/health-settings", {"csrf": "wrong", "config_json": update})
+        self.assertEqual(400, status)
+        self.assertEqual(85, json.loads(self.health_config.read_text())["targets"][0]["cpu_warn_percent"])
+
+        status, _ = self._request("POST", "/admin/health-settings", {"csrf": csrf, "config_json": update, "run_monitor": "true"})
+        self.assertEqual(200, status)
+        saved = json.loads(self.health_config.read_text())
+        self.assertEqual(75.0, saved["targets"][0]["cpu_warn_percent"])
+        self.assertEqual(["PANIC", "timeout"], saved["targets"][0]["log_rules"][0]["keywords"])
+        self.assertNotEqual(original_inode, self.health_config.stat().st_ino)
+        self.assertEqual(1, self.monitor_starts)
+
+    def test_health_settings_reject_unbounded_schema_without_mutation(self) -> None:
+        before = self.health_config.read_bytes()
+        with self.assertRaisesRegex(Exception, "threshold"):
+            self.store.save_health_config({"targets": [{"target": "local", "cpu_warn_percent": 101, "log_rules": []}]}, "sso:operator")
+        self.assertEqual(before, self.health_config.read_bytes())
+        with self.assertRaisesRegex(Exception, "keywords"):
+            self.store.save_health_config({"targets": [{"target": "local", "log_rules": [{"backend": "journalctl", "keywords": ["x"] * 33}]}]}, "sso:operator")
+        self.assertEqual(before, self.health_config.read_bytes())
 
     def test_routes_are_validated_and_persisted_with_a_restart(self) -> None:
         self.store.set_routes({"critical": {"chat_id": "-100123", "message_thread_id": 42}}, "sso:operator")
