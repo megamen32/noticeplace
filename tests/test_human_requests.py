@@ -206,6 +206,22 @@ class HumanRequestHttpTests(unittest.TestCase):
         self.assertEqual("resolved", result["status"])
         self.assertEqual("later", result["value"])
 
+    def test_ask_human_uses_central_service_token_without_user_env_file(self) -> None:
+        """Use the running center's scoped token instead of a second MCP credential file."""
+        import os
+        from unittest.mock import patch
+
+        environment = {
+            "NOTIFY_CENTER_TOKENS_JSON": json.dumps({"token": {"project": "hermes", "max_severity": "critical"}}),
+            "NOTIFY_CENTER_PORT": str(self.server.server_port),
+            "NOTIFY_CENTER_PROJECT": "hermes",
+            "ASK_HUMAN_ALLOWED_ACTORS": "telegram:42",
+        }
+        cleared = {"NOTIFY_CENTER_TOKEN": "", "NOTIFY_CENTER_EVENT_URL": "", "NOTIFY_SECRETS_FILE": "/missing"}
+        with patch.dict(os.environ, {**environment, **cleared}, clear=False):
+            result = tool_ask_human({"message": "Central config?", "choices": [{"label": "Yes", "value": "yes"}, {"label": "No", "value": "no"}], "wait_seconds": 0})
+        self.assertEqual("pending", result["status"])
+
     def test_ask_human_is_the_first_canonical_agent_tool(self) -> None:
         """Make the preferred human interaction obvious during MCP discovery."""
         tools = tool_specs()

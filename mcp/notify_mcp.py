@@ -182,9 +182,23 @@ def notify_center_config() -> Dict[str, str]:
     """Load a project-scoped producer identity, never Telegram credentials."""
     secrets_file = Path(os.environ.get("NOTIFY_SECRETS_FILE", "~/.config/secrets/notifier.env")).expanduser()
     file_env = parse_env_file(secrets_file)
+    project = os.environ.get("NOTIFY_CENTER_PROJECT") or file_env.get("NOTIFY_CENTER_PROJECT") or "hermes"
     token = os.environ.get("NOTIFY_CENTER_TOKEN") or file_env.get("NOTIFY_CENTER_TOKEN") or ""
+    tokens_json = os.environ.get("NOTIFY_CENTER_TOKENS_JSON", "").strip()
+    if not token and tokens_json:
+        try:
+            configured_tokens = json.loads(tokens_json)
+        except json.JSONDecodeError as error:
+            raise ValueError("NOTIFY_CENTER_TOKENS_JSON must be valid JSON") from error
+        if isinstance(configured_tokens, dict):
+            token = next((
+                str(candidate)
+                for candidate, scope in configured_tokens.items()
+                if isinstance(scope, dict) and str(scope.get("project") or "") == project
+            ), "")
     event_url = os.environ.get("NOTIFY_CENTER_EVENT_URL") or file_env.get("NOTIFY_CENTER_EVENT_URL") or ""
-    project = os.environ.get("NOTIFY_CENTER_PROJECT") or file_env.get("NOTIFY_CENTER_PROJECT") or "notify-mcp"
+    if not event_url and tokens_json:
+        event_url = f"http://127.0.0.1:{os.environ.get('NOTIFY_CENTER_PORT', '8091')}/v1/events"
     recipient = os.environ.get("NOTIFY_CENTER_RECIPIENT") or file_env.get("NOTIFY_CENTER_RECIPIENT") or "me"
     if not token or not event_url:
         raise ValueError(f"NOTIFY_CENTER_EVENT_URL/NOTIFY_CENTER_TOKEN not configured in env or {secrets_file}")
