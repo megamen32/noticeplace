@@ -105,11 +105,13 @@ class DirectHealthRemediationAdapter:
         direct_profile = {
             "url": os.environ.get("NOTIFY_HEALTH_REMEDIATION_URL", "http://127.0.0.1:18787/api/sessions/new-or-resume"),
             "harness": "opencode",
-            "name": "health_remediation_direct",
+            "name": "health_remediation_direct_v2",
             "cwd": os.environ.get("NOTIFY_HEALTH_REMEDIATION_CWD", "/home/roomhacker/ServersAdministartion"),
-            "mode": "queue",
-            "instruction": "Apply only the selected health remediation plan and report useful progress.",
-            "model": "openai-codex/gpt-5.6-luna",
+            "mode": "sync",
+            "instruction": "Apply only the selected health remediation plan and report useful progress. Return status=completed when the plan itself finished; report the independently observed source separately as observed_state=healthy|degraded|unknown.",
+            # Proven fallback while configured Luna routes fail live with
+            # credential, unsupported-model, or timeout errors.
+            "model": "minimax-coding-plan/MiniMax-M2.5-highspeed",
             "reasoning": "high",
             "topic": "health",
             "poll_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_POLL_SECONDS", "1"),

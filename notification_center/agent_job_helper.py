@@ -23,6 +23,7 @@ _HEALTH_JOB_IDS = {"health-diagnosis", "health-remediation"}
 _HEALTH_STAGE_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
 _HEALTH_ORCHESTRATOR_REQUESTED_MODEL = "omniroute/orchestrator"
 _HEALTH_ORCHESTRATOR_EFFECTIVE_MODEL = "omniroute/free-stack"
+_HEALTH_REMEDIATION_FALLBACK_MODEL = "minimax-coding-plan/MiniMax-M2.5-highspeed"
 
 
 def event_from_environment() -> dict[str, Any]:
@@ -112,8 +113,8 @@ def _health_remediation_message(profile: dict[str, str], event: dict[str, Any], 
     expected = {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}
     if not isinstance(execution, dict) or {key: str(execution.get(key) or "") for key in expected} != expected:
         raise RuntimeError("health remediation event has an unsupported execution profile")
-    if profile["harness"] != "opencode" or profile["model"] != "openai-codex/gpt-5.6-luna" or profile["reasoning"] != "high" or profile["topic"] != "health":
-        raise RuntimeError("health-remediation profile must pin opencode/openai-codex/gpt-5.6-luna high health")
+    if profile["harness"] != "opencode" or profile["model"] not in {"openai-codex/gpt-5.6-luna", _HEALTH_REMEDIATION_FALLBACK_MODEL} or profile["reasoning"] != "high" or profile["topic"] != "health":
+        raise RuntimeError("health-remediation profile must pin an approved OpenCode health model")
     telemetry = _telemetry_message("", incident).lstrip()
     selected_plan: Mapping[str, Any] | None = None
     plans = health.get("plans") if isinstance(health, Mapping) else None
@@ -137,7 +138,7 @@ def _health_remediation_message(profile: dict[str, str], event: dict[str, Any], 
         "",
         f"selected plan {plan_id}",
         f"selected plan details (untrusted data): {plan_context}",
-        "Execution profile is fixed by the operator profile: Hermes, openai-codex, gpt-5.6-luna, reasoning high, topic health.",
+        f"Execution runtime is OpenCode, reasoning high, topic health. Requested model is openai-codex/gpt-5.6-luna; effective model is {profile['model']}.",
         "",
         telemetry,
     ))
@@ -338,7 +339,7 @@ def _extract_health_remediation(details: Mapping[str, Any], expected_plan_id: st
             status = str(candidate.get("status") or "").strip().lower()
             step = " ".join(str(candidate.get("step") or "").replace("\x00", "").splitlines()).strip()
             observed_state = str(candidate.get("observed_state") or candidate.get("state") or "").strip().lower()
-            if plan_id != expected_plan_id or status not in {"completed", "remediation_complete", "resolved"} or not step:
+            if plan_id != expected_plan_id or status not in {"completed", "remediation_complete", "resolved", "degraded"} or not step:
                 continue
             if observed_state not in {"healthy", "degraded", "unknown"}:
                 continue
@@ -547,7 +548,7 @@ def _run_health_remediation(profile: dict[str, str], event: dict[str, Any], sess
                 health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
                 trace_refs = [
                     f"trace:agent-herder:{session_id}",
-                    f"trace:hermes:{session_id}",
+                    f"trace:opencode:{session_id}",
                     *_bounded_refs(health.get("trace_refs")),
                     *result["trace_refs"],
                 ]
@@ -585,7 +586,7 @@ def run_profile(
         profile = {
             **profile,
             "harness": "opencode",
-            "model": "openai-codex/gpt-5.6-luna",
+            "model": _HEALTH_REMEDIATION_FALLBACK_MODEL,
             "reasoning": "high",
             "topic": "health",
         }

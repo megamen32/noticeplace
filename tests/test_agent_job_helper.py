@@ -157,11 +157,12 @@ class AgentJobHelperTests(unittest.TestCase):
                 runner=runner,
             )
             self.assertEqual("opencode-health-1", result["session_id"])
-            self.assertEqual("openai-codex/gpt-5.6-luna", result["model"])
+            self.assertEqual("minimax-coding-plan/MiniMax-M2.5-highspeed", result["model"])
             body = json.loads(requests[0].data)
             self.assertEqual("opencode", body["harness"])
-            self.assertEqual("openai-codex/gpt-5.6-luna", body["model"])
+            self.assertEqual("minimax-coding-plan/MiniMax-M2.5-highspeed", body["model"])
             self.assertIn("selected plan repair", body["message"])
+            self.assertIn("Execution runtime is OpenCode", body["message"])
 
     def test_health_remediation_waits_for_terminal_receipt_and_returns_verification(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -278,6 +279,16 @@ class AgentJobHelperTests(unittest.TestCase):
         })}]}
         self.assertIsNone(_extract_health_remediation(details, "repair"))
 
+    def test_health_remediation_accepts_completed_plan_with_degraded_source(self) -> None:
+        details = {"messages": [{"role": "assistant", "text": json.dumps({
+            "status": "degraded", "plan_id": "repair", "step": "validate keywords", "observed_state": "degraded",
+            "verification_id": "verify-live", "source_id": "host:vusa", "source_fingerprint": "fp-live",
+            "verifier_id": "health-monitor-independent", "evidence_refs": ["probe:live"], "trace_refs": ["trace:opencode:live"],
+        })}]}
+        receipt = _extract_health_remediation(details, "repair")
+        self.assertIsNotNone(receipt)
+        self.assertEqual("degraded", receipt["observed_state"])
+
     def test_health_remediation_canonicalizes_legacy_profile_to_opencode(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()
@@ -319,7 +330,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 )
             body = json.loads(requests[0].data)
             self.assertEqual("opencode", body["harness"])
-            self.assertEqual("openai-codex/gpt-5.6-luna", body["model"])
+            self.assertEqual("minimax-coding-plan/MiniMax-M2.5-highspeed", body["model"])
             self.assertEqual("opencode", result["harness"])
 
     def test_profile_owns_target_identity_and_event_is_only_telemetry(self) -> None:
