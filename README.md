@@ -1,47 +1,26 @@
 # NoticePlace
 
-[Русский](README.ru.md) · [中文](README.zh.md) · [GitHub](https://github.com/megamen32/noticeplace) · [Docs](docs/)
+[Русский](README.ru.md) · [中文](README.zh.md) · [Docs](docs/)
 
-![NoticePlace is a Universal Outbox for AI-to-human attention](assets/hero-universal-outbox.png)
+![Agent Herder and NoticePlace in production](docs/assets/agent-herder-live.png)
 
-> Universal Outbox for AI-to-human attention.
+> Your agents keep working. You get the decision and the result in Telegram.
 
-AI does not stop working because it needs your answer. NoticePlace keeps the
-work running and sends important attention to calls, chats, messages, email,
-or any other configured channel. Your separate [Universal Inbox](https://github.com/megamen32/universal-inbox)
-can receive and organize the incoming human-facing conversation.
+NoticePlace turns failures and long agent jobs into one visible flow: detect → diagnose → offer three plans → let a human choose → run Codex through Agent Herder → verify independently → report the outcome.
 
-- One universal inbox for AI-to-human attention.
-- Calls, chats, messages, email, and other configured adapters.
-- AI can continue its work while NoticePlace escalates what matters.
-- Project-scoped producer events with severity limits.
-- Optional acknowledgement/resolution waiting for Python and Node.js services.
-- Protected operator console for producer scopes and Telegram topic routes.
-- Optional signed GPTAdmin agent jobs selected only from each producer token's
-  allowlist, with durable idempotency and terminal result tracking.
+```mermaid
+flowchart LR
+  H["Health signal"] --> I["Deduplicated incident"] --> D["AI diagnosis"] --> P["3 remediation plans"] --> T["Telegram choice"] --> A["Agent Herder + Codex"] --> V["Independent verification"] --> R["Telegram receipt"]
+```
 
-The public center hostname has one deliberate entry behavior: `GET /` returns
-`303 See Other` to `/admin/`. The admin UI is not the producer API; nginx first
-checks the existing `auth.bezrabotnyi.com` session and only then proxies the
-request to the loopback admin service. The API and health endpoints remain
-Bearer-authenticated separately.
-
-## HTTP surface
-
-- `POST /v1/events` — project-scoped event intake (`202 Accepted`).
-- `GET /v1/incidents/{incident_id}` — read an incident with its project token.
-- `POST /v1/incidents/{incident_id}/ack|resolve|snooze` — explicit incident
-  actions with that token.
-- `GET /health` — dedicated health-probe Bearer token; returns
-  `notify.health.v1` JSON or `503` when readiness is degraded.
-- `POST /mcp` — HTTP JSON-RPC MCP transport with its own `NOTIFY_MCP_TOKEN`.
-- `/admin/` — SSO/cookie-protected operator console; it is not a public API
-  credential boundary.
-
-Delivery is durable and at-least-once: stable keys prevent routine duplicate
-scheduling, but a worker crash after claiming a delivery can cause a retry and
-therefore a duplicate external send. A successful adapter response means the
-adapter accepted the request, not that a carrier or human completed a call.
+- Host CPU, RAM, disk, failed services, logs and keywords
+- Durable incidents, deduplication, retries and trace IDs
+- Human choice with signed Telegram buttons
+- Codex, OpenCode, Hermes and GPTAdmin agent jobs
+- Useful-progress supervision, not heartbeat-only checks
+- Independent verification before resolution
+- Telegram, Matrix calls, Android calls and extensible delivery adapters
+- AskHuman MCP, producer SDKs and protected operator console
 
 ## Install
 
@@ -49,34 +28,6 @@ adapter accepted the request, not that a carrier or human completed a call.
 codex mcp add notify -- npx -y github:megamen32/noticeplace
 ```
 
-For production service install, upgrade, rollback, or removal, use the canonical
-[deployment lifecycle](deploy/README.md).
+See the [complete feature list](docs/features.md), [production deployment](deploy/README.md), [producer API](docs/producer.md), and [agent jobs](docs/gptadmin-agent-jobs.md).
 
-## Production events
-
-```bash
-# Python
-pip install 'git+https://github.com/megamen32/noticeplace.git#subdirectory=python'
-
-# Node.js
-npm install github:megamen32/noticeplace
-```
-
-Create a scoped producer token in the operator console, store it in the
-project's secret store, then follow the detailed guide. `202 Accepted` means
-the event was stored; an optional wait ends only at `acknowledged` or
-`resolved`.
-
-## Learn more
-
-- [Producer SDK: curl, Python, Node.js and systemd](docs/producer-sdk.md)
-- [Operator console](docs/admin.md)
-- [Allowlisted GPTAdmin agent jobs](docs/gptadmin-agent-jobs.md)
-- [Mandatory full-cycle supertest](docs/mandatory-e2e-supertest.md)
-- [MCP server](docs/mcp.md)
-- [Notify CLI and AI skill](https://github.com/megamen32/notify)
-- [AI skill](docs/skill.md)
-
-## License
-
-[MIT](LICENSE)
+MIT

@@ -1,14 +1,26 @@
 # NoticePlace
 
-[English](README.md) · **Русский** · [中文](README.zh.md) · [Документация](docs/)
+[English](README.md) · [中文](README.zh.md) · [Документация](docs/)
 
-![NoticePlace — Universal Outbox для связи AI с человеком](assets/hero-universal-outbox.png)
+![Agent Herder и NoticePlace в production](docs/assets/agent-herder-live.png)
 
-> Universal Outbox для AI-to-human attention.
+> Агенты продолжают работать. Решение и результат приходят вам в Telegram.
 
-AI продолжает работу, пока NoticePlace доставляет важное через звонок, чат,
-сообщение, email или другой настроенный канал. Для обратного потока и входящих
-сообщений используется отдельный [Universal Inbox](https://github.com/megamen32/universal-inbox).
+NoticePlace превращает сбои и долгие агентские задачи в один понятный поток: обнаружить → диагностировать → предложить три плана → получить выбор человека → запустить Codex через Agent Herder → независимо проверить → сообщить результат.
+
+```mermaid
+flowchart LR
+  H["Сигнал здоровья"] --> I["Инцидент без дублей"] --> D["AI-диагноз"] --> P["3 плана"] --> T["Выбор в Telegram"] --> A["Agent Herder + Codex"] --> V["Независимая проверка"] --> R["Результат в Telegram"]
+```
+
+- CPU, RAM, диск, failed services, логи и ключевые слова
+- Инциденты, дедупликация, повторы и trace ID
+- Подписанные кнопки выбора в Telegram
+- Codex, OpenCode, Hermes и GPTAdmin jobs
+- Supervisor полезного прогресса, а не heartbeat
+- Закрытие только после независимой проверки
+- Telegram, Matrix-звонки, Android-звонки и расширяемые адаптеры
+- AskHuman MCP, SDK продюсера и защищённая админка
 
 ## Установка
 
@@ -16,15 +28,6 @@ AI продолжает работу, пока NoticePlace доставляет 
 codex mcp add notify -- npx -y github:megamen32/noticeplace
 ```
 
-Для маленького SSH/process watcher используйте отдельный публичный проект
-[Notify](https://github.com/megamen32/notify) — маленький CLI и AI skill.
+[Все функции](docs/features.md) · [Production deploy](deploy/README.md) · [API](docs/producer.md) · [Agent jobs](docs/gptadmin-agent-jobs.md)
 
-## Быстрый старт
-
-1. Создайте project-scoped token в защищённой админке.
-2. Отправьте событие на `POST /v1/events`.
-3. Настройте topics, adapters и live escalation в `/admin/`.
-
-Подробнее: [API](docs/notification-center-mvp.md), [админка](docs/admin.md),
-[обязательный супертест полного цикла](docs/mandatory-e2e-supertest.md),
-[SDK](docs/producer-sdk.md), [MCP](docs/mcp.ru.md).
+MIT
