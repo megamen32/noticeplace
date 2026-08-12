@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 from notification_center.core import DEFAULT_CONSUMER_QUIET_HOURS
 
 SERVER_NAME = "notify-mcp"
-SERVER_VERSION = "1.3.0"
+SERVER_VERSION = "1.2.0"
 NOTIFY_BIN = Path(os.environ.get("NOTIFY_BIN", "/usr/local/bin/notify"))
 STATE_DIR = Path(os.environ.get("NOTIFY_MCP_STATE_DIR", "~/.local/state/notify-mcp")).expanduser()
 JOBS_DIR = STATE_DIR / "jobs"

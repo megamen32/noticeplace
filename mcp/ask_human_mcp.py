@@ -15,4 +15,5 @@ from mcp import notify_mcp
 
 if __name__ == "__main__":
     notify_mcp.SERVER_NAME = "ask-human"
+    notify_mcp.SERVER_VERSION = "1.3.0"
     notify_mcp.main()
