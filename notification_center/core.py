@@ -1438,11 +1438,28 @@ class NotificationCenter:
                     "agent-herder",
                 )
             if self._health_text(agent_receipt.get("observed_state") or "", 32) == "degraded":
+                outcome = {
+                    "plan_id": selected_plan,
+                    "observed_state": "degraded",
+                    "step": progress_step,
+                    "progress_fingerprint": progress_fingerprint,
+                    "evidence_refs": evidence_refs,
+                    "trace_refs": trace_refs[:16],
+                }
+                with self._lock, self._connection:
+                    outcome_delivery_id = self._schedule_delivery(
+                        incident_id,
+                        "telegram.main",
+                        f"health.remediation_degraded:{selected_plan}:{progress_fingerprint}",
+                        time.time(),
+                        {"health_outcome": outcome},
+                    )
                 return {
                     "accepted": True,
                     "resolved": False,
                     "reason": "selected remediation plan completed; source remains degraded",
                     "progress": progress,
+                    "outcome_delivery_id": outcome_delivery_id,
                 }
             verification = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["verification"])
             verification_actor = self._health_text(verification.get("actor") or "", 128) if isinstance(verification, Mapping) else ""
@@ -2353,6 +2370,8 @@ class NotificationCenter:
                 target = None
             if isinstance(target, dict):
                 payload["target"] = target
+                if isinstance(target.get("health_outcome"), dict):
+                    payload["health_outcome"] = self._health_value(target["health_outcome"])
         if str(incident.get("event_type") or "").startswith("health."):
             original = self._health_original_event(str(incident["id"]))
             if isinstance(original, dict):
@@ -2368,7 +2387,7 @@ class NotificationCenter:
                         if self._health_text(ref, 128)
                     ],
                 }
-            latest_plans = self.latest_health_event(str(incident["id"]), "health.plans_attached")
+            latest_plans = None if isinstance(payload.get("health_outcome"), dict) else self.latest_health_event(str(incident["id"]), "health.plans_attached")
             if latest_plans is not None:
                 plan_payload = latest_plans["payload"]
                 plans = plan_payload.get("plans")

@@ -238,6 +238,7 @@ class TelegramSender:
         note_block = f"\n\nNote: {note}" if note else ""
         health_plans = payload.get("health_plans")
         choice_options = payload.get("choices")
+        health_outcome = payload.get("health_outcome")
         plan_block = ""
         if isinstance(health_plans, list) and health_plans:
             plan_lines = [
@@ -247,7 +248,18 @@ class TelegramSender:
             ]
             if plan_lines:
                 plan_block = "\n\nPlans:\n" + "\n".join(plan_lines)
-        text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nIncident: {incident['id']}"
+        if isinstance(health_outcome, dict) and str(health_outcome.get("observed_state") or "") == "degraded":
+            plan_id = str(health_outcome.get("plan_id") or "selected plan")[:64]
+            step = str(health_outcome.get("step") or "completed")[:128]
+            text = (
+                f"HEALTH · {incident['project']}\n\n"
+                f"Plan {plan_id} completed, but the source is still degraded.\n\n"
+                f"Completed step: {step}\n"
+                "The incident remains open. Choose or generate a remediation plan that fixes the remaining signal."
+                f"\n\nIncident: {incident['id']}"
+            )
+        else:
+            text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nIncident: {incident['id']}"
         destination = telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes)
         mode = telegram_mode(incident)
         if self._active_modes is not None and mode not in self._active_modes:
@@ -258,7 +270,9 @@ class TelegramSender:
             raise RuntimeError(f"Telegram destination is not configured: {mode}")
         request_data: dict[str, str] = {**destination, "text": text, "disable_web_page_preview": "true"}
         health_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
-        if self._action_codec is not None:
+        if isinstance(health_outcome, dict):
+            pass
+        elif self._action_codec is not None:
             if isinstance(health_plans, list) and health_plans:
                 health_keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
                 request_data["reply_markup"] = json.dumps(health_keyboard, separators=(",", ":"))

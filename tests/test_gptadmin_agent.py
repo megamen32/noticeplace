@@ -637,6 +637,15 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertFalse(result["resolved"])
         self.assertEqual("open", center.get_incident(created["incident_id"])["state"])
         self.assertIsNone(center.latest_health_event(created["incident_id"], "health.resolved"))
+        outcome_delivery = center._connection.execute(
+            "SELECT status, target_json FROM deliveries WHERE delivery_key = ?",
+            (f"{created['incident_id']}:telegram.main:health.remediation_degraded:repair:progress-degraded",),
+        ).fetchone()
+        self.assertIsNotNone(outcome_delivery)
+        self.assertEqual("queued", outcome_delivery["status"])
+        target = json.loads(outcome_delivery["target_json"])["health_outcome"]
+        self.assertEqual("repair", target["plan_id"])
+        self.assertEqual("degraded", target["observed_state"])
 
     def test_heartbeat_only_running_progress_is_not_recorded(self) -> None:
         center = NotificationCenter(

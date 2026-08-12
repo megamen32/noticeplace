@@ -122,6 +122,35 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertEqual(3, receipt["health_button_count"])
         self.assertEqual(3, receipt["health_signed_callback_count"])
 
+    def test_telegram_sender_reports_completed_plan_that_remains_degraded(self) -> None:
+        codec = TelegramActionCodec("x" * 32)
+        sender = TelegramSender("bot-token", "-100123", action_codec=codec, center=self.center)
+        self.center.set_runtime_setting("telegram_topics_json", json.dumps({"health": {"chat_id": "-100123", "message_thread_id": 77}}))
+        captured: dict[str, str] = {}
+
+        class FakeResponse:
+            status = 200
+            def __enter__(self) -> "FakeResponse": return self
+            def __exit__(self, *_exc: object) -> None: return None
+            def read(self) -> bytes: return json.dumps({"ok": True, "result": {"message_id": 2}}).encode()
+
+        def fake_urlopen(request: object, timeout: float = 0) -> FakeResponse:
+            data = urllib.parse.parse_qs(getattr(request, "data").decode())
+            captured.update({key: values[0] for key, values in data.items()})
+            return FakeResponse()
+
+        with patch("notification_center.http_api.urllib.request.urlopen", fake_urlopen):
+            sender.send({
+                "incident": self._incident(),
+                "delivery": {"delivery_key": "degraded-result"},
+                "health_outcome": {"plan_id": "plan-003", "observed_state": "degraded", "step": "validate keywords"},
+            })
+
+        self.assertIn("Plan plan-003 completed", captured["text"])
+        self.assertIn("still degraded", captured["text"])
+        self.assertEqual("77", captured["message_thread_id"])
+        self.assertNotIn("reply_markup", captured)
+
     def test_telegram_sender_fails_closed_without_health_callback_codec(self) -> None:
         sender = TelegramSender(
             "bot-token",
