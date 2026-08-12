@@ -9,7 +9,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 rm -rf "$DIST"
 mkdir -p "$DIST" "$TMP/$NAME"
-cp -a README*.md LICENSE package.json bin mcp npm docs assets skill "$TMP/$NAME/"
+cp -a README*.md LICENSE package.json bin mcp npm docs deploy assets skill "$TMP/$NAME/"
 find "$TMP/$NAME" -name '__pycache__' -type d -prune -exec rm -rf {} +
 find "$TMP/$NAME" -name '*.pyc' -delete
 cat > "$TMP/$NAME/install.sh" <<'INSTALL'

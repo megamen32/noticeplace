@@ -49,6 +49,9 @@ adapter accepted the request, not that a carrier or human completed a call.
 codex mcp add notify -- npx -y github:megamen32/noticeplace
 ```
 
+For production service install, upgrade, rollback, or removal, use the canonical
+[deployment lifecycle](deploy/README.md).
+
 ## Production events
 
 ```bash

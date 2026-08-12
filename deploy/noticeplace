@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+DESTDIR=${NOTICEPLACE_DESTDIR:-}
+DESTDIR=${DESTDIR%/}
+
+at_root() {
+    printf '%s%s' "$DESTDIR" "$1"
+}
+
+APP_ROOT=$(at_root /opt/noticeplace)
+RELEASE_ROOT=$(at_root /opt/noticeplace-releases)
+SYSTEMD_ROOT=$(at_root /etc/systemd/system)
+ETC_ROOT=$(at_root /etc)
+STATE_ROOT=$(at_root /var/lib/noticeplace-deploy)
+PRIMARY_STATE=$(at_root /var/lib/notification-center)
+ADMIN_STATE=$(at_root /var/lib/notification-center-admin)
+
+NO_START=0
+YES=0
+
+usage() {
+    cat <<'EOF'
+Usage: sudo ./deploy/noticeplace COMMAND [OPTIONS]
+
+Commands:
+  install       Install a versioned release; start when configuration is ready
+  upgrade       Install a new release while preserving configuration and data
+  rollback      Switch to the previous managed release
+  start         Enable and start the two persistent NoticePlace services
+  stop          Stop the two persistent NoticePlace services
+  status        Show the managed release, configuration and service state
+  uninstall     Remove runtime wiring; preserve configuration, data and releases
+  purge --yes   Remove NoticePlace configuration, data, releases and managed user
+
+Options:
+  --no-start    Do not start or restart services after install/upgrade/rollback
+
+For isolated packaging tests, NOTICEPLACE_DESTDIR stages all files below a
+temporary root and skips user/systemd operations.
+EOF
+}
+
+die() {
+    printf 'noticeplace-deploy: %s\n' "$*" >&2
+    exit 1
+}
+
+need_root() {
+    if [[ -z "$DESTDIR" && ${EUID:-$(id -u)} -ne 0 ]]; then
+        die "run this command as root (for example: sudo ./deploy/noticeplace $COMMAND)"
+    fi
+}
+
+atomic_link() {
+    local target=$1 link=$2 temporary="${2}.new.$$"
+    mkdir -p -- "$(dirname -- "$link")"
+    ln -s -- "$target" "$temporary"
+    mv -Tf -- "$temporary" "$link"
+}
+
+release_id() {
+    local revision=source
+    if revision=$(git -C "$SOURCE_ROOT" rev-parse --short=12 HEAD 2>/dev/null); then
+        :
+    elif [[ -r "$SOURCE_ROOT/.noticeplace-release" ]]; then
+        revision=$(sed -n 's/^revision=//p' "$SOURCE_ROOT/.noticeplace-release" | head -n 1)
+        revision=${revision:-source}
+    fi
+    printf '%s-%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "$revision" "$$"
+}
+
+stage_release() {
+    local id=$1 release="$RELEASE_ROOT/$1"
+    mkdir -p -- "$RELEASE_ROOT" "$release"
+    if [[ ${NOTICEPLACE_SOURCE_MODE:-git} == git ]] && git -C "$SOURCE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git -C "$SOURCE_ROOT" archive --format=tar HEAD | tar -C "$release" -xf -
+    else
+        tar -C "$SOURCE_ROOT" \
+            --exclude='./.git' \
+            --exclude='./.agents' \
+            --exclude='./graphify-out' \
+            --exclude='./dist' \
+            --exclude='./node_modules' \
+            --exclude='*/__pycache__' \
+            --exclude='*.pyc' \
+            -cf - . | tar -C "$release" -xf -
+    fi
+    cat >"$release/.noticeplace-release" <<EOF
+release=$id
+revision=${id#*-}
+installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+    printf '%s' "$release"
+}
+
+install_if_missing() {
+    local source=$1 target=$2 mode=$3
+    if [[ ! -e "$target" ]]; then
+        install -D -m "$mode" "$source" "$target"
+    fi
+}
+
+install_units() {
+    local release=$1
+    install -D -m 0644 "$release/deploy/notification-center.service" "$SYSTEMD_ROOT/notification-center.service"
+    install -D -m 0644 "$release/deploy/notification-center-admin.service" "$SYSTEMD_ROOT/notification-center-admin.service"
+    install -D -m 0644 "$release/deploy/notification-center-admin-apply@.service" "$SYSTEMD_ROOT/notification-center-admin-apply@.service"
+    install -D -m 0644 "$release/deploy/notification-center-telegram-route.conf" "$SYSTEMD_ROOT/notification-center.service.d/20-noticeplace-route.conf"
+    install -D -m 0644 "$release/deploy/notification-center-severity-policy.conf" "$SYSTEMD_ROOT/notification-center.service.d/30-noticeplace-severity.conf"
+}
+
+install_configuration() {
+    local release=$1
+    install_if_missing "$release/deploy/notification-center.env.example" "$ETC_ROOT/notification-center.env" 0600
+    install_if_missing "$release/deploy/notification-center-admin.env.example" "$ETC_ROOT/notification-center-admin.env" 0600
+    install_if_missing "$release/deploy/notification-center-telegram-routes.env" "$ETC_ROOT/notification-center-telegram-routes.env" 0600
+}
+
+ensure_runtime_owner() {
+    [[ -n "$DESTDIR" ]] && return
+    if ! id notification-center >/dev/null 2>&1; then
+        useradd --system --home-dir /var/lib/notification-center --shell /usr/sbin/nologin notification-center
+        mkdir -p -- "$STATE_ROOT"
+        touch "$STATE_ROOT/notification-center-user-created"
+    fi
+}
+
+configuration_ready() {
+    local file
+    for file in "$ETC_ROOT/notification-center.env" "$ETC_ROOT/notification-center-admin.env"; do
+        [[ -r "$file" ]] || return 1
+        if sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$file" | grep -q 'replace-with'; then
+            return 1
+        fi
+    done
+}
+
+daemon_reload() {
+    [[ -n "$DESTDIR" ]] || systemctl daemon-reload
+}
+
+start_services() {
+    if [[ -n "$DESTDIR" ]]; then
+        return
+    fi
+    configuration_ready || die "configuration contains placeholders; edit /etc/notification-center*.env, then run deploy/noticeplace start"
+    systemctl enable notification-center.service notification-center-admin.service
+    systemctl restart notification-center.service notification-center-admin.service
+}
+
+stop_services() {
+    [[ -n "$DESTDIR" ]] || systemctl stop notification-center-admin.service notification-center.service
+}
+
+install_release() {
+    need_root
+    ensure_runtime_owner
+
+    local id release previous=
+    id=$(release_id)
+    release=$(stage_release "$id")
+
+    if [[ -L "$APP_ROOT" ]]; then
+        previous=$(readlink "$APP_ROOT")
+    elif [[ -e "$APP_ROOT" ]]; then
+        previous="$RELEASE_ROOT/legacy-$(date -u +%Y%m%dT%H%M%SZ)"
+        mv -- "$APP_ROOT" "$previous"
+        printf 'Preserved legacy deployment: %s\n' "$previous"
+    fi
+
+    if [[ -n "$previous" ]]; then
+        atomic_link "$previous" "$RELEASE_ROOT/previous"
+    fi
+    atomic_link "$release" "$APP_ROOT"
+    mkdir -p -- "$STATE_ROOT"
+    printf '%s\n' "$release" >"$STATE_ROOT/current-release"
+
+    install_units "$release"
+    install_configuration "$release"
+    daemon_reload
+
+    if (( NO_START )); then
+        printf 'Installed NoticePlace release %s (services not restarted).\n' "$id"
+    elif configuration_ready; then
+        if ! start_services; then
+            if [[ -n "$previous" ]]; then
+                atomic_link "$previous" "$APP_ROOT"
+                install_units "$previous"
+                daemon_reload
+                [[ -n "$DESTDIR" ]] || systemctl restart notification-center.service notification-center-admin.service || true
+            fi
+            die "new release failed to start; previous release restored"
+        fi
+        printf 'Installed and started NoticePlace release %s.\n' "$id"
+    else
+        printf 'Installed NoticePlace release %s.\n' "$id"
+        printf 'Services were not started because new configuration still contains placeholders.\n'
+        printf 'Edit /etc/notification-center.env and /etc/notification-center-admin.env, then run: deploy/noticeplace start\n'
+    fi
+}
+
+rollback_release() {
+    need_root
+    [[ -L "$RELEASE_ROOT/previous" ]] || die "no previous managed release is available"
+    local previous current=
+    previous=$(readlink "$RELEASE_ROOT/previous")
+    [[ -e "$previous" ]] || die "previous release is missing: $previous"
+    if [[ -L "$APP_ROOT" ]]; then
+        current=$(readlink "$APP_ROOT")
+    fi
+    atomic_link "$previous" "$APP_ROOT"
+    [[ -z "$current" ]] || atomic_link "$current" "$RELEASE_ROOT/previous"
+    install_units "$previous"
+    daemon_reload
+    (( NO_START )) || start_services
+    printf 'Rolled back NoticePlace to %s.\n' "$previous"
+}
+
+show_status() {
+    if [[ -L "$APP_ROOT" ]]; then
+        printf 'managed release: %s\n' "$(readlink "$APP_ROOT")"
+    else
+        printf 'managed release: not installed\n'
+    fi
+    if [[ -r "$ETC_ROOT/notification-center.env" && -r "$ETC_ROOT/notification-center-admin.env" ]]; then
+        printf 'configuration: present\n'
+    else
+        printf 'configuration: incomplete\n'
+    fi
+    if [[ -n "$DESTDIR" ]]; then
+        printf 'services: staged root (not queried)\n'
+    else
+        printf 'notification-center.service: %s\n' "$(systemctl is-active notification-center.service 2>/dev/null || true)"
+        printf 'notification-center-admin.service: %s\n' "$(systemctl is-active notification-center-admin.service 2>/dev/null || true)"
+    fi
+}
+
+uninstall_runtime() {
+    need_root
+    if [[ -z "$DESTDIR" ]]; then
+        systemctl disable --now notification-center-admin.service notification-center.service 2>/dev/null || true
+    fi
+    rm -f -- \
+        "$SYSTEMD_ROOT/notification-center.service" \
+        "$SYSTEMD_ROOT/notification-center-admin.service" \
+        "$SYSTEMD_ROOT/notification-center-admin-apply@.service" \
+        "$SYSTEMD_ROOT/noticeplace.service" \
+        "$SYSTEMD_ROOT/noticeplace-admin.service" \
+        "$SYSTEMD_ROOT/notification-center.service.d/20-noticeplace-route.conf" \
+        "$SYSTEMD_ROOT/notification-center.service.d/30-noticeplace-severity.conf"
+    if [[ -L "$APP_ROOT" ]]; then
+        rm -f -- "$APP_ROOT"
+    fi
+    daemon_reload
+    printf 'NoticePlace runtime removed. Configuration, data and releases were preserved.\n'
+}
+
+purge_all() {
+    need_root
+    (( YES )) || die "purge permanently deletes NoticePlace data; repeat with: deploy/noticeplace purge --yes"
+    uninstall_runtime
+    rm -rf -- "$RELEASE_ROOT" "$PRIMARY_STATE" "$ADMIN_STATE"
+    rm -f -- \
+        "$ETC_ROOT/notification-center.env" \
+        "$ETC_ROOT/notification-center-admin.env" \
+        "$ETC_ROOT/notification-center-telegram-routes.env"
+    if [[ -z "$DESTDIR" && -e "$STATE_ROOT/notification-center-user-created" ]]; then
+        userdel notification-center 2>/dev/null || true
+    fi
+    rm -rf -- "$STATE_ROOT"
+    printf 'NoticePlace configuration, data and managed releases were purged.\n'
+}
+
+COMMAND=${1:-help}
+[[ $# -eq 0 ]] || shift
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-start) NO_START=1 ;;
+        --yes) YES=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) die "unknown option: $1" ;;
+    esac
+    shift
+done
+
+case "$COMMAND" in
+    install|upgrade) install_release ;;
+    rollback) rollback_release ;;
+    start) need_root; daemon_reload; start_services ;;
+    stop) need_root; stop_services ;;
+    status) show_status ;;
+    uninstall) uninstall_runtime ;;
+    purge) purge_all ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; die "unknown command: $COMMAND" ;;
+esac
