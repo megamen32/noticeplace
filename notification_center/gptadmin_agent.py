@@ -416,7 +416,7 @@ class GptAdminAgentJobAdapter:
             raise GptAdminAdmissionUnavailable(str(error)) from error
         hub_job_id = str(accepted.get("job_id") or "").strip()
         if not hub_job_id or str(accepted.get("status") or "") not in ("accepted", "running", "completed", "failed"):
-            raise RuntimeError("GPTAdmin agent job did not return a durable job identity")
+            raise GptAdminAdmissionUnavailable("GPTAdmin agent job did not return a durable job identity")
 
         parsed = urllib.parse.urlsplit(self._url)
         job_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, f"/webhook-jobs/{urllib.parse.quote(hub_job_id, safe='')}", "", ""))

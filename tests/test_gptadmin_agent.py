@@ -804,6 +804,22 @@ class GptAdminAgentJobTests(unittest.TestCase):
             adapter.send({"incident": {"id": "inc-1"}}, "delivery-1")
         fallback.send_with_progress.assert_not_called()
 
+    def test_missing_durable_identity_is_safe_to_fallback(self) -> None:
+        primary = GptAdminAgentJobAdapter(
+            "health-remediation",
+            "http://127.0.0.1:3013/webhooks/v1/health-remediation",
+            "route-secret",
+            runner=lambda *_args, **_kwargs: _Response(202, {"status": "accepted"}),
+        )
+        fallback = mock.Mock()
+        fallback.send_with_progress.return_value = {"status": "completed", "job_id": "direct"}
+        adapter = DurableHealthRemediationAdapter(primary, fallback)
+
+        result = adapter.send({"incident": {"id": "inc-1"}}, "delivery-1")
+
+        self.assertEqual("direct", result["job_id"])
+        fallback.send_with_progress.assert_called_once()
+
     def test_direct_remediation_does_not_read_gptadmin_profile_file(self) -> None:
         adapter = DirectHealthRemediationAdapter(config_path=Path("/definitely/unreadable/gptadmin.json"))
         with (
