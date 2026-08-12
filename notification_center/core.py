@@ -1437,16 +1437,16 @@ class NotificationCenter:
                     progress_step.strip().lower() in {"heartbeat", "keepalive", "heartbeat-only"},
                     "agent-herder",
                 )
+            if self._health_text(agent_receipt.get("observed_state") or "", 32) == "degraded":
+                return {
+                    "accepted": True,
+                    "resolved": False,
+                    "reason": "selected remediation plan completed; source remains degraded",
+                    "progress": progress,
+                }
             verification = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["verification"])
             verification_actor = self._health_text(verification.get("actor") or "", 128) if isinstance(verification, Mapping) else ""
             if not isinstance(verification, Mapping) or not verification_actor:
-                if self._health_text(agent_receipt.get("observed_state") or "", 32) == "degraded":
-                    return {
-                        "accepted": True,
-                        "resolved": False,
-                        "reason": "selected remediation plan completed; source remains degraded",
-                        "progress": progress,
-                    }
                 return {
                     "accepted": False,
                     "resolved": False,
