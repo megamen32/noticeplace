@@ -606,6 +606,38 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("open", center.get_incident(created["incident_id"])["state"])
         self.assertIsNone(center.latest_health_event(created["incident_id"], "health.resolved"))
 
+    def test_completed_plan_with_degraded_verification_finishes_delivery_but_keeps_incident_open(self) -> None:
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "health-remediation-degraded.sqlite3",
+            {"health-token": {"project": "health-monitor", "max_severity": "critical"}},
+            default_quiet_hours=[],
+        )
+        workflow = HealthWorkflow(center, callback_secret="x" * 32)
+        created = workflow.intake_signal("health-token", "health-degraded-intake", {
+            "project": "health-monitor", "recipient": "health", "severity": "critical",
+            "title": "Still degraded", "body": "error remains", "dedup_key": "health:source-a:degraded",
+            "source_id": "source-a", "source_fingerprint": "source-fp-1", "host_id": "host-a", "signal_type": "log",
+        })
+        workflow.attach_plans(created["incident_id"], "health-degraded-plans", [
+            {"plan_id": "observe", "title": "Observe", "summary": "Capture", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Verify", "step": "verify"},
+        ], actor="omniroute")
+        workflow.select_plan(created["incident_id"], "health-degraded-selection", "repair", "telegram:42")
+        result = center.record_agent_job_result(created["incident_id"], "delivery-degraded", "health-remediation", {
+            "job_id": "direct-opencode", "status": "completed", "elapsed_ms": 100,
+            "agent_receipt": {
+                "plan_id": "repair", "step": "validate", "progress_fingerprint": "progress-degraded",
+                "evidence_refs": ["probe:degraded"], "source_id": "source-a", "source_fingerprint": "source-fp-1",
+                "verification_id": "verify-degraded", "verifier_id": "probe-b", "observed_state": "degraded",
+                "trace_refs": ["trace:opencode:degraded"],
+            },
+        }, {"selection": {"plan_id": "repair"}, "source_id": "source-a", "source_fingerprint": "source-fp-1"})
+        self.assertTrue(result["accepted"])
+        self.assertFalse(result["resolved"])
+        self.assertEqual("open", center.get_incident(created["incident_id"])["state"])
+        self.assertIsNone(center.latest_health_event(created["incident_id"], "health.resolved"))
+
     def test_heartbeat_only_running_progress_is_not_recorded(self) -> None:
         center = NotificationCenter(
             Path(self.tempdir.name) / "health-running-heartbeat.sqlite3",
