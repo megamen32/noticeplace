@@ -633,7 +633,7 @@ class DeliveryWorker:
                                     attempt=delivery.get("attempt"),
                                 )
                             return
-                    if is_health and not _health_plans_ready(payload):
+                    if is_health and not isinstance(payload.get("health_outcome"), dict) and not _health_plans_ready(payload):
                         self._center.complete_delivery(
                             delivery["id"],
                             "retry",

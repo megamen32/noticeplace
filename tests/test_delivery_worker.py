@@ -86,6 +86,29 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual("Health plans are not attached", row["last_error"])
         self.assertEqual([], sent)
 
+    def test_health_degraded_remediation_outcome_sends_without_plan_card(self) -> None:
+        created = self.center.create_event(
+            "producer", "health-remediation-outcome",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        delivery_id = self.center._schedule_delivery(
+            created["incident_id"], "telegram.main", "health.remediation_degraded:repair:fp-1", 0,
+            {"health_outcome": {"plan_id": "repair", "observed_state": "degraded", "step": "validate"}},
+        )
+        sent: list[dict[str, object]] = []
+
+        class Telegram:
+            active_modes = {"health"}
+            def send(self, payload: dict[str, object]) -> dict[str, object]:
+                sent.append(payload)
+                return {"message_id": 22, "chat_id": "-1001"}
+
+        worker = DeliveryWorker(self.center, Telegram())
+        self.assertEqual(1, worker.run_once())
+        row = self.center._connection.execute("SELECT status FROM deliveries WHERE id = ?", (delivery_id,)).fetchone()
+        self.assertEqual("sent", row["status"])
+        self.assertEqual("degraded", sent[0]["health_outcome"]["observed_state"])
+
     def test_attaching_plans_releases_one_plan_card_from_the_existing_slot(self) -> None:
         created = self.center.create_event(
             "producer",
