@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Minimal stdio MCP server for /usr/local/bin/notify.
+"""AskHuman stdio MCP server with legacy Notify compatibility.
 
-Designed for AI agents: submit lightweight human-facing notification cards.
-For long background work and returning to the right chat, use agent-resume;
-use notify at the end of work or before asking the user a question.
+The canonical ``ask_human`` tool says or asks something in one call. Existing
+Notify tools remain available so installed callers do not break.
 """
 from __future__ import annotations
 
@@ -14,6 +13,7 @@ import signal
 import subprocess
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 import sys
 import time
@@ -211,6 +211,84 @@ def notify_center_send_text(message: str, title: str, request_key: str) -> Dict[
         status = error.code
         body = json.loads(error.read() or b"{}")
     return {"http_status": status, "ok": status == 202, "incident_id": body.get("incident_id"), "event_id": body.get("event_id")}
+
+
+def _human_request_config() -> Dict[str, Any]:
+    """Resolve the Human Request API and the configured human identities."""
+    cfg: Dict[str, Any] = notify_center_config()
+    base_url = os.environ.get("ASK_HUMAN_URL", "").strip()
+    if not base_url:
+        event_url = cfg["event_url"].rstrip("/")
+        base_url = event_url[:-len("/events")] + "/human-requests" if event_url.endswith("/events") else event_url + "/human-requests"
+    raw_actors = os.environ.get("ASK_HUMAN_ALLOWED_ACTORS", "").strip()
+    if not raw_actors:
+        raw_actors = os.environ.get("NOTIFY_TELEGRAM_ALLOWED_USER_IDS", "").strip()
+    actors = []
+    for raw in raw_actors.replace(";", ",").split(","):
+        actor = raw.strip()
+        if actor:
+            actors.append(actor if ":" in actor else f"telegram:{actor}")
+    if not actors:
+        raise ValueError("ASK_HUMAN_ALLOWED_ACTORS is not configured")
+    return {**cfg, "human_url": base_url.rstrip("/"), "actors": actors}
+
+
+def _human_request_call(cfg: Dict[str, Any], method: str, path: str = "", payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Call one authenticated Human Request endpoint."""
+    request = urllib.request.Request(
+        cfg["human_url"] + path,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None,
+        method=method,
+        headers={"Authorization": f"Bearer {cfg['token']}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=8) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            body = json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as error:
+        status = error.code
+        body = json.loads(error.read() or b"{}")
+    if status < 200 or status >= 300:
+        raise RuntimeError(str(body.get("error") or body.get("message") or f"AskHuman HTTP {status}"))
+    return body
+
+
+def tool_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Say something to the human, or ask and return their answer value."""
+    message = str(args.get("message") or "").strip()
+    if not message:
+        raise ValueError("message is required")
+    if args.get("expect_reply", True) is False:
+        result = tool_send_message({"message": message, "title": args.get("title")})
+        return {"status": "sent" if result.get("ok") else "failed", **result}
+
+    cfg = _human_request_config()
+    choices = args.get("choices")
+    mode = "choice" if choices else "question"
+    wait_seconds = min(max(int(args.get("wait_seconds", 300)), 0), 900)
+    request_id = str(args.get("request_id") or f"ask-{uuid.uuid4().hex[:20]}").strip()
+    created = _human_request_call(cfg, "POST", payload={
+        "schema": "ask_human.request.v1",
+        "request_id": request_id,
+        "project": cfg["project"],
+        "recipient": cfg["recipient"],
+        "mode": mode,
+        "message": message,
+        "choices": choices if choices else None,
+        "allowed_actors": cfg["actors"],
+        "expires_at": time.time() + max(wait_seconds + 60, 300),
+    })
+    deadline = time.monotonic() + wait_seconds
+    current = created
+    while current.get("state") == "pending" and time.monotonic() < deadline:
+        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+        current = _human_request_call(cfg, "GET", "/" + urllib.parse.quote(request_id, safe=""))
+    return {
+        "request_id": request_id,
+        "status": current.get("state"),
+        "value": current.get("response_value"),
+        "actor": current.get("response_actor"),
+    }
 
 
 def split_notification_message(text: str, limit: int = 3900) -> List[str]:
@@ -553,6 +631,27 @@ def tool_kill_job(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 TOOLS = {
+    "ask_human": {
+        "description": "Best default way to say or ask something to the human. Set expect_reply=false for a notification. For a question, optionally show two or three choice buttons; the returned value is the human's selected value.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "What the human should see."},
+                "title": {"type": ["string", "null"], "description": "Optional notification title."},
+                "expect_reply": {"type": "boolean", "default": True, "description": "False sends a notification; true waits for an answer."},
+                "choices": {
+                    "type": ["array", "null"], "minItems": 2, "maxItems": 3,
+                    "items": {"type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string"}}, "required": ["label", "value"], "additionalProperties": False},
+                    "description": "Optional two or three buttons. The selected value is returned."
+                },
+                "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 900, "default": 300},
+                "request_id": {"type": ["string", "null"], "description": "Optional stable correlation id."},
+            },
+            "required": ["message"],
+            "additionalProperties": False,
+        },
+        "handler": tool_ask_human,
+    },
     "send_message": {
         "description": "Send a plain Telegram message immediately. Preferred use: ping the human at the end of work or right before asking a question, e.g. 'I finished X, please check'. This is only an extra notification; agent-resume handles long waits and context resume.",
         "inputSchema": {

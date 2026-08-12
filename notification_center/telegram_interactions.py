@@ -31,7 +31,7 @@ class TelegramActionCodec:
             if not plan_id or choice_id is not None:
                 raise ValueError("health_plan callback requires a plan_id")
             unsigned = f"n:{action}:{incident_id}:{plan_id}"
-        elif action == "choice":
+        elif action in {"choice", "human_choice"}:
             if plan_id is not None or not choice_id or ":" in choice_id:
                 raise ValueError("choice callback requires a safe choice_id")
             unsigned = f"n:{action}:{incident_id}:{choice_id}"
@@ -58,7 +58,7 @@ class TelegramActionCodec:
                 return None
             return action, incident_id
         action, incident_id, plan_id, signature = parts[1:]
-        if action not in {"health_plan", "choice"}:
+        if action not in {"health_plan", "choice", "human_choice"}:
             return None
         expected = (
             self.encode(action, incident_id, plan_id)
@@ -107,7 +107,7 @@ def telegram_api(token: str, method: str, payload: dict[str, Any]) -> dict[str, 
 class TelegramInteractionPoller:
     """Poll Bot API callbacks in-process; no public webhook or second daemon exists."""
 
-    def __init__(self, center: NotificationCenter, token: str, allowed_user_ids: set[str], codec: TelegramActionCodec, health_plan_codec: TelegramHealthPlanCodec | None = None, api: TelegramApi | None = None, choice_callback: ChoiceCallback | None = None) -> None:
+    def __init__(self, center: NotificationCenter, token: str, allowed_user_ids: set[str], codec: TelegramActionCodec, health_plan_codec: TelegramHealthPlanCodec | None = None, api: TelegramApi | None = None, choice_callback: ChoiceCallback | None = None, human_request_token: str | None = None) -> None:
         self._center = center
         self._token = token
         self._allowed_user_ids = allowed_user_ids
@@ -115,6 +115,7 @@ class TelegramInteractionPoller:
         self._health_plan_codec = health_plan_codec
         self._api = api or (lambda method, payload: telegram_api(token, method, payload))
         self._choice_callback = choice_callback
+        self._human_request_token = human_request_token
 
     def _answer(self, callback_id: str, text: str) -> None:
         self._api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:180]})
@@ -204,6 +205,19 @@ class TelegramInteractionPoller:
                         self._dismiss_choice_message(callback, str(selection["label"]))
                     self._answer(callback_id, f"choice: {str(result.get('status') or 'accepted')}")
                     return
+                if action == "human_choice":
+                    request = self._center.get_human_request_from_telegram(incident_id)
+                    choices = request.get("choices") if isinstance(request.get("choices"), list) else []
+                    try:
+                        selected = choices[int(plan_id)]
+                    except (IndexError, TypeError, ValueError):
+                        raise ValidationError("human request choice is invalid")
+                    result = self._center.resolve_human_request_from_telegram(
+                        incident_id, f"telegram:{actor_id}", str(selected.get("value") or "")
+                    )
+                    self._dismiss_choice_message(callback, str(selected.get("label") or selected.get("value") or ""))
+                    self._answer(callback_id, f"choice: {result['state']}")
+                    return
             self._answer(callback_id, "Invalid action")
         except (ValidationError, ValueError) as error:
             self._answer(callback_id, str(error)[:180])
@@ -211,13 +225,23 @@ class TelegramInteractionPoller:
     def _handle_message(self, message: dict[str, Any]) -> None:
         actor_id = message.get("from", {}).get("id")
         text = str(message.get("text") or "").strip()
-        if not self._allowed(actor_id) or not text.startswith("/ask "):
+        if not self._allowed(actor_id):
+            return
+        reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else {}
+        reply_message_id = reply.get("message_id")
+        chat_id = str(message.get("chat", {}).get("id") or "")
+        if chat_id and isinstance(reply_message_id, int) and text:
+            resolved = self._center.resolve_human_reply_from_telegram(
+                chat_id, reply_message_id, f"telegram:{actor_id}", text
+            )
+            if resolved is not None:
+                return
+        if not text.startswith("/ask "):
             return
         _, incident_id, question = text.split(maxsplit=2) if len(text.split(maxsplit=2)) == 3 else ("", "", "")
         if not incident_id or not question:
             return
         self._center.record_telegram_ask(incident_id, f"telegram:{actor_id}", question)
-        chat_id = str(message.get("chat", {}).get("id") or "")
         if chat_id:
             self._message(chat_id, "Ask recorded.")
 

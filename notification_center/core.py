@@ -206,6 +206,25 @@ class NotificationCenter:
                     value TEXT NOT NULL,
                     updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS human_requests (
+                    request_id TEXT PRIMARY KEY,
+                    project TEXT NOT NULL,
+                    recipient TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    choices_json TEXT NOT NULL,
+                    allowed_actors_json TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL,
+                    response_value TEXT,
+                    response_actor TEXT,
+                    resolved_at REAL,
+                    cancelled_at REAL,
+                    cancelled_by TEXT,
+                    telegram_chat_id TEXT,
+                    telegram_message_id INTEGER
+                );
                 """
             )
             incident_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(incidents)")}
@@ -223,6 +242,11 @@ class NotificationCenter:
             delivery_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(deliveries)")}
             if "target_json" not in delivery_columns:
                 self._connection.execute("ALTER TABLE deliveries ADD COLUMN target_json TEXT NOT NULL DEFAULT '{}'")
+            human_request_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(human_requests)")}
+            if "telegram_chat_id" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_chat_id TEXT")
+            if "telegram_message_id" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_message_id INTEGER")
             for column, definition in (
                 ("policy_step_id", "TEXT"),
                 ("repeat_number", "INTEGER"),
@@ -396,6 +420,190 @@ class NotificationCenter:
     def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
         """Convert a SQLite row to a JSON-safe dictionary, preserving nulls."""
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _human_request_result(row: sqlite3.Row) -> dict[str, Any]:
+        """Convert one durable human request row to its JSON-safe API shape."""
+        result = dict(row)
+        result["schema"] = "ask_human.response.v1"
+        result["choices"] = json.loads(str(result.pop("choices_json")))
+        result["allowed_actors"] = json.loads(str(result.pop("allowed_actors_json")))
+        return result
+
+    def _human_request_row(self, token: str, request_id: str) -> sqlite3.Row:
+        """Load and authorize one human request; raises ValidationError when absent."""
+        row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+        if row is None:
+            if token not in self._tokens:
+                raise AuthorizationError("invalid bearer token")
+            raise ValidationError("human request not found")
+        self._scope(token, str(row["project"]))
+        return row
+
+    def _expire_human_request(self, row: sqlite3.Row) -> sqlite3.Row:
+        """Persist expiry for an overdue pending request and return its current row."""
+        expires_at = row["expires_at"]
+        if row["state"] == "pending" and expires_at is not None and float(expires_at) <= time.time():
+            self._connection.execute("UPDATE human_requests SET state = 'expired' WHERE request_id = ? AND state = 'pending'", (row["request_id"],))
+            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
+        return row
+
+    def create_human_request(self, token: str, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate and durably create one bounded AskHuman request."""
+        if request.get("schema") != "ask_human.request.v1":
+            raise ValidationError("unsupported human request schema")
+        required = ("request_id", "project", "recipient", "mode", "message")
+        missing = [name for name in required if not str(request.get(name) or "").strip()]
+        if missing:
+            raise ValidationError(f"missing required human request fields: {', '.join(missing)}")
+        request_id = str(request["request_id"]).strip()
+        project = str(request["project"]).strip()
+        mode = str(request["mode"]).strip()
+        if mode not in {"notify", "question", "choice"}:
+            raise ValidationError("unsupported human request mode")
+        self._scope(token, project)
+        raw_choices = request.get("choices")
+        choices: list[dict[str, str]] = []
+        if mode == "choice":
+            if not isinstance(raw_choices, list) or len(raw_choices) not in {2, 3}:
+                raise ValidationError("choice requests require two or three choices")
+            seen_values: set[str] = set()
+            for raw in raw_choices:
+                if not isinstance(raw, Mapping):
+                    raise ValidationError("human request choices must be objects")
+                label = str(raw.get("label") or "").strip()
+                value = str(raw.get("value") or "").strip()
+                if not label or not value or len(label) > 80 or len(value) > 128 or value in seen_values:
+                    raise ValidationError("human request choices require unique bounded label and value")
+                seen_values.add(value)
+                choices.append({"label": label, "value": value})
+        elif raw_choices not in (None, []):
+            raise ValidationError("choices are only allowed in choice mode")
+        raw_actors = request.get("allowed_actors")
+        if not isinstance(raw_actors, list) or not raw_actors:
+            raise ValidationError("human request requires allowed actors")
+        actors = [str(actor).strip() for actor in raw_actors]
+        if any(not actor or len(actor) > 128 for actor in actors) or len(set(actors)) != len(actors):
+            raise ValidationError("human request actors must be unique bounded values")
+        expires_at = request.get("expires_at")
+        expires = float(expires_at) if expires_at is not None else None
+        now = time.time()
+        with self._lock, self._connection:
+            try:
+                self._connection.execute(
+                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, choices_json, allowed_actors_json, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                    (request_id, project, str(request["recipient"]).strip(), mode, str(request["message"]).strip()[:4000], json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ValidationError("human request already exists") from error
+            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            return self._human_request_result(self._expire_human_request(row))
+
+    def get_human_request(self, token: str, request_id: str) -> dict[str, Any]:
+        """Return the stable current state of one authorized human request."""
+        with self._lock, self._connection:
+            return self._human_request_result(self._expire_human_request(self._human_request_row(token, request_id)))
+
+    def get_human_request_from_telegram(self, request_id: str) -> dict[str, Any]:
+        """Read one request for the signed, allowlisted in-process Telegram poller."""
+        with self._lock, self._connection:
+            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            if row is None:
+                raise ValidationError("human request not found")
+            return self._human_request_result(self._expire_human_request(row))
+
+    def bind_human_request_message(self, token: str, request_id: str, chat_id: str, message_id: int) -> dict[str, Any]:
+        """Bind one sent Telegram message so a ForceReply can resolve its request."""
+        chat_id = str(chat_id).strip()
+        if not chat_id or not isinstance(message_id, int) or message_id <= 0:
+            raise ValidationError("valid Telegram chat and message ids are required")
+        with self._lock, self._connection:
+            row = self._expire_human_request(self._human_request_row(token, request_id))
+            if row["state"] != "pending":
+                raise ValidationError(f"human request is {row['state']}")
+            self._connection.execute(
+                "UPDATE human_requests SET telegram_chat_id = ?, telegram_message_id = ? WHERE request_id = ?",
+                (chat_id, message_id, request_id),
+            )
+            current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            return self._human_request_result(current)
+
+    def _resolve_human_request_row(self, row: sqlite3.Row, actor: str, value: str) -> dict[str, Any]:
+        """Resolve an already selected row; caller owns the lock and transport trust."""
+        actors = json.loads(str(row["allowed_actors_json"]))
+        if actor not in actors:
+            raise ValidationError("human response actor is not allowed")
+        if row["state"] == "resolved":
+            if row["response_actor"] == actor and row["response_value"] == value:
+                return self._human_request_result(row)
+            raise ValidationError("human request already resolved")
+        if row["state"] != "pending":
+            raise ValidationError(f"human request is {row['state']}")
+        if row["mode"] == "notify":
+            raise ValidationError("notification requests cannot be resolved")
+        choices = json.loads(str(row["choices_json"]))
+        if row["mode"] == "choice" and value not in {choice["value"] for choice in choices}:
+            raise ValidationError("human response is not a valid choice")
+        resolved_at = time.time()
+        update = self._connection.execute(
+            "UPDATE human_requests SET state = 'resolved', response_value = ?, response_actor = ?, resolved_at = ? WHERE request_id = ? AND state = 'pending'",
+            (value, actor, resolved_at, row["request_id"]),
+        )
+        current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
+        if update.rowcount != 1:
+            if current["state"] == "resolved" and current["response_actor"] == actor and current["response_value"] == value:
+                return self._human_request_result(current)
+            raise ValidationError(f"human request is {current['state']}")
+        return self._human_request_result(current)
+
+    def resolve_human_request(self, token: str, request_id: str, actor: str, value: str) -> dict[str, Any]:
+        """Resolve one request once, allowing idempotent replay of the same answer."""
+        actor = str(actor).strip()
+        value = str(value).strip()
+        if not actor or not value or len(value) > 4000:
+            raise ValidationError("human response actor and value are required")
+        with self._lock, self._connection:
+            row = self._expire_human_request(self._human_request_row(token, request_id))
+            return self._resolve_human_request_row(row, actor, value)
+
+    def resolve_human_request_from_telegram(self, request_id: str, actor: str, value: str) -> dict[str, Any]:
+        """Resolve from the allowlisted in-process Telegram poller without a producer token."""
+        actor = str(actor).strip()
+        value = str(value).strip()
+        if not actor or not value or len(value) > 4000:
+            raise ValidationError("human response actor and value are required")
+        with self._lock, self._connection:
+            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            if row is None:
+                raise ValidationError("human request not found")
+            return self._resolve_human_request_row(self._expire_human_request(row), actor, value)
+
+    def resolve_human_reply_from_telegram(self, chat_id: str, message_id: int, actor: str, value: str) -> dict[str, Any] | None:
+        """Resolve only a reply correlated to the exact sent Telegram question."""
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT * FROM human_requests WHERE telegram_chat_id = ? AND telegram_message_id = ? AND mode = 'question' ORDER BY created_at DESC LIMIT 1",
+                (str(chat_id), message_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._resolve_human_request_row(self._expire_human_request(row), str(actor).strip(), str(value).strip())
+
+    def cancel_human_request(self, token: str, request_id: str, actor: str) -> dict[str, Any]:
+        """Cancel one pending request without changing any existing terminal state."""
+        actor = str(actor).strip() or "api"
+        with self._lock, self._connection:
+            row = self._expire_human_request(self._human_request_row(token, request_id))
+            if row["state"] != "pending":
+                raise ValidationError(f"human request is {row['state']}")
+            update = self._connection.execute(
+                "UPDATE human_requests SET state = 'cancelled', cancelled_at = ?, cancelled_by = ? WHERE request_id = ? AND state = 'pending'",
+                (time.time(), actor, request_id),
+            )
+            current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            if update.rowcount != 1:
+                raise ValidationError(f"human request is {current['state']}")
+            return self._human_request_result(current)
 
     @staticmethod
     def _validate_consumer_policy(policy: list[Mapping[str, Any]]) -> list[dict[str, Any]]:

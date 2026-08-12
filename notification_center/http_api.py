@@ -18,7 +18,7 @@ from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, N
 from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import GptAdminAgentJobAdapter
 from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, validate_health_plans
-from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback
+from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
 ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log"))
@@ -771,6 +771,42 @@ def _bearer(handler: BaseHTTPRequestHandler) -> str:
     return token
 
 
+def send_human_request_telegram(
+    center: NotificationCenter,
+    producer_token: str,
+    request: Mapping[str, Any],
+    api: Any | None = None,
+) -> dict[str, Any]:
+    """Send one AskHuman request through the service's existing Telegram bot."""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not bot_token or not chat_id:
+        return {"status": "not_configured"}
+    payload: dict[str, Any] = {"chat_id": chat_id, "text": str(request["message"])[:4096]}
+    mode = str(request["mode"])
+    if mode == "choice":
+        secret = os.environ.get("TELEGRAM_CALLBACK_SECRET", "").strip()
+        if not secret:
+            raise RuntimeError("TELEGRAM_CALLBACK_SECRET is required for AskHuman choices")
+        codec = TelegramActionCodec(secret)
+        rows = [
+            [{"text": str(choice["label"])[:80], "callback_data": codec.encode("human_choice", str(request["request_id"]), choice_id=str(index))}]
+            for index, choice in enumerate(request.get("choices") or [])
+        ]
+        payload["reply_markup"] = json.dumps({"inline_keyboard": rows}, ensure_ascii=False, separators=(",", ":"))
+    elif mode == "question":
+        payload["reply_markup"] = json.dumps({"force_reply": True, "selective": True}, separators=(",", ":"))
+    response = (api or (lambda method, body: telegram_api(bot_token, method, body)))("sendMessage", payload)
+    message = response.get("result") if isinstance(response, dict) else None
+    message_id = message.get("message_id") if isinstance(message, dict) else None
+    response_chat_id = str(message.get("chat", {}).get("id") or chat_id) if isinstance(message, dict) else chat_id
+    if not isinstance(message_id, int) or message_id <= 0:
+        raise RuntimeError("Telegram AskHuman sendMessage returned no message id")
+    if mode == "question":
+        center.bind_human_request_message(producer_token, str(request["request_id"]), response_chat_id, message_id)
+    return {"status": "sent", "chat_id": response_chat_id, "message_id": message_id}
+
+
 def build_handler(center: NotificationCenter, health_token: str, mcp_token: str | None = None) -> type[BaseHTTPRequestHandler]:
     """Build an HTTP handler bound to one center and two dedicated bearer tokens."""
     if not health_token:
@@ -874,6 +910,15 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                 except NotificationCenterError as error:
                     self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
                 return
+            if self.path.startswith("/v1/human-requests/"):
+                try:
+                    request_id = self.path.rsplit("/", 1)[-1]
+                    self._reply(HTTPStatus.OK, center.get_human_request(_bearer(self), request_id))
+                except AuthorizationError as error:
+                    self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
+                except ValidationError as error:
+                    self._reply(HTTPStatus.NOT_FOUND, {"error": str(error)})
+                return
             self._reply(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self) -> None:
@@ -900,7 +945,32 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         return
                     self._reply(HTTPStatus.ACCEPTED, center.create_event(token, key, body, request_meta=self._request_meta()))
                     return
+                if self.path == "/v1/human-requests":
+                    if not body.get("allowed_actors"):
+                        configured_actors = {
+                            item.strip()
+                            for item in os.environ.get(
+                                "TELEGRAM_CALLBACK_ALLOWED_USER_IDS", os.environ.get("TELEGRAM_CHAT_ID", "")
+                            ).split(",")
+                            if item.strip()
+                        }
+                        body["allowed_actors"] = [f"telegram:{actor}" for actor in sorted(configured_actors)]
+                    created = center.create_human_request(token, body)
+                    created["telegram"] = send_human_request_telegram(center, token, created)
+                    self._reply(HTTPStatus.CREATED, created)
+                    return
                 parts = self.path.split("/")
+                if len(parts) == 5 and parts[:3] == ["", "v1", "human-requests"]:
+                    request_id, action = parts[3], parts[4]
+                    if action == "resolve":
+                        result = center.resolve_human_request(token, request_id, str(body.get("actor") or ""), str(body.get("value") or ""))
+                    elif action == "cancel":
+                        result = center.cancel_human_request(token, request_id, str(body.get("actor") or "api"))
+                    else:
+                        self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown human request action"})
+                        return
+                    self._reply(HTTPStatus.OK, result)
+                    return
                 if len(parts) == 4 and parts[:3] == ["", "v1", "health"] and parts[3] == "signals":
                     key = self.headers.get("Idempotency-Key") or ""
                     self._reply(HTTPStatus.ACCEPTED, health_workflow.intake_signal(token, key, body, request_meta=self._request_meta()))
