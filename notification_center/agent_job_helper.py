@@ -563,14 +563,20 @@ def _run_health_remediation(profile: dict[str, str], event: dict[str, Any], sess
         time.sleep(poll_seconds)
 
 
-def run_profile(profile_id: str, event: dict[str, Any], config_path: Path, runner: Any = urllib.request.urlopen) -> dict[str, Any]:
+def run_profile(
+    profile_id: str,
+    event: dict[str, Any],
+    config_path: Path,
+    runner: Any = urllib.request.urlopen,
+    profile_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Execute one allowlisted profile; Agent Herder validates canonical CWD."""
     if event.get("schema") != "notify.agent-job.v1" or event.get("job_id") != profile_id:
         raise RuntimeError("agent job event does not match the selected profile")
     incident = event.get("incident")
     if not isinstance(incident, dict):
         raise RuntimeError("agent job event is missing incident telemetry")
-    profile = _validate_profile(_load_profile(profile_id, config_path))
+    profile = _validate_profile(profile_override if profile_override is not None else _load_profile(profile_id, config_path))
     if profile_id == "health-remediation":
         # The direct NoticePlace MVP owns the execution runtime. Keep the
         # existing root-owned profile for URL/CWD/timeouts, but do not require

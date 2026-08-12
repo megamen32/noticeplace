@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import time
 from datetime import datetime
 import urllib.error
@@ -101,11 +102,25 @@ class DirectHealthRemediationAdapter:
             raise RuntimeError("direct health remediation requires a bounded idempotency key")
         from .agent_job_helper import default_profile_path, run_profile
         started_at = time.monotonic()
+        direct_profile = {
+            "url": os.environ.get("NOTIFY_HEALTH_REMEDIATION_URL", "http://127.0.0.1:18787/api/sessions/new-or-resume"),
+            "harness": "opencode",
+            "name": "health_remediation_direct",
+            "cwd": os.environ.get("NOTIFY_HEALTH_REMEDIATION_CWD", "/home/roomhacker/ServersAdministartion"),
+            "mode": "queue",
+            "instruction": "Apply only the selected health remediation plan and report useful progress.",
+            "model": "openai-codex/gpt-5.6-luna",
+            "reasoning": "high",
+            "topic": "health",
+            "poll_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_POLL_SECONDS", "1"),
+            "remediation_timeout_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_TIMEOUT_SECONDS", "1200"),
+        }
         receipt = run_profile(
             self.job_id,
             _agent_job_event(self.job_id, payload),
             self._config_path or default_profile_path(),
             runner=self._runner,
+            profile_override=direct_profile,
         )
         if progress_callback is not None:
             progress_callback({"status": "completed", "agent_receipt": receipt})

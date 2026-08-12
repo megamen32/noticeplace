@@ -716,6 +716,28 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertIsInstance(jobs["health-diagnosis"], GptAdminAgentJobAdapter)
         self.assertIsInstance(jobs["health-remediation"], DirectHealthRemediationAdapter)
 
+    def test_direct_remediation_does_not_read_gptadmin_profile_file(self) -> None:
+        adapter = DirectHealthRemediationAdapter(config_path=Path("/definitely/unreadable/gptadmin.json"))
+        with (
+            mock.patch("notification_center.agent_job_helper.run_profile") as run,
+            mock.patch.dict(os.environ, {}, clear=True),
+        ):
+            run.return_value = {"status": "completed", "useful_progress": True, "evidence_refs": ["probe:1"]}
+            result = adapter.send_with_progress(
+                {
+                    "incident": {"id": "inc-direct"},
+                    "health_context": {},
+                    "health_selection": {
+                        "plan_id": "plan-003",
+                        "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"},
+                    },
+                },
+                "delivery-direct-1",
+            )
+        self.assertEqual("completed", result["status"])
+        self.assertEqual("opencode", run.call_args.kwargs["profile_override"]["harness"])
+        self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
+
     def test_supervisor_classifies_useful_progress_and_ignores_heartbeat_only_updates(self) -> None:
         supervisor = HealthProgressSupervisor(stale_after_seconds=10, now=lambda: 110)
         progressing = supervisor.observe({
