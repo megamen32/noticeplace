@@ -107,7 +107,11 @@ class DirectHealthRemediationAdapter:
             "harness": "codex",
             "name": "health_remediation_direct_v2",
             "cwd": os.environ.get("NOTIFY_HEALTH_REMEDIATION_CWD", "/home/roomhacker/ServersAdministartion"),
-            "mode": "sync",
+            # Return the durable session id immediately. NoticePlace owns the
+            # longer remediation polling window below; keeping this synchronous
+            # makes the initial HTTP request time out while Codex is still
+            # making useful progress.
+            "mode": "queue",
             "instruction": "Выполни только выбранный план устранения инцидента и сообщай полезный прогресс. Пользовательские объяснения пиши по-русски. Верни status=completed, когда сам план выполнен; независимо наблюдаемое состояние источника укажи отдельно как observed_state=healthy|degraded|unknown.",
             # Agent Herder's Codex app-server transport is the live-proven
             # remediation route; OpenCode currently fails before the first

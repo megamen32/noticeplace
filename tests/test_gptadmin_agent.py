@@ -777,7 +777,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
             )
         self.assertEqual("completed", result["status"])
         self.assertEqual("codex", run.call_args.kwargs["profile_override"]["harness"])
-        self.assertEqual("sync", run.call_args.kwargs["profile_override"]["mode"])
+        self.assertEqual("queue", run.call_args.kwargs["profile_override"]["mode"])
         self.assertEqual("gpt-5.6-luna", run.call_args.kwargs["profile_override"]["model"])
         self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
 
