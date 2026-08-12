@@ -10,6 +10,7 @@ from datetime import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .health_workflow import sanitize_bounded_text
@@ -20,12 +21,107 @@ _INCIDENT_LIMITS = {"id": 128, "project": 128, "severity": 32, "title": 500, "bo
 _TERMINAL_STATES = {"completed", "failed"}
 _RESPONSE_LIMIT = 64 * 1024
 _HEALTH_EXECUTION_PROFILE = {
-    "runtime": "hermes",
+    "runtime": "opencode",
     "provider": "openai-codex",
     "model": "gpt-5.6-luna",
     "reasoning": "high",
     "topic": "health",
 }
+
+
+def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the bounded helper event shared by Hub and direct execution."""
+    incident = payload.get("incident")
+    if not isinstance(incident, dict):
+        raise RuntimeError("GPTAdmin agent job payload is missing incident telemetry")
+    bounded_incident = {
+        field: sanitize_bounded_text(
+            str(incident.get(field) if incident.get(field) is not None else ""),
+            _INCIDENT_LIMITS[field],
+        )
+        for field in _INCIDENT_FIELDS
+    }
+    event: dict[str, Any] = {"schema": "notify.agent-job.v1", "job_id": job_id, "incident": bounded_incident}
+    health_context = payload.get("health_context")
+    if isinstance(health_context, dict):
+        bounded_health: dict[str, Any] = {
+            "source_id": _safe_health_ref(health_context.get("source_id")),
+            "host_id": _safe_health_ref(health_context.get("host_id")),
+            "signal_type": _safe_health_ref(health_context.get("signal_type"), 64),
+            "correlation_id": _safe_health_ref(health_context.get("correlation_id")),
+            "source_fingerprint": _safe_health_ref(health_context.get("source_fingerprint")),
+            "trace_refs": [_safe_health_ref(ref) for ref in health_context.get("trace_refs", [])[:16]] if isinstance(health_context.get("trace_refs"), list) else [],
+        }
+        plans = payload.get("health_plans")
+        if isinstance(plans, list):
+            bounded_health["plans"] = [
+                {key: _safe_health_ref(plan.get(key), 64 if key in {"plan_id", "step"} else 256)
+                 for key in ("plan_id", "title", "summary", "step")}
+                for plan in plans[:3] if isinstance(plan, dict)
+            ]
+        selection = payload.get("health_selection")
+        if isinstance(selection, Mapping):
+            execution = selection.get("execution")
+            # Existing selections predate the operator's runtime switch. The
+            # chosen plan remains authoritative; execution is now canonical.
+            if isinstance(execution, Mapping) and str(execution.get("runtime") or "") == "hermes":
+                execution = dict(_HEALTH_EXECUTION_PROFILE)
+            bounded_health["selection"] = {
+                "plan_id": _safe_health_ref(selection.get("plan_id"), 64),
+                "actor": _safe_health_ref(selection.get("actor"), 128),
+                "execution": _bounded_health_execution(execution),
+            }
+        event["health"] = bounded_health
+        if bounded_health["correlation_id"]:
+            event["correlation_id"] = bounded_health["correlation_id"]
+        if bounded_health["trace_refs"]:
+            event["trace_refs"] = bounded_health["trace_refs"]
+    return event
+
+
+class DirectHealthRemediationAdapter:
+    """Run the existing helper locally, bypassing GPTAdmin Hub for remediation."""
+
+    job_id = "health-remediation"
+
+    def __init__(self, config_path: Path | None = None, runner: Any = urllib.request.urlopen) -> None:
+        self._config_path = config_path
+        self._runner = runner
+
+    def send(self, payload: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
+        return self.send_with_progress(payload, idempotency_key)
+
+    def send_with_progress(
+        self,
+        payload: dict[str, Any],
+        idempotency_key: str,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        if not idempotency_key.strip() or len(idempotency_key) > 512:
+            raise RuntimeError("direct health remediation requires a bounded idempotency key")
+        from .agent_job_helper import default_profile_path, run_profile
+        started_at = time.monotonic()
+        receipt = run_profile(
+            self.job_id,
+            _agent_job_event(self.job_id, payload),
+            self._config_path or default_profile_path(),
+            runner=self._runner,
+        )
+        if progress_callback is not None:
+            progress_callback({"status": "completed", "agent_receipt": receipt})
+        return {
+            "job_id": "direct-agent-herder",
+            "route_id": "noticeplace-direct-health-remediation",
+            "status": "completed",
+            "agent_receipt": receipt,
+            "elapsed_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+            "supervision": {
+                "state": "terminal",
+                "useful_progress": receipt.get("useful_progress") is True,
+                "progress_fingerprint": _safe_health_ref(receipt.get("progress_fingerprint"), 128),
+                "evidence_refs": receipt.get("evidence_refs", [])[:16],
+            },
+        }
 
 
 def _safe_health_ref(value: Any, limit: int = 128) -> str:
@@ -261,52 +357,7 @@ class GptAdminAgentJobAdapter:
         """Submit telemetry while forwarding durable useful-progress snapshots."""
         if not idempotency_key.strip() or len(idempotency_key) > 512:
             raise RuntimeError("GPTAdmin agent job requires a bounded idempotency key")
-        incident = payload.get("incident")
-        if not isinstance(incident, dict):
-            raise RuntimeError("GPTAdmin agent job payload is missing incident telemetry")
-        bounded_incident: dict[str, str] = {}
-        for field in _INCIDENT_FIELDS:
-            value = str(incident.get(field) if incident.get(field) is not None else "")
-            bounded_incident[field] = sanitize_bounded_text(value, _INCIDENT_LIMITS[field])
-        event = {
-            "schema": "notify.agent-job.v1",
-            "job_id": self.job_id,
-            "incident": bounded_incident,
-        }
-        health_context = payload.get("health_context")
-        if isinstance(health_context, dict):
-            bounded_health = {
-                "source_id": _safe_health_ref(health_context.get("source_id")),
-                "host_id": _safe_health_ref(health_context.get("host_id")),
-                "signal_type": _safe_health_ref(health_context.get("signal_type"), 64),
-                "correlation_id": _safe_health_ref(health_context.get("correlation_id")),
-                "source_fingerprint": _safe_health_ref(health_context.get("source_fingerprint")),
-                "trace_refs": [_safe_health_ref(ref) for ref in health_context.get("trace_refs", [])[:16]] if isinstance(health_context.get("trace_refs"), list) else [],
-            }
-            plans = payload.get("health_plans")
-            if isinstance(plans, list):
-                bounded_health["plans"] = [
-                    {
-                        "plan_id": _safe_health_ref(plan.get("plan_id"), 64),
-                        "title": _safe_health_ref(plan.get("title"), 128),
-                        "summary": _safe_health_ref(plan.get("summary"), 256),
-                        "step": _safe_health_ref(plan.get("step"), 64),
-                    }
-                    for plan in plans[:3]
-                    if isinstance(plan, dict)
-                ]
-            selection = payload.get("health_selection")
-            if isinstance(selection, Mapping):
-                bounded_health["selection"] = {
-                    "plan_id": _safe_health_ref(selection.get("plan_id"), 64),
-                    "actor": _safe_health_ref(selection.get("actor"), 128),
-                    "execution": _bounded_health_execution(selection.get("execution")),
-                }
-            event["health"] = bounded_health
-            if bounded_health["correlation_id"]:
-                event["correlation_id"] = bounded_health["correlation_id"]
-            if bounded_health["trace_refs"]:
-                event["trace_refs"] = bounded_health["trace_refs"]
+        event = _agent_job_event(self.job_id, payload)
         body = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         started_at = self._now()
         accepted = self._open(self._signed_request(self._url, "POST", body, idempotency_key), min(20, self._timeout_seconds))

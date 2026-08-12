@@ -109,11 +109,11 @@ def _health_remediation_message(profile: dict[str, str], event: dict[str, Any], 
     plan_id = str(selection.get("plan_id") or "") if isinstance(selection, dict) else ""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", plan_id):
         raise RuntimeError("health remediation event has no safe selected plan")
-    expected = {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}
+    expected = {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}
     if not isinstance(execution, dict) or {key: str(execution.get(key) or "") for key in expected} != expected:
         raise RuntimeError("health remediation event has an unsupported execution profile")
-    if profile["harness"] != "hermes" or profile["model"] != "gpt-5.6-luna" or profile["reasoning"] != "high" or profile["topic"] != "health":
-        raise RuntimeError("health-remediation profile must pin hermes/gpt-5.6-luna high health")
+    if profile["harness"] != "opencode" or profile["model"] != "openai-codex/gpt-5.6-luna" or profile["reasoning"] != "high" or profile["topic"] != "health":
+        raise RuntimeError("health-remediation profile must pin opencode/openai-codex/gpt-5.6-luna high health")
     telemetry = _telemetry_message("", incident).lstrip()
     selected_plan: Mapping[str, Any] | None = None
     plans = health.get("plans") if isinstance(health, Mapping) else None
@@ -571,6 +571,18 @@ def run_profile(profile_id: str, event: dict[str, Any], config_path: Path, runne
     if not isinstance(incident, dict):
         raise RuntimeError("agent job event is missing incident telemetry")
     profile = _validate_profile(_load_profile(profile_id, config_path))
+    if profile_id == "health-remediation":
+        # The direct NoticePlace MVP owns the execution runtime. Keep the
+        # existing root-owned profile for URL/CWD/timeouts, but do not require
+        # a separate production config migration away from the former Hermes
+        # route.
+        profile = {
+            **profile,
+            "harness": "opencode",
+            "model": "openai-codex/gpt-5.6-luna",
+            "reasoning": "high",
+            "topic": "health",
+        }
     started_at = time.monotonic()
     if profile_id == "health-diagnosis":
         # Validate the callback credential before creating a session, avoiding

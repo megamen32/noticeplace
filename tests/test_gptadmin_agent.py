@@ -14,7 +14,7 @@ from unittest import mock
 
 from notification_center.core import AuthorizationError, NotificationCenter, ValidationError
 from notification_center.health_workflow import HealthWorkflow
-from notification_center.gptadmin_agent import GptAdminAgentJobAdapter, HealthProgressSupervisor
+from notification_center.gptadmin_agent import DirectHealthRemediationAdapter, GptAdminAgentJobAdapter, HealthProgressSupervisor
 from notification_center.http_api import DeliveryWorker, gptadmin_agent_jobs_from_environment
 
 
@@ -705,6 +705,16 @@ class GptAdminAgentJobTests(unittest.TestCase):
             jobs = gptadmin_agent_jobs_from_environment()
         self.assertEqual(["repair_100"], list(jobs))
         self.assertEqual("repair_100", jobs["repair_100"].job_id)
+
+    def test_environment_bypasses_hub_only_for_health_remediation(self) -> None:
+        configured = {
+            "health-diagnosis": {"url": "http://127.0.0.1:9001/webhooks/v1/health-diagnosis", "hmac_secret": "diagnosis-secret"},
+            "health-remediation": {"url": "http://127.0.0.1:9001/webhooks/v1/health-remediation", "hmac_secret": "remediation-secret"},
+        }
+        with mock.patch.dict(os.environ, {"NOTIFY_GPTADMIN_AGENT_JOBS_JSON": json.dumps(configured)}, clear=True):
+            jobs = gptadmin_agent_jobs_from_environment()
+        self.assertIsInstance(jobs["health-diagnosis"], GptAdminAgentJobAdapter)
+        self.assertIsInstance(jobs["health-remediation"], DirectHealthRemediationAdapter)
 
     def test_supervisor_classifies_useful_progress_and_ignores_heartbeat_only_updates(self) -> None:
         supervisor = HealthProgressSupervisor(stale_after_seconds=10, now=lambda: 110)

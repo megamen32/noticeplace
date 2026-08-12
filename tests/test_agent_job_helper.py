@@ -116,14 +116,14 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertNotIn("health-callback-token", json.dumps(result))
             self.assertEqual(7, len(requests))
 
-    def test_health_remediation_profile_requires_selected_plan_and_routes_to_hermes(self) -> None:
+    def test_health_remediation_profile_requires_selected_plan_and_routes_to_opencode(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()
             config = root / "agent-jobs.json"
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
-                "harness": "hermes", "name": "health_remediation_100", "cwd": str(root), "mode": "queue",
-                "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "harness": "opencode", "name": "health_remediation_100", "cwd": str(root), "mode": "queue",
+                "model": "openai-codex/gpt-5.6-luna", "reasoning": "high", "topic": "health",
                 "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -134,7 +134,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "hermes-health-1", "delivery": "accepted", "model": "gpt-5.6-luna"})
+                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-1", "delivery": "accepted", "model": "openai-codex/gpt-5.6-luna"})
                 if "/progress?" in url:
                     return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
                 if "/details?" in url:
@@ -151,16 +151,16 @@ class AgentJobHelperTests(unittest.TestCase):
                     "schema": "notify.agent-job.v1",
                     "job_id": "health-remediation",
                     "incident": {"id": "inc-health-1", "project": "health-monitor", "severity": "critical", "title": "Disk degraded", "body": "bounded", "dedup_key": "health:disk", "occurrences": 1},
-                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
+                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
                 },
                 config,
                 runner=runner,
             )
-            self.assertEqual("hermes-health-1", result["session_id"])
-            self.assertEqual("gpt-5.6-luna", result["model"])
+            self.assertEqual("opencode-health-1", result["session_id"])
+            self.assertEqual("openai-codex/gpt-5.6-luna", result["model"])
             body = json.loads(requests[0].data)
-            self.assertEqual("hermes", body["harness"])
-            self.assertEqual("gpt-5.6-luna", body["model"])
+            self.assertEqual("opencode", body["harness"])
+            self.assertEqual("openai-codex/gpt-5.6-luna", body["model"])
             self.assertIn("selected plan repair", body["message"])
 
     def test_health_remediation_waits_for_terminal_receipt_and_returns_verification(self) -> None:
@@ -169,8 +169,8 @@ class AgentJobHelperTests(unittest.TestCase):
             config = root / "agent-jobs.json"
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
-                "harness": "hermes", "name": "health_remediation_test", "cwd": str(root), "mode": "queue",
-                "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "harness": "opencode", "name": "health_remediation_test", "cwd": str(root), "mode": "queue",
+                "model": "openai-codex/gpt-5.6-luna", "reasoning": "high", "topic": "health",
                 "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -193,7 +193,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "hermes-health-1", "delivery": "accepted", "model": "gpt-5.6-luna"})
+                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-1", "delivery": "accepted", "model": "openai-codex/gpt-5.6-luna"})
                 if "/progress?" in url:
                     return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
                 if "/details?" in url:
@@ -209,7 +209,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "health": {
                         "source_id": "host:vusa",
                         "source_fingerprint": "source-fingerprint-1",
-                        "selection": {"plan_id": "repair", "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}},
+                        "selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}},
                     },
                 },
                 config,
@@ -232,8 +232,8 @@ class AgentJobHelperTests(unittest.TestCase):
             config = root / "agent-jobs.json"
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
-                "harness": "hermes", "name": "health_remediation_timeout", "cwd": str(root), "mode": "queue",
-                "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "harness": "opencode", "name": "health_remediation_timeout", "cwd": str(root), "mode": "queue",
+                "model": "openai-codex/gpt-5.6-luna", "reasoning": "high", "topic": "health",
                 "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5", "remediation_timeout_seconds": "1200",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -265,7 +265,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 result = run_profile(
                     "health-remediation",
                     {"schema": "notify.agent-job.v1", "job_id": "health-remediation", "incident": {"id": "inc-timeout"},
-                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}}},
+                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}}},
                     config,
                     runner=runner,
                 )
@@ -278,28 +278,49 @@ class AgentJobHelperTests(unittest.TestCase):
         })}]}
         self.assertIsNone(_extract_health_remediation(details, "repair"))
 
-    def test_health_remediation_rejects_legacy_non_hermes_profile(self) -> None:
+    def test_health_remediation_canonicalizes_legacy_profile_to_opencode(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()
             config = root / "agent-jobs.json"
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
-                "harness": "opencode", "name": "health_remediation_legacy", "cwd": str(root), "mode": "queue",
-                "model": "openai-codex/gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "harness": "hermes", "name": "health_remediation_legacy", "cwd": str(root), "mode": "queue",
+                "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health",
                 "instruction": "Apply only the selected health remediation plan.",
             }}}), encoding="utf-8")
             config.chmod(0o600)
-            with self.assertRaisesRegex(RuntimeError, "must pin hermes/gpt-5.6-luna"):
-                run_profile(
+            requests: list[object] = []
+
+            def runner(request: object, **_kwargs: object) -> _Response:
+                requests.append(request)
+                url = str(getattr(request, "full_url", ""))
+                if url.endswith("/api/sessions/new-or-resume"):
+                    return _Response({"ok": True, "created": True, "sessionId": "opencode-legacy-1", "delivery": "accepted"})
+                if "/progress?" in url:
+                    return _Response({"session": {"status": "idle"}, "fingerprint": "progress:legacy"})
+                if "/details?" in url:
+                    return _Response({"messages": [{"role": "assistant", "text": json.dumps({
+                        "status": "completed", "plan_id": "repair", "step": "verify", "observed_state": "unknown",
+                        "verification_id": "verify-legacy", "source_id": "source-a", "source_fingerprint": "fp-1",
+                        "verifier_id": "probe-b", "evidence_refs": ["probe:legacy"], "trace_refs": ["trace:legacy"],
+                    })}]})
+                self.fail(f"unexpected Agent Herder URL: {url}")
+
+            result = run_profile(
                     "health-remediation",
                     {
                         "schema": "notify.agent-job.v1",
                         "job_id": "health-remediation",
                         "incident": {"id": "inc-health-legacy"},
-                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
+                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
                     },
                     config,
+                    runner=runner,
                 )
+            body = json.loads(requests[0].data)
+            self.assertEqual("opencode", body["harness"])
+            self.assertEqual("openai-codex/gpt-5.6-luna", body["model"])
+            self.assertEqual("opencode", result["harness"])
 
     def test_profile_owns_target_identity_and_event_is_only_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
