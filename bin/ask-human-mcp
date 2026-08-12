@@ -3,5 +3,12 @@ set -eu
 
 SCRIPT=$(readlink -f -- "$0")
 ROOT=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")/.." && pwd)
+ENV_FILE=${ASK_HUMAN_ENV_FILE:-"$HOME/.config/ask-human/env"}
+if [ -r "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+fi
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 exec /usr/bin/python3 "$ROOT/mcp/ask_human_mcp.py" "$@"

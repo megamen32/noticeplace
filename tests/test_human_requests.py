@@ -22,6 +22,16 @@ from mcp.notify_mcp import tool_ask_human
 from mcp.notify_mcp import tool_specs
 
 
+class AskHumanEntrypointTests(unittest.TestCase):
+    """Prove the installed command loads its private runtime environment."""
+
+    def test_entrypoint_loads_default_runtime_env(self) -> None:
+        """Keep Codex registration simple by sourcing one fixed env file."""
+        script = (Path(__file__).parents[1] / "bin" / "ask-human-mcp").read_text()
+        self.assertIn('$HOME/.config/ask-human/env', script)
+        self.assertIn('ASK_HUMAN_ENV_FILE', script)
+
+
 class HumanRequestTests(unittest.TestCase):
     """Prove request validation and immutable resolution in the domain layer."""
 
