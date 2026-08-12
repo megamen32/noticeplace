@@ -116,7 +116,7 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertNotIn("health-callback-token", json.dumps(result))
             self.assertEqual(7, len(requests))
 
-    def test_health_remediation_profile_requires_selected_plan_and_routes_to_opencode(self) -> None:
+    def test_health_remediation_profile_requires_selected_plan_and_routes_to_codex(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()
             config = root / "agent-jobs.json"
@@ -157,12 +157,12 @@ class AgentJobHelperTests(unittest.TestCase):
                 runner=runner,
             )
             self.assertEqual("opencode-health-1", result["session_id"])
-            self.assertEqual("minimax-coding-plan/MiniMax-M2.5-highspeed", result["model"])
+            self.assertEqual("gpt-5.6-luna", result["model"])
             body = json.loads(requests[0].data)
-            self.assertEqual("opencode", body["harness"])
-            self.assertEqual("minimax-coding-plan/MiniMax-M2.5-highspeed", body["model"])
+            self.assertEqual("codex", body["harness"])
+            self.assertEqual("gpt-5.6-luna", body["model"])
             self.assertIn("selected plan repair", body["message"])
-            self.assertIn("Execution runtime is OpenCode", body["message"])
+            self.assertIn("Execution runtime is Codex through Agent Herder", body["message"])
 
     def test_health_remediation_waits_for_terminal_receipt_and_returns_verification(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -289,7 +289,7 @@ class AgentJobHelperTests(unittest.TestCase):
         self.assertIsNotNone(receipt)
         self.assertEqual("degraded", receipt["observed_state"])
 
-    def test_health_remediation_canonicalizes_legacy_profile_to_opencode(self) -> None:
+    def test_health_remediation_canonicalizes_legacy_profile_to_codex(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()
             config = root / "agent-jobs.json"
@@ -329,9 +329,9 @@ class AgentJobHelperTests(unittest.TestCase):
                     runner=runner,
                 )
             body = json.loads(requests[0].data)
-            self.assertEqual("opencode", body["harness"])
-            self.assertEqual("minimax-coding-plan/MiniMax-M2.5-highspeed", body["model"])
-            self.assertEqual("opencode", result["harness"])
+            self.assertEqual("codex", body["harness"])
+            self.assertEqual("gpt-5.6-luna", body["model"])
+            self.assertEqual("codex", result["harness"])
 
     def test_profile_owns_target_identity_and_event_is_only_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

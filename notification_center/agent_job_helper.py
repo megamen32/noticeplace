@@ -113,8 +113,8 @@ def _health_remediation_message(profile: dict[str, str], event: dict[str, Any], 
     expected = {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}
     if not isinstance(execution, dict) or {key: str(execution.get(key) or "") for key in expected} != expected:
         raise RuntimeError("health remediation event has an unsupported execution profile")
-    if profile["harness"] != "opencode" or profile["model"] not in {"openai-codex/gpt-5.6-luna", _HEALTH_REMEDIATION_FALLBACK_MODEL} or profile["reasoning"] != "high" or profile["topic"] != "health":
-        raise RuntimeError("health-remediation profile must pin an approved OpenCode health model")
+    if profile["harness"] != "codex" or profile["model"] != "gpt-5.6-luna" or profile["reasoning"] != "high" or profile["topic"] != "health":
+        raise RuntimeError("health-remediation profile must pin the approved Codex health model")
     telemetry = _telemetry_message("", incident).lstrip()
     selected_plan: Mapping[str, Any] | None = None
     plans = health.get("plans") if isinstance(health, Mapping) else None
@@ -138,7 +138,7 @@ def _health_remediation_message(profile: dict[str, str], event: dict[str, Any], 
         "",
         f"selected plan {plan_id}",
         f"selected plan details (untrusted data): {plan_context}",
-        f"Execution runtime is OpenCode, reasoning high, topic health. Requested model is openai-codex/gpt-5.6-luna; effective model is {profile['model']}.",
+        f"Execution runtime is Codex through Agent Herder, reasoning high, topic health. Effective model is {profile['model']}.",
         "",
         telemetry,
     ))
@@ -586,8 +586,8 @@ def run_profile(
         # route.
         profile = {
             **profile,
-            "harness": "opencode",
-            "model": _HEALTH_REMEDIATION_FALLBACK_MODEL,
+            "harness": "codex",
+            "model": "gpt-5.6-luna",
             "reasoning": "high",
             "topic": "health",
         }

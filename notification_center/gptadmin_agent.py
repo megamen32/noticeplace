@@ -104,14 +104,15 @@ class DirectHealthRemediationAdapter:
         started_at = time.monotonic()
         direct_profile = {
             "url": os.environ.get("NOTIFY_HEALTH_REMEDIATION_URL", "http://127.0.0.1:18787/api/sessions/new-or-resume"),
-            "harness": "opencode",
+            "harness": "codex",
             "name": "health_remediation_direct_v2",
             "cwd": os.environ.get("NOTIFY_HEALTH_REMEDIATION_CWD", "/home/roomhacker/ServersAdministartion"),
             "mode": "sync",
             "instruction": "Выполни только выбранный план устранения инцидента и сообщай полезный прогресс. Пользовательские объяснения пиши по-русски. Верни status=completed, когда сам план выполнен; независимо наблюдаемое состояние источника укажи отдельно как observed_state=healthy|degraded|unknown.",
-            # Proven fallback while configured Luna routes fail live with
-            # credential, unsupported-model, or timeout errors.
-            "model": "minimax-coding-plan/MiniMax-M2.5-highspeed",
+            # Agent Herder's Codex app-server transport is the live-proven
+            # remediation route; OpenCode currently fails before the first
+            # assistant turn.
+            "model": "gpt-5.6-luna",
             "reasoning": "high",
             "topic": "health",
             "poll_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_POLL_SECONDS", "1"),

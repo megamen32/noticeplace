@@ -776,9 +776,9 @@ class GptAdminAgentJobTests(unittest.TestCase):
                 "delivery-direct-1",
             )
         self.assertEqual("completed", result["status"])
-        self.assertEqual("opencode", run.call_args.kwargs["profile_override"]["harness"])
+        self.assertEqual("codex", run.call_args.kwargs["profile_override"]["harness"])
         self.assertEqual("sync", run.call_args.kwargs["profile_override"]["mode"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M2.5-highspeed", run.call_args.kwargs["profile_override"]["model"])
+        self.assertEqual("gpt-5.6-luna", run.call_args.kwargs["profile_override"]["model"])
         self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
 
     def test_supervisor_classifies_useful_progress_and_ignores_heartbeat_only_updates(self) -> None:
