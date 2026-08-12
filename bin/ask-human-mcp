@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+SCRIPT=$(readlink -f -- "$0")
+ROOT=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")/.." && pwd)
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 exec /usr/bin/python3 "$ROOT/mcp/ask_human_mcp.py" "$@"
