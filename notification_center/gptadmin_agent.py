@@ -108,7 +108,7 @@ class DirectHealthRemediationAdapter:
             "name": "health_remediation_direct_v2",
             "cwd": os.environ.get("NOTIFY_HEALTH_REMEDIATION_CWD", "/home/roomhacker/ServersAdministartion"),
             "mode": "sync",
-            "instruction": "Apply only the selected health remediation plan and report useful progress. Return status=completed when the plan itself finished; report the independently observed source separately as observed_state=healthy|degraded|unknown.",
+            "instruction": "Выполни только выбранный план устранения инцидента и сообщай полезный прогресс. Пользовательские объяснения пиши по-русски. Верни status=completed, когда сам план выполнен; независимо наблюдаемое состояние источника укажи отдельно как observed_state=healthy|degraded|unknown.",
             # Proven fallback while configured Luna routes fail live with
             # credential, unsupported-model, or timeout errors.
             "model": "minimax-coding-plan/MiniMax-M2.5-highspeed",

@@ -126,6 +126,15 @@ class TelegramInteractionPoller:
     def _allowed(self, user_id: Any) -> bool:
         return str(user_id) in self._allowed_user_ids
 
+    @staticmethod
+    def _health_plan_label(plan_id: str, title: Any) -> str:
+        known = {
+            "observe": "Наблюдать", "repair": "Исправить", "verify": "Проверить",
+            "plan-001": "План 1", "plan-002": "План 2", "plan-003": "План 3",
+        }
+        value = str(title or "").strip()
+        return known.get(plan_id, value or plan_id)
+
     def _dismiss_choice_message(self, callback: dict[str, Any], label: str) -> None:
         """Remove choice buttons and leave a visible selected marker."""
         message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
@@ -134,7 +143,7 @@ class TelegramInteractionPoller:
         if not chat_id or not isinstance(message_id, int) or message_id <= 0:
             return
         current_text = str(message.get("text") or "").rstrip()
-        marker = f"✓ Выбрано: {label[:128]}"
+        marker = f"✅ Выбрано: {label[:128]}"
         text = f"{current_text}\n\n{marker}" if current_text else marker
         payload = {
             "chat_id": chat_id,
@@ -165,8 +174,13 @@ class TelegramInteractionPoller:
                 selected = self._health_plan_codec.decode(str(callback.get("data") or ""))
                 if selected is not None:
                     incident_id, plan_id = selected
-                    self._center.record_health_plan_selection(incident_id, plan_id, f"telegram:{actor_id}", f"{incident_id}:health.plan:{plan_id}")
-                    self._answer(callback_id, "plan: selected")
+                    result = self._center.record_health_plan_selection(incident_id, plan_id, f"telegram:{actor_id}", f"{incident_id}:health.plan:{plan_id}")
+                    plans = self._center.latest_health_plans(incident_id)
+                    title = next((plan.get("title") for plan in plans if str(plan.get("plan_id") or "") == plan_id), "")
+                    label = self._health_plan_label(plan_id, title)
+                    if result.get("idempotent") is not True:
+                        self._dismiss_choice_message(callback, label)
+                    self._answer(callback_id, f"✅ Выбрано: {label}")
                     return
             parsed = self._codec.decode(str(callback.get("data") or ""))
             if parsed is not None and len(parsed) == 2:
@@ -181,8 +195,13 @@ class TelegramInteractionPoller:
             if parsed is not None and len(parsed) == 3:
                 action, incident_id, plan_id = parsed
                 if action == "health_plan":
-                    self._center.record_health_plan_selection(incident_id, plan_id, f"telegram:{actor_id}", f"{incident_id}:health.plan:{plan_id}")
-                    self._answer(callback_id, "plan: selected")
+                    result = self._center.record_health_plan_selection(incident_id, plan_id, f"telegram:{actor_id}", f"{incident_id}:health.plan:{plan_id}")
+                    plans = self._center.latest_health_plans(incident_id)
+                    title = next((plan.get("title") for plan in plans if str(plan.get("plan_id") or "") == plan_id), "")
+                    label = self._health_plan_label(plan_id, title)
+                    if result.get("idempotent") is not True:
+                        self._dismiss_choice_message(callback, label)
+                    self._answer(callback_id, f"✅ Выбрано: {label}")
                     return
                 if action == "choice":
                     if self._choice_callback is None:
@@ -218,7 +237,7 @@ class TelegramInteractionPoller:
                     self._dismiss_choice_message(callback, str(selected.get("label") or selected.get("value") or ""))
                     self._answer(callback_id, f"choice: {result['state']}")
                     return
-            self._answer(callback_id, "Invalid action")
+            self._answer(callback_id, "Недопустимое действие")
         except (ValidationError, ValueError) as error:
             self._answer(callback_id, str(error)[:180])
 
@@ -243,7 +262,7 @@ class TelegramInteractionPoller:
             return
         self._center.record_telegram_ask(incident_id, f"telegram:{actor_id}", question)
         if chat_id:
-            self._message(chat_id, "Ask recorded.")
+            self._message(chat_id, "Вопрос сохранён.")
 
     def poll_once(self) -> int:
         if not self._token or not self._allowed_user_ids:

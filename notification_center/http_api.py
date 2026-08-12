@@ -235,7 +235,7 @@ class TelegramSender:
             raise RuntimeError("Telegram sender is not configured")
         incident = payload["incident"]
         note = str(incident.get("operator_note") or "").strip()
-        note_block = f"\n\nNote: {note}" if note else ""
+        note_block = f"\n\nПримечание: {note}" if note else ""
         health_plans = payload.get("health_plans")
         choice_options = payload.get("choices")
         health_outcome = payload.get("health_outcome")
@@ -247,16 +247,16 @@ class TelegramSender:
                 if isinstance(plan, dict)
             ]
             if plan_lines:
-                plan_block = "\n\nPlans:\n" + "\n".join(plan_lines)
+                plan_block = "\n\nПланы:\n" + "\n".join(plan_lines)
         if isinstance(health_outcome, dict) and str(health_outcome.get("observed_state") or "") == "degraded":
-            plan_id = str(health_outcome.get("plan_id") or "selected plan")[:64]
-            step = str(health_outcome.get("step") or "completed")[:128]
+            plan_id = str(health_outcome.get("plan_id") or "выбранный план")[:64]
+            step = str(health_outcome.get("step") or "выполнено")[:128]
             text = (
-                f"HEALTH · {incident['project']}\n\n"
-                f"Plan {plan_id} completed, but the source is still degraded.\n\n"
-                f"Completed step: {step}\n"
-                "The incident remains open. Choose or generate a remediation plan that fixes the remaining signal."
-                f"\n\nIncident: {incident['id']}"
+                f"ЗДОРОВЬЕ · {incident['project']}\n\n"
+                f"План {plan_id} выполнен, но источник всё ещё в состоянии деградации.\n\n"
+                f"Выполненный шаг: {step}\n"
+                "Инцидент остаётся открытым. Выберите или создайте план, который устранит оставшийся сигнал."
+                f"\n\nИнцидент: {incident['id']}"
             )
         else:
             text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nIncident: {incident['id']}"

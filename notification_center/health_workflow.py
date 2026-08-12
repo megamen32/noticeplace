@@ -195,9 +195,9 @@ def validate_health_plans(plans: Any) -> list[dict[str, Any]]:
 
 def _default_health_plans() -> list[dict[str, Any]]:
     return [
-        {"plan_id": "observe", "title": "Observe", "summary": "Gather a bounded live snapshot", "step": "observe"},
-        {"plan_id": "repair", "title": "Repair", "summary": "Execute the selected repair path", "step": "repair"},
-        {"plan_id": "verify", "title": "Verify", "summary": "Confirm the original source is healthy", "step": "verify"},
+        {"plan_id": "observe", "title": "Наблюдать", "summary": "Собрать ограниченный актуальный снимок", "step": "observe"},
+        {"plan_id": "repair", "title": "Исправить", "summary": "Выполнить выбранный способ исправления", "step": "repair"},
+        {"plan_id": "verify", "title": "Проверить", "summary": "Подтвердить восстановление исходного сигнала", "step": "verify"},
     ]
 
 

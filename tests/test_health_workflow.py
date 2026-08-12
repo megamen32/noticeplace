@@ -146,8 +146,8 @@ class HealthWorkflowTests(unittest.TestCase):
                 "health_outcome": {"plan_id": "plan-003", "observed_state": "degraded", "step": "validate keywords"},
             })
 
-        self.assertIn("Plan plan-003 completed", captured["text"])
-        self.assertIn("still degraded", captured["text"])
+        self.assertIn("План plan-003 выполнен", captured["text"])
+        self.assertIn("всё ещё в состоянии деградации", captured["text"])
         self.assertEqual("77", captured["message_thread_id"])
         self.assertNotIn("reply_markup", captured)
 
@@ -204,7 +204,7 @@ class HealthWorkflowTests(unittest.TestCase):
         calls: list[tuple[str, dict[str, object]]] = []
         health_codec = TelegramHealthPlanCodec(codec.secret)
         self.workflow.attach_plans(self.created["incident_id"], "plans-3", self._plans(), actor="gptadmin")
-        update = {"update_id": 10, "callback_query": {"id": "cb-1", "from": {"id": 42}, "data": health_codec.encode(self.created["incident_id"], "verify")}}
+        update = {"update_id": 10, "callback_query": {"id": "cb-1", "from": {"id": 42}, "data": health_codec.encode(self.created["incident_id"], "verify"), "message": {"message_id": 88, "chat": {"id": -100123}, "text": "Три плана"}}}
 
         def api(method: str, payload: dict[str, object]) -> dict[str, object]:
             calls.append((method, payload))
@@ -219,7 +219,10 @@ class HealthWorkflowTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual(1, len(event_rows))
         self.assertIn('"plan_id": "verify"', event_rows[0]["payload_json"])
-        self.assertEqual(1, len([call for call in calls if call[0] == "answerCallbackQuery"]))
+        self.assertIn(("answerCallbackQuery", {"callback_query_id": "cb-1", "text": "✅ Выбрано: Проверить"}), calls)
+        edit = next(payload for method, payload in calls if method == "editMessageText")
+        self.assertIn("✅ Выбрано: Проверить", edit["text"])
+        self.assertEqual(json.dumps({"inline_keyboard": []}, ensure_ascii=False, separators=(",", ":")), edit["reply_markup"])
 
         duplicate = self.center.select_health_plan(self.created["incident_id"], "cb-1", "verify", "telegram:42")
         self.assertTrue(duplicate["idempotent"])
@@ -242,7 +245,7 @@ class HealthWorkflowTests(unittest.TestCase):
             api=api,
         )
         self.assertEqual(1, poller.poll_once())
-        self.assertIn(("answerCallbackQuery", {"callback_query_id": "cb-malformed", "text": "Invalid action"}), calls)
+        self.assertIn(("answerCallbackQuery", {"callback_query_id": "cb-malformed", "text": "Недопустимое действие"}), calls)
 
     def test_malformed_health_plan_callback_without_plan_is_answered_without_stopping_poller(self) -> None:
         calls: list[tuple[str, dict[str, object]]] = []
@@ -260,7 +263,7 @@ class HealthWorkflowTests(unittest.TestCase):
             api=api,
         )
         self.assertEqual(1, poller.poll_once())
-        self.assertIn(("answerCallbackQuery", {"callback_query_id": "cb-health-malformed", "text": "Invalid action"}), calls)
+        self.assertIn(("answerCallbackQuery", {"callback_query_id": "cb-health-malformed", "text": "Недопустимое действие"}), calls)
 
     def test_selected_plan_creates_one_remediation_request_with_execution_profile(self) -> None:
         self.workflow.attach_plans(self.created["incident_id"], "plans-remediation", self._plans(), actor="omniroute")
