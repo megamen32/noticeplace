@@ -112,7 +112,7 @@ class DirectHealthRemediationAdapter:
             # makes the initial HTTP request time out while Codex is still
             # making useful progress.
             "mode": "queue",
-            "instruction": "Выполни только выбранный план устранения инцидента и сообщай полезный прогресс. Пользовательские объяснения пиши по-русски. Верни status=completed, когда сам план выполнен; независимо наблюдаемое состояние источника укажи отдельно как observed_state=healthy|degraded|unknown.",
+            "instruction": "Выполни только выбранный план устранения инцидента и сообщай полезный прогресс. Пользовательские объяснения пиши по-русски. Последним сообщением верни только JSON: {\"status\":\"completed\",\"plan_id\":\"<selected>\",\"step\":\"<done>\",\"observed_state\":\"healthy|degraded|unknown\",\"verification_id\":\"<id>\",\"source_id\":\"<id>\",\"source_fingerprint\":\"<fingerprint>\",\"verifier_id\":\"<distinct id>\",\"evidence_refs\":[\"<ref>\"],\"trace_refs\":[\"<ref>\"]}.",
             # Agent Herder's Codex app-server transport is the live-proven
             # remediation route; OpenCode currently fails before the first
             # assistant turn.

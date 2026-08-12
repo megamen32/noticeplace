@@ -539,7 +539,10 @@ def _run_health_remediation(profile: dict[str, str], event: dict[str, Any], sess
         session = progress.get("session") if isinstance(progress.get("session"), Mapping) else {}
         session_status = str(session.get("status") or "").strip().lower()
         if session_status in {"idle", "completed", "done"}:
-            details = _session_json(profile, session_id, "/details?limit=5&history=auto", runner)
+            # The terminal receipt is the latest assistant turn. Loading five
+            # Codex turns also includes large tool traces and can exceed the
+            # helper's bounded response guard after a real diagnosis.
+            details = _session_json(profile, session_id, "/details?limit=1&history=auto", runner)
             result = _extract_health_remediation(details, plan_id)
             if result is not None:
                 if not last_fingerprint:
