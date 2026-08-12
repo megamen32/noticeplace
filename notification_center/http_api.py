@@ -96,7 +96,7 @@ def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[s
     mode = telegram_mode(incident)
     if active_modes is not None and mode not in active_modes:
         return {}
-    configured = severity_routes.get(mode, {})
+    configured = severity_routes.get(mode, severity_routes.get(str(incident.get("severity") or ""), {}))
     if configured.get("enabled") is False:
         return {}
     # Health cards contain actionable plan callbacks.  Never fall back to the
