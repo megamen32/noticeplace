@@ -339,7 +339,12 @@ def _extract_health_remediation(details: Mapping[str, Any], expected_plan_id: st
             plan_id = str(candidate.get("plan_id") or "").strip()
             status = str(candidate.get("status") or "").strip().lower()
             step = " ".join(str(candidate.get("step") or "").replace("\x00", "").splitlines()).strip()
-            observed_state = str(candidate.get("observed_state") or candidate.get("state") or "").strip().lower()
+            raw_observed_state = candidate.get("observed_state") or candidate.get("state") or ""
+            # A real diagnostic can report a structured degraded snapshot
+            # (failed units, disk pressure, etc.).  It remains an explicit
+            # degraded outcome rather than a reason to discard a complete,
+            # independently verified receipt.
+            observed_state = "degraded" if isinstance(raw_observed_state, Mapping) else str(raw_observed_state).strip().lower()
             if plan_id != expected_plan_id or status not in {"completed", "remediation_complete", "resolved", "degraded"} or not step:
                 continue
             if observed_state not in {"healthy", "degraded", "unknown"}:

@@ -289,6 +289,19 @@ class AgentJobHelperTests(unittest.TestCase):
         self.assertIsNotNone(receipt)
         self.assertEqual("degraded", receipt["observed_state"])
 
+    def test_health_remediation_treats_structured_observed_state_as_degraded(self) -> None:
+        details = {"messages": [{"role": "assistant", "text": json.dumps({
+            "status": "degraded", "plan_id": "repair", "step": "readonly-triage-complete",
+            "observed_state": {"failed_unit": "exit=1", "disk": "94%"},
+            "verification_id": "verify-live", "source_id": "host:server-100", "source_fingerprint": "fp-live",
+            "verifier_id": "independent-systemd-snapshot", "evidence_refs": ["probe:live"], "trace_refs": ["trace:codex:live"],
+        })}]}
+
+        receipt = _extract_health_remediation(details, "repair")
+
+        self.assertIsNotNone(receipt)
+        self.assertEqual("degraded", receipt["observed_state"])
+
     def test_health_remediation_canonicalizes_legacy_profile_to_codex(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()
