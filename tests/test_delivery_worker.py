@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from notification_center.core import NotificationCenter
-from notification_center.http_api import DeliveryWorker, MatrixCallSender, TelegramSender
+from notification_center.http_api import (
+    DeliveryWorker,
+    MatrixCallSender,
+    MatrixMessageSender,
+    TelegramSender,
+    WebhookMessageSender,
+    WebhookCallSender,
+    call_adapters_from_environment,
+    message_adapters_from_environment,
+)
 
 
 class DeliveryWorkerTests(unittest.TestCase):
@@ -22,6 +32,297 @@ class DeliveryWorkerTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def test_generic_message_channel_uses_registered_adapter_and_persists_receipt(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Matrix message route",
+            policy=[{
+                "id": "matrix-root",
+                "platform": "matrix",
+                "action": "message",
+                "target": {"room_id": "!ops:example.org"},
+                "retry_interval_seconds": 30,
+                "max_repeats": 1,
+            }],
+        )
+        created = self.center.create_event(
+            consumer["intake_token"],
+            "inbox-telegram-chat-1",
+            {**self.event, "correlation_id": "inbox://telegram/chat:1"},
+        )
+        calls: list[tuple[dict[str, object], str]] = []
+
+        class MessageAdapter:
+            def send(self, payload: dict[str, object], delivery_key: str) -> dict[str, object]:
+                calls.append((payload, delivery_key))
+                return {"event_id": "$matrix-event", "room_id": "!ops:example.org"}
+
+        worker = DeliveryWorker(
+            self.center,
+            type("Telegram", (), {"send": lambda *_args: (_ for _ in ()).throw(AssertionError("wrong adapter"))})(),
+            message_adapters={"matrix.message": MessageAdapter()},
+        )
+        self.assertEqual(1, worker.run_once())
+
+        row = self.center._connection.execute(
+            "SELECT status, result_json FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()
+        self.assertEqual("sent", row["status"])
+        self.assertEqual("$matrix-event", json.loads(row["result_json"])["event_id"])
+        self.assertEqual("inbox://telegram/chat:1", calls[0][0]["incident"]["correlation_id"])
+        self.assertIn(":matrix.message:", calls[0][1])
+
+    def test_matrix_message_sender_uses_stable_transaction_and_target_room(self) -> None:
+        requests = []
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            @staticmethod
+            def read() -> bytes:
+                return b'{"event_id":"$sent-event"}'
+
+        def runner(request, *, timeout):
+            requests.append((request, timeout))
+            return Response()
+
+        sender = MatrixMessageSender(
+            "https://matrix.example.org",
+            "matrix-token",
+            default_room_id="!default:example.org",
+            runner=runner,
+        )
+        payload = {
+            "incident": {"title": "Telegram message", "body": "hello", "correlation_id": "inbox://telegram/chat:1"},
+            "target": {"room_id": "!ops:example.org"},
+        }
+        first = sender.send(payload, "delivery-key-1")
+        second = sender.send(payload, "delivery-key-1")
+
+        self.assertEqual(first, second)
+        self.assertEqual("$sent-event", first["event_id"])
+        self.assertIn("%21ops%3Aexample.org/send/m.room.message/notice-", requests[0][0].full_url)
+        self.assertEqual(requests[0][0].full_url, requests[1][0].full_url)
+        self.assertEqual("Bearer matrix-token", requests[0][0].get_header("Authorization"))
+        self.assertEqual(
+            {"msgtype": "m.text", "body": "Telegram message\n\nhello\n\nSource: inbox://telegram/chat:1"},
+            json.loads(requests[0][0].data),
+        )
+
+    def test_webhook_message_sender_uses_provider_neutral_contract_and_idempotency(self) -> None:
+        requests = []
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            @staticmethod
+            def read() -> bytes:
+                return b'{"ok":true,"receipt_id":"wa-42"}'
+
+        def runner(request, *, timeout):
+            requests.append((request, timeout))
+            return Response()
+
+        sender = WebhookMessageSender(
+            "whatsapp.message",
+            "https://wa-bridge.example/v1/messages",
+            "bridge-token",
+            runner=runner,
+        )
+        result = sender.send(
+            {
+                "incident": {"title": "Telegram message", "body": "hello", "correlation_id": "inbox://telegram/chat:1"},
+                "target": {"chat_id": "operator"},
+            },
+            "delivery-key-1",
+        )
+
+        self.assertEqual("wa-42", result["receipt_id"])
+        self.assertEqual("Bearer bridge-token", requests[0][0].get_header("Authorization"))
+        self.assertTrue(requests[0][0].get_header("Idempotency-key").startswith("notice-"))
+        self.assertEqual(
+            {
+                "schema": "noticeplace.message.v1",
+                "channel": "whatsapp.message",
+                "delivery_key": "delivery-key-1",
+                "target": {"chat_id": "operator"},
+                "message": {"title": "Telegram message", "body": "hello", "source": "inbox://telegram/chat:1"},
+            },
+            json.loads(requests[0][0].data),
+        )
+
+    def test_message_adapter_registry_builds_matrix_whatsapp_and_vk_from_operator_env(self) -> None:
+        environment = {
+            "MATRIX_MESSAGE_HOMESERVER": "https://matrix.example.org",
+            "MATRIX_MESSAGE_ACCESS_TOKEN": "matrix-token",
+            "MATRIX_MESSAGE_ROOM_ID": "!ops:example.org",
+            "NOTIFY_MESSAGE_WEBHOOKS_JSON": json.dumps({
+                "whatsapp.message": {"url": "https://wa.example/messages", "token": "wa-token"},
+                "vk.message": {"url": "https://vk.example/messages", "token": "vk-token"},
+            }),
+        }
+
+        adapters = message_adapters_from_environment(environment)
+
+        self.assertEqual({"matrix.message", "whatsapp.message", "vk.message"}, set(adapters))
+        self.assertIsInstance(adapters["matrix.message"], MatrixMessageSender)
+        self.assertIsInstance(adapters["whatsapp.message"], WebhookMessageSender)
+
+    def test_generic_phone_call_uses_registered_adapter_and_persists_receipt(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Phone route",
+            policy=[{
+                "id": "phone-root",
+                "platform": "phone",
+                "action": "call",
+                "target": {"number_ref": "operator"},
+                "retry_interval_seconds": 30,
+                "max_repeats": 1,
+            }],
+        )
+        created = self.center.create_event(consumer["intake_token"], "phone-route", self.event)
+        calls = []
+
+        class Phone:
+            def send(self, payload, delivery_key):
+                calls.append((payload, delivery_key))
+                return {"receipt_id": "call-42", "answered": False}
+
+        worker = DeliveryWorker(
+            self.center,
+            type("Telegram", (), {"send": lambda *_args: None})(),
+            call_adapters={"phone.call": Phone()},
+        )
+        self.assertEqual(1, worker.run_once())
+        row = self.center._connection.execute(
+            "SELECT status, result_json FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()
+        self.assertEqual("sent", row["status"])
+        self.assertEqual("call-42", json.loads(row["result_json"])["receipt_id"])
+        self.assertEqual({"number_ref": "operator"}, calls[0][0]["target"])
+
+    def test_generic_call_respects_operator_kill_switch(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Disabled call route",
+            policy=[{
+                "id": "phone-root",
+                "platform": "phone",
+                "action": "call",
+                "target": {"number_ref": "operator"},
+                "retry_interval_seconds": 30,
+                "max_repeats": 1,
+            }],
+        )
+        created = self.center.create_event(consumer["intake_token"], "disabled-phone-route", self.event)
+        self.center.set_runtime_setting("automatic_calls_enabled", "false")
+
+        class Phone:
+            def send(self, *_args):
+                raise AssertionError("disabled call must not reach provider")
+
+        DeliveryWorker(
+            self.center,
+            type("Telegram", (), {"send": lambda *_args: None})(),
+            call_adapters={"phone.call": Phone()},
+        ).run_once()
+        row = self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()
+        self.assertEqual("cancelled", row["status"])
+
+    def test_generic_telegram_call_uses_call_adapter_not_message_sender(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Telegram call route",
+            policy=[{
+                "id": "telegram-call",
+                "platform": "telegram",
+                "action": "call",
+                "target": {"username": "operator"},
+                "retry_interval_seconds": 30,
+                "max_repeats": 1,
+            }],
+        )
+        created = self.center.create_event(consumer["intake_token"], "telegram-call-route", self.event)
+        calls = []
+
+        class Call:
+            def send(self, payload, delivery_key):
+                calls.append(payload["target"])
+                return {"receipt_id": "tg-call-1", "answered": False}
+
+        class Telegram:
+            def send(self, *_args):
+                raise AssertionError("telegram.call must not use message sender")
+
+        DeliveryWorker(self.center, Telegram(), call_adapters={"telegram.call": Call()}).run_once()
+        row = self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()
+        self.assertEqual("sent", row["status"])
+        self.assertEqual([{"username": "operator"}], calls)
+
+    def test_webhook_call_sender_uses_call_contract(self) -> None:
+        requests = []
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            @staticmethod
+            def read():
+                return b'{"ok":true,"receipt_id":"wa-call-1","answered":true,"actor":"whatsapp:user"}'
+
+        def runner(request, *, timeout):
+            requests.append(request)
+            return Response()
+
+        result = WebhookCallSender(
+            "whatsapp.call",
+            "https://wa.example/calls",
+            "wa-token",
+            runner=runner,
+        ).send(
+            {"incident": {"title": "Call me", "body": "urgent", "correlation_id": "inbox://vk/1"}, "target": {"user": "operator"}},
+            "delivery-key-1",
+        )
+
+        assert result == {"receipt_id": "wa-call-1", "channel": "whatsapp.call", "answered": True, "actor": "whatsapp:user"}
+        assert json.loads(requests[0].data)["schema"] == "noticeplace.call.v1"
+
+    def test_call_adapter_registry_builds_phone_telegram_and_whatsapp_spokes(self) -> None:
+        environment = {
+            "NOTIFY_CALL_WEBHOOKS_JSON": json.dumps({
+                "phone.call": {"url": "https://phone.example/calls", "token": "phone-token"},
+                "telegram.call": {"url": "https://telegram.example/calls", "token": "tg-token"},
+                "whatsapp.call": {"url": "https://wa.example/calls", "token": "wa-token"},
+            }),
+        }
+
+        adapters = call_adapters_from_environment(environment)
+
+        self.assertEqual({"phone.call", "telegram.call", "whatsapp.call"}, set(adapters))
+        self.assertTrue(all(isinstance(adapter, WebhookCallSender) for adapter in adapters.values()))
 
     def test_inactive_standard_mode_is_cancelled_without_telegram_send(self) -> None:
         created = self.center.create_event("producer", "inactive-critical", {**self.event, "severity": "debug"})

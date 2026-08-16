@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import ipaddress
 import os
 import secrets
@@ -440,16 +441,175 @@ class MatrixCallSender:
         return {"answered": answered, "actor": f"matrix:{target}" if answered else None}
 
 
+class MatrixMessageSender:
+    """Send one idempotent text message through the Matrix Client-Server API."""
+
+    def __init__(
+        self,
+        homeserver: str,
+        token: str,
+        *,
+        default_room_id: str = "",
+        timeout_seconds: float = 8,
+        runner: Any = urllib.request.urlopen,
+    ) -> None:
+        self._homeserver = homeserver.rstrip("/")
+        self._token = token
+        self._default_room_id = default_room_id
+        self._timeout_seconds = timeout_seconds
+        self._runner = runner
+
+    def send(self, payload: dict[str, Any], delivery_key: str) -> dict[str, Any]:
+        """Use a stable Matrix transaction id so retries cannot duplicate a message."""
+        target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
+        room_id = str(target.get("room_id") or self._default_room_id).strip()
+        if not self._homeserver or not self._token or not room_id:
+            raise RuntimeError("Matrix message sender is not configured")
+        incident = payload["incident"]
+        title = str(incident.get("title") or "").strip()
+        body = str(incident.get("body") or "").strip()
+        source = str(incident.get("correlation_id") or "").strip()
+        text = title
+        if body:
+            text += f"\n\n{body}"
+        if source:
+            text += f"\n\nSource: {source}"
+        transaction_id = "notice-" + hashlib.sha256(delivery_key.encode()).hexdigest()[:32]
+        url = (
+            f"{self._homeserver}/_matrix/client/v3/rooms/"
+            f"{urllib.parse.quote(room_id, safe='')}/send/m.room.message/{transaction_id}"
+        )
+        request = urllib.request.Request(
+            url,
+            data=json.dumps({"msgtype": "m.text", "body": text}, ensure_ascii=False).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._token}"},
+            method="PUT",
+        )
+        try:
+            with self._runner(request, timeout=self._timeout_seconds) as response:
+                if not 200 <= int(response.status) < 300:
+                    raise RuntimeError(f"Matrix message send returned HTTP {response.status}")
+                result = json.loads(response.read())
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Matrix message send returned invalid JSON") from error
+        event_id = result.get("event_id") if isinstance(result, dict) else None
+        if not isinstance(event_id, str) or not event_id.startswith("$"):
+            raise RuntimeError("Matrix message send returned no event id")
+        return {"event_id": event_id, "room_id": room_id, "transaction_id": transaction_id}
+
+
+class WebhookMessageSender:
+    """Send a provider-neutral message to one fixed operator-owned bridge."""
+
+    def __init__(
+        self,
+        channel: str,
+        url: str,
+        token: str,
+        *,
+        timeout_seconds: float = 8,
+        runner: Any = urllib.request.urlopen,
+    ) -> None:
+        self._channel = channel
+        self._url = url
+        self._token = token
+        self._timeout_seconds = timeout_seconds
+        self._runner = runner
+
+    def send(self, payload: dict[str, Any], delivery_key: str) -> dict[str, Any]:
+        if not self._url or not self._token:
+            raise RuntimeError(f"{self._channel} sender is not configured")
+        incident = payload["incident"]
+        request_payload = {
+            "schema": "noticeplace.message.v1",
+            "channel": self._channel,
+            "delivery_key": delivery_key,
+            "target": payload.get("target") if isinstance(payload.get("target"), dict) else {},
+            "message": {
+                "title": str(incident.get("title") or ""),
+                "body": str(incident.get("body") or ""),
+                "source": str(incident.get("correlation_id") or ""),
+            },
+        }
+        idempotency_key = "notice-" + hashlib.sha256(delivery_key.encode()).hexdigest()
+        request = urllib.request.Request(
+            self._url,
+            data=json.dumps(request_payload, ensure_ascii=False, sort_keys=True).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._token}",
+                "Idempotency-Key": idempotency_key,
+            },
+            method="POST",
+        )
+        try:
+            with self._runner(request, timeout=self._timeout_seconds) as response:
+                if not 200 <= int(response.status) < 300:
+                    raise RuntimeError(f"{self._channel} bridge returned HTTP {response.status}")
+                result = json.loads(response.read())
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"{self._channel} bridge returned invalid JSON") from error
+        receipt_id = result.get("receipt_id") if isinstance(result, dict) else None
+        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(receipt_id, str) or not receipt_id:
+            raise RuntimeError(f"{self._channel} bridge returned no receipt")
+        return {"receipt_id": receipt_id, "channel": self._channel}
+
+
+class WebhookCallSender(WebhookMessageSender):
+    """Use the same fixed bridge transport with a call-specific contract."""
+
+    def send(self, payload: dict[str, Any], delivery_key: str) -> dict[str, Any]:
+        if not self._url or not self._token:
+            raise RuntimeError(f"{self._channel} sender is not configured")
+        incident = payload["incident"]
+        request_payload = {
+            "schema": "noticeplace.call.v1",
+            "channel": self._channel,
+            "delivery_key": delivery_key,
+            "target": payload.get("target") if isinstance(payload.get("target"), dict) else {},
+            "message": {
+                "title": str(incident.get("title") or ""),
+                "body": str(incident.get("body") or ""),
+                "source": str(incident.get("correlation_id") or ""),
+            },
+        }
+        idempotency_key = "notice-" + hashlib.sha256(delivery_key.encode()).hexdigest()
+        request = urllib.request.Request(
+            self._url,
+            data=json.dumps(request_payload, ensure_ascii=False, sort_keys=True).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._token}", "Idempotency-Key": idempotency_key},
+            method="POST",
+        )
+        try:
+            with self._runner(request, timeout=self._timeout_seconds) as response:
+                if not 200 <= int(response.status) < 300:
+                    raise RuntimeError(f"{self._channel} bridge returned HTTP {response.status}")
+                result = json.loads(response.read())
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"{self._channel} bridge returned invalid JSON") from error
+        receipt_id = result.get("receipt_id") if isinstance(result, dict) else None
+        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(receipt_id, str) or not receipt_id:
+            raise RuntimeError(f"{self._channel} bridge returned no receipt")
+        return {
+            "receipt_id": receipt_id,
+            "channel": self._channel,
+            "answered": result.get("answered") is True,
+            "actor": str(result.get("actor") or "") or None,
+        }
+
+
 class DeliveryWorker:
     """Run due delivery claims through known adapters without hiding failures."""
 
-    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0, agent_jobs: dict[str, GptAdminAgentJobAdapter | Any] | None = None) -> None:
+    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0, agent_jobs: dict[str, GptAdminAgentJobAdapter | Any] | None = None, message_adapters: Mapping[str, Any] | None = None, call_adapters: Mapping[str, Any] | None = None) -> None:
         """Attach durable delivery state to Telegram, Matrix, and the local S21 adapter."""
         self._center = center
         self._telegram = telegram
         self._matrix_call = matrix_call
         self._android_phone = android_phone
         self._agent_jobs = dict(agent_jobs or {})
+        self._message_adapters = dict(message_adapters or {})
+        self._call_adapters = dict(call_adapters or {})
         self._lease_seconds = lease_seconds
         self._critical_call_escalation_seconds = max(0, call_escalation_seconds if critical_call_escalation_seconds is None else critical_call_escalation_seconds)
         self._emergency_call_escalation_seconds = max(0, emergency_call_escalation_seconds)
@@ -543,7 +703,7 @@ class DeliveryWorker:
         """Deliver one claimed job; callers may run this in a bounded worker pool."""
         try:
             payload = self._center.delivery_payload(delivery)
-            if delivery["channel"] in {"matrix.call", "android.telegram.call", "android.phone.call"} and not self._automatic_calls_enabled():
+            if str(delivery["channel"]).endswith(".call") and not self._automatic_calls_enabled():
                 self._center.complete_delivery(delivery["id"], "cancelled", "automatic calls disabled by operator")
                 return
             if delivery["channel"] == "telegram.edit":
@@ -591,7 +751,7 @@ class DeliveryWorker:
                         result=receipt,
                     )
                 return
-            if delivery["channel"] == "telegram.main" or str(delivery["channel"]).startswith("telegram."):
+            if delivery["channel"] in {"telegram.main", "telegram.message"} or str(delivery["channel"]).startswith("telegram.consumer:"):
                 with self._center.delivery_send_lock():
                     # Rebuild the payload and validate the exact lease while the
                     # coalescer/claim-reclaimer is excluded from the final send.
@@ -671,6 +831,23 @@ class DeliveryWorker:
                 if delivery["channel"] == "telegram.main":
                     self._after_telegram_delivery(delivery, incident)
                 return
+            elif str(delivery["channel"]).endswith(".message"):
+                adapter = self._message_adapters.get(str(delivery["channel"]))
+                if adapter is None:
+                    raise RuntimeError(f"message channel adapter is not configured: {delivery['channel']}")
+                if not self._center.reserve_delivery_send(
+                    str(delivery["id"]),
+                    claimed_at=float(delivery["claimed_at"]),
+                    attempt=int(delivery["attempt"]),
+                ):
+                    return
+                result = adapter.send(payload, str(delivery["delivery_key"]))
+                self._center.complete_delivery(
+                    delivery["id"], "sent",
+                    claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    result=result if isinstance(result, Mapping) else None,
+                )
+                return
             elif delivery["channel"] == "matrix.call":
                 if self._matrix_call is None:
                     raise RuntimeError("Matrix call sender is not configured")
@@ -688,6 +865,22 @@ class DeliveryWorker:
                     raise RuntimeError("Android phone adapter is not configured")
                 self._send_critical_pre_call_context(payload)
                 self._android_phone.phone_call(payload)
+            elif str(delivery["channel"]).endswith(".call"):
+                adapter = self._call_adapters.get(str(delivery["channel"]))
+                if adapter is None:
+                    raise RuntimeError(f"call channel adapter is not configured: {delivery['channel']}")
+                if not self._center.reserve_delivery_send(
+                    str(delivery["id"]), claimed_at=float(delivery["claimed_at"]), attempt=int(delivery["attempt"]),
+                ):
+                    return
+                result = adapter.send(payload, str(delivery["delivery_key"]))
+                if isinstance(result, Mapping) and result.get("answered") is True and result.get("actor"):
+                    self._center.acknowledge_if_active(str(delivery["incident_id"]), str(result["actor"]))
+                self._center.complete_delivery(
+                    delivery["id"], "sent", claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    result=result if isinstance(result, Mapping) else None,
+                )
+                return
             elif str(delivery["channel"]).startswith("gptadmin.agent:"):
                 job_name = str(delivery["channel"])[len("gptadmin.agent:"):]
                 adapter = self._agent_jobs.get(job_name)
@@ -1150,7 +1343,67 @@ def telegram_interactions_from_environment(center: NotificationCenter, codec: Te
         raise RuntimeError("Agent Herder choice callback requires a token outside loopback")
     if callback_url:
         choice_callback = lambda request_id, choice_id, actor: agent_herder_choice_callback(callback_url, callback_token, request_id, choice_id, actor)
-    return TelegramInteractionPoller(center, token, allowed, codec, health_plan_codec=TelegramHealthPlanCodec(codec.secret), choice_callback=choice_callback) if token and allowed else None
+    inbox_sink = telegram_inbox_sink_from_environment()
+    inbox_chat_ids = {
+        part.strip()
+        for part in os.environ.get("UNIVERSAL_INBOX_TELEGRAM_CHAT_IDS", "").split(",")
+        if part.strip()
+    }
+    inbox_sender_ids = {
+        part.strip()
+        for part in os.environ.get("UNIVERSAL_INBOX_TELEGRAM_SENDER_IDS", "").split(",")
+        if part.strip()
+    }
+    return TelegramInteractionPoller(
+        center,
+        token,
+        allowed,
+        codec,
+        health_plan_codec=TelegramHealthPlanCodec(codec.secret),
+        choice_callback=choice_callback,
+        inbox_sink=inbox_sink,
+        inbox_chat_ids=inbox_chat_ids,
+        inbox_sender_ids=inbox_sender_ids or allowed,
+    ) if token and allowed else None
+
+
+def telegram_inbox_sink_from_environment(
+    environment: Mapping[str, str] | None = None,
+    *,
+    runner: Any = urllib.request.urlopen,
+):
+    """Build one fixed loopback Universal Inbox ingress client for Telegram updates."""
+    environment = environment or os.environ
+    url = environment.get("UNIVERSAL_INBOX_INGRESS_URL", "").strip()
+    token = environment.get("UNIVERSAL_INBOX_INGRESS_TOKEN", "").strip()
+    if not url and not token:
+        return None
+    if not url or not token:
+        raise RuntimeError("Universal Inbox ingress requires URL and token")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("Universal Inbox ingress URL is invalid")
+    timeout_seconds = float(environment.get("UNIVERSAL_INBOX_INGRESS_TIMEOUT_SECONDS", "8"))
+
+    def send(payload: dict[str, object]) -> dict[str, Any]:
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False, sort_keys=True).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+            method="POST",
+        )
+        with runner(request, timeout=timeout_seconds) as response:
+            if int(response.status) != 202:
+                raise RuntimeError(f"Universal Inbox ingress returned HTTP {response.status}")
+            try:
+                result = json.loads(response.read())
+            except json.JSONDecodeError as error:
+                raise RuntimeError("Universal Inbox ingress returned invalid JSON") from error
+        if not isinstance(result, dict) or not isinstance(result.get("event_id"), str):
+            raise RuntimeError("Universal Inbox ingress returned an invalid receipt")
+        return result
+
+    return send
 
 
 def matrix_call_from_environment() -> MatrixCallSender | None:
@@ -1158,6 +1411,73 @@ def matrix_call_from_environment() -> MatrixCallSender | None:
     url = os.environ.get("MATRIX_CALL_URL", "")
     token = os.environ.get("MATRIX_CALL_TOKEN", "")
     return MatrixCallSender(url, token, float(os.environ.get("MATRIX_CALL_TIMEOUT_SECONDS", "150"))) if url or token else None
+
+
+def message_adapters_from_environment(environment: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Build fixed message adapters; event producers never choose URLs or credentials."""
+    environment = environment or os.environ
+    adapters: dict[str, Any] = {}
+    homeserver = environment.get("MATRIX_MESSAGE_HOMESERVER", "").strip()
+    matrix_token = environment.get("MATRIX_MESSAGE_ACCESS_TOKEN", "").strip()
+    room_id = environment.get("MATRIX_MESSAGE_ROOM_ID", "").strip()
+    if homeserver or matrix_token or room_id:
+        if not homeserver or not matrix_token or not room_id:
+            raise RuntimeError("Matrix message adapter requires homeserver, access token, and room id")
+        adapters["matrix.message"] = MatrixMessageSender(
+            homeserver,
+            matrix_token,
+            default_room_id=room_id,
+            timeout_seconds=float(environment.get("MATRIX_MESSAGE_TIMEOUT_SECONDS", "8")),
+        )
+    raw_webhooks = environment.get("NOTIFY_MESSAGE_WEBHOOKS_JSON", "").strip()
+    if not raw_webhooks:
+        return adapters
+    try:
+        webhooks = json.loads(raw_webhooks)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("NOTIFY_MESSAGE_WEBHOOKS_JSON must be a JSON object") from error
+    if not isinstance(webhooks, dict):
+        raise RuntimeError("NOTIFY_MESSAGE_WEBHOOKS_JSON must be a JSON object")
+    allowed = {"whatsapp.message", "vk.message"}
+    for channel, config in webhooks.items():
+        if channel not in allowed or not isinstance(config, dict):
+            raise RuntimeError("unsupported message webhook adapter")
+        url = str(config.get("url") or "").strip()
+        token = str(config.get("token") or "").strip()
+        if not url or not token:
+            raise RuntimeError(f"{channel} webhook requires url and token")
+        adapters[channel] = WebhookMessageSender(
+            channel,
+            url,
+            token,
+            timeout_seconds=float(config.get("timeout_seconds") or 8),
+        )
+    return adapters
+
+
+def call_adapters_from_environment(environment: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Build fixed call bridges for generic `phone.call` and `whatsapp.call` policy steps."""
+    environment = environment or os.environ
+    raw = environment.get("NOTIFY_CALL_WEBHOOKS_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        configured = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("NOTIFY_CALL_WEBHOOKS_JSON must be a JSON object") from error
+    if not isinstance(configured, dict):
+        raise RuntimeError("NOTIFY_CALL_WEBHOOKS_JSON must be a JSON object")
+    allowed = {"phone.call", "telegram.call", "whatsapp.call"}
+    adapters: dict[str, Any] = {}
+    for channel, config in configured.items():
+        if channel not in allowed or not isinstance(config, dict):
+            raise RuntimeError("unsupported call webhook adapter")
+        url = str(config.get("url") or "").strip()
+        token = str(config.get("token") or "").strip()
+        if not url or not token:
+            raise RuntimeError(f"{channel} webhook requires url and token")
+        adapters[channel] = WebhookCallSender(channel, url, token, timeout_seconds=float(config.get("timeout_seconds") or 150))
+    return adapters
 
 
 def gptadmin_agent_jobs_from_environment() -> dict[str, Any]:

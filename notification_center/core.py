@@ -618,6 +618,7 @@ class NotificationCenter:
                 ("telegram", "message"), ("telegram", "call"),
                 ("matrix", "message"), ("matrix", "call"),
                 ("whatsapp", "message"), ("whatsapp", "call"),
+                ("vk", "message"),
                 ("phone", "call"),
             }
             normalized: list[dict[str, Any]] = []
@@ -660,6 +661,23 @@ class NotificationCenter:
                 previous = step["previous_step_id"]
                 if previous is not None and previous not in ids:
                     raise ValidationError("previous_step_id must reference a policy step")
+            children: dict[str, list[str]] = {step_id: [] for step_id in ids}
+            for step in normalized:
+                previous = step["previous_step_id"]
+                if previous is not None:
+                    children[previous].append(step["step_id"])
+            if any(len(successors) > 1 for successors in children.values()):
+                raise ValidationError("generic consumer policy must be one linear chain")
+            visited: set[str] = set()
+            current = roots[0]["step_id"]
+            while current not in visited:
+                visited.add(current)
+                successors = children[current]
+                if not successors:
+                    break
+                current = successors[0]
+            if len(visited) != len(ids):
+                raise ValidationError("generic consumer policy must be connected and acyclic")
             return normalized
 
         normalized = []
@@ -831,8 +849,10 @@ class NotificationCenter:
                 if previous["payload_json"] != payload_json:
                     raise IdempotencyConflict("Idempotency-Key was already used with different event content")
                 previous_incident = self.get_incident(str(previous["incident_id"]))
-                initial_channel = self._initial_channel_for_profile(previous_incident.get("consumer_id") if previous_incident else None)
-                initial = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (f"{previous['incident_id']}:{initial_channel}:initial",)).fetchone()
+                initial = self._connection.execute(
+                    "SELECT id FROM deliveries WHERE incident_id = ? AND channel NOT LIKE 'gptadmin.agent:%' ORDER BY created_at, id LIMIT 1",
+                    (previous["incident_id"],),
+                ).fetchone()
                 previous_event = json.loads(previous["payload_json"])
                 previous_job = str(previous_event.get("agent_job") or "") if isinstance(previous_event, dict) else ""
                 agent_delivery = self._connection.execute(
@@ -1283,6 +1303,39 @@ class NotificationCenter:
                 (update_id, time.time()),
             )
             return cursor.rowcount == 1
+
+    def telegram_update_offset(self) -> int:
+        """Return the first Bot API update not durably processed yet."""
+        value = self.get_runtime_setting("telegram_update_offset", "0")
+        try:
+            return max(0, int(value or "0"))
+        except ValueError:
+            return 0
+
+    def release_telegram_update(self, update_id: int) -> None:
+        """Release a failed update so the same offset can be processed again."""
+        with self._lock, self._connection:
+            self._connection.execute("DELETE FROM telegram_updates WHERE update_id = ?", (update_id,))
+
+    def complete_telegram_update(self, update_id: int) -> None:
+        """Advance the durable Bot API offset only after successful processing."""
+        if update_id < 0:
+            raise ValidationError("Telegram update id must not be negative")
+        next_offset = update_id + 1
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT value FROM runtime_settings WHERE key = 'telegram_update_offset'"
+            ).fetchone()
+            try:
+                current = int(row["value"]) if row is not None else 0
+            except ValueError:
+                current = 0
+            if next_offset > current:
+                self._connection.execute(
+                    "INSERT INTO runtime_settings(key, value, updated_at) VALUES ('telegram_update_offset', ?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                    (str(next_offset), time.time()),
+                )
 
     def apply_telegram_action(self, incident_id: str, action: str, actor: str) -> dict[str, Any]:
         """Apply an authorized compact Telegram control action to one active incident."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 import unittest
@@ -161,6 +162,43 @@ class ConsumerPolicyTests(unittest.TestCase):
         self.assertEqual("call", stored["policy"][0]["action"])
         self.assertNotIn("previous_step_id", stored["policy"][0])
 
+    def test_generic_policy_accepts_vk_message_as_an_independent_spoke(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="VK route",
+            policy=[{
+                "id": "vk-root",
+                "platform": "vk",
+                "action": "message",
+                "target": {"peer_id": "operator"},
+                "retry_interval_seconds": 30,
+                "max_repeats": 1,
+            }],
+        )
+
+        created = self.center.create_event(consumer["intake_token"], "vk-route", self.event())
+        delivery = self.center._connection.execute(
+            "SELECT channel, target_json FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()
+        self.assertEqual("vk.message", delivery["channel"])
+        self.assertEqual({"peer_id": "operator"}, json.loads(delivery["target_json"]))
+
+    def test_generic_policy_rejects_disconnected_or_cyclic_steps(self) -> None:
+        base = [
+            {"id": "root", "platform": "matrix", "action": "message", "target": {}, "retry_interval_seconds": 30, "max_repeats": 1},
+        ]
+        disconnected_cycle = base + [
+            {"id": "a", "platform": "telegram", "action": "message", "target": {}, "retry_interval_seconds": 30, "max_repeats": 1, "previous_step_id": "b"},
+            {"id": "b", "platform": "vk", "action": "message", "target": {}, "retry_interval_seconds": 30, "max_repeats": 1, "previous_step_id": "a"},
+        ]
+        disconnected_branch = base + [
+            {"id": "a", "platform": "telegram", "action": "message", "target": {}, "retry_interval_seconds": 30, "max_repeats": 1, "previous_step_id": "root"},
+            {"id": "b", "platform": "vk", "action": "message", "target": {}, "retry_interval_seconds": 30, "max_repeats": 1, "previous_step_id": "root"},
+        ]
+        for name, policy in (("cycle", disconnected_cycle), ("branch", disconnected_branch)):
+            with self.subTest(name=name), self.assertRaises(ValidationError, msg=name):
+                self.center.create_consumer(project="hermes", name=name, policy=policy)
+
     def test_generic_policy_schedules_only_root_step_initially(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
@@ -190,6 +228,10 @@ class ConsumerPolicyTests(unittest.TestCase):
             "SELECT channel FROM deliveries WHERE incident_id = ? ORDER BY due_at", (created["incident_id"],)
         ).fetchall()
         self.assertEqual(["matrix.message"], [row["channel"] for row in rows])
+
+        replay = self.center.create_event(consumer["intake_token"], "root-only", self.event())
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual(created["initial_delivery_id"], replay["initial_delivery_id"])
 
     def test_generic_policy_repeat_budget_then_schedules_successor(self) -> None:
         consumer = self.center.create_consumer(

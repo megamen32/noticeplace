@@ -72,6 +72,7 @@ class TelegramActionCodec:
 
 TelegramApi = Callable[[str, dict[str, Any]], dict[str, Any]]
 ChoiceCallback = Callable[[str, str, str], Mapping[str, Any]]
+InboxSink = Callable[[dict[str, object]], Mapping[str, Any]]
 
 
 def agent_herder_choice_callback(url: str, token: str, request_id: str, choice_id: str, _actor: str) -> dict[str, Any]:
@@ -107,7 +108,7 @@ def telegram_api(token: str, method: str, payload: dict[str, Any]) -> dict[str, 
 class TelegramInteractionPoller:
     """Poll Bot API callbacks in-process; no public webhook or second daemon exists."""
 
-    def __init__(self, center: NotificationCenter, token: str, allowed_user_ids: set[str], codec: TelegramActionCodec, health_plan_codec: TelegramHealthPlanCodec | None = None, api: TelegramApi | None = None, choice_callback: ChoiceCallback | None = None, human_request_token: str | None = None) -> None:
+    def __init__(self, center: NotificationCenter, token: str, allowed_user_ids: set[str], codec: TelegramActionCodec, health_plan_codec: TelegramHealthPlanCodec | None = None, api: TelegramApi | None = None, choice_callback: ChoiceCallback | None = None, human_request_token: str | None = None, inbox_sink: InboxSink | None = None, inbox_chat_ids: set[str] | None = None, inbox_sender_ids: set[str] | None = None) -> None:
         self._center = center
         self._token = token
         self._allowed_user_ids = allowed_user_ids
@@ -116,6 +117,9 @@ class TelegramInteractionPoller:
         self._api = api or (lambda method, payload: telegram_api(token, method, payload))
         self._choice_callback = choice_callback
         self._human_request_token = human_request_token
+        self._inbox_sink = inbox_sink
+        self._inbox_chat_ids = set(inbox_chat_ids or ())
+        self._inbox_sender_ids = set(inbox_sender_ids or allowed_user_ids)
 
     def _answer(self, callback_id: str, text: str) -> None:
         self._api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:180]})
@@ -244,11 +248,30 @@ class TelegramInteractionPoller:
     def _handle_message(self, message: dict[str, Any]) -> None:
         actor_id = message.get("from", {}).get("id")
         text = str(message.get("text") or "").strip()
+        chat_id = str(message.get("chat", {}).get("id") or "")
+        message_id = message.get("message_id")
+        sender = message.get("from") if isinstance(message.get("from"), dict) else {}
+        if (
+            self._inbox_sink is not None
+            and chat_id in self._inbox_chat_ids
+            and str(actor_id) in self._inbox_sender_ids
+            and text
+            and isinstance(message_id, int)
+            and message_id > 0
+            and sender.get("is_bot") is not True
+        ):
+            self._inbox_sink({
+                "schema": "universal.inbox.message.v1",
+                "source": "telegram",
+                "message_id": f"{chat_id}:{message_id}",
+                "sender": str(actor_id),
+                "body": text,
+            })
+            return
         if not self._allowed(actor_id):
             return
         reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else {}
         reply_message_id = reply.get("message_id")
-        chat_id = str(message.get("chat", {}).get("id") or "")
         if chat_id and isinstance(reply_message_id, int) and text:
             resolved = self._center.resolve_human_reply_from_telegram(
                 chat_id, reply_message_id, f"telegram:{actor_id}", text
@@ -267,15 +290,27 @@ class TelegramInteractionPoller:
     def poll_once(self) -> int:
         if not self._token or not self._allowed_user_ids:
             return 0
-        response = self._api("getUpdates", {"timeout": 0, "allowed_updates": json.dumps(["callback_query", "message"])})
+        offset = self._center.telegram_update_offset()
+        response = self._api("getUpdates", {
+            "offset": offset,
+            "timeout": 0,
+            "allowed_updates": json.dumps(["callback_query", "message"]),
+        })
         processed = 0
         for update in response.get("result", []):
             update_id = int(update.get("update_id", -1))
-            if update_id < 0 or not self._center.claim_telegram_update(update_id):
+            if update_id < offset:
                 continue
-            if isinstance(update.get("callback_query"), dict):
-                self._handle_callback(update["callback_query"])
-            elif isinstance(update.get("message"), dict):
-                self._handle_message(update["message"])
+            already_processed = not self._center.claim_telegram_update(update_id)
+            if not already_processed:
+                try:
+                    if isinstance(update.get("callback_query"), dict):
+                        self._handle_callback(update["callback_query"])
+                    elif isinstance(update.get("message"), dict):
+                        self._handle_message(update["message"])
+                except Exception:
+                    self._center.release_telegram_update(update_id)
+                    raise
+            self._center.complete_telegram_update(update_id)
             processed += 1
         return processed
