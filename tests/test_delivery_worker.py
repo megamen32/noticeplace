@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +15,7 @@ from notification_center.http_api import (
     MatrixCallSender,
     MatrixMessageSender,
     TelegramSender,
+    TelegramMessageSender,
     WebhookMessageSender,
     WebhookCallSender,
     call_adapters_from_environment,
@@ -180,6 +182,52 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual({"matrix.message", "whatsapp.message", "vk.message"}, set(adapters))
         self.assertIsInstance(adapters["matrix.message"], MatrixMessageSender)
         self.assertIsInstance(adapters["whatsapp.message"], WebhookMessageSender)
+
+    def test_generic_telegram_message_sender_uses_target_and_returns_bot_receipt(self) -> None:
+        requests = []
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            @staticmethod
+            def read() -> bytes:
+                return b'{"ok":true,"result":{"message_id":17,"chat":{"id":-1001}}}'
+
+        def runner(request, *, timeout):
+            requests.append((request, timeout))
+            return Response()
+
+        sender = TelegramMessageSender("bot-token", default_chat_id="42", runner=runner)
+        result = sender.send(
+            {"incident": {"title": "Matrix message", "body": "hello", "correlation_id": "inbox://matrix/$event"}, "target": {"chat_id": "-1001"}},
+            "delivery-key-1",
+        )
+
+        self.assertEqual({"message_id": 17, "chat_id": "-1001"}, result)
+        self.assertIn("/botbot-token/sendMessage", requests[0][0].full_url)
+        request_data = dict(urllib.parse.parse_qsl(requests[0][0].data.decode()))
+        self.assertEqual("-1001", request_data["chat_id"])
+        self.assertIn("Source: inbox://matrix/$event", request_data["text"])
+
+    def test_message_adapter_registry_builds_generic_telegram_from_operator_env(self) -> None:
+        adapters = message_adapters_from_environment({
+            "TELEGRAM_BOT_TOKEN": "bot-token",
+            "TELEGRAM_CHAT_ID": "42",
+        })
+
+        self.assertEqual({"telegram.message"}, set(adapters))
+        self.assertIsInstance(adapters["telegram.message"], TelegramMessageSender)
+
+    def test_generic_telegram_adapter_can_require_target_without_default_chat(self) -> None:
+        adapters = message_adapters_from_environment({"TELEGRAM_BOT_TOKEN": "bot-token"})
+
+        self.assertEqual({"telegram.message"}, set(adapters))
 
     def test_generic_phone_call_uses_registered_adapter_and_persists_receipt(self) -> None:
         consumer = self.center.create_consumer(

@@ -498,6 +498,60 @@ class MatrixMessageSender:
         return {"event_id": event_id, "room_id": room_id, "transaction_id": transaction_id}
 
 
+class TelegramMessageSender:
+    """Send a generic route-controlled text message through the Telegram Bot API."""
+
+    def __init__(
+        self,
+        token: str,
+        *,
+        default_chat_id: str = "",
+        timeout_seconds: float = 8,
+        runner: Any = urllib.request.urlopen,
+    ) -> None:
+        self._token = token
+        self._default_chat_id = default_chat_id
+        self._timeout_seconds = timeout_seconds
+        self._runner = runner
+
+    def send(self, payload: dict[str, Any], _delivery_key: str) -> dict[str, Any]:
+        target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
+        chat_id = str(target.get("chat_id") or self._default_chat_id).strip()
+        if not self._token or not chat_id:
+            raise RuntimeError("Telegram message sender is not configured")
+        incident = payload["incident"]
+        title = str(incident.get("title") or "").strip()
+        body = str(incident.get("body") or "").strip()
+        source = str(incident.get("correlation_id") or "").strip()
+        text = title
+        if body:
+            text += f"\n\n{body}"
+        if source:
+            text += f"\n\nSource: {source}"
+        request = urllib.request.Request(
+            f"https://api.telegram.org/bot{self._token}/sendMessage",
+            data=urllib.parse.urlencode({
+                "chat_id": chat_id,
+                "text": text[:4096],
+                "disable_web_page_preview": "true",
+            }).encode(),
+            method="POST",
+        )
+        try:
+            with self._runner(request, timeout=self._timeout_seconds) as response:
+                if not 200 <= int(response.status) < 300:
+                    raise RuntimeError(f"Telegram returned HTTP {response.status}")
+                result = json.loads(response.read())
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Telegram returned invalid JSON") from error
+        message = result.get("result") if isinstance(result, dict) else None
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(message_id, int) or message_id <= 0:
+            raise RuntimeError("Telegram sendMessage response has no valid message_id")
+        resolved_chat_id = str(message.get("chat", {}).get("id") or chat_id) if isinstance(message.get("chat"), dict) else chat_id
+        return {"message_id": message_id, "chat_id": resolved_chat_id}
+
+
 class WebhookMessageSender:
     """Send a provider-neutral message to one fixed operator-owned bridge."""
 
@@ -1417,6 +1471,16 @@ def message_adapters_from_environment(environment: Mapping[str, str] | None = No
     """Build fixed message adapters; event producers never choose URLs or credentials."""
     environment = environment or os.environ
     adapters: dict[str, Any] = {}
+    telegram_token = environment.get("TELEGRAM_BOT_TOKEN", "").strip()
+    telegram_chat_id = environment.get("TELEGRAM_CHAT_ID", "").strip()
+    if telegram_token:
+        adapters["telegram.message"] = TelegramMessageSender(
+            telegram_token,
+            default_chat_id=telegram_chat_id,
+            timeout_seconds=float(environment.get("TELEGRAM_MESSAGE_TIMEOUT_SECONDS", "8")),
+        )
+    elif telegram_chat_id:
+        raise RuntimeError("Telegram message adapter requires a bot token")
     homeserver = environment.get("MATRIX_MESSAGE_HOMESERVER", "").strip()
     matrix_token = environment.get("MATRIX_MESSAGE_ACCESS_TOKEN", "").strip()
     room_id = environment.get("MATRIX_MESSAGE_ROOM_ID", "").strip()
