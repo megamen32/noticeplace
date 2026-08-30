@@ -248,7 +248,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
                 "health_selection": {
                     "plan_id": "repair",
                     "actor": "telegram:42",
-                    "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"},
+                    "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"},
                 },
             },
             "health-delivery-1",
@@ -833,7 +833,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
                     "health_context": {},
                     "health_selection": {
                         "plan_id": "plan-003",
-                        "execution": {"runtime": "hermes", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"},
+                        "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"},
                     },
                 },
                 "delivery-direct-1",

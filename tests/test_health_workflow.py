@@ -270,7 +270,7 @@ class HealthWorkflowTests(unittest.TestCase):
         selected = self.workflow.select_plan(self.created["incident_id"], "selection-remediation", "repair", "telegram:42")
 
         expected_execution = {
-            "runtime": "hermes",
+            "runtime": "codex",
             "provider": "openai-codex",
             "model": "gpt-5.6-luna",
             "reasoning": "high",

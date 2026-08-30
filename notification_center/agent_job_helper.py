@@ -110,7 +110,7 @@ def _health_remediation_message(profile: dict[str, str], event: dict[str, Any], 
     plan_id = str(selection.get("plan_id") or "") if isinstance(selection, dict) else ""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", plan_id):
         raise RuntimeError("health remediation event has no safe selected plan")
-    expected = {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}
+    expected = {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}
     if not isinstance(execution, dict) or {key: str(execution.get(key) or "") for key in expected} != expected:
         raise RuntimeError("health remediation event has an unsupported execution profile")
     if profile["harness"] != "codex" or profile["model"] != "gpt-5.6-luna" or profile["reasoning"] != "high" or profile["topic"] != "health":

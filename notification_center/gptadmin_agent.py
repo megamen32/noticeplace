@@ -22,7 +22,7 @@ _INCIDENT_LIMITS = {"id": 128, "project": 128, "severity": 32, "title": 500, "bo
 _TERMINAL_STATES = {"completed", "failed"}
 _RESPONSE_LIMIT = 64 * 1024
 _HEALTH_EXECUTION_PROFILE = {
-    "runtime": "opencode",
+    "runtime": "codex",
     "provider": "openai-codex",
     "model": "gpt-5.6-luna",
     "reasoning": "high",
@@ -69,7 +69,7 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
             execution = selection.get("execution")
             # Existing selections predate the operator's runtime switch. The
             # chosen plan remains authoritative; execution is now canonical.
-            if isinstance(execution, Mapping) and str(execution.get("runtime") or "") == "hermes":
+            if isinstance(execution, Mapping) and str(execution.get("runtime") or "") in {"hermes", "opencode"}:
                 execution = dict(_HEALTH_EXECUTION_PROFILE)
             bounded_health["selection"] = {
                 "plan_id": _safe_health_ref(selection.get("plan_id"), 64),

@@ -19,7 +19,10 @@ _SECRET_ASSIGNMENT_RE = re.compile(r"(?i)\b(token|secret|password|credential|aut
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+\S+")
 
 HEALTH_EXECUTION_PROFILE = {
-    "runtime": "hermes",
+    # Agent Herder launches the approved health model through Codex.  Keeping
+    # this name truthful prevents a selected plan from claiming Hermes/OpenCode
+    # while the helper actually starts a Codex session.
+    "runtime": "codex",
     "provider": "openai-codex",
     "model": "gpt-5.6-luna",
     "reasoning": "high",
@@ -100,7 +103,7 @@ def normalize_health_execution(value: Any) -> dict[str, str]:
     reasoning = _bounded_text(value.get("reasoning") or HEALTH_EXECUTION_PROFILE["reasoning"], 16).lower()
     topic = _bounded_text(value.get("topic") or value.get("topic_key") or HEALTH_EXECUTION_PROFILE["topic"], 64).lower()
     if runtime != HEALTH_EXECUTION_PROFILE["runtime"]:
-        raise ValidationError("health remediation runtime must be hermes")
+        raise ValidationError("health remediation runtime must be codex")
     if provider != HEALTH_EXECUTION_PROFILE["provider"]:
         raise ValidationError("health remediation provider must be openai-codex")
     if model != HEALTH_EXECUTION_PROFILE["model"]:

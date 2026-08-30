@@ -151,7 +151,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "schema": "notify.agent-job.v1",
                     "job_id": "health-remediation",
                     "incident": {"id": "inc-health-1", "project": "health-monitor", "severity": "critical", "title": "Disk degraded", "body": "bounded", "dedup_key": "health:disk", "occurrences": 1},
-                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
+                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
                 },
                 config,
                 runner=runner,
@@ -210,7 +210,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "health": {
                         "source_id": "host:vusa",
                         "source_fingerprint": "source-fingerprint-1",
-                        "selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}},
+                        "selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}},
                     },
                 },
                 config,
@@ -266,7 +266,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 result = run_profile(
                     "health-remediation",
                     {"schema": "notify.agent-job.v1", "job_id": "health-remediation", "incident": {"id": "inc-timeout"},
-                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}}},
+                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}}},
                     config,
                     runner=runner,
                 )
@@ -336,7 +336,7 @@ class AgentJobHelperTests(unittest.TestCase):
                         "schema": "notify.agent-job.v1",
                         "job_id": "health-remediation",
                         "incident": {"id": "inc-health-legacy"},
-                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
+                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health"}}},
                     },
                     config,
                     runner=runner,
