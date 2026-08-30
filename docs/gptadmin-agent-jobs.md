@@ -80,11 +80,11 @@ already signed plan choice and bounded health telemetry:
 {
   "health-remediation": {
     "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
-    "harness": "hermes",
+    "harness": "codex",
     "name": "health_remediation_100",
     "cwd": "/home/roomhacker/ServersAdministartion",
     "mode": "queue",
-    "model": "gpt-5.6-luna",
+    "model": "o3",
     "reasoning": "high",
     "topic": "health",
     "instruction": "Apply only the selected health remediation plan and report useful progress."

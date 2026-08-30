@@ -24,7 +24,7 @@ HEALTH_EXECUTION_PROFILE = {
     # while the helper actually starts a Codex session.
     "runtime": "codex",
     "provider": "openai-codex",
-    "model": "gpt-5.6-luna",
+    "model": "o3",
     "reasoning": "high",
     "topic": "health",
 }
@@ -107,7 +107,7 @@ def normalize_health_execution(value: Any) -> dict[str, str]:
     if provider != HEALTH_EXECUTION_PROFILE["provider"]:
         raise ValidationError("health remediation provider must be openai-codex")
     if model != HEALTH_EXECUTION_PROFILE["model"]:
-        raise ValidationError("health remediation model must be gpt-5.6-luna")
+        raise ValidationError("health remediation model must be o3")
     if reasoning != HEALTH_EXECUTION_PROFILE["reasoning"]:
         raise ValidationError("health remediation reasoning must be high")
     if topic != HEALTH_EXECUTION_PROFILE["topic"]:

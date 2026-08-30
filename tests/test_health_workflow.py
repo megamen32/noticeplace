@@ -272,7 +272,7 @@ class HealthWorkflowTests(unittest.TestCase):
         expected_execution = {
             "runtime": "codex",
             "provider": "openai-codex",
-            "model": "gpt-5.6-luna",
+            "model": "o3",
             "reasoning": "high",
             "topic": "health",
         }
