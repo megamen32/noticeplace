@@ -59,9 +59,9 @@ class AgentJobHelperTests(unittest.TestCase):
                 "trace_refs": ["trace:orchestrator:test"],
                 "evidence_refs": ["probe:synthetic"],
                 "plans": [
-                    {"plan_id": "observe", "title": "Observe", "summary": "Capture a bounded snapshot", "step": "observe"},
-                    {"plan_id": "repair", "title": "Repair", "summary": "Apply the selected repair", "step": "repair"},
-                    {"plan_id": "verify", "title": "Verify", "summary": "Verify the original signal", "step": "verify"},
+                    {"plan_id": "model_generated_observation_plan", "title": "Observe", "summary": "Capture a bounded snapshot", "step": "observe"},
+                    {"plan_id": "model_generated_remediation_plan", "title": "Repair", "summary": "Apply the selected repair", "step": "repair"},
+                    {"plan_id": "model_generated_verification_plan", "title": "Verify", "summary": "Verify the original signal", "step": "verify"},
                 ],
             })
 
@@ -91,6 +91,8 @@ class AgentJobHelperTests(unittest.TestCase):
                 body = json.loads(getattr(request, "data").decode())
                 self.assertEqual("omniroute/orchestrator", body["orchestration"]["orchestrator_requested_model"])
                 self.assertEqual("omniroute/subagent", body["orchestration"]["orchestrator_effective_model"])
+                self.assertEqual(["observe", "repair", "verify"], [plan["plan_id"] for plan in body["plans"]])
+                self.assertRegex(getattr(request, "headers", {}).get("Idempotency-key", ""), r"^health-diagnosis:inc-health-1:opencode-health-orchestrator-1:[0-9a-f]{12}$")
                 return _Response({"event_id": "evt-plans-1"})
 
             result = run_profile(

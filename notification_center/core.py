@@ -2770,16 +2770,46 @@ class NotificationCenter:
                         "SELECT id, channel, delivery_key, status, result_json FROM deliveries WHERE incident_id = ? AND channel LIKE 'telegram.%' ORDER BY created_at, rowid",
                         (incident_id,),
                     ).fetchall()
-                    active = [row for row in telegram_rows if str(row["status"]) in {"queued", "claimed", "sending", "sent", "uncertain"}]
+                    attached_plans = bounded_payload.get("plans") if isinstance(bounded_payload.get("plans"), list) else []
+                    attached_plan_ids = tuple(
+                        str(plan.get("plan_id") or plan.get("id") or "").strip()
+                        for plan in attached_plans
+                        if isinstance(plan, Mapping)
+                    )
+                    migration_fingerprint = hashlib.sha256(
+                        json.dumps(attached_plans, sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest()[:12]
+                    migration_step = f"health.migration:{migration_fingerprint}"
+                    migration_delivery_key = f"{incident_id}:telegram.edit:{migration_step}"
+                    for row in telegram_rows:
+                        if (
+                            str(row["channel"]) == "telegram.edit"
+                            and str(row["status"]) in {"queued", "uncertain"}
+                            and str(row["delivery_key"]) != migration_delivery_key
+                        ):
+                            self._connection.execute(
+                                "UPDATE deliveries SET status = 'cancelled', last_error = ?, updated_at = ? WHERE id = ?",
+                                ("superseded by a newer health plan bundle", now, row["id"]),
+                            )
+                            self._audit(
+                                incident_id,
+                                "delivery_cancelled",
+                                "health-workflow",
+                                {"delivery_id": str(row["id"]), "reason": "health.newer_plan_bundle"},
+                            )
+                    active = [
+                        row for row in telegram_rows
+                        if str(row["status"]) in {"queued", "claimed", "sending", "sent", "uncertain"}
+                        and not (
+                            str(row["channel"]) == "telegram.edit"
+                            and str(row["status"]) in {"queued", "uncertain"}
+                            and str(row["delivery_key"]) != migration_delivery_key
+                        )
+                    ]
                     if active:
                         uncertain_rows = [row for row in active if str(row["status"]) == "uncertain"]
                         sending_rows = [row for row in active if str(row["status"]) == "sending"]
                         sent_rows = [row for row in active if str(row["status"]) == "sent"]
-                        attached_plan_ids = tuple(
-                            str(plan.get("plan_id") or plan.get("id") or "").strip()
-                            for plan in (bounded_payload.get("plans") if isinstance(bounded_payload.get("plans"), list) else [])
-                            if isinstance(plan, Mapping)
-                        )
                         sent_rows_are_compliant = bool(attached_plan_ids) and all(
                             self._sent_health_delivery_matches_plans(row, attached_plan_ids)
                             for row in sent_rows
@@ -2888,7 +2918,7 @@ class NotificationCenter:
                                         "health-workflow",
                                         {"delivery_id": duplicate["id"], "reason": "health.legacy_card_edit_scheduled"},
                                     )
-                                edit_id = existing_edit["id"] if existing_edit is not None else self._schedule_delivery(incident_id, "telegram.edit", "health.migration", now, migration_target)
+                                edit_id = existing_edit["id"] if existing_edit is not None else self._schedule_delivery(incident_id, "telegram.edit", migration_step, now, migration_target)
                                 if existing_edit is not None and str(existing_edit["status"]) == "queued":
                                     self._connection.execute(
                                         "UPDATE deliveries SET due_at = ?, last_error = NULL, updated_at = ? WHERE id = ?",

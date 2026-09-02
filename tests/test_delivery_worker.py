@@ -775,6 +775,37 @@ class DeliveryWorkerTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual((first_edit["id"], "queued"), (second_edit["id"], second_edit["status"]))
 
+    def test_new_plan_bundle_replaces_uncertain_legacy_edit(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-legacy-edit-new-bundle",
+            {**self.event, "event_type": "health.degraded"},
+        )
+        source_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
+        self.center.claim_due_deliveries(now_epoch=10**12)
+        self.center.complete_delivery(source_id, "sent", result={"message_id": 90, "chat_id": "-100123"})
+        first_plans = {"plans": [
+            {"plan_id": "observe", "title": "Observe", "summary": "Collect evidence"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Apply the fix"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Check the source"},
+        ]}
+        self.center.record_health_update(created["incident_id"], "health-legacy-edit-new-bundle-1", "health.plans_attached", first_plans, actor="omniroute")
+        first_edit = self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id = ? AND channel = 'telegram.edit'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.center.complete_delivery(first_edit["id"], "uncertain", "Telegram HTTP 400")
+
+        second_plans = {"plans": [dict(plan, title=f"{plan['title']} now") for plan in first_plans["plans"]]}
+        self.center.record_health_update(created["incident_id"], "health-legacy-edit-new-bundle-2", "health.plans_attached", second_plans, actor="omniroute")
+        edits = self.center._connection.execute(
+            "SELECT id, status FROM deliveries WHERE incident_id = ? AND channel = 'telegram.edit' ORDER BY created_at, rowid",
+            (created["incident_id"],),
+        ).fetchall()
+        self.assertEqual(2, len(edits))
+        self.assertEqual(("cancelled", "queued"), tuple(row["status"] for row in edits))
+        self.assertNotEqual(edits[0]["id"], edits[1]["id"])
+
     def test_successor_persistence_failure_does_not_requeue_sent_delivery(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
