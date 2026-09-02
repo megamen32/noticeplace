@@ -77,6 +77,7 @@ class AgentJobHelperTests(unittest.TestCase):
                         return _Response({"ok": True, "created": True, "sessionId": "opencode-health-diagnosis-1", "delivery": "accepted", "model": "omniroute/subagent"})
                     body = json.loads(getattr(request, "data").decode())
                     self.assertEqual("omniroute/free-stack", body["model"])
+                    self.assertEqual("sync", body["mode"])
                     self.assertIn("bounded synthetic diagnosis", body["message"])
                     return _Response({"ok": True, "created": True, "sessionId": "opencode-health-orchestrator-1", "delivery": "accepted", "model": "omniroute/free-stack"})
                 if "/progress?" in url:

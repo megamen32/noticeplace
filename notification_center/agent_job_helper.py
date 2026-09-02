@@ -468,7 +468,11 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
         "harness": profile["harness"],
         "name": _health_session_name(profile, "health-orchestrator", event),
         "cwd": profile["cwd"],
-        "mode": profile["mode"],
+        # OpenCode can acknowledge prompt_async before the selected routed
+        # model actually starts, leaving an idle session with only the user
+        # turn. The orchestrator is one bounded response, so wait for its
+        # delivery before polling the durable transcript.
+        "mode": "sync",
         "model": profile["orchestrator_model"],
         "message": _health_orchestrator_message(profile, event, event["incident"], diagnosis),
     }
