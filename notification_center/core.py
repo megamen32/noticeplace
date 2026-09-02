@@ -1398,16 +1398,23 @@ class NotificationCenter:
                 raise ValidationError("incident not found")
             if incident["state"] not in DELIVERABLE_STATES:
                 return {"action": action, "state": "inactive", "idempotent": True, "agent_job_delivery_id": None}
-            delivery_key = f"{incident_id}:gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}:incident"
             with self._lock, self._connection:
                 now = time.time()
-                previous = self._connection.execute("SELECT id, status FROM deliveries WHERE delivery_key = ?", (delivery_key,)).fetchone()
+                previous = self._connection.execute(
+                    "SELECT id, status FROM deliveries WHERE incident_id = ? AND channel = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                    (incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}"),
+                ).fetchone()
                 restarted = previous is not None and str(previous["status"]) in {"failed", "cancelled"}
                 if restarted:
-                    delivery_id = str(previous["id"])
-                    self._connection.execute(
-                        "UPDATE deliveries SET status = 'queued', due_at = ?, claimed_at = NULL, last_error = NULL, result_json = NULL, updated_at = ? WHERE id = ?",
-                        (now, now, delivery_id),
+                    generation = int(self._connection.execute(
+                        "SELECT COUNT(*) AS count FROM deliveries WHERE incident_id = ? AND channel = ?",
+                        (incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}"),
+                    ).fetchone()["count"])
+                    delivery_id = self._schedule_delivery(
+                        incident_id,
+                        f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}",
+                        f"incident:manual:{generation}",
+                        now,
                     )
                 else:
                     delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}", "incident", now)

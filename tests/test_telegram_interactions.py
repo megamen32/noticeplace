@@ -78,15 +78,16 @@ class TelegramInteractionTests(unittest.TestCase):
         self.center.complete_delivery(first["agent_job_delivery_id"], "failed", "temporary downstream failure")
 
         restarted = self.center.apply_telegram_action(self.created["incident_id"], "ai", "telegram:42")
-        row = self.center._connection.execute(
-            "SELECT status, last_error FROM deliveries WHERE id = ?",
-            (first["agent_job_delivery_id"],),
-        ).fetchone()
+        rows = self.center._connection.execute(
+            "SELECT id, status, last_error FROM deliveries WHERE incident_id = ? AND channel = 'gptadmin.agent:health-diagnosis' ORDER BY created_at, id",
+            (self.created["incident_id"],),
+        ).fetchall()
 
         self.assertFalse(restarted["idempotent"])
         self.assertTrue(restarted["restarted"])
-        self.assertEqual("queued", row["status"])
-        self.assertIsNone(row["last_error"])
+        self.assertNotEqual(first["agent_job_delivery_id"], restarted["agent_job_delivery_id"])
+        self.assertEqual(["failed", "queued"], [row["status"] for row in rows])
+        self.assertIsNone(rows[1]["last_error"])
 
     def test_allowed_regular_message_is_forwarded_to_universal_inbox_once(self) -> None:
         codec = TelegramActionCodec("x" * 32)
