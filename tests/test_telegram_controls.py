@@ -13,14 +13,14 @@ class TelegramControlPolicyTests(unittest.TestCase):
     def test_important_message_keeps_ask_without_acknowledgement_controls(self) -> None:
         keyboard = telegram_inline_keyboard(self.codec, {"id": "inc_important", "severity": "important"})
 
-        self.assertEqual([["Ask"]], [[button["text"] for button in row] for row in keyboard["inline_keyboard"]])
+        self.assertEqual([["Ask", "AI"]], [[button["text"] for button in row] for row in keyboard["inline_keyboard"]])
 
     def test_only_exact_critical_gets_acknowledgement_and_snooze_controls(self) -> None:
         critical = telegram_inline_keyboard(self.codec, {"id": "inc_critical", "severity": "critical"})
         emergency = telegram_inline_keyboard(self.codec, {"id": "inc_emergency", "severity": "emergency"})
 
-        self.assertEqual([["ACK", "Snooze 15m"], ["Ask"]], [[button["text"] for button in row] for row in critical["inline_keyboard"]])
-        self.assertEqual([["Ask"]], [[button["text"] for button in row] for row in emergency["inline_keyboard"]])
+        self.assertEqual([["ACK", "Snooze 15m"], ["Ask", "AI"]], [[button["text"] for button in row] for row in critical["inline_keyboard"]])
+        self.assertEqual([["Ask", "AI"]], [[button["text"] for button in row] for row in emergency["inline_keyboard"]])
 
     def test_severity_route_overrides_default_chat_and_optionally_sets_topic(self) -> None:
         route = telegram_destination(

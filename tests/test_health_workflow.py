@@ -76,6 +76,82 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(attached)
         self.assertEqual(orchestration, attached["payload"]["orchestration"])
 
+    def test_matching_typed_source_recovery_closes_an_unselected_health_incident(self) -> None:
+        created = self.center.create_event(
+            "producer-token",
+            "typed-health-down",
+            {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "me",
+                "kind": "incident",
+                "severity": "critical",
+                "title": "TLS check failed",
+                "dedup_key": "health:site-a:https",
+                "event_type": "health.external_site",
+                "source_id": "external-site:site-a",
+                "host_id": "site-a",
+                "signal_type": "https",
+                "correlation_id": "external-site:site-a:transition-1",
+            },
+        )
+        recovery = {
+            "schema": "notify.event.v1",
+            "action": "resolve",
+            "project": "hermes",
+            "recipient": "me",
+            "dedup_key": "health:site-a:https",
+            "event_type": "health.recovered",
+            "source_id": "external-site:site-a",
+            "host_id": "site-a",
+            "signal_type": "https",
+            "correlation_id": "external-site:site-a:transition-1",
+        }
+
+        resolved = self.center.resolve_event("producer-token", "typed-health-recovered", recovery)
+
+        self.assertTrue(resolved["resolved"])
+        self.assertEqual("resolved", self.center.get_incident(created["incident_id"])["state"])
+
+    def test_mismatched_typed_source_cannot_bypass_health_resolution_gate(self) -> None:
+        created = self.center.create_event(
+            "producer-token",
+            "typed-health-down-mismatch",
+            {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "me",
+                "kind": "incident",
+                "severity": "critical",
+                "title": "TLS check failed",
+                "dedup_key": "health:site-b:https",
+                "event_type": "health.external_site",
+                "source_id": "external-site:site-b",
+                "host_id": "site-b",
+                "signal_type": "https",
+                "correlation_id": "external-site:site-b:transition-1",
+            },
+        )
+
+        with self.assertRaisesRegex(ValidationError, "explicit plan selection"):
+            self.center.resolve_event(
+                "producer-token",
+                "typed-health-recovered-mismatch",
+                {
+                    "schema": "notify.event.v1",
+                    "action": "resolve",
+                    "project": "hermes",
+                    "recipient": "me",
+                    "dedup_key": "health:site-b:https",
+                    "event_type": "health.recovered",
+                    "source_id": "external-site:site-b",
+                    "host_id": "site-b",
+                    "signal_type": "https",
+                    "correlation_id": "external-site:site-b:wrong-transition",
+                },
+            )
+        self.assertEqual("open", self.center.get_incident(created["incident_id"])["state"])
+
     def test_health_plan_keyboard_has_exactly_three_signed_choices(self) -> None:
         self.workflow.attach_plans(self.created["incident_id"], "plans-1", self._plans(), actor="gptadmin")
         keyboard = health_workflow.health_plan_keyboard(self.workflow.codec, self.created["incident_id"], self.center.latest_health_plans(self.created["incident_id"]))

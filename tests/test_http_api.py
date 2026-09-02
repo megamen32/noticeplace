@@ -260,7 +260,6 @@ class HttpApiTests(unittest.TestCase):
             "event_type": "health.degraded",
             "producer": "health-monitor",
             "plugin": "health-incident-monitor",
-            "agent_job": "health-diagnosis",
             "correlation_id": "health:host-a:disk:1",
             "source_id": "host:host-a",
             "host_id": "host-a",
@@ -269,8 +268,9 @@ class HttpApiTests(unittest.TestCase):
             "health": {"source_id": "host:host-a", "host_id": "host-a", "signal_type": "disk"},
         }
         auth = {"Authorization": "Bearer secret-token"}
-        status, created = self.request("POST", "/v1/health/signals", signal, **auth, **{"Idempotency-Key": "health-signal-1"})
+        status, created = self.request("POST", "/v1/events", signal, **auth, **{"Idempotency-Key": "health-signal-1"})
         self.assertEqual(202, status)
+        self.assertTrue(created["agent_job_delivery_id"])
         incident_id = str(created["incident_id"])
         self.assertEqual(1, len(self.center.list_incidents()))
         self.assertEqual([], self.center.latest_health_plans(incident_id))

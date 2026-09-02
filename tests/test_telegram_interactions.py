@@ -7,7 +7,7 @@ from pathlib import Path
 
 from notification_center.core import NotificationCenter
 from notification_center.telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
-from notification_center.http_api import telegram_inbox_sink_from_environment
+from notification_center.http_api import telegram_inbox_sink_from_environment, telegram_inline_keyboard
 
 
 class TelegramInteractionTests(unittest.TestCase):
@@ -50,6 +50,28 @@ class TelegramInteractionTests(unittest.TestCase):
         events = self.center._connection.execute("SELECT type, payload_json FROM audit_events WHERE incident_id = ? ORDER BY created_at", (self.created["incident_id"],)).fetchall()
         self.assertIn("telegram_ask_recorded", [row["type"] for row in events])
         self.assertEqual("open", self.center.get_incident(self.created["incident_id"])["state"])
+
+    def test_ai_button_schedules_one_manual_diagnosis_job(self) -> None:
+        codec = TelegramActionCodec("x" * 32)
+        keyboard = telegram_inline_keyboard(codec, self.center.get_incident(self.created["incident_id"]))
+        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+        ai_button = next(button for button in buttons if button["text"] == "AI")
+        updates = [{
+            "update_id": 21,
+            "callback_query": {"id": "cb_ai", "from": {"id": 42}, "data": ai_button["callback_data"]},
+        }]
+
+        def api(method: str, _payload: dict[str, object]) -> dict[str, object]:
+            return {"ok": True, "result": updates if method == "getUpdates" else True}
+
+        TelegramInteractionPoller(self.center, "bot-token", {"42"}, codec, api=api).poll_once()
+        repeated = self.center.apply_telegram_action(self.created["incident_id"], "ai", "telegram:42")
+        rows = self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id = ? AND channel = 'gptadmin.agent:health-diagnosis'",
+            (self.created["incident_id"],),
+        ).fetchall()
+        self.assertEqual(1, len(rows))
+        self.assertTrue(repeated["idempotent"])
 
     def test_allowed_regular_message_is_forwarded_to_universal_inbox_once(self) -> None:
         codec = TelegramActionCodec("x" * 32)

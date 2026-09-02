@@ -117,7 +117,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
             "source_id": "host:server-100",
             "host_id": "server-100",
             "signal_type": "cpu",
-            "agent_job": "health-diagnosis",
+            "correlation_id": "health:server-100:cpu:incident-1",
         }
         first = center.create_event("health-token", "health-event-1", event)
         second = center.create_event("health-token", "health-event-2", {**event, "body": "repeat observation"})
@@ -127,6 +127,35 @@ class GptAdminAgentJobTests(unittest.TestCase):
             "SELECT COUNT(*) AS count FROM deliveries WHERE channel = 'gptadmin.agent:health-diagnosis'"
         ).fetchone()
         self.assertEqual(1, rows["count"])
+
+    def test_health_policy_does_not_auto_diagnose_incomplete_or_noncritical_signals(self) -> None:
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "health-policy.sqlite3",
+            {"health-token": {"project": "health-monitor", "max_severity": "critical", "agent_jobs": ["health-diagnosis"]}},
+        )
+        base = {
+            "schema": "notify.event.v1",
+            "project": "health-monitor",
+            "recipient": "health",
+            "kind": "incident",
+            "severity": "important",
+            "title": "Health warning",
+            "body": "bounded observation",
+            "dedup_key": "health:host:server-100:disk",
+            "event_type": "health.disk",
+            "source_id": "host:server-100",
+            "host_id": "server-100",
+            "signal_type": "disk",
+            "correlation_id": "health:server-100:disk:incident-1",
+        }
+        important = center.create_event("health-token", "health-policy-important", base)
+        incomplete = center.create_event(
+            "health-token",
+            "health-policy-incomplete",
+            {**base, "severity": "critical", "dedup_key": "health:incomplete", "correlation_id": ""},
+        )
+        self.assertIsNone(important["agent_job_delivery_id"])
+        self.assertIsNone(incomplete["agent_job_delivery_id"])
 
     def test_crash_reopen_reclaims_same_delivery_key_and_same_hub_job(self) -> None:
         created = self.center.create_event("allowed", "crash-disk-event", self.event)

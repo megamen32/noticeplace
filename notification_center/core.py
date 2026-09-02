@@ -409,6 +409,46 @@ class NotificationCenter:
         if event.get("schema", "notify.event.v1") != "notify.event.v1" or event.get("action") != "resolve":
             raise ValidationError("unsupported resolution event")
 
+    @staticmethod
+    def _effective_agent_job(event: Mapping[str, Any], scope: Mapping[str, Any]) -> str:
+        """Resolve producer intent plus the central deterministic diagnosis policy."""
+        explicit = str(event.get("agent_job") or "")
+        if explicit:
+            return explicit
+        allowed_jobs = {str(value) for value in scope.get("agent_jobs", [])} if isinstance(scope.get("agent_jobs"), (list, tuple)) else set()
+        required_health_identity = ("source_id", "host_id", "signal_type", "correlation_id")
+        if (
+            HEALTH_DIAGNOSIS_AGENT_JOB in allowed_jobs
+            and str(event.get("kind") or "") == "incident"
+            and str(event.get("event_type") or "").startswith("health.")
+            and str(event.get("severity") or "") in {"critical", "emergency"}
+            and all(str(event.get(field) or "").strip() for field in required_health_identity)
+        ):
+            return HEALTH_DIAGNOSIS_AGENT_JOB
+        return ""
+
+    def _source_health_recovery_matches(self, incident_id: str, event: Mapping[str, Any]) -> bool:
+        """Accept an unselected health incident's recovery only from the same typed source."""
+        if str(event.get("event_type") or "") != "health.recovered":
+            return False
+        keys = ("source_id", "host_id", "signal_type", "correlation_id")
+        recovery_identity = {key: str(event.get(key) or "").strip() for key in keys}
+        if not all(recovery_identity.values()):
+            return False
+        original = self._connection.execute(
+            "SELECT payload_json FROM events WHERE incident_id = ? ORDER BY created_at, event_id LIMIT 1",
+            (incident_id,),
+        ).fetchone()
+        if original is None:
+            return False
+        try:
+            original_event = json.loads(str(original["payload_json"]))
+        except (TypeError, json.JSONDecodeError):
+            return False
+        return isinstance(original_event, dict) and all(
+            str(original_event.get(key) or "").strip() == recovery_identity[key] for key in keys
+        )
+
     def _audit(self, incident_id: str | None, event_type: str, actor: str | None, payload: Mapping[str, Any]) -> None:
         """Record an immutable state transition for later human and machine audit."""
         self._connection.execute(
@@ -828,7 +868,7 @@ class NotificationCenter:
             raise ValidationError("Idempotency-Key is required")
         self._validate_event(event)
         scope = self._token(token, event)
-        agent_job = str(event.get("agent_job") or "")
+        agent_job = self._effective_agent_job(event, scope)
         if agent_job:
             allowed_jobs = scope.get("agent_jobs", [])
             if not isinstance(allowed_jobs, (list, tuple)) or agent_job not in {str(value) for value in allowed_jobs}:
@@ -854,7 +894,7 @@ class NotificationCenter:
                     (previous["incident_id"],),
                 ).fetchone()
                 previous_event = json.loads(previous["payload_json"])
-                previous_job = str(previous_event.get("agent_job") or "") if isinstance(previous_event, dict) else ""
+                previous_job = self._effective_agent_job(previous_event, scope) if isinstance(previous_event, dict) else ""
                 agent_delivery = self._connection.execute(
                     "SELECT id FROM deliveries WHERE delivery_key = ?",
                     (f"{previous['incident_id']}:gptadmin.agent:{previous_job}:event:{previous['event_id']}",),
@@ -949,7 +989,8 @@ class NotificationCenter:
             incident_id = str(row["id"]) if row is not None else None
             if incident_id is not None:
                 self._require_severity(self._scope(token, project), str(row["severity"]))
-                self._require_health_resolution_gate(incident_id)
+                if self._health_selected_plan(incident_id) or not self._source_health_recovery_matches(incident_id, event):
+                    self._require_health_resolution_gate(incident_id)
                 self._transition(incident_id, "resolved", "producer")
             self._connection.execute(
                 "INSERT INTO resolution_events(idempotency_key, event_id, project, recipient, dedup_key, payload_json, incident_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -976,15 +1017,11 @@ class NotificationCenter:
         return delivery_id
 
     def _schedule_consumer_policy(self, incident_id: str, consumer_id: str, now: float) -> str | None:
-        """Materialize a root step, keeping health Telegram delivery plan-gated."""
+        """Materialize the root notification before any optional diagnosis."""
         incident = self.get_incident(incident_id)
         is_health = incident is not None and str(incident.get("event_type") or "").startswith("health.")
         profile = self._connection.execute("SELECT profile_type FROM consumers WHERE id = ?", (consumer_id,)).fetchone()
         if profile is not None and str(profile["profile_type"]) == "builtin":
-            if is_health:
-                # Built-in health incidents become user-facing only after
-                # GPTAdmin/OmniRoute attaches the validated three-plan bundle.
-                return None
             return self._schedule_delivery(incident_id, "telegram.main", "initial", now)
         generic = self._connection.execute(
             "SELECT step_id, platform, action, target_json, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1 AND step_id IS NOT NULL AND previous_step_id IS NULL",
@@ -1355,6 +1392,23 @@ class NotificationCenter:
             with self._lock, self._connection:
                 self._audit(incident_id, "telegram_ask_requested", actor, {})
             return {"action": action, "state": incident["state"]}
+        if action == "ai":
+            incident = self.get_incident(incident_id)
+            if incident is None:
+                raise ValidationError("incident not found")
+            if incident["state"] not in DELIVERABLE_STATES:
+                return {"action": action, "state": "inactive", "idempotent": True, "agent_job_delivery_id": None}
+            delivery_key = f"{incident_id}:gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}:incident"
+            with self._lock, self._connection:
+                previous = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (delivery_key,)).fetchone()
+                delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}", "incident", time.time())
+                self._audit(
+                    incident_id,
+                    "telegram_ai_requested",
+                    actor,
+                    {"delivery_id": delivery_id, "idempotent": previous is not None},
+                )
+            return {"action": action, "state": incident["state"], "idempotent": previous is not None, "agent_job_delivery_id": delivery_id}
         raise ValidationError("unsupported Telegram action")
 
     def record_telegram_ask(self, incident_id: str, actor: str, question: str) -> None:
@@ -2927,6 +2981,8 @@ class NotificationCenter:
         message_id = result.get("message_id")
         if not isinstance(message_id, int) or message_id <= 0:
             return False
+        if not attached_plan_ids:
+            return result.get("ai_button_count") == 1 and result.get("ai_signed_callback_count") == 1
         if result.get("health_button_count") != 3 or result.get("health_signed_callback_count") != 3:
             return False
         sent_plan_ids = result.get("health_plan_ids")

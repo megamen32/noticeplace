@@ -190,6 +190,9 @@ class TelegramInteractionPoller:
             if parsed is not None and len(parsed) == 2:
                 action, incident_id = parsed
                 result = self._center.apply_telegram_action(incident_id, action, f"telegram:{actor_id}")
+                if action == "ai":
+                    self._answer(callback_id, "AI diagnosis already requested" if result.get("idempotent") else "AI diagnosis started")
+                    return
                 if action == "ask" and result["state"] != "inactive":
                     chat_id = str(callback.get("message", {}).get("chat", {}).get("id") or "")
                     if chat_id:

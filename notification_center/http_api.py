@@ -72,14 +72,15 @@ def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[s
         if buttons:
             return {"inline_keyboard": buttons}
     ask = {"text": "Ask", "callback_data": action_codec.encode("ask", incident_id)}
+    ai = {"text": "AI", "callback_data": action_codec.encode("ai", incident_id)}
     if str(incident["severity"]) != "critical":
-        return {"inline_keyboard": [[ask]]}
+        return {"inline_keyboard": [[ask, ai]]}
     return {"inline_keyboard": [
         [
             {"text": "ACK", "callback_data": action_codec.encode("ack", incident_id)},
             {"text": "Snooze 15m", "callback_data": action_codec.encode("snz", incident_id)},
         ],
-        [ask],
+        [ask, ai],
     ]}
 
 
@@ -271,6 +272,7 @@ class TelegramSender:
             raise RuntimeError(f"Telegram destination is not configured: {mode}")
         request_data: dict[str, str] = {**destination, "text": text, "disable_web_page_preview": "true"}
         health_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
+        action_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
         if isinstance(health_outcome, dict):
             pass
         elif self._action_codec is not None:
@@ -278,7 +280,8 @@ class TelegramSender:
                 health_keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
                 request_data["reply_markup"] = json.dumps(health_keyboard, separators=(",", ":"))
             else:
-                request_data["reply_markup"] = json.dumps(telegram_inline_keyboard(self._action_codec, incident, choice_options if isinstance(choice_options, list) else None), separators=(",", ":"))
+                action_keyboard = telegram_inline_keyboard(self._action_codec, incident, choice_options if isinstance(choice_options, list) else None)
+                request_data["reply_markup"] = json.dumps(action_keyboard, separators=(",", ":"))
         elif mode == "health":
             raise RuntimeError("Telegram health delivery requires signed plan callback configuration")
         data = urllib.parse.urlencode(request_data).encode()
@@ -300,6 +303,20 @@ class TelegramSender:
             "message_id": message_id,
             "chat_id": str(message.get("chat", {}).get("id") or destination["chat_id"]) if isinstance(message.get("chat"), dict) else destination["chat_id"],
         }
+        action_buttons = [
+            button
+            for row in (action_keyboard or {}).get("inline_keyboard", [])
+            for button in row
+            if isinstance(button, dict)
+        ]
+        ai_buttons = [button for button in action_buttons if str(button.get("text") or "") == "AI"]
+        receipt["ai_button_count"] = len(ai_buttons)
+        receipt["ai_signed_callback_count"] = sum(
+            1
+            for button in ai_buttons
+            if self._action_codec is not None
+            and self._action_codec.decode(str(button.get("callback_data") or "")) == ("ai", str(incident["id"]))
+        )
         if isinstance(health_plans, list):
             receipt["health_plan_ids"] = [
                 str(plan.get("plan_id") or "").strip()
@@ -847,16 +864,6 @@ class DeliveryWorker:
                                     attempt=delivery.get("attempt"),
                                 )
                             return
-                    if is_health and not isinstance(payload.get("health_outcome"), dict) and not _health_plans_ready(payload):
-                        self._center.complete_delivery(
-                            delivery["id"],
-                            "retry",
-                            "Health plans are not attached",
-                            retry_after_seconds=300,
-                            claimed_at=delivery.get("claimed_at"),
-                            attempt=delivery.get("attempt"),
-                        )
-                        return
                     if not self._center.reserve_delivery_send(
                         str(delivery["id"]),
                         claimed_at=float(delivery["claimed_at"]),
@@ -1231,10 +1238,6 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown human request action"})
                         return
                     self._reply(HTTPStatus.OK, result)
-                    return
-                if len(parts) == 4 and parts[:3] == ["", "v1", "health"] and parts[3] == "signals":
-                    key = self.headers.get("Idempotency-Key") or ""
-                    self._reply(HTTPStatus.ACCEPTED, health_workflow.intake_signal(token, key, body, request_meta=self._request_meta()))
                     return
                 if len(parts) == 5 and parts[:3] == ["", "v1", "incidents"]:
                     incident_id, action = parts[3], parts[4]
