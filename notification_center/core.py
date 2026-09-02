@@ -1400,15 +1400,24 @@ class NotificationCenter:
                 return {"action": action, "state": "inactive", "idempotent": True, "agent_job_delivery_id": None}
             delivery_key = f"{incident_id}:gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}:incident"
             with self._lock, self._connection:
-                previous = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (delivery_key,)).fetchone()
-                delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}", "incident", time.time())
+                now = time.time()
+                previous = self._connection.execute("SELECT id, status FROM deliveries WHERE delivery_key = ?", (delivery_key,)).fetchone()
+                restarted = previous is not None and str(previous["status"]) in {"failed", "cancelled"}
+                if restarted:
+                    delivery_id = str(previous["id"])
+                    self._connection.execute(
+                        "UPDATE deliveries SET status = 'queued', due_at = ?, claimed_at = NULL, last_error = NULL, result_json = NULL, updated_at = ? WHERE id = ?",
+                        (now, now, delivery_id),
+                    )
+                else:
+                    delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}", "incident", now)
                 self._audit(
                     incident_id,
                     "telegram_ai_requested",
                     actor,
-                    {"delivery_id": delivery_id, "idempotent": previous is not None},
+                    {"delivery_id": delivery_id, "idempotent": previous is not None and not restarted, "restarted": restarted},
                 )
-            return {"action": action, "state": incident["state"], "idempotent": previous is not None, "agent_job_delivery_id": delivery_id}
+            return {"action": action, "state": incident["state"], "idempotent": previous is not None and not restarted, "restarted": restarted, "agent_job_delivery_id": delivery_id}
         raise ValidationError("unsupported Telegram action")
 
     def record_telegram_ask(self, incident_id: str, actor: str, question: str) -> None:

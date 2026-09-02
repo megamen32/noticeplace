@@ -73,6 +73,21 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertEqual(1, len(rows))
         self.assertTrue(repeated["idempotent"])
 
+    def test_ai_button_restarts_a_failed_diagnosis_delivery(self) -> None:
+        first = self.center.apply_telegram_action(self.created["incident_id"], "ai", "telegram:42")
+        self.center.complete_delivery(first["agent_job_delivery_id"], "failed", "temporary downstream failure")
+
+        restarted = self.center.apply_telegram_action(self.created["incident_id"], "ai", "telegram:42")
+        row = self.center._connection.execute(
+            "SELECT status, last_error FROM deliveries WHERE id = ?",
+            (first["agent_job_delivery_id"],),
+        ).fetchone()
+
+        self.assertFalse(restarted["idempotent"])
+        self.assertTrue(restarted["restarted"])
+        self.assertEqual("queued", row["status"])
+        self.assertIsNone(row["last_error"])
+
     def test_allowed_regular_message_is_forwarded_to_universal_inbox_once(self) -> None:
         codec = TelegramActionCodec("x" * 32)
         update = {
