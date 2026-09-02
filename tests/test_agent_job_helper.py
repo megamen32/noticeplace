@@ -41,7 +41,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 "instruction": "Return exactly one diagnosis JSON object.",
                 "orchestrator_name": "health_orchestrator_test",
                 "orchestrator_requested_model": "omniroute/orchestrator",
-                "orchestrator_model": "omniroute/free-stack",
+                "orchestrator_model": "omniroute/subagent",
             }}}), encoding="utf-8")
             config.chmod(0o600)
             callback.write_text(json.dumps({"url": "http://127.0.0.1:8091", "token": "health-callback-token"}), encoding="utf-8")
@@ -76,10 +76,10 @@ class AgentJobHelperTests(unittest.TestCase):
                     if session_calls == 1:
                         return _Response({"ok": True, "created": True, "sessionId": "opencode-health-diagnosis-1", "delivery": "accepted", "model": "omniroute/subagent"})
                     body = json.loads(getattr(request, "data").decode())
-                    self.assertEqual("omniroute/free-stack", body["model"])
+                    self.assertEqual("omniroute/subagent", body["model"])
                     self.assertEqual("sync", body["mode"])
                     self.assertIn("bounded synthetic diagnosis", body["message"])
-                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-orchestrator-1", "delivery": "accepted", "model": "omniroute/free-stack"})
+                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-orchestrator-1", "delivery": "accepted", "model": "omniroute/subagent"})
                 if "/progress?" in url:
                     fingerprint = "progress:diagnosis-1" if "opencode-health-diagnosis-1" in url else "progress:orchestrator-1"
                     return _Response({"session": {"status": "idle"}, "fingerprint": fingerprint})
@@ -90,7 +90,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 self.assertEqual("Bearer health-callback-token", getattr(request, "headers", {}).get("Authorization"))
                 body = json.loads(getattr(request, "data").decode())
                 self.assertEqual("omniroute/orchestrator", body["orchestration"]["orchestrator_requested_model"])
-                self.assertEqual("omniroute/free-stack", body["orchestration"]["orchestrator_effective_model"])
+                self.assertEqual("omniroute/subagent", body["orchestration"]["orchestrator_effective_model"])
                 return _Response({"event_id": "evt-plans-1"})
 
             result = run_profile(

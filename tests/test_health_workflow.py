@@ -62,7 +62,7 @@ class HealthWorkflowTests(unittest.TestCase):
             "diagnosis_model": "omniroute/subagent",
             "orchestrator_session_id": "orchestrator-session",
             "orchestrator_requested_model": "omniroute/orchestrator",
-            "orchestrator_effective_model": "omniroute/free-stack",
+            "orchestrator_effective_model": "omniroute/subagent",
             "harness": "opencode",
             "diagnosis_elapsed_ms": 1200,
             "orchestrator_elapsed_ms": 2300,
