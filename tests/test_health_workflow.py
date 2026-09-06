@@ -348,7 +348,7 @@ class HealthWorkflowTests(unittest.TestCase):
         expected_execution = {
             "runtime": "codex",
             "provider": "openai-codex",
-            "model": "o3",
+            "model": "gpt-6-astra",
             "reasoning": "high",
             "topic": "health",
         }

@@ -154,16 +154,16 @@ class AgentJobHelperTests(unittest.TestCase):
                     "schema": "notify.agent-job.v1",
                     "job_id": "health-remediation",
                     "incident": {"id": "inc-health-1", "project": "health-monitor", "severity": "critical", "title": "Disk degraded", "body": "bounded", "dedup_key": "health:disk", "occurrences": 1},
-                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "o3", "reasoning": "high", "topic": "health"}}},
+                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"}}},
                 },
                 config,
                 runner=runner,
             )
             self.assertEqual("opencode-health-1", result["session_id"])
-            self.assertEqual("o3", result["model"])
+            self.assertEqual("gpt-6-astra", result["model"])
             body = json.loads(requests[0].data)
             self.assertEqual("codex", body["harness"])
-            self.assertEqual("o3", body["model"])
+            self.assertEqual("gpt-6-astra", body["model"])
             self.assertIn("selected plan repair", body["message"])
             self.assertIn("Execution runtime is Codex through Agent Herder", body["message"])
 
@@ -213,7 +213,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "health": {
                         "source_id": "host:vusa",
                         "source_fingerprint": "source-fingerprint-1",
-                        "selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "o3", "reasoning": "high", "topic": "health"}},
+                        "selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"}},
                     },
                 },
                 config,
@@ -269,7 +269,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 result = run_profile(
                     "health-remediation",
                     {"schema": "notify.agent-job.v1", "job_id": "health-remediation", "incident": {"id": "inc-timeout"},
-                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "o3", "reasoning": "high", "topic": "health"}}}},
+                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"}}}},
                     config,
                     runner=runner,
                 )
@@ -339,14 +339,14 @@ class AgentJobHelperTests(unittest.TestCase):
                         "schema": "notify.agent-job.v1",
                         "job_id": "health-remediation",
                         "incident": {"id": "inc-health-legacy"},
-                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "o3", "reasoning": "high", "topic": "health"}}},
+                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"}}},
                     },
                     config,
                     runner=runner,
                 )
             body = json.loads(requests[0].data)
             self.assertEqual("codex", body["harness"])
-            self.assertEqual("o3", body["model"])
+            self.assertEqual("gpt-6-astra", body["model"])
             self.assertEqual("codex", result["harness"])
 
     def test_profile_owns_target_identity_and_event_is_only_telemetry(self) -> None:

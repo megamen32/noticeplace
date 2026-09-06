@@ -277,7 +277,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
                 "health_selection": {
                     "plan_id": "repair",
                     "actor": "telegram:42",
-                    "execution": {"runtime": "codex", "provider": "openai-codex", "model": "o3", "reasoning": "high", "topic": "health"},
+                    "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"},
                 },
             },
             "health-delivery-1",
@@ -288,7 +288,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("host:100", outbound["health"]["source_id"])
         self.assertEqual(1, len(outbound["health"]["plans"]))
         self.assertEqual("repair", outbound["health"]["selection"]["plan_id"])
-        self.assertEqual("o3", outbound["health"]["selection"]["execution"]["model"])
+        self.assertEqual("gpt-6-astra", outbound["health"]["selection"]["execution"]["model"])
         self.assertEqual("high", outbound["health"]["selection"]["execution"]["reasoning"])
         self.assertNotIn("must-not-leak", json.dumps(outbound))
         self.assertNotIn("route-secret", json.dumps(outbound))
@@ -862,7 +862,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
                     "health_context": {},
                     "health_selection": {
                         "plan_id": "plan-003",
-                        "execution": {"runtime": "codex", "provider": "openai-codex", "model": "o3", "reasoning": "high", "topic": "health"},
+                        "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"},
                     },
                 },
                 "delivery-direct-1",
@@ -870,7 +870,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("completed", result["status"])
         self.assertEqual("codex", run.call_args.kwargs["profile_override"]["harness"])
         self.assertEqual("queue", run.call_args.kwargs["profile_override"]["mode"])
-        self.assertEqual("o3", run.call_args.kwargs["profile_override"]["model"])
+        self.assertEqual("gpt-6-astra", run.call_args.kwargs["profile_override"]["model"])
         self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
 
     def test_supervisor_classifies_useful_progress_and_ignores_heartbeat_only_updates(self) -> None:

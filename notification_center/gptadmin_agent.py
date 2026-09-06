@@ -24,7 +24,7 @@ _RESPONSE_LIMIT = 64 * 1024
 _HEALTH_EXECUTION_PROFILE = {
     "runtime": "codex",
     "provider": "openai-codex",
-    "model": "o3",
+    "model": "gpt-6-astra",
     "reasoning": "high",
     "topic": "health",
 }
@@ -120,7 +120,7 @@ class DirectHealthRemediationAdapter:
             # Agent Herder's Codex app-server transport is the live-proven
             # remediation route; OpenCode currently fails before the first
             # assistant turn.
-            "model": "o3",
+            "model": "gpt-6-astra",
             "reasoning": "high",
             "topic": "health",
             "poll_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_POLL_SECONDS", "1"),
