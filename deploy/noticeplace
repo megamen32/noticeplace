@@ -62,7 +62,7 @@ atomic_link() {
 
 release_id() {
     local revision=source
-    if revision=$(git -C "$SOURCE_ROOT" rev-parse --short=12 HEAD 2>/dev/null); then
+    if revision=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse --short=12 HEAD 2>/dev/null); then
         :
     elif [[ -r "$SOURCE_ROOT/.noticeplace-release" ]]; then
         revision=$(sed -n 's/^revision=//p' "$SOURCE_ROOT/.noticeplace-release" | head -n 1)
@@ -75,7 +75,7 @@ stage_release() {
     local id=$1 release="$RELEASE_ROOT/$1"
     mkdir -p -- "$RELEASE_ROOT" "$release"
     if [[ ${NOTICEPLACE_SOURCE_MODE:-git} == git ]] && git -C "$SOURCE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        git -C "$SOURCE_ROOT" archive --format=tar HEAD | tar -C "$release" -xf -
+        git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" archive --format=tar HEAD | tar -C "$release" -xf -
     else
         tar -C "$SOURCE_ROOT" \
             --exclude='./.git' \
