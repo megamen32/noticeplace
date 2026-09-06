@@ -92,6 +92,10 @@ release=$id
 revision=${id#*-}
 installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
+    # The runtime services use a dedicated unprivileged account. Source
+    # checkouts may use a restrictive umask, so normalize public release
+    # readability without widening write permissions.
+    chmod -R a+rX "$release"
     printf '%s' "$release"
 }
 
