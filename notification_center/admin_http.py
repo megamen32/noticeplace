@@ -293,6 +293,9 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         "matrix_call_critical_escalation_seconds": "Matrix critical call delay (s)",
         "matrix_call_emergency_escalation_seconds": "Matrix emergency call delay (s)",
         "android_phone_call_escalation_seconds": "Android phone call delay (s)",
+        "android_phone_emergency_call_escalation_seconds": "Emergency phone call delay (s)",
+        "android_phone_quiet_start_hour": "Phone quiet hours start (Moscow hour)",
+        "android_phone_quiet_end_hour": "Phone quiet hours end (Moscow hour)",
         "android_telegram_call_escalation_seconds": "Android Telegram call delay (s)",
         "telegram_critical_repeat_seconds": "Critical Telegram repeat delay (s)",
     }

@@ -6,8 +6,10 @@ import json
 import tempfile
 import unittest
 import urllib.parse
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from notification_center.core import NotificationCenter
 from notification_center.http_api import (
@@ -20,6 +22,7 @@ from notification_center.http_api import (
     WebhookCallSender,
     call_adapters_from_environment,
     message_adapters_from_environment,
+    phone_call_allowed,
 )
 
 
@@ -34,6 +37,102 @@ class DeliveryWorkerTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def test_critical_phone_quiet_hours_and_emergency_override(self) -> None:
+        moscow = ZoneInfo("Europe/Moscow")
+        self.assertFalse(phone_call_allowed(
+            "critical", datetime(2026, 9, 12, 11, 59, tzinfo=moscow), 0, 12,
+        ))
+        self.assertTrue(phone_call_allowed(
+            "critical", datetime(2026, 9, 12, 12, 0, tzinfo=moscow), 0, 12,
+        ))
+        self.assertTrue(phone_call_allowed(
+            "emergency", datetime(2026, 9, 12, 2, 0, tzinfo=moscow), 0, 12,
+        ))
+
+    def test_quiet_hours_cancel_critical_call_but_not_emergency(self) -> None:
+        calls: list[str] = []
+
+        class Android:
+            can_phone_call = True
+
+            def phone_call(self, payload: dict[str, object]) -> None:
+                calls.append(str(payload["incident"]["severity"]))
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        for severity in ("critical", "emergency"):
+            created = self.center.create_event(
+                "producer", f"quiet-{severity}",
+                {**self.event, "severity": severity, "dedup_key": f"quiet:{severity}"},
+            )
+            self.center.complete_delivery(created["initial_delivery_id"], "sent")
+            self.center.schedule_escalation(created["incident_id"], "android.phone.call", due_epoch=0)
+
+        worker = DeliveryWorker(
+            self.center, Telegram(), android_phone=Android(),
+            android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=24,
+        )
+        self.assertEqual(2, worker.run_once())
+        self.assertEqual(["emergency"], calls)
+        statuses = self.center._connection.execute(
+            "SELECT i.severity, d.status FROM deliveries d JOIN incidents i ON i.id=d.incident_id "
+            "WHERE d.channel='android.phone.call' ORDER BY i.severity"
+        ).fetchall()
+        self.assertEqual(
+            [("critical", "cancelled"), ("emergency", "sent")],
+            [(row["severity"], row["status"]) for row in statuses],
+        )
+
+    def test_zero_delay_schedules_critical_phone_immediately(self) -> None:
+        created = self.center.create_event("producer", "phone-now", self.event)
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        class Android:
+            can_phone_call = True
+
+        worker = DeliveryWorker(
+            self.center, Telegram(), android_phone=Android(),
+            android_phone_call_escalation_seconds=0,
+        )
+        with mock.patch("notification_center.http_api.time.time", return_value=10**12):
+            self.assertEqual(1, worker.run_once())
+        row = self.center._connection.execute(
+            "SELECT status, due_at FROM deliveries WHERE incident_id=? AND channel='android.phone.call'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertEqual(("queued", 10**12), (row["status"], row["due_at"]))
+
+    def test_emergency_schedules_phone_immediately_even_with_quiet_hours(self) -> None:
+        created = self.center.create_event(
+            "producer", "emergency-phone-now",
+            {**self.event, "severity": "emergency", "dedup_key": "emergency:phone-now"},
+        )
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        class Android:
+            can_phone_call = True
+
+        worker = DeliveryWorker(
+            self.center, Telegram(), android_phone=Android(),
+            android_phone_emergency_call_escalation_seconds=0,
+            android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=24,
+        )
+        with mock.patch("notification_center.http_api.time.time", return_value=10**12):
+            self.assertEqual(1, worker.run_once())
+        row = self.center._connection.execute(
+            "SELECT status, due_at FROM deliveries WHERE incident_id=? AND channel='android.phone.call'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertEqual(("queued", 10**12), (row["status"], row["due_at"]))
 
     def test_generic_message_channel_uses_registered_adapter_and_persists_receipt(self) -> None:
         consumer = self.center.create_consumer(

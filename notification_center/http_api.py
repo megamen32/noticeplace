@@ -10,10 +10,13 @@ import secrets
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
+from .agentcall_phone import AgentCallPhoneAdapter
 from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
 from .gptadmin_phone import GptAdminPhoneAdapter
@@ -24,6 +27,21 @@ from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
 ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log"))
 SUPPORTED_TELEGRAM_MODES = frozenset((*ACTIVE_TELEGRAM_MODES, "health"))
+
+
+def phone_call_allowed(severity: str, when: datetime, quiet_start_hour: float, quiet_end_hour: float) -> bool:
+    """Allow critical calls outside quiet hours; emergency always overrides."""
+    if severity == "emergency":
+        return True
+    if severity != "critical":
+        return False
+    start = max(0.0, min(24.0, float(quiet_start_hour)))
+    end = max(0.0, min(24.0, float(quiet_end_hour)))
+    if start == end:
+        return True
+    hour = when.hour + when.minute / 60 + when.second / 3600
+    quiet = start <= hour < end if start < end else hour >= start or hour < end
+    return not quiet
 
 
 def telegram_active_modes(raw: str) -> set[str]:
@@ -672,7 +690,7 @@ class WebhookCallSender(WebhookMessageSender):
 class DeliveryWorker:
     """Run due delivery claims through known adapters without hiding failures."""
 
-    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0, agent_jobs: dict[str, GptAdminAgentJobAdapter | Any] | None = None, message_adapters: Mapping[str, Any] | None = None, call_adapters: Mapping[str, Any] | None = None) -> None:
+    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | AgentCallPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0, agent_jobs: dict[str, GptAdminAgentJobAdapter | Any] | None = None, message_adapters: Mapping[str, Any] | None = None, call_adapters: Mapping[str, Any] | None = None, android_phone_emergency_call_escalation_seconds: float = 0, android_phone_quiet_start_hour: float = 0, android_phone_quiet_end_hour: float = 12, android_phone_quiet_timezone: str = "Europe/Moscow") -> None:
         """Attach durable delivery state to Telegram, Matrix, and the local S21 adapter."""
         self._center = center
         self._telegram = telegram
@@ -687,6 +705,10 @@ class DeliveryWorker:
         self._critical_repeat_seconds = max(0, critical_repeat_seconds)
         self._android_telegram_call_escalation_seconds = max(0, android_telegram_call_escalation_seconds)
         self._android_phone_call_escalation_seconds = max(0, android_phone_call_escalation_seconds)
+        self._android_phone_emergency_call_escalation_seconds = max(0, android_phone_emergency_call_escalation_seconds)
+        self._android_phone_quiet_start_hour = android_phone_quiet_start_hour
+        self._android_phone_quiet_end_hour = android_phone_quiet_end_hour
+        self._android_phone_quiet_timezone = android_phone_quiet_timezone
 
     def claim_due(self) -> list[dict[str, Any]]:
         """Claim a bounded batch without blocking the dispatcher heartbeat."""
@@ -718,6 +740,21 @@ class DeliveryWorker:
             return True
         return value.lower() in {"1", "true", "yes", "on"}
 
+    def _phone_delay_seconds(self, severity: str) -> float:
+        if severity == "critical":
+            return self._runtime_float("android_phone_call_escalation_seconds", self._android_phone_call_escalation_seconds)
+        if severity == "emergency":
+            return self._runtime_float("android_phone_emergency_call_escalation_seconds", self._android_phone_emergency_call_escalation_seconds)
+        return 0
+
+    def _phone_call_allowed(self, incident: Mapping[str, Any]) -> bool:
+        return phone_call_allowed(
+            str(incident.get("severity") or ""),
+            datetime.now(ZoneInfo(self._android_phone_quiet_timezone)),
+            self._runtime_float("android_phone_quiet_start_hour", self._android_phone_quiet_start_hour),
+            self._runtime_float("android_phone_quiet_end_hour", self._android_phone_quiet_end_hour),
+        )
+
     @staticmethod
     def _telegram_repeat_sequence(delivery_key: str) -> int | None:
         if delivery_key.endswith(":initial"):
@@ -741,13 +778,12 @@ class DeliveryWorker:
                 self._center.schedule_escalation_if_active(incident_id, "matrix.call", time.time() + delay)
         if (
             str(delivery["delivery_key"]).endswith(":initial")
-            and str(incident["severity"]) == "critical"
+            and str(incident["severity"]) in {"critical", "emergency"}
             and self._android_phone is not None
             and getattr(self._android_phone, "can_phone_call", False)
             and self._automatic_calls_enabled()
-            and self._runtime_float("android_phone_call_escalation_seconds", self._android_phone_call_escalation_seconds) > 0
         ):
-            delay = self._runtime_float("android_phone_call_escalation_seconds", self._android_phone_call_escalation_seconds)
+            delay = self._phone_delay_seconds(str(incident["severity"]))
             self._center.schedule_escalation_if_active(
                 incident_id,
                 "android.phone.call",
@@ -924,6 +960,12 @@ class DeliveryWorker:
             elif delivery["channel"] == "android.phone.call":
                 if self._android_phone is None:
                     raise RuntimeError("Android phone adapter is not configured")
+                if not self._phone_call_allowed(payload["incident"]):
+                    self._center.complete_delivery(
+                        delivery["id"], "cancelled", "critical phone call suppressed by quiet hours",
+                        claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    )
+                    return
                 self._send_critical_pre_call_context(payload)
                 self._android_phone.phone_call(payload)
             elif str(delivery["channel"]).endswith(".call"):
@@ -1578,8 +1620,11 @@ def gptadmin_agent_jobs_from_environment() -> dict[str, Any]:
     return result
 
 
-def android_phone_from_environment() -> AndroidPhoneAdapter | GptAdminPhoneAdapter | None:
+def android_phone_from_environment() -> AndroidPhoneAdapter | GptAdminPhoneAdapter | AgentCallPhoneAdapter | None:
     """Build either the direct ADB adapter or the narrow fixed GPTAdmin call path."""
+    agentcall_socket = os.environ.get("AGENTCALL_PHONE_SOCKET", "").strip()
+    if agentcall_socket:
+        return AgentCallPhoneAdapter(agentcall_socket, float(os.environ.get("AGENTCALL_PHONE_TIMEOUT_SECONDS", "30")))
     gptadmin_url = os.environ.get("GPTADMIN_ANDROID_PHONE_CALL_URL", "").strip()
     gptadmin_token = os.environ.get("GPTADMIN_ANDROID_PHONE_CALL_TOKEN", "").strip()
     serial = os.environ.get("ANDROID_ADB_SERIAL", "").strip()

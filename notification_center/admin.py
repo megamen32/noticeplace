@@ -28,6 +28,9 @@ RUNTIME_SETTING_ENV = {
     "matrix_call_critical_escalation_seconds": "MATRIX_CALL_CRITICAL_ESCALATION_SECONDS",
     "matrix_call_emergency_escalation_seconds": "MATRIX_CALL_EMERGENCY_ESCALATION_SECONDS",
     "android_phone_call_escalation_seconds": "ANDROID_PHONE_CALL_ESCALATION_SECONDS",
+    "android_phone_emergency_call_escalation_seconds": "ANDROID_PHONE_EMERGENCY_CALL_ESCALATION_SECONDS",
+    "android_phone_quiet_start_hour": "ANDROID_PHONE_QUIET_START_HOUR",
+    "android_phone_quiet_end_hour": "ANDROID_PHONE_QUIET_END_HOUR",
     "android_telegram_call_escalation_seconds": "ANDROID_TELEGRAM_CALL_ESCALATION_SECONDS",
     "telegram_critical_repeat_seconds": "TELEGRAM_CRITICAL_REPEAT_SECONDS",
 }
@@ -351,6 +354,8 @@ class AdminConfigStore:
                 raise ValidationError(f"{key} must be a non-negative number") from error
             if number < 0:
                 raise ValidationError(f"{key} must be a non-negative number")
+            if key.endswith("_hour") and number > 24:
+                raise ValidationError(f"{key} must be between 0 and 24")
             normalized[key] = str(int(number)) if number.is_integer() else str(number)
         for key, value in normalized.items():
             center.set_runtime_setting(key, value)

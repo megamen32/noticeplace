@@ -187,6 +187,9 @@ class AdminConsoleTests(unittest.TestCase):
             "matrix_call_critical_escalation_seconds": "91",
             "matrix_call_emergency_escalation_seconds": "31",
             "android_phone_call_escalation_seconds": "601",
+            "android_phone_emergency_call_escalation_seconds": "0",
+            "android_phone_quiet_start_hour": "0",
+            "android_phone_quiet_end_hour": "12",
             "android_telegram_call_escalation_seconds": "41",
             "telegram_critical_repeat_seconds": "121",
         }
