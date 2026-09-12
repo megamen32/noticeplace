@@ -49,3 +49,21 @@ Started at 2026-09-12T17:49:31+03:00 (`date -Iseconds`).
   семь новых/изменённых проверок проходят. Срез из 101 релевантного теста
   проходит. Полный suite: 260 тестов, один существующий несвязанный fail в
   `test_agent_herder_choices` (`✓` в ожидании против `✅` в реализации).
+- Deployed release `20260912T151829Z-973cd06394cd-2827416`; both NoticePlace
+  services are active and the effective runtime sees the AgentCall socket,
+  zero-second critical/emergency delays, and Moscow quiet hours 00:00-12:00.
+- Live synthetic critical incident `inc_acd4e2d5bccb4d0ab982dad5effb589c`
+  reached Telegram, scheduled delivery `dlv_71072e79c6674c09aa64e9204ea2709b`,
+  pre-synthesized before dialing, and produced answered AgentCall
+  `9900c6a8-1930-4146-9534-2878c4539579`. CDR billsec was 107; UserIO captured
+  the prepared incident greeting and two-way transcript.
+- Canary exposed a target-identity blocker: the recipient said the configured
+  `+79068443132` is wrong and dictated a different number. The spoken change is
+  not treated as authenticated operator configuration. The exact call was hung
+  up and `automatic_calls_enabled` was returned to `false`; Telegram/Matrix
+  delivery remains active. Live automatic calling must stay paused until the
+  owner confirms the target in the authenticated task chat.
+- Status: implementation deployed and proven; live automatic calls safely
+  paused pending target confirmation. Active time: about 34 wall-clock minutes
+  from 17:49:31 MSK; continuously measured active time was not separately
+  instrumented.
