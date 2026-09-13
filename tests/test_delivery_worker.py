@@ -1606,7 +1606,35 @@ class DeliveryWorkerTests(unittest.TestCase):
 
         self.assertEqual(1, DeliveryWorker(self.center, Telegram(), matrix_call=Matrix(), android_phone=Android()).run_once())
         queued = self.center.claim_due_deliveries(now_epoch=10**12)
-        self.assertEqual(["android.phone.call"], [item["channel"] for item in queued])
+        self.assertEqual(
+            ["android.phone.call", "telegram.main"],
+            sorted(item["channel"] for item in queued),
+        )
+
+    def test_failed_middle_policy_delivery_schedules_both_neighbours(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Adjacent fallback",
+            policy=[
+                {"id": "telegram-first", "platform": "telegram", "action": "message", "target": {"chat_id": -100123}, "retry_interval_seconds": 30, "max_repeats": 1},
+                {"id": "matrix-middle", "platform": "matrix", "action": "call", "target": {"room_id": "!ops:example.org"}, "retry_interval_seconds": 30, "max_repeats": 1, "previous_step_id": "telegram-first"},
+                {"id": "phone-last", "platform": "phone", "action": "call", "target": {"device": "operator"}, "retry_interval_seconds": 30, "max_repeats": 1, "previous_step_id": "matrix-middle"},
+            ],
+        )
+        created = self.center.create_event(
+            consumer["intake_token"], "adjacent-fallback", self.event
+        )
+        root = self.center.claim_due_deliveries(now_epoch=10**12)[0]
+        self.center.complete_delivery(root["id"], "sent")
+        middle = self.center.claim_due_deliveries(now_epoch=10**12)[0]
+
+        self.center.complete_delivery(middle["id"], "failed", "provider unavailable")
+
+        queued = self.center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual(
+            ["phone.call", "telegram.message"],
+            sorted(item["channel"] for item in queued),
+        )
 
     def test_initial_critical_delivery_schedules_one_phone_call_after_configured_delay(self) -> None:
         created = self.center.create_event("producer", "create", self.event)

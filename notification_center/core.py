@@ -1201,6 +1201,61 @@ class NotificationCenter:
             return True
         return False
 
+    def _schedule_failure_neighbours(self, row: sqlite3.Row, now: float) -> None:
+        """Fan a failed delivery out to the adjacent methods exactly once."""
+        delivery_key = str(row["delivery_key"] or "")
+        if ":failure-neighbour:" in delivery_key:
+            return
+        neighbours: list[tuple[str, sqlite3.Row]] = []
+        policy_step_id = row["policy_step_id"]
+        if policy_step_id is not None:
+            current = self._connection.execute(
+                "SELECT previous_step_id FROM consumer_policy_stages "
+                "WHERE consumer_id=? AND step_id=? AND enabled=1",
+                (row["consumer_id"], policy_step_id),
+            ).fetchone()
+            if current is not None and current["previous_step_id"] is not None:
+                previous = self._connection.execute(
+                    "SELECT step_id,platform,action,target_json FROM consumer_policy_stages "
+                    "WHERE consumer_id=? AND step_id=? AND enabled=1",
+                    (row["consumer_id"], current["previous_step_id"]),
+                ).fetchone()
+                if previous is not None:
+                    neighbours.append(("previous", previous))
+            successor = self._connection.execute(
+                "SELECT step_id,platform,action,target_json FROM consumer_policy_stages "
+                "WHERE consumer_id=? AND previous_step_id=? AND enabled=1",
+                (row["consumer_id"], policy_step_id),
+            ).fetchone()
+            if successor is not None:
+                neighbours.append(("next", successor))
+        else:
+            profile = self._connection.execute(
+                "SELECT profile_type FROM consumers WHERE id=?", (row["consumer_id"],)
+            ).fetchone()
+            ladder = ("telegram.main", "matrix.call", "android.phone.call")
+            channel = str(row["channel"])
+            if profile is not None and str(profile["profile_type"]) == "builtin" and channel in ladder:
+                index = ladder.index(channel)
+                for relation, neighbour_index in (("previous", index - 1), ("next", index + 1)):
+                    if 0 <= neighbour_index < len(ladder):
+                        neighbour_channel = ladder[neighbour_index]
+                        neighbours.append((relation, {
+                            "step_id": None,
+                            "platform": neighbour_channel.rsplit(".", 1)[0],
+                            "action": neighbour_channel.rsplit(".", 1)[1],
+                            "target_json": "{}",
+                        }))
+        for relation, neighbour in neighbours:
+            channel = f"{neighbour['platform']}.{neighbour['action']}"
+            self._schedule_delivery(
+                str(row["incident_id"]),
+                channel,
+                f"failure-neighbour:{row['id']}:{relation}",
+                now,
+                json.loads(str(neighbour["target_json"] or "{}")),
+            )
+
     def complete_delivery(self, delivery_id: str, outcome: str, error: str | None = None, retry_after_seconds: float = 30, claimed_at: float | None = None, attempt: int | None = None, result: Mapping[str, Any] | None = None) -> None:
         """Mark one claim sent, cancelled, or safely queued for a future retry."""
         if outcome not in ("sent", "failed", "cancelled", "retry", "uncertain", "superseded"):
@@ -1209,7 +1264,7 @@ class NotificationCenter:
         safe_error = " ".join((error or "").replace("\x00", "").splitlines())[-1000:] or None
         result_json = json.dumps(dict(result), ensure_ascii=False, sort_keys=True)[:4000] if isinstance(result, Mapping) else None
         with self._lock, self._connection:
-            row = self._connection.execute("SELECT d.status, d.claimed_at, d.attempt, d.incident_id, d.channel, d.policy_step_id, d.repeat_number, i.state, i.consumer_id, i.event_type FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
+            row = self._connection.execute("SELECT d.id, d.status, d.claimed_at, d.attempt, d.incident_id, d.channel, d.delivery_key, d.policy_step_id, d.repeat_number, i.state, i.consumer_id, i.event_type FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
             if row is None:
                 raise ValidationError("delivery not found")
             if str(row["status"]) == "cancelled":
@@ -1229,6 +1284,8 @@ class NotificationCenter:
                 self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), safe_error, now, delivery_id))
             else:
                 self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, result_json = COALESCE(?, result_json), updated_at = ? WHERE id = ?", (outcome, safe_error, result_json, now, delivery_id))
+            if outcome in {"failed", "retry", "uncertain"} and str(row["state"]) in DELIVERABLE_STATES:
+                self._schedule_failure_neighbours(row, now)
             if outcome == "sent" and row["policy_step_id"] is not None and str(row["state"]) in DELIVERABLE_STATES:
                 try:
                     step = self._connection.execute(

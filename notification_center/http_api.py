@@ -951,8 +951,12 @@ class DeliveryWorker:
                 result = self._matrix_call.send(payload)
                 if result["answered"]:
                     self._center.acknowledge_if_active(str(delivery["incident_id"]), str(result["actor"]))
-                elif self._automatic_calls_enabled() and self._android_phone is not None and getattr(self._android_phone, "can_phone_call", False):
-                    self._center.schedule_escalation_if_active(str(delivery["incident_id"]), "android.phone.call", time.time())
+                else:
+                    self._center.complete_delivery(
+                        delivery["id"], "failed", "Matrix call was not answered",
+                        claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    )
+                    return
             elif delivery["channel"] == "android.telegram.call":
                 if self._android_phone is None:
                     raise RuntimeError("Android phone adapter is not configured")
