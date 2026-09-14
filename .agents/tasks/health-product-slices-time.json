@@ -1,0 +1,14 @@
+{
+  "cycle_id": "health-product-slices",
+  "estimate_mutations": [],
+  "last_active_minutes": 0,
+  "last_checked_at": "2026-08-12T23:38:41.673402+03:00",
+  "overrun_reported": false,
+  "planned_minutes": {
+    "maximum": 250,
+    "minimum": 125
+  },
+  "reported_hours": 0,
+  "schema_version": 1,
+  "started_at": "2026-08-12T20:38:41.146000+00:00"
+}

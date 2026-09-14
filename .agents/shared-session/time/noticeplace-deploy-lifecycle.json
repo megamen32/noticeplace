@@ -1,0 +1,14 @@
+{
+  "cycle_id": "noticeplace-deploy-lifecycle",
+  "estimate_mutations": [],
+  "last_active_minutes": 21,
+  "last_checked_at": "2026-08-12T16:24:37+03:00",
+  "overrun_reported": false,
+  "planned_minutes": {
+    "maximum": 25,
+    "minimum": 12
+  },
+  "reported_hours": 0,
+  "schema_version": 1,
+  "started_at": "2026-08-12T13:03:26.714000+00:00"
+}

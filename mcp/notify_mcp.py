@@ -913,7 +913,7 @@ def dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if method == "tools/call":
             ensure_runtime_ready()
         if method == "initialize":
-            payload = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}}
+            payload = {"protocolVersion": "2026-07-28", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}}
         elif method == "tools/list":
             payload = {"tools": tool_specs()}
         elif method == "tools/call":
@@ -924,6 +924,8 @@ def dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 raise ValueError(f"unknown tool: {name}")
             result = TOOLS[name]["handler"](targs)
             payload = {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}], "structuredContent": result}
+        elif method == "ping":
+            payload = {}
         elif method and method.startswith("notifications/"):
             return None
         else:

@@ -1,0 +1,13 @@
+# Never ship interpreter caches or repository analysis artifacts.
+__pycache__/
+**/__pycache__/
+*.pyc
+**/*.pyc
+**/graphify-out/
+
+# Local development and acceptance-only material are not runtime package files.
+tests/
+.agents/
+.git/
+.github/
+coverage/

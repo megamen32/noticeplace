@@ -90,3 +90,10 @@ class DirectCallToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Mcp2ContractTests(unittest.TestCase):
+    def test_initialize_negotiates_mcp2_and_ping(self):
+        init = notify_mcp.dispatch({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28"}})
+        self.assertEqual("2026-07-28", init["result"]["protocolVersion"])
+        self.assertEqual({}, notify_mcp.dispatch({"jsonrpc":"2.0","id":2,"method":"ping","params":{}})["result"])
