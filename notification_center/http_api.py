@@ -961,16 +961,18 @@ class DeliveryWorker:
                 if self._android_phone is None:
                     raise RuntimeError("Android phone adapter is not configured")
                 self._android_phone.telegram_call(payload)
-            elif delivery["channel"] == "android.phone.call":
-                if self._android_phone is None:
-                    raise RuntimeError("Android phone adapter is not configured")
+            elif (
+                delivery["channel"] in {"android.phone.call", "phone.call"}
+                and self._android_phone is not None
+            ):
                 if not self._phone_call_allowed(payload["incident"]):
                     self._center.complete_delivery(
                         delivery["id"], "cancelled", "critical phone call suppressed by quiet hours",
                         claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
                     )
                     return
-                self._send_critical_pre_call_context(payload)
+                if delivery["channel"] == "android.phone.call":
+                    self._send_critical_pre_call_context(payload)
                 self._android_phone.phone_call(payload)
             elif str(delivery["channel"]).endswith(".call"):
                 adapter = self._call_adapters.get(str(delivery["channel"]))

@@ -174,6 +174,58 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual("inbox://telegram/chat:1", calls[0][0]["incident"]["correlation_id"])
         self.assertIn(":matrix.message:", calls[0][1])
 
+    def test_generic_phone_channel_uses_the_central_agentcall_adapter(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Phone-only route",
+            policy=[{
+                "id": "owner-phone",
+                "platform": "phone",
+                "action": "call",
+                "target": {},
+                "retry_interval_seconds": 30,
+                "max_repeats": 1,
+            }],
+        )
+        created = self.center.create_event(
+            consumer["intake_token"],
+            "phone-only-lead",
+            {**self.event, "dedup_key": "lead:phone-only", "event_type": "lead.created"},
+        )
+        calls: list[dict[str, object]] = []
+
+        class Android:
+            can_phone_call = True
+
+            def phone_call(self, payload: dict[str, object]) -> None:
+                calls.append(payload)
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 9, 16, 17, 0, tzinfo=tz)
+
+        worker = DeliveryWorker(
+            self.center,
+            Telegram(),
+            android_phone=Android(),
+            android_phone_quiet_start_hour=0,
+            android_phone_quiet_end_hour=12,
+        )
+        with mock.patch("notification_center.http_api.datetime", FixedDateTime):
+            self.assertEqual(1, worker.run_once())
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual("Gateway unavailable", calls[0]["incident"]["title"])
+        row = self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
+        ).fetchone()
+        self.assertEqual("sent", row["status"])
+
     def test_matrix_message_sender_uses_stable_transaction_and_target_room(self) -> None:
         requests = []
 
