@@ -226,6 +226,37 @@ class DeliveryWorkerTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual("sent", row["status"])
 
+    def test_telegram_ack_cancels_the_five_minute_phone_escalation(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Telegram then phone",
+            policy=[
+                {"kind": "telegram", "chat_id": 1},
+                {"kind": "phone", "delay_seconds": 300},
+            ],
+        )
+        created = self.center.create_event(
+            consumer["intake_token"],
+            "telegram-ack-cancels-phone",
+            {**self.event, "dedup_key": "lead:ack-cancels-phone"},
+        )
+        queued_phone = self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE incident_id = ? AND channel = 'android.phone.call'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertEqual("queued", queued_phone["status"])
+
+        acknowledged = self.center.apply_telegram_action(
+            created["incident_id"], "ack", "telegram:operator"
+        )
+
+        self.assertEqual("acknowledged", acknowledged["state"])
+        cancelled_phone = self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE incident_id = ? AND channel = 'android.phone.call'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertEqual("cancelled", cancelled_phone["status"])
+
     def test_matrix_message_sender_uses_stable_transaction_and_target_room(self) -> None:
         requests = []
 
