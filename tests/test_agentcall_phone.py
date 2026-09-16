@@ -44,6 +44,27 @@ class AgentCallPhoneAdapterTests(unittest.TestCase):
         }, clear=True):
             self.assertIsInstance(android_phone_from_environment(), AgentCallPhoneAdapter)
 
+    def test_lead_notification_is_not_described_as_an_outage(self) -> None:
+        requests: list[dict[str, object]] = []
+
+        def requester(_path: str, payload: bytes, _timeout: float) -> bytes:
+            requests.append(json.loads(payload))
+            return b'{"ok":true,"receipt_id":"call-456"}\n'
+
+        adapter = AgentCallPhoneAdapter("/run/agentcall/control.sock", requester=requester)
+        adapter.phone_call({
+            "incident": {
+                "id": "lead-1",
+                "severity": "critical",
+                "event_type": "lead.created",
+                "title": "Новая заявка с лендинга",
+                "body": "Имя: Тест",
+            }
+        })
+
+        self.assertIn("Новая заявка", requests[0]["message"])
+        self.assertNotIn("Сломалось что-то", requests[0]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

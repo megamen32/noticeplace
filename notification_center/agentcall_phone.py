@@ -48,8 +48,10 @@ class AgentCallPhoneAdapter:
         title = " ".join(str(incident.get("title") or "Инцидент").split())[:500]
         body = " ".join(str(incident.get("body") or "Подробности отсутствуют").split())[:1200]
         severity = str(incident.get("severity") or "critical")
+        lead_notification = str(incident.get("event_type") or "") == "lead.created"
+        opening = "Новая заявка." if lead_notification else "Внимание. Сломалось что-то."
         request = {
-            "message": f"Внимание. Сломалось что-то. {title}. {body}",
+            "message": f"{opening} {title}. {body}",
             "context": f"Уровень {severity}. {title}. {body}",
             "repeat": 2,
             "incident_id": str(incident.get("id") or "")[:128],
