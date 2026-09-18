@@ -23,6 +23,7 @@ from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import DirectHealthRemediationAdapter, DurableHealthRemediationAdapter, GptAdminAgentJobAdapter
 from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, validate_health_plans
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
+from .telegram_format import telegram_html
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
 ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log"))
@@ -288,7 +289,7 @@ class TelegramSender:
             if mode == "health":
                 raise RuntimeError("Telegram health topic route is not configured")
             raise RuntimeError(f"Telegram destination is not configured: {mode}")
-        request_data: dict[str, str] = {**destination, "text": text, "disable_web_page_preview": "true"}
+        request_data: dict[str, str] = {**destination, "text": telegram_html(text), "parse_mode": "HTML", "disable_web_page_preview": "true"}
         health_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
         action_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
         if isinstance(health_outcome, dict):

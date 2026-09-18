@@ -155,6 +155,15 @@ class TelegramInteractionPoller:
             "text": text[:4096],
             "reply_markup": json.dumps({"inline_keyboard": []}, ensure_ascii=False, separators=(",", ":")),
         }
+        # Callback text is already rendered; retain its formatting on edit.
+        if isinstance(message.get("entities"), list):
+            limit = len(payload["text"].encode("utf-16-le")) // 2
+            entities = [entity for entity in message["entities"]
+                        if isinstance(entity, dict)
+                        and isinstance(entity.get("offset"), int)
+                        and isinstance(entity.get("length"), int)
+                        and 0 <= entity["offset"] < entity["offset"] + entity["length"] <= limit]
+            payload["entities"] = json.dumps(entities, ensure_ascii=False)
         try:
             self._api("editMessageText", payload)
         except Exception:

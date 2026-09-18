@@ -69,7 +69,7 @@ class AgentHerderChoiceTests(unittest.TestCase):
                 "id": "callback-501",
                 "from": {"id": 42},
                 "data": callback_data,
-                "message": {"chat": {"id": 42}, "message_id": 332, "text": "Choose next step"},
+                "message": {"chat": {"id": 42}, "message_id": 332, "text": "Choose next step", "entities": [{"type": "bold", "offset": 0, "length": 6}]},
             },
         }]
 
@@ -94,7 +94,8 @@ class AgentHerderChoiceTests(unittest.TestCase):
         edit_payload = next(payload for method, payload in api_calls if method == "editMessageText")
         self.assertEqual("42", edit_payload["chat_id"])
         self.assertEqual("332", edit_payload["message_id"])
-        self.assertIn("✓ Выбрано: Correlate failure timing", str(edit_payload["text"]))
+        self.assertIn("✅ Выбрано: Correlate failure timing", str(edit_payload["text"]))
+        self.assertEqual([{"type": "bold", "offset": 0, "length": 6}], json.loads(str(edit_payload["entities"])))
         self.assertEqual({"inline_keyboard": []}, json.loads(str(edit_payload["reply_markup"])))
 
     def test_choice_event_rejects_authority_goal_data(self) -> None:
