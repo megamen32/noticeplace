@@ -771,9 +771,12 @@ class DeliveryWorker:
     def _after_telegram_delivery(self, delivery: dict[str, Any], incident: dict[str, Any]) -> None:
         """Durably schedule policy follow-ups only after Telegram delivery succeeded."""
         incident_id = str(delivery["incident_id"])
-        if telegram_mode(incident) == "health":
-            return
-        if str(delivery["delivery_key"]).endswith(":initial") and self._matrix_call is not None:
+        health_mode = telegram_mode(incident) == "health"
+        if (
+            not health_mode
+            and str(delivery["delivery_key"]).endswith(":initial")
+            and self._matrix_call is not None
+        ):
             delay = self._matrix_delay_seconds(str(incident["severity"]))
             if delay > 0:
                 self._center.schedule_escalation_if_active(incident_id, "matrix.call", time.time() + delay)
@@ -790,6 +793,8 @@ class DeliveryWorker:
                 "android.phone.call",
                 time.time() + delay,
             )
+        if health_mode:
+            return
         sequence = self._telegram_repeat_sequence(str(delivery["delivery_key"]))
         repeat_delay = self._runtime_float("telegram_critical_repeat_seconds", self._critical_repeat_seconds)
         if str(incident["severity"]) == "critical" and sequence is not None and repeat_delay > 0:

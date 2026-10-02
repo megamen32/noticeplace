@@ -108,6 +108,40 @@ class DeliveryWorkerTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(("queued", 10**12), (row["status"], row["due_at"]))
 
+    def test_zero_delay_schedules_critical_health_phone_immediately(self) -> None:
+        created = self.center.create_event(
+            "producer",
+            "health-phone-now",
+            {
+                **self.event,
+                "event_type": "health.degraded",
+                "dedup_key": "health:disk:critical",
+            },
+        )
+
+        class Telegram:
+            active_modes = {"health"}
+
+            def send(self, _payload: dict[str, object]) -> None:
+                return None
+
+        class Android:
+            can_phone_call = True
+
+        worker = DeliveryWorker(
+            self.center,
+            Telegram(),
+            android_phone=Android(),
+            android_phone_call_escalation_seconds=0,
+        )
+        with mock.patch("notification_center.http_api.time.time", return_value=10**12):
+            self.assertEqual(1, worker.run_once())
+        row = self.center._connection.execute(
+            "SELECT status, due_at FROM deliveries WHERE incident_id=? AND channel='android.phone.call'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertEqual(("queued", 10**12), (row["status"], row["due_at"]))
+
     def test_emergency_schedules_phone_immediately_even_with_quiet_hours(self) -> None:
         created = self.center.create_event(
             "producer", "emergency-phone-now",
@@ -1490,7 +1524,13 @@ class DeliveryWorkerTests(unittest.TestCase):
             def phone_call(self, payload: dict[str, object]) -> None:
                 calls.append(payload)
 
-        worker = DeliveryWorker(self.center, Telegram(), android_phone=Android())
+        worker = DeliveryWorker(
+            self.center,
+            Telegram(),
+            android_phone=Android(),
+            android_phone_quiet_start_hour=0,
+            android_phone_quiet_end_hour=0,
+        )
         self.assertEqual(2, worker.run_once())
         self.assertEqual(1, len(sent))
         self.assertEqual(1, len(calls))
@@ -1741,6 +1781,8 @@ class DeliveryWorkerTests(unittest.TestCase):
             Telegram(),
             android_phone=android,
             android_phone_call_escalation_seconds=600,
+            android_phone_quiet_start_hour=0,
+            android_phone_quiet_end_hour=0,
         )
         with mock.patch("notification_center.http_api.time.time", return_value=10**12):
             self.assertEqual(1, worker.run_once())
@@ -1767,7 +1809,13 @@ class DeliveryWorkerTests(unittest.TestCase):
                 order.append("phone")
 
         due = self.center.claim_due_deliveries(now_epoch=0)
-        DeliveryWorker(self.center, Telegram(), android_phone=Android()).deliver(due[0])
+        DeliveryWorker(
+            self.center,
+            Telegram(),
+            android_phone=Android(),
+            android_phone_quiet_start_hour=0,
+            android_phone_quiet_end_hour=0,
+        ).deliver(due[0])
         self.assertEqual(["telegram", "phone"], order)
 
     def test_consumer_telegram_uses_policy_target_and_keeps_existing_phone_deadline(self) -> None:
@@ -1794,7 +1842,13 @@ class DeliveryWorkerTests(unittest.TestCase):
                 self.calls.append(payload)
 
         android = Android()
-        worker = DeliveryWorker(self.center, Telegram(), android_phone=android)
+        worker = DeliveryWorker(
+            self.center,
+            Telegram(),
+            android_phone=android,
+            android_phone_quiet_start_hour=0,
+            android_phone_quiet_end_hour=0,
+        )
         deadlines = self.center._connection.execute(
             "SELECT channel, due_at FROM deliveries WHERE incident_id = ? ORDER BY due_at", (created["incident_id"],)
         ).fetchall()
