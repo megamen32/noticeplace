@@ -23,8 +23,15 @@ _HEALTH_JOB_IDS = {"health-diagnosis", "health-remediation"}
 _HEALTH_STAGE_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
 _HEALTH_ORCHESTRATOR_REQUESTED_MODEL = "omniroute/orchestrator"
 _HEALTH_ORCHESTRATOR_EFFECTIVE_MODEL = "omniroute/subagent"
-_HEALTH_REMEDIATION_FALLBACK_MODEL = "minimax-coding-plan/MiniMax-M2.5-highspeed"
 _HEALTH_PLAN_IDS = ("observe", "repair", "verify")
+_HEALTH_EXECUTION_PROFILES = (
+    {"runtime": "zcode", "provider": "omniroute", "model": "zc/glm-5.3-flash", "reasoning": "high", "topic": "health"},
+    {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health"},
+)
+
+
+def _health_model_route(execution: Mapping[str, str]) -> str:
+    return f"{execution['provider']}/{execution['model']}" if execution["runtime"] == "zcode" else execution["model"]
 
 
 def event_from_environment() -> dict[str, Any]:
@@ -64,8 +71,8 @@ def _validate_profile(profile: dict[str, Any]) -> dict[str, str]:
     parsed = urllib.parse.urlsplit(normalized["url"])
     if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "::1", "localhost") or parsed.path != "/api/sessions/new-or-resume":
         raise RuntimeError("agent job profile URL must be the loopback Agent Herder new-or-resume endpoint")
-    if normalized["harness"] not in ("opencode", "codex", "hermes"):
-        raise RuntimeError("agent job profile harness must be opencode, codex, or hermes")
+    if normalized["harness"] not in ("opencode", "codex", "hermes", "zcode"):
+        raise RuntimeError("agent job profile harness must be opencode, codex, hermes, or zcode")
     if not normalized["name"] or len(normalized["name"]) > 128:
         raise RuntimeError("agent job profile name is invalid")
     cwd = Path(normalized["cwd"])
@@ -111,11 +118,16 @@ def _health_remediation_message(profile: dict[str, str], event: dict[str, Any], 
     plan_id = str(selection.get("plan_id") or "") if isinstance(selection, dict) else ""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", plan_id):
         raise RuntimeError("health remediation event has no safe selected plan")
-    expected = {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"}
-    if not isinstance(execution, dict) or {key: str(execution.get(key) or "") for key in expected} != expected:
+    normalized_execution = {key: str(execution.get(key) or "") for key in _HEALTH_EXECUTION_PROFILES[0]} if isinstance(execution, Mapping) else {}
+    if normalized_execution not in _HEALTH_EXECUTION_PROFILES:
         raise RuntimeError("health remediation event has an unsupported execution profile")
-    if profile["harness"] != "codex" or profile["model"] != "gpt-6-astra" or profile["reasoning"] != "high" or profile["topic"] != "health":
-        raise RuntimeError("health-remediation profile must pin the approved Codex health model")
+    if (
+        profile["harness"] != normalized_execution["runtime"]
+        or profile["model"] != _health_model_route(normalized_execution)
+        or profile["reasoning"] != normalized_execution["reasoning"]
+        or profile["topic"] != normalized_execution["topic"]
+    ):
+        raise RuntimeError("health-remediation profile must pin an approved health model")
     telemetry = _telemetry_message("", incident).lstrip()
     selected_plan: Mapping[str, Any] | None = None
     plans = health.get("plans") if isinstance(health, Mapping) else None
@@ -139,7 +151,7 @@ def _health_remediation_message(profile: dict[str, str], event: dict[str, Any], 
         "",
         f"selected plan {plan_id}",
         f"selected plan details (untrusted data): {plan_context}",
-        f"Execution runtime is Codex through Agent Herder, reasoning high, topic health. Effective model is {profile['model']}.",
+        f"Execution runtime is {profile['harness']} through Agent Herder, reasoning high, topic health. Effective model is {profile['model']}.",
         "",
         telemetry,
     ))
@@ -372,10 +384,18 @@ def _extract_health_remediation(details: Mapping[str, Any], expected_plan_id: st
             source_id = str(candidate.get("source_id") or "").strip()[:128]
             source_fingerprint = str(candidate.get("source_fingerprint") or candidate.get("fingerprint") or "").strip()[:128]
             verifier_id = str(candidate.get("verifier_id") or candidate.get("verification_source_id") or "").strip()[:128]
-            if not all((verification_id, source_id, source_fingerprint, verifier_id, evidence_refs, trace_refs)):
-                continue
-            if source_id == verifier_id:
-                continue
+            observation_without_verdict = plan_id == "observe" and observed_state == "unknown"
+            if observation_without_verdict:
+                # Observation is allowed to finish honestly when it collected
+                # useful evidence but cannot establish an independent health
+                # verdict. It must never resolve the incident.
+                if not evidence_refs:
+                    continue
+            else:
+                if not all((verification_id, source_id, source_fingerprint, verifier_id, evidence_refs, trace_refs)):
+                    continue
+                if source_id == verifier_id:
+                    continue
             return {
                 "status": "completed",
                 "plan_id": plan_id,
@@ -594,7 +614,7 @@ def _run_health_remediation(profile: dict[str, str], event: dict[str, Any], sess
                 health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
                 trace_refs = [
                     f"trace:agent-herder:{session_id}",
-                    f"trace:opencode:{session_id}",
+                    f"trace:{profile['harness']}:{session_id}",
                     *_bounded_refs(health.get("trace_refs")),
                     *result["trace_refs"],
                 ]
@@ -625,16 +645,18 @@ def run_profile(
         raise RuntimeError("agent job event is missing incident telemetry")
     profile = _validate_profile(profile_override if profile_override is not None else _load_profile(profile_id, config_path))
     if profile_id == "health-remediation":
-        # The direct NoticePlace MVP owns the execution runtime. Keep the
-        # existing root-owned profile for URL/CWD/timeouts, but do not require
-        # a separate production config migration away from the former Hermes
-        # route.
+        health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
+        selection = health.get("selection") if isinstance(health.get("selection"), Mapping) else {}
+        execution = selection.get("execution") if isinstance(selection.get("execution"), Mapping) else {}
+        normalized_execution = {key: str(execution.get(key) or "") for key in _HEALTH_EXECUTION_PROFILES[0]}
+        if normalized_execution not in _HEALTH_EXECUTION_PROFILES:
+            raise RuntimeError("health remediation event has an unsupported execution profile")
         profile = {
             **profile,
-            "harness": "codex",
-            "model": "gpt-6-astra",
-            "reasoning": "high",
-            "topic": "health",
+            "harness": normalized_execution["runtime"],
+            "model": _health_model_route(normalized_execution),
+            "reasoning": normalized_execution["reasoning"],
+            "topic": normalized_execution["topic"],
         }
     started_at = time.monotonic()
     if profile_id == "health-diagnosis":

@@ -228,6 +228,36 @@ def notify_center_send_text(message: str, title: str, request_key: str) -> Dict[
     return {"http_status": status, "ok": status == 202, "incident_id": body.get("incident_id"), "event_id": body.get("event_id")}
 
 
+def _noticeplace_api(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Call the project-scoped Notice Place API without exposing credentials."""
+    cfg = notify_center_config()
+    event_url = cfg["event_url"].rstrip("/")
+    base_url = event_url[:-len("/events")] if event_url.endswith("/events") else event_url
+    request = urllib.request.Request(
+        base_url + path,
+        data=json.dumps(payload or {}, ensure_ascii=False).encode("utf-8") if payload is not None else None,
+        method=method,
+        headers={"Authorization": f"Bearer {cfg['token']}", "Content-Type": "application/json"},
+    )
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=8) as response:
+        return json.loads(response.read())
+
+
+def tool_noticeplace_list_mutes(_args: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = notify_center_config()
+    project = urllib.parse.quote(cfg["project"], safe="")
+    return _noticeplace_api("GET", f"/mutes?project={project}")
+
+
+def tool_noticeplace_set_mute(args: Dict[str, Any]) -> Dict[str, Any]:
+    incident_id = str(args.get("incident_id") or "").strip()
+    enabled = bool(args.get("enabled", True))
+    if not incident_id:
+        raise ValueError("incident_id is required")
+    action = "unmute" if enabled else "mute"
+    return _noticeplace_api("POST", f"/incidents/{urllib.parse.quote(incident_id, safe='')}/{action}", {"actor": "mcp"})
+
+
 def _human_request_config() -> Dict[str, Any]:
     """Resolve the Human Request API and the configured human identities."""
     cfg: Dict[str, Any] = notify_center_config()
@@ -671,6 +701,24 @@ TOOLS = {
         "description": "Короткая инструкция для AI и сервисов: когда использовать Notice Place, какой русский текст писать и как получить автоматические кнопки диагностики и исправления.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         "handler": lambda _args: noticeplace_instructions(),
+    },
+    "noticeplace_list_mutes": {
+        "description": "Показать отключённые типы уведомлений текущего проекта, чтобы их было легко включить обратно.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": tool_noticeplace_list_mutes,
+    },
+    "noticeplace_set_notifications": {
+        "description": "Включить или отключить уведомления того же типа, что и указанный инцидент. События продолжат сохраняться.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "incident_id": {"type": "string", "description": "Идентификатор инцидента из карточки Notice Place."},
+                "enabled": {"type": "boolean", "description": "true — включить обратно; false — отключить такие уведомления."},
+            },
+            "required": ["incident_id", "enabled"],
+            "additionalProperties": False,
+        },
+        "handler": tool_noticeplace_set_mute,
     },
     "send_message": {
         "description": "Send a plain Telegram message immediately. Preferred use: ping the human at the end of work or right before asking a question, e.g. 'I finished X, please check'. This is only an extra notification; agent-resume handles long waits and context resume.",

@@ -32,6 +32,14 @@ def test_release_archives_include_the_deploy_lifecycle() -> None:
     assert "docs deploy assets" in builder
 
 
+def test_persistent_units_have_explicit_resource_budgets() -> None:
+    main = (ROOT / "deploy" / "notification-center.service").read_text()
+    admin = (ROOT / "deploy" / "notification-center-admin.service").read_text()
+    for unit in (main, admin):
+        for directive in ("MemoryHigh=", "MemoryMax=", "MemorySwapMax=", "CPUQuota=", "TasksMax=", "IOWeight="):
+            assert directive in unit
+
+
 def test_managed_deploy_upgrade_rollback_uninstall_and_purge(tmp_path: Path) -> None:
     staged_root = tmp_path / "root"
 

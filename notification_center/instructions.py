@@ -27,7 +27,13 @@ def noticeplace_instructions() -> dict[str, Any]:
             "instructions": "GET /v1/instructions",
             "create_or_update": "POST /v1/events с Bearer-токеном проекта и Idempotency-Key",
             "recovery": "Для health-инцидента сначала POST .../health/verification, затем POST .../health/resolve.",
+            "disabled_notifications": "GET /v1/mutes?project=...; включить обратно: POST /v1/incidents/{id}/unmute.",
         },
+        "telegram_controls": (
+            "Ответьте обычным reply на карточку — ответ автоматически привяжется к инциденту. "
+            "AI запускает диагностику. «Отключить такие» глушит только тот же проект и dedup_key; "
+            "на этой же карточке появится «Включить обратно»."
+        ),
         "automatic_repair": (
             "Для кнопок «Наблюдать / Исправить / Проверить» отправьте health.degraded "
             "с source_id, host_id, signal_type и correlation_id. Токен проекта должен разрешать "

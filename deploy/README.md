@@ -43,6 +43,20 @@ The persistent services have separate jobs:
   one-shot job used by the admin console to apply validated configuration and
   restart the main service.
 
+## Resource budget
+
+The measured steady working sets on server-100 are approximately 76 MiB for
+the main service and 44 MiB for the admin console. The tracked systemd units
+therefore enforce these reviewed outer limits:
+
+- main: 512 MiB soft / 1 GiB hard RAM, 256 MiB swap, two CPUs, 256 tasks;
+- admin: 256 MiB soft / 512 MiB hard RAM, 128 MiB swap, one CPU, 128 tasks.
+
+Both use reduced I/O weight. AI remediation runs in the separately budgeted
+Agent Herder service, so it must not be moved into either NoticePlace cgroup.
+Raise these limits only after measuring a real peak and preserving the host
+reserve documented by ServersAdministartion.
+
 AskHuman MCP is a per-agent local process, not another system service. It calls
 the human-request API owned by `notification-center.service`. AskSecret belongs
 to the separate SSS deployment and can hand NoticePlace only an opaque reference

@@ -14,20 +14,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .health_workflow import sanitize_bounded_text
+from .health_workflow import HEALTH_EXECUTION_PROFILE, normalize_health_execution, sanitize_bounded_text
 
 
 _INCIDENT_FIELDS = ("id", "project", "severity", "title", "body", "dedup_key", "occurrences")
 _INCIDENT_LIMITS = {"id": 128, "project": 128, "severity": 32, "title": 500, "body": 3000, "dedup_key": 500, "occurrences": 32}
 _TERMINAL_STATES = {"completed", "failed"}
 _RESPONSE_LIMIT = 64 * 1024
-_HEALTH_EXECUTION_PROFILE = {
-    "runtime": "codex",
-    "provider": "openai-codex",
-    "model": "gpt-6-astra",
-    "reasoning": "high",
-    "topic": "health",
-}
+_HEALTH_EXECUTION_PROFILE = HEALTH_EXECUTION_PROFILE
 
 
 class GptAdminAdmissionUnavailable(RuntimeError):
@@ -108,19 +102,14 @@ class DirectHealthRemediationAdapter:
         started_at = time.monotonic()
         direct_profile = {
             "url": os.environ.get("NOTIFY_HEALTH_REMEDIATION_URL", "http://127.0.0.1:18787/api/sessions/new-or-resume"),
-            "harness": "codex",
+            "harness": "zcode",
             "name": "health_remediation_direct_v2",
             "cwd": os.environ.get("NOTIFY_HEALTH_REMEDIATION_CWD", "/home/roomhacker/ServersAdministartion"),
             # Return the durable session id immediately. NoticePlace owns the
-            # longer remediation polling window below; keeping this synchronous
-            # makes the initial HTTP request time out while Codex is still
-            # making useful progress.
+            # longer remediation polling window below.
             "mode": "queue",
-            "instruction": "Выполни только выбранный план устранения инцидента и сообщай полезный прогресс. Пользовательские объяснения пиши по-русски. Последним сообщением верни только JSON: {\"status\":\"completed\",\"plan_id\":\"<selected>\",\"step\":\"<done>\",\"observed_state\":\"healthy|degraded|unknown\",\"verification_id\":\"<id>\",\"source_id\":\"<id>\",\"source_fingerprint\":\"<fingerprint>\",\"verifier_id\":\"<distinct id>\",\"evidence_refs\":[\"<ref>\"],\"trace_refs\":[\"<ref>\"]}.",
-            # Agent Herder's Codex app-server transport is the live-proven
-            # remediation route; OpenCode currently fails before the first
-            # assistant turn.
-            "model": "gpt-6-astra",
+            "instruction": "Выполни только выбранный план устранения инцидента и сообщай полезный прогресс. Пользовательские объяснения пиши по-русски. Последним сообщением верни только JSON: {\"status\":\"completed\",\"plan_id\":\"<selected>\",\"step\":\"<done>\",\"observed_state\":\"healthy|degraded|unknown\",\"verification_id\":\"<id>\",\"source_id\":\"<id>\",\"source_fingerprint\":\"<fingerprint>\",\"verifier_id\":\"<distinct id>\",\"evidence_refs\":[\"<ref>\"],\"trace_refs\":[\"<ref>\"]}. Для плана observe допустим observed_state=unknown с непустым evidence_refs без выдуманных verification_id, source_fingerprint и verifier_id; такой результат не закрывает инцидент.",
+            "model": "omniroute/zc/glm-5.3-flash",
             "reasoning": "high",
             "topic": "health",
             "poll_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_POLL_SECONDS", "1"),
@@ -179,12 +168,10 @@ def _safe_health_ref(value: Any, limit: int = 128) -> str:
 
 
 def _bounded_health_execution(value: Any) -> dict[str, str]:
-    if not isinstance(value, Mapping):
-        raise RuntimeError("health remediation request is missing execution profile")
-    result = {key: _safe_health_ref(value.get(key), 64).lower() for key in _HEALTH_EXECUTION_PROFILE}
-    if result != _HEALTH_EXECUTION_PROFILE:
-        raise RuntimeError("health remediation request has an unsupported execution profile")
-    return result
+    try:
+        return normalize_health_execution(value)
+    except Exception as error:
+        raise RuntimeError("health remediation request has an unsupported execution profile") from error
 
 
 def _is_useful_progress_entry(item: Mapping[str, Any]) -> bool:

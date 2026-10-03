@@ -178,18 +178,18 @@ class AgentJobHelperTests(unittest.TestCase):
                     "schema": "notify.agent-job.v1",
                     "job_id": "health-remediation",
                     "incident": {"id": "inc-health-1", "project": "health-monitor", "severity": "critical", "title": "Disk degraded", "body": "bounded", "dedup_key": "health:disk", "occurrences": 1},
-                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"}}},
+                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health"}}},
                 },
                 config,
                 runner=runner,
             )
             self.assertEqual("opencode-health-1", result["session_id"])
-            self.assertEqual("gpt-6-astra", result["model"])
+            self.assertEqual("gpt-5.6-sol", result["model"])
             body = json.loads(requests[0].data)
             self.assertEqual("codex", body["harness"])
-            self.assertEqual("gpt-6-astra", body["model"])
+            self.assertEqual("gpt-5.6-sol", body["model"])
             self.assertIn("selected plan repair", body["message"])
-            self.assertIn("Execution runtime is Codex through Agent Herder", body["message"])
+            self.assertIn("Execution runtime is codex through Agent Herder", body["message"])
 
     def test_health_remediation_waits_for_terminal_receipt_and_returns_verification(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -237,7 +237,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "health": {
                         "source_id": "host:vusa",
                         "source_fingerprint": "source-fingerprint-1",
-                        "selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"}},
+                        "selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health"}},
                     },
                 },
                 config,
@@ -293,7 +293,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 result = run_profile(
                     "health-remediation",
                     {"schema": "notify.agent-job.v1", "job_id": "health-remediation", "incident": {"id": "inc-timeout"},
-                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"}}}},
+                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health"}}}},
                     config,
                     runner=runner,
                 )
@@ -307,7 +307,7 @@ class AgentJobHelperTests(unittest.TestCase):
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "codex", "name": "health_remediation_retry", "cwd": str(root), "mode": "queue",
-                "model": "gpt-6-astra", "reasoning": "high", "topic": "health",
+                "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health",
                 "poll_seconds": "0.2", "remediation_timeout_seconds": "30",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -341,7 +341,7 @@ class AgentJobHelperTests(unittest.TestCase):
                         "schema": "notify.agent-job.v1", "job_id": "health-remediation",
                         "incident": {"id": "inc-retry"},
                         "health": {"selection": {"plan_id": "observe", "execution": {
-                            "runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra",
+                            "runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol",
                             "reasoning": "high", "topic": "health",
                         }}},
                     },
@@ -357,6 +357,19 @@ class AgentJobHelperTests(unittest.TestCase):
             "status": "completed", "plan_id": "repair", "step": "inspect", "observed_state": "healthy",
         })}]}
         self.assertIsNone(_extract_health_remediation(details, "repair"))
+
+    def test_observe_may_finish_unknown_with_evidence_but_without_fake_verification(self) -> None:
+        details = {"messages": [{"role": "assistant", "text": json.dumps({
+            "status": "completed", "plan_id": "observe", "step": "read-only inspection complete",
+            "observed_state": "unknown", "evidence_refs": ["journal:worker:last-100"],
+        })}]}
+
+        receipt = _extract_health_remediation(details, "observe")
+
+        self.assertIsNotNone(receipt)
+        self.assertEqual("unknown", receipt["observed_state"])
+        self.assertEqual("", receipt["verification_id"])
+        self.assertEqual(["journal:worker:last-100"], receipt["evidence_refs"])
 
     def test_health_remediation_accepts_completed_plan_with_degraded_source(self) -> None:
         details = {"messages": [{"role": "assistant", "text": json.dumps({
@@ -415,14 +428,14 @@ class AgentJobHelperTests(unittest.TestCase):
                         "schema": "notify.agent-job.v1",
                         "job_id": "health-remediation",
                         "incident": {"id": "inc-health-legacy"},
-                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"}}},
+                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health"}}},
                     },
                     config,
                     runner=runner,
                 )
             body = json.loads(requests[0].data)
             self.assertEqual("codex", body["harness"])
-            self.assertEqual("gpt-6-astra", body["model"])
+            self.assertEqual("gpt-5.6-sol", body["model"])
             self.assertEqual("codex", result["harness"])
 
     def test_profile_owns_target_identity_and_event_is_only_telemetry(self) -> None:

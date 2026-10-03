@@ -19,12 +19,17 @@ _SECRET_ASSIGNMENT_RE = re.compile(r"(?i)\b(token|secret|password|credential|aut
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+\S+")
 
 HEALTH_EXECUTION_PROFILE = {
-    # Agent Herder launches the approved health model through Codex.  Keeping
-    # this name truthful prevents a selected plan from claiming Hermes/OpenCode
-    # while the helper actually starts a Codex session.
+    "runtime": "zcode",
+    "provider": "omniroute",
+    "model": "zc/glm-5.3-flash",
+    "reasoning": "high",
+    "topic": "health",
+}
+
+HEALTH_FALLBACK_EXECUTION_PROFILE = {
     "runtime": "codex",
     "provider": "openai-codex",
-    "model": "gpt-6-astra",
+    "model": "gpt-5.6-sol",
     "reasoning": "high",
     "topic": "health",
 }
@@ -90,7 +95,7 @@ def _safe_plan_id(plan_id: Any) -> str:
 
 
 def normalize_health_execution(value: Any) -> dict[str, str]:
-    """Normalize the one approved health-remediation execution profile."""
+    """Normalize the default ZCode profile or its explicit Codex fallback."""
     if value is None:
         return dict(HEALTH_EXECUTION_PROFILE)
     if not isinstance(value, Mapping):
@@ -102,23 +107,16 @@ def normalize_health_execution(value: Any) -> dict[str, str]:
     model = _bounded_text(value.get("model") or HEALTH_EXECUTION_PROFILE["model"], 64)
     reasoning = _bounded_text(value.get("reasoning") or HEALTH_EXECUTION_PROFILE["reasoning"], 16).lower()
     topic = _bounded_text(value.get("topic") or value.get("topic_key") or HEALTH_EXECUTION_PROFILE["topic"], 64).lower()
-    if runtime != HEALTH_EXECUTION_PROFILE["runtime"]:
-        raise ValidationError("health remediation runtime must be codex")
-    if provider != HEALTH_EXECUTION_PROFILE["provider"]:
-        raise ValidationError("health remediation provider must be openai-codex")
-    if model != HEALTH_EXECUTION_PROFILE["model"]:
-        raise ValidationError("health remediation model must be gpt-6-astra")
-    if reasoning != HEALTH_EXECUTION_PROFILE["reasoning"]:
-        raise ValidationError("health remediation reasoning must be high")
-    if topic != HEALTH_EXECUTION_PROFILE["topic"]:
-        raise ValidationError("health remediation topic must be health")
-    return {
+    result = {
         "runtime": runtime,
         "provider": provider,
         "model": model,
         "reasoning": reasoning,
         "topic": topic,
     }
+    if result not in (HEALTH_EXECUTION_PROFILE, HEALTH_FALLBACK_EXECUTION_PROFILE):
+        raise ValidationError("health remediation execution must use ZCode/GLM-5.3-Flash or Codex/GPT-5.6-Sol high")
+    return result
 
 
 def normalize_health_signal(signal: Mapping[str, Any]) -> dict[str, Any]:

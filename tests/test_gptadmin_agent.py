@@ -277,7 +277,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
                 "health_selection": {
                     "plan_id": "repair",
                     "actor": "telegram:42",
-                    "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"},
+                    "execution": {"runtime": "zcode", "provider": "omniroute", "model": "zc/glm-5.3-flash", "reasoning": "high", "topic": "health"},
                 },
             },
             "health-delivery-1",
@@ -288,7 +288,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("host:100", outbound["health"]["source_id"])
         self.assertEqual(1, len(outbound["health"]["plans"]))
         self.assertEqual("repair", outbound["health"]["selection"]["plan_id"])
-        self.assertEqual("gpt-6-astra", outbound["health"]["selection"]["execution"]["model"])
+        self.assertEqual("zc/glm-5.3-flash", outbound["health"]["selection"]["execution"]["model"])
         self.assertEqual("high", outbound["health"]["selection"]["execution"]["reasoning"])
         self.assertNotIn("must-not-leak", json.dumps(outbound))
         self.assertNotIn("route-secret", json.dumps(outbound))
@@ -683,6 +683,40 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("repair", target["plan_id"])
         self.assertEqual("degraded", target["observed_state"])
 
+    def test_completed_observation_with_unknown_state_is_accepted_but_stays_open(self) -> None:
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "health-observe-unknown.sqlite3",
+            {"health-token": {"project": "health-monitor", "max_severity": "critical"}},
+            default_quiet_hours=[],
+        )
+        workflow = HealthWorkflow(center, callback_secret="x" * 32)
+        created = workflow.intake_signal("health-token", "health-observe-intake", {
+            "project": "health-monitor", "recipient": "health", "severity": "critical",
+            "title": "Unknown source state", "body": "inspection required", "dedup_key": "health:source-a:observe",
+            "source_id": "source-a", "source_fingerprint": "source-fp-1", "host_id": "host-a", "signal_type": "log",
+        })
+        workflow.attach_plans(created["incident_id"], "health-observe-plans", [
+            {"plan_id": "observe", "title": "Observe", "summary": "Capture", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Verify", "step": "verify"},
+        ], actor="omniroute")
+        workflow.select_plan(created["incident_id"], "health-observe-selection", "observe", "telegram:42")
+
+        result = center.record_agent_job_result(created["incident_id"], "delivery-observe", "health-remediation", {
+            "job_id": "zcode-observe", "status": "completed", "elapsed_ms": 100,
+            "agent_receipt": {
+                "plan_id": "observe", "step": "read-only inspection complete",
+                "evidence_refs": ["journal:worker:last-100"], "observed_state": "unknown",
+                "trace_refs": ["trace:zcode:observe"],
+            },
+        }, {"selection": {"plan_id": "observe"}, "source_id": "source-a", "source_fingerprint": "source-fp-1"})
+
+        self.assertTrue(result["accepted"])
+        self.assertFalse(result["resolved"])
+        self.assertEqual("open", center.get_incident(created["incident_id"])["state"])
+        self.assertIsNotNone(center.latest_health_progress(created["incident_id"], "observe"))
+        self.assertIsNone(center.latest_health_event(created["incident_id"], "health.resolved"))
+
     def test_heartbeat_only_running_progress_is_not_recorded(self) -> None:
         center = NotificationCenter(
             Path(self.tempdir.name) / "health-running-heartbeat.sqlite3",
@@ -862,15 +896,15 @@ class GptAdminAgentJobTests(unittest.TestCase):
                     "health_context": {},
                     "health_selection": {
                         "plan_id": "plan-003",
-                        "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "high", "topic": "health"},
+                        "execution": {"runtime": "zcode", "provider": "omniroute", "model": "zc/glm-5.3-flash", "reasoning": "high", "topic": "health"},
                     },
                 },
                 "delivery-direct-1",
             )
         self.assertEqual("completed", result["status"])
-        self.assertEqual("codex", run.call_args.kwargs["profile_override"]["harness"])
+        self.assertEqual("zcode", run.call_args.kwargs["profile_override"]["harness"])
         self.assertEqual("queue", run.call_args.kwargs["profile_override"]["mode"])
-        self.assertEqual("gpt-6-astra", run.call_args.kwargs["profile_override"]["model"])
+        self.assertEqual("omniroute/zc/glm-5.3-flash", run.call_args.kwargs["profile_override"]["model"])
         self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
 
     def test_supervisor_classifies_useful_progress_and_ignores_heartbeat_only_updates(self) -> None:

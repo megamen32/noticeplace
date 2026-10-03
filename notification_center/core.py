@@ -201,6 +201,16 @@ class NotificationCenter:
                     update_id INTEGER PRIMARY KEY,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS notification_mutes (
+                    project TEXT NOT NULL,
+                    recipient TEXT NOT NULL,
+                    dedup_key TEXT NOT NULL,
+                    muted_at REAL NOT NULL,
+                    muted_by TEXT NOT NULL,
+                    unmuted_at REAL,
+                    unmuted_by TEXT,
+                    PRIMARY KEY (project, recipient, dedup_key)
+                );
                 CREATE TABLE IF NOT EXISTS runtime_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -346,6 +356,10 @@ class NotificationCenter:
             return
         scope = self._scope(token, str(incident["project"]))
         self._require_severity(scope, str(incident["severity"]))
+
+    def authorize_project(self, token: str, project: str) -> None:
+        """Authorize a project-scoped operator read without exposing token data."""
+        self._scope(token, project)
 
     @staticmethod
     def _validate_event(event: Mapping[str, Any]) -> None:
@@ -904,7 +918,8 @@ class NotificationCenter:
                         "SELECT id FROM deliveries WHERE delivery_key = ?",
                         (f"{previous['incident_id']}:gptadmin.agent:{previous_job}:incident",),
                     ).fetchone() or agent_delivery
-                return {"event_id": previous["event_id"], "incident_id": previous["incident_id"], "state": self.get_incident(previous["incident_id"])["state"], "deduplicated": False, "idempotent": True, "initial_delivery_id": initial["id"] if initial else None, "agent_job_delivery_id": agent_delivery["id"] if agent_delivery else None}
+                previous_incident = self.get_incident(previous["incident_id"])
+                return {"event_id": previous["event_id"], "incident_id": previous["incident_id"], "state": previous_incident["state"], "deduplicated": False, "idempotent": True, "initial_delivery_id": initial["id"] if initial else None, "agent_job_delivery_id": agent_delivery["id"] if agent_delivery else None, "notifications_muted": bool(previous_incident.get("notifications_muted"))}
             project, recipient, dedup_key = str(event["project"]), str(event["recipient"]), str(event["dedup_key"])
             parent = None
             if parent_incident_id:
@@ -939,10 +954,13 @@ class NotificationCenter:
             self._connection.execute("INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, proxy_ip, forwarded_for) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (idempotency_key, event_id, incident_id, payload_json, now, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, ingress.get("peer_ip"), ingress.get("source_ip"), ingress.get("proxy_ip"), ingress.get("forwarded_for")))
             ingress.update({"project": project, "profile_id": consumer_id, "severity": str(event["severity"]), "event_type": event_type, "producer": producer, "plugin": plugin, "correlation_id": correlation_id, "parent_incident_id": parent_incident_id, "parent_event_id": parent_event_id})
             self._audit(incident_id, "event_ingress", "producer", ingress)
-            delivery_id = self._schedule_consumer_policy(incident_id, consumer_id, now)
+            notifications_muted = self._notification_scope_muted(project, recipient, dedup_key)
+            delivery_id = None if notifications_muted else self._schedule_consumer_policy(incident_id, consumer_id, now)
+            if notifications_muted:
+                self._audit(incident_id, "notification_suppressed", "policy", {"reason": "operator_mute", "dedup_key": dedup_key})
             agent_step = "incident" if agent_job == HEALTH_DIAGNOSIS_AGENT_JOB else f"event:{event_id}"
             agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", agent_step, now) if agent_job else None
-            return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id, "agent_job_delivery_id": agent_delivery_id}
+            return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id, "agent_job_delivery_id": agent_delivery_id, "notifications_muted": notifications_muted}
 
     def _builtin_profile_for_event(self, event: Mapping[str, Any]) -> str:
         """Resolve a legacy event to the ordinary built-in mode profile."""
@@ -1127,7 +1145,7 @@ class NotificationCenter:
         now = time.time() if now_epoch is None else now_epoch
         with self._lock, self._connection:
             rows = self._connection.execute(
-                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND i.state IN (?, ?) AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) ORDER BY d.due_at LIMIT ?",
+                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND i.state IN (?, ?) AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key = i.dedup_key AND m.unmuted_at IS NULL)) ORDER BY d.due_at LIMIT ?",
                 (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, limit),
             ).fetchall()
             result: list[dict[str, Any]] = []
@@ -1433,6 +1451,9 @@ class NotificationCenter:
 
     def apply_telegram_action(self, incident_id: str, action: str, actor: str) -> dict[str, Any]:
         """Apply an authorized compact Telegram control action to one active incident."""
+        if action in {"mute", "unmute"}:
+            result = self.set_incident_notifications_muted(incident_id, action == "mute", actor)
+            return {"action": action, "state": "muted" if result["notifications_muted"] else "enabled", **result}
         if action == "ack":
             result = self.acknowledge_if_active(incident_id, actor)
             return {"action": action, "state": result["state"] if result else "inactive"}
@@ -1493,6 +1514,33 @@ class NotificationCenter:
             raise ValidationError("incident not found")
         with self._lock, self._connection:
             self._audit(incident_id, "telegram_ask_recorded", actor, {"question": normalized})
+
+    def record_telegram_reply(self, chat_id: str, message_id: int, actor: str, text: str) -> dict[str, Any] | None:
+        """Attach a native Telegram reply to the incident card it answers."""
+        normalized = text.strip()
+        if not normalized or len(normalized) > 1000 or message_id <= 0:
+            raise ValidationError("reply must be between 1 and 1000 characters")
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                "SELECT incident_id, result_json FROM deliveries WHERE channel LIKE 'telegram.%' "
+                "AND result_json IS NOT NULL ORDER BY updated_at DESC LIMIT 500"
+            ).fetchall()
+            for row in rows:
+                try:
+                    result = json.loads(str(row["result_json"]) or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if str(result.get("chat_id") or "") != str(chat_id) or result.get("message_id") != message_id:
+                    continue
+                incident_id = str(row["incident_id"])
+                self._audit(
+                    incident_id,
+                    "telegram_reply_recorded",
+                    actor,
+                    {"reply_to_message_id": message_id, "text": normalized},
+                )
+                return self.get_incident(incident_id)
+        return None
 
     def record_health_agent_progress(self, incident_id: str, delivery_id: str, payload: Mapping[str, Any], job: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Persist useful progress snapshots observed while a remediation runs."""
@@ -1617,7 +1665,22 @@ class NotificationCenter:
                     progress_step.strip().lower() in {"heartbeat", "keepalive", "heartbeat-only"},
                     "agent-herder",
                 )
-            if self._health_text(agent_receipt.get("observed_state") or "", 32) == "degraded":
+            observed_state = self._health_text(agent_receipt.get("observed_state") or "", 32)
+            if observed_state == "unknown" and selected_plan == "observe":
+                if not evidence_refs:
+                    return {
+                        "accepted": False,
+                        "resolved": False,
+                        "reason": "observation requires useful evidence",
+                        "progress": progress,
+                    }
+                return {
+                    "accepted": True,
+                    "resolved": False,
+                    "reason": "observation completed; source state remains unknown",
+                    "progress": progress,
+                }
+            if observed_state == "degraded":
                 outcome = {
                     "plan_id": selected_plan,
                     "observed_state": "degraded",
@@ -2336,7 +2399,94 @@ class NotificationCenter:
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
         """Return the current incident record, or None when it has never existed."""
         with self._lock:
-            return self._row(self._connection.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone())
+            incident = self._row(self._connection.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone())
+            if incident is not None:
+                incident["notifications_muted"] = self._notification_scope_muted(
+                    str(incident["project"]), str(incident["recipient"]), str(incident["dedup_key"])
+                )
+            return incident
+
+    def _notification_scope_muted(self, project: str, recipient: str, dedup_key: str) -> bool:
+        row = self._connection.execute(
+            "SELECT unmuted_at FROM notification_mutes WHERE project = ? AND recipient = ? AND dedup_key = ?",
+            (project, recipient, dedup_key),
+        ).fetchone()
+        return row is not None and row["unmuted_at"] is None
+
+    def set_incident_notifications_muted(self, incident_id: str, muted: bool, actor: str) -> dict[str, Any]:
+        """Mute or restore one exact project/recipient/dedup notification scope."""
+        with self._lock, self._connection:
+            incident = self._connection.execute(
+                "SELECT project, recipient, dedup_key, state, consumer_id FROM incidents WHERE id = ?", (incident_id,)
+            ).fetchone()
+            if incident is None:
+                raise ValidationError("incident not found")
+            scope = (str(incident["project"]), str(incident["recipient"]), str(incident["dedup_key"]))
+            was_muted = self._notification_scope_muted(*scope)
+            now = time.time()
+            if muted:
+                self._connection.execute(
+                    "INSERT INTO notification_mutes(project, recipient, dedup_key, muted_at, muted_by, unmuted_at, unmuted_by) "
+                    "VALUES (?, ?, ?, ?, ?, NULL, NULL) ON CONFLICT(project, recipient, dedup_key) DO UPDATE SET "
+                    "muted_at=excluded.muted_at, muted_by=excluded.muted_by, unmuted_at=NULL, unmuted_by=NULL",
+                    (*scope, now, actor),
+                )
+                # A claimed delivery has not crossed the external send boundary
+                # yet; changing its state makes the worker's lease check fail.
+                self._connection.execute(
+                    "UPDATE deliveries SET status = 'cancelled', last_error = 'notifications disabled by operator', updated_at = ? "
+                    "WHERE incident_id IN (SELECT id FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ?) "
+                    "AND status IN ('queued', 'claimed') AND channel NOT LIKE 'gptadmin.agent:%'",
+                    (now, *scope),
+                )
+            else:
+                self._connection.execute(
+                    "UPDATE notification_mutes SET unmuted_at = ?, unmuted_by = ? "
+                    "WHERE project = ? AND recipient = ? AND dedup_key = ? AND unmuted_at IS NULL",
+                    (now, actor, *scope),
+                )
+                if was_muted and str(incident["state"]) in DELIVERABLE_STATES:
+                    previous = self._connection.execute(
+                        "SELECT channel, target_json FROM deliveries WHERE incident_id = ? AND channel LIKE 'telegram.%' "
+                        "ORDER BY created_at DESC, id DESC LIMIT 1",
+                        (incident_id,),
+                    ).fetchone()
+                    channel = str(previous["channel"]) if previous is not None else self._initial_channel_for_profile(str(incident["consumer_id"] or "") or None)
+                    try:
+                        target = json.loads(previous["target_json"] or "{}") if previous is not None else {}
+                    except (TypeError, ValueError):
+                        target = {}
+                    self._schedule_delivery(incident_id, channel, f"notifications-restored:{int(now)}", now, target)
+            self._audit(
+                incident_id,
+                "notifications_muted" if muted else "notifications_unmuted",
+                actor,
+                {"project": scope[0], "dedup_key": scope[2], "idempotent": was_muted == muted},
+            )
+            return {
+                "incident_id": incident_id,
+                "notifications_muted": muted,
+                "idempotent": was_muted == muted,
+                "project": scope[0],
+                "dedup_key": scope[2],
+            }
+
+    def list_notification_mutes(self, active_only: bool = True, project: str | None = None) -> list[dict[str, Any]]:
+        """List notification scopes so an operator can restore one without Telegram."""
+        with self._lock:
+            clauses: list[str] = []
+            params: list[str] = []
+            if active_only:
+                clauses.append("unmuted_at IS NULL")
+            if project:
+                clauses.append("project = ?")
+                params.append(project)
+            where = "WHERE " + " AND ".join(clauses) if clauses else ""
+            rows = self._connection.execute(
+                f"SELECT project, recipient, dedup_key, muted_at, muted_by, unmuted_at, unmuted_by FROM notification_mutes {where} ORDER BY muted_at DESC",
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def list_incidents(self) -> list[dict[str, Any]]:
         """Return incidents newest first for the initial inbox/API implementation."""

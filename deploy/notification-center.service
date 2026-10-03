@@ -12,6 +12,14 @@ WorkingDirectory=/opt/noticeplace
 ExecStart=/usr/bin/python3 /opt/noticeplace/bin/notify-center
 Restart=on-failure
 RestartSec=3
+# Measured steady state is about 76 MiB. Keep enough headroom for bounded
+# Telegram/AI callbacks while preserving server-100 capacity for other tenants.
+MemoryHigh=512M
+MemoryMax=1G
+MemorySwapMax=256M
+CPUQuota=200%
+TasksMax=256
+IOWeight=50
 StateDirectory=notification-center
 Environment=HOME=/var/lib/notification-center
 Environment=ANDROID_USER_HOME=/var/lib/notification-center

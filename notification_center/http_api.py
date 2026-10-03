@@ -125,7 +125,9 @@ def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[s
     """Return the narrow interactive contract for this incident severity.
 
     Only exact critical incidents ask the recipient to acknowledge or snooze;
-    every notification retains the non-blocking Ask action.
+    every ordinary notification retains AI and reversible mute controls. Native
+    Telegram replies are associated automatically, so no Reply/Ask button is
+    needed.
     """
     incident_id = str(incident["id"])
     if isinstance(choices, list) and choices:
@@ -142,16 +144,20 @@ def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[s
                 buttons.append([{"text": label[:128], "callback_data": action_codec.encode("choice", incident_id, choice_id=str(index))}])
         if buttons:
             return {"inline_keyboard": buttons}
-    ask = {"text": "Ask", "callback_data": action_codec.encode("ask", incident_id)}
     ai = {"text": "AI", "callback_data": action_codec.encode("ai", incident_id)}
+    muted = bool(incident.get("notifications_muted"))
+    mute = {
+        "text": "🔔 Включить обратно" if muted else "🔕 Отключить такие",
+        "callback_data": action_codec.encode("unmute" if muted else "mute", incident_id),
+    }
     if str(incident["severity"]) != "critical":
-        return {"inline_keyboard": [[ask, ai]]}
+        return {"inline_keyboard": [[ai, mute]]}
     return {"inline_keyboard": [
         [
             {"text": "ACK", "callback_data": action_codec.encode("ack", incident_id)},
             {"text": "Snooze 15m", "callback_data": action_codec.encode("snz", incident_id)},
         ],
-        [ask, ai],
+        [ai, mute],
     ]}
 
 
@@ -402,6 +408,8 @@ class TelegramSender:
         elif self._action_codec is not None:
             if isinstance(health_plans, list) and health_plans:
                 health_keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
+                action_keyboard = telegram_inline_keyboard(self._action_codec, incident)
+                health_keyboard["inline_keyboard"].extend(action_keyboard["inline_keyboard"][-1:])
                 request_data["reply_markup"] = json.dumps(health_keyboard, separators=(",", ":"))
             else:
                 action_keyboard = telegram_inline_keyboard(self._action_codec, incident, choice_options if isinstance(choice_options, list) else None)
@@ -454,10 +462,11 @@ class TelegramSender:
                 if isinstance(button, dict)
             ]
             codec = TelegramHealthPlanCodec(self._action_codec.secret) if self._action_codec is not None else None
-            receipt["health_button_count"] = len(buttons)
+            health_buttons = [button for button in buttons if codec is not None and codec.decode(str(button.get("callback_data") or "")) is not None]
+            receipt["health_button_count"] = len(health_buttons)
             receipt["health_signed_callback_count"] = sum(
                 1
-                for button in buttons
+                for button in health_buttons
                 if codec is not None and codec.decode(str(button.get("callback_data") or "")) is not None
             )
         if isinstance(choice_options, list) and choice_options:
@@ -507,6 +516,8 @@ class TelegramSender:
         note_block = f"\n\nПримечание: {note}" if note else ""
         text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nПланы:\n" + "\n".join(plan_lines) + f"{note_block}\n\nИнцидент: {incident['id']}"
         keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
+        controls = telegram_inline_keyboard(self._action_codec, incident)
+        keyboard["inline_keyboard"].extend(controls["inline_keyboard"][-1:])
         visible_text, overflow_text = _telegram_text_with_attachment(text)
         request_data = {
             "chat_id": str(chat_id),
@@ -1388,6 +1399,7 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
 
         def do_GET(self) -> None:
             """Serve authenticated health and incident reads."""
+            parsed_path = urllib.parse.urlparse(self.path)
             if self.path == "/":
                 self.send_response(HTTPStatus.SEE_OTHER)
                 self.send_header("Location", "/admin/")
@@ -1412,6 +1424,18 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     self._reply(HTTPStatus.SERVICE_UNAVAILABLE, {"schema": "notify.health.v1", "service": "notification-center", "status": "degraded", "storage_ready": False, "dispatcher_ready": False})
                     return
                 self._reply(HTTPStatus.OK if health["status"] == "ok" else HTTPStatus.SERVICE_UNAVAILABLE, health)
+                return
+            if parsed_path.path == "/v1/mutes":
+                try:
+                    project = str(urllib.parse.parse_qs(parsed_path.query).get("project", [""])[0]).strip()
+                    if not project:
+                        raise ValidationError("project is required")
+                    center.authorize_project(_bearer(self), project)
+                    self._reply(HTTPStatus.OK, {"project": project, "mutes": center.list_notification_mutes(project=project)})
+                except AuthorizationError as error:
+                    self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
+                except ValidationError as error:
+                    self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             if self.path.startswith("/v1/incidents/"):
                 try:
@@ -1493,6 +1517,8 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         self._reply(HTTPStatus.OK, center.resolve(incident_id, actor))
                     elif action == "snooze":
                         self._reply(HTTPStatus.OK, center.snooze(incident_id, float(body.get("until_epoch") or 0), actor))
+                    elif action in {"mute", "unmute"}:
+                        self._reply(HTTPStatus.OK, center.set_incident_notifications_muted(incident_id, action == "mute", actor))
                     else:
                         self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown action"})
                     return

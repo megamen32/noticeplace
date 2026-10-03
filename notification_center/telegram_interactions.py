@@ -127,6 +127,17 @@ class TelegramInteractionPoller:
     def _message(self, chat_id: str, text: str) -> None:
         self._api("sendMessage", {"chat_id": chat_id, "text": text[:1200]})
 
+    def _incident_control_row(self, incident: Mapping[str, Any]) -> list[dict[str, str]]:
+        incident_id = str(incident["id"])
+        muted = bool(incident.get("notifications_muted"))
+        return [
+            {"text": "AI", "callback_data": self._codec.encode("ai", incident_id)},
+            {
+                "text": "🔔 Включить обратно" if muted else "🔕 Отключить такие",
+                "callback_data": self._codec.encode("unmute" if muted else "mute", incident_id),
+            },
+        ]
+
     def _allowed(self, user_id: Any) -> bool:
         return str(user_id) in self._allowed_user_ids
 
@@ -203,6 +214,9 @@ class TelegramInteractionPoller:
             base_text = base_text[:max(0, base_limit - 1)].rstrip() + "…"
         text = f"{base_text}\n\n{marker}" if base_text else marker
         keyboard = health_plan_keyboard(self._health_plan_codec, incident_id, plans, selected_plan_id=plan_id)
+        incident = self._center.get_incident(incident_id)
+        if incident is not None:
+            keyboard["inline_keyboard"].append(self._incident_control_row(incident))
         payload = {
             "chat_id": chat_id,
             "message_id": str(message_id),
@@ -225,6 +239,44 @@ class TelegramInteractionPoller:
                 "message_id": str(message_id),
                 "reply_markup": payload["reply_markup"],
             })
+
+    def _refresh_action_keyboard(self, callback: dict[str, Any], incident_id: str) -> None:
+        """Reflect a mute toggle on the original Telegram card immediately."""
+        message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+        chat_id = str(chat.get("id") or "")
+        message_id = message.get("message_id")
+        incident = self._center.get_incident(incident_id)
+        if not chat_id or not isinstance(message_id, int) or message_id <= 0 or incident is None:
+            return
+        plans = self._center.latest_health_plans(incident_id)
+        if plans and self._health_plan_codec is not None and str(incident.get("event_type") or "").startswith("health."):
+            selection = self._center.latest_health_selection(incident_id) or {}
+            keyboard = health_plan_keyboard(
+                self._health_plan_codec,
+                incident_id,
+                plans,
+                selected_plan_id=str(selection.get("plan_id") or "") or None,
+            )
+            keyboard["inline_keyboard"].append(self._incident_control_row(incident))
+        else:
+            rows = (
+                [[
+                    {"text": "ACK", "callback_data": self._codec.encode("ack", incident_id)},
+                    {"text": "Snooze 15m", "callback_data": self._codec.encode("snz", incident_id)},
+                ]] if str(incident["severity"]) == "critical" else []
+            )
+            rows.append(self._incident_control_row(incident))
+            keyboard = {"inline_keyboard": rows}
+        self._api("editMessageReplyMarkup", {
+            "chat_id": chat_id,
+            "message_id": str(message_id),
+            "reply_markup": json.dumps(
+                keyboard,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        })
 
     def _handle_callback(self, callback: dict[str, Any]) -> None:
         callback_id = str(callback.get("id") or "")
@@ -249,7 +301,14 @@ class TelegramInteractionPoller:
                 action, incident_id = parsed
                 result = self._center.apply_telegram_action(incident_id, action, f"telegram:{actor_id}")
                 if action == "ai":
-                    self._answer(callback_id, "AI diagnosis already requested" if result.get("idempotent") else "AI diagnosis started")
+                    self._answer(callback_id, "AI уже запущен" if result.get("idempotent") else "AI начал диагностику")
+                    return
+                if action in {"mute", "unmute"}:
+                    self._refresh_action_keyboard(callback, incident_id)
+                    self._answer(
+                        callback_id,
+                        "Такие уведомления отключены" if action == "mute" else "Такие уведомления снова включены",
+                    )
                     return
                 if action == "ask" and result["state"] != "inactive":
                     chat_id = str(callback.get("message", {}).get("chat", {}).get("id") or "")
@@ -311,6 +370,21 @@ class TelegramInteractionPoller:
         chat_id = str(message.get("chat", {}).get("id") or "")
         message_id = message.get("message_id")
         sender = message.get("from") if isinstance(message.get("from"), dict) else {}
+        allowed_actor = self._allowed(actor_id)
+        reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else {}
+        reply_message_id = reply.get("message_id")
+        if allowed_actor and chat_id and isinstance(reply_message_id, int) and text:
+            resolved = self._center.resolve_human_reply_from_telegram(
+                chat_id, reply_message_id, f"telegram:{actor_id}", text
+            )
+            if resolved is not None:
+                return
+            incident = self._center.record_telegram_reply(
+                chat_id, reply_message_id, f"telegram:{actor_id}", text
+            )
+            if incident is not None:
+                self._message(chat_id, "Ответ привязан к инциденту.")
+                return
         if (
             self._inbox_sink is not None
             and chat_id in self._inbox_chat_ids
@@ -328,16 +402,8 @@ class TelegramInteractionPoller:
                 "body": text,
             })
             return
-        if not self._allowed(actor_id):
+        if not allowed_actor:
             return
-        reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else {}
-        reply_message_id = reply.get("message_id")
-        if chat_id and isinstance(reply_message_id, int) and text:
-            resolved = self._center.resolve_human_reply_from_telegram(
-                chat_id, reply_message_id, f"telegram:{actor_id}", text
-            )
-            if resolved is not None:
-                return
         if not text.startswith("/ask "):
             return
         _, incident_id, question = text.split(maxsplit=2) if len(text.split(maxsplit=2)) == 3 else ("", "", "")

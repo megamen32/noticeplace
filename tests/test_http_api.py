@@ -254,6 +254,34 @@ class HttpApiTests(unittest.TestCase):
         status, _ = self.request("POST", f"/v1/incidents/{incident_id}/ack", {"actor": "attacker"}, Authorization="Bearer wrong-token")
         self.assertEqual(401, status)
 
+    def test_mute_api_lists_and_restores_one_exact_notification_scope(self) -> None:
+        event = {"schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident", "severity": "critical", "title": "Worker unavailable", "dedup_key": "worker:queue"}
+        status, created = self.request(
+            "POST", "/v1/events", event,
+            Authorization="Bearer secret-token", **{"Idempotency-Key": "mute-http-1"},
+        )
+        self.assertEqual(202, status)
+        incident_id = str(created["incident_id"])
+
+        status, muted = self.request(
+            "POST", f"/v1/incidents/{incident_id}/mute", {"actor": "api:test"},
+            Authorization="Bearer secret-token",
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(muted["notifications_muted"])
+        status, listing = self.request("GET", "/v1/mutes?project=hermes", Authorization="Bearer secret-token")
+        self.assertEqual(200, status)
+        self.assertEqual("worker:queue", listing["mutes"][0]["dedup_key"])
+
+        status, restored = self.request(
+            "POST", f"/v1/incidents/{incident_id}/unmute", {"actor": "api:test"},
+            Authorization="Bearer secret-token",
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(restored["notifications_muted"])
+        status, listing = self.request("GET", "/v1/mutes?project=hermes", Authorization="Bearer secret-token")
+        self.assertEqual([], listing["mutes"])
+
     def test_health_http_vertical_contract_has_one_incident_three_plans_useful_progress_and_verified_resolution(self) -> None:
         signal = {
             "schema": "notify.event.v1",

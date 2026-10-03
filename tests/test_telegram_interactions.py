@@ -89,6 +89,82 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertEqual(["failed", "queued"], [row["status"] for row in rows])
         self.assertIsNone(rows[1]["last_error"])
 
+    def test_native_reply_is_attached_to_the_replied_incident_card(self) -> None:
+        self.center.complete_delivery(
+            self.created["initial_delivery_id"],
+            "sent",
+            result={"message_id": 73, "chat_id": "-1001"},
+        )
+        calls: list[tuple[str, dict[str, object]]] = []
+        poller = TelegramInteractionPoller(
+            self.center,
+            "bot-token",
+            {"42"},
+            TelegramActionCodec("x" * 32),
+            api=lambda method, payload: calls.append((method, payload)) or {"ok": True, "result": True},
+        )
+
+        poller._handle_message({
+            "message_id": 74,
+            "from": {"id": 42, "is_bot": False},
+            "chat": {"id": -1001},
+            "text": "Проверь логи воркера и почини.",
+            "reply_to_message": {"message_id": 73},
+        })
+
+        row = self.center._connection.execute(
+            "SELECT type, payload_json FROM audit_events WHERE incident_id = ? AND type = 'telegram_reply_recorded'",
+            (self.created["incident_id"],),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual("Проверь логи воркера и почини.", json.loads(row["payload_json"])["text"])
+        self.assertIn(("sendMessage", {"chat_id": "-1001", "text": "Ответ привязан к инциденту."}), calls)
+
+    def test_mute_button_suppresses_same_scope_and_old_card_restores_it(self) -> None:
+        codec = TelegramActionCodec("x" * 32)
+        calls: list[tuple[str, dict[str, object]]] = []
+        poller = TelegramInteractionPoller(
+            self.center,
+            "bot-token",
+            {"42"},
+            codec,
+            api=lambda method, payload: calls.append((method, payload)) or {"ok": True, "result": True},
+        )
+        card = {"message_id": 73, "chat": {"id": -1001}}
+
+        poller._handle_callback({
+            "id": "mute-1", "from": {"id": 42},
+            "data": codec.encode("mute", self.created["incident_id"]), "message": card,
+        })
+        self.assertTrue(self.center.get_incident(self.created["incident_id"])["notifications_muted"])
+        muted = self.center.create_event("producer", "muted-repeat", {
+            "schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident",
+            "severity": "critical", "title": "Still out", "body": "details", "dedup_key": "telegram-controls",
+        })
+        self.assertTrue(muted["notifications_muted"])
+        self.assertIsNone(muted["initial_delivery_id"])
+        edit = next(payload for method, payload in calls if method == "editMessageReplyMarkup")
+        self.assertIn("Включить обратно", str(edit["reply_markup"]))
+
+        poller._handle_callback({
+            "id": "unmute-1", "from": {"id": 42},
+            "data": codec.encode("unmute", self.created["incident_id"]), "message": card,
+        })
+        self.assertFalse(self.center.get_incident(self.created["incident_id"])["notifications_muted"])
+        restored_now = self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE incident_id = ? AND delivery_key LIKE ?",
+            (self.created["incident_id"], "%:notifications-restored:%"),
+        ).fetchone()
+        self.assertIsNotNone(restored_now)
+        self.assertEqual("queued", restored_now["status"])
+        self.center.resolve(self.created["incident_id"], "test")
+        restored = self.center.create_event("producer", "restored-event", {
+            "schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident",
+            "severity": "critical", "title": "Out again", "body": "details", "dedup_key": "telegram-controls",
+        })
+        self.assertFalse(restored["notifications_muted"])
+        self.assertIsNotNone(restored["initial_delivery_id"])
+
     def test_allowed_regular_message_is_forwarded_to_universal_inbox_once(self) -> None:
         codec = TelegramActionCodec("x" * 32)
         update = {

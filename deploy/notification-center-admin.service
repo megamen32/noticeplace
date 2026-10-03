@@ -12,6 +12,14 @@ WorkingDirectory=/opt/noticeplace
 ExecStart=/usr/bin/python3 /opt/noticeplace/bin/notify-center-admin
 Restart=on-failure
 RestartSec=2
+# Measured steady state is about 44 MiB; config apply jobs run in their own
+# transient unit and do not justify an unbounded console daemon.
+MemoryHigh=256M
+MemoryMax=512M
+MemorySwapMax=128M
+CPUQuota=100%
+TasksMax=128
+IOWeight=25
 StateDirectory=notification-center-admin
 UMask=0077
 NoNewPrivileges=true

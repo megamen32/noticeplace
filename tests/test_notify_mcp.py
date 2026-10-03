@@ -108,3 +108,9 @@ class Mcp2ContractTests(unittest.TestCase):
         self.assertEqual("noticeplace.instructions.v1", result["schema"])
         self.assertIn("health-diagnosis", result["automatic_repair"])
         self.assertIn("Кто сломался", result["message_format"][0])
+        self.assertIn("Включить обратно", result["telegram_controls"])
+
+    def test_noticeplace_mute_tools_are_discoverable(self):
+        tools = {tool["name"] for tool in notify_mcp.tool_specs()}
+        self.assertIn("noticeplace_list_mutes", tools)
+        self.assertIn("noticeplace_set_notifications", tools)

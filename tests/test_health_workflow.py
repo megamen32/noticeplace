@@ -200,8 +200,10 @@ class HealthWorkflowTests(unittest.TestCase):
 
         reply_markup = json.loads(captured["reply_markup"])
         buttons = [button for row in reply_markup["inline_keyboard"] for button in row]
-        self.assertEqual(3, len(buttons))
-        self.assertEqual({"observe", "repair", "verify"}, {self.workflow.codec.decode(button["callback_data"])[1] for button in buttons})
+        plan_buttons = [button for button in buttons if self.workflow.codec.decode(button["callback_data"]) is not None]
+        self.assertEqual(5, len(buttons))
+        self.assertEqual({"observe", "repair", "verify"}, {self.workflow.codec.decode(button["callback_data"])[1] for button in plan_buttons})
+        self.assertEqual({"AI", "🔕 Отключить такие"}, {button["text"] for button in buttons if button not in plan_buttons})
         self.assertEqual("77", captured["message_thread_id"])
         self.assertEqual({"observe", "repair", "verify"}, set(receipt["health_plan_ids"]))
         self.assertEqual(3, receipt["health_button_count"])
@@ -324,7 +326,7 @@ class HealthWorkflowTests(unittest.TestCase):
             )
         self.assertTrue(captured["url"].endswith("/editMessageText"))
         buttons = [button for row in json.loads(captured["reply_markup"])["inline_keyboard"] for button in row]
-        self.assertEqual(3, len(buttons))
+        self.assertEqual(5, len(buttons))
         self.assertEqual(3, receipt["health_signed_callback_count"])
 
     def test_telegram_sender_replaces_old_overflow_document_after_health_edit(self) -> None:
@@ -394,7 +396,7 @@ class HealthWorkflowTests(unittest.TestCase):
         edit = next(payload for method, payload in calls if method == "editMessageText")
         self.assertIn("✅ Выбран путь: Проверить", edit["text"])
         buttons = [button for row in json.loads(edit["reply_markup"])["inline_keyboard"] for button in row]
-        self.assertEqual(["Observe", "Repair", "✅ Verify"], [button["text"] for button in buttons])
+        self.assertEqual(["Observe", "Repair", "✅ Verify", "AI", "🔕 Отключить такие"], [button["text"] for button in buttons])
 
         duplicate = self.center.select_health_plan(self.created["incident_id"], "cb-1", "verify", "telegram:42")
         self.assertTrue(duplicate["idempotent"])
@@ -442,9 +444,9 @@ class HealthWorkflowTests(unittest.TestCase):
         selected = self.workflow.select_plan(self.created["incident_id"], "selection-remediation", "repair", "telegram:42")
 
         expected_execution = {
-            "runtime": "codex",
-            "provider": "openai-codex",
-            "model": "gpt-6-astra",
+            "runtime": "zcode",
+            "provider": "omniroute",
+            "model": "zc/glm-5.3-flash",
             "reasoning": "high",
             "topic": "health",
         }
