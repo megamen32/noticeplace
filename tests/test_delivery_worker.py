@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 import urllib.parse
 from datetime import datetime
@@ -107,6 +108,27 @@ class DeliveryWorkerTests(unittest.TestCase):
             (created["incident_id"],),
         ).fetchone()
         self.assertEqual(("queued", 10**12), (row["status"], row["due_at"]))
+
+    def test_telegram_network_send_does_not_hold_the_center_lock(self) -> None:
+        created = self.center.create_event("producer", "lock-free-send", {**self.event, "dedup_key": "lock-free-send"})
+        lock_was_free = threading.Event()
+
+        class Telegram:
+            def send(_self, _payload: dict[str, object]) -> dict[str, object]:
+                reader = threading.Thread(target=lambda: (self.center.list_incidents(), lock_was_free.set()))
+                reader.start()
+                if not lock_was_free.wait(1):
+                    raise AssertionError("NotificationCenter lock was held during Telegram I/O")
+                reader.join()
+                return {"message_id": 17, "chat_id": "42"}
+
+        worker = DeliveryWorker(self.center, Telegram())
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12, channel_group="message")
+        worker.deliver(claimed[0])
+
+        row = self.center._connection.execute("SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)).fetchone()
+        self.assertTrue(lock_was_free.is_set())
+        self.assertEqual("sent", row["status"])
 
     def test_zero_delay_schedules_critical_health_phone_immediately(self) -> None:
         created = self.center.create_event(

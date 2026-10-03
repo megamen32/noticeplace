@@ -1032,35 +1032,35 @@ class DeliveryWorker:
                         attempt=int(delivery["attempt"]),
                     ):
                         return
-                    try:
-                        overflow_document_message_id = target.get("overflow_document_message_id")
-                        if isinstance(overflow_document_message_id, int) and overflow_document_message_id > 0:
-                            receipt = self._telegram.edit_health_card(
-                                payload,
-                                message_id,
-                                chat_id,
-                                overflow_document_message_id=overflow_document_message_id,
-                            )
-                        else:
-                            receipt = self._telegram.edit_health_card(payload, message_id, chat_id)
-                        self._center.record_health_delivery_migrated(source_delivery_id, receipt)
-                    except Exception as error:
-                        self._center.complete_delivery(
-                            delivery["id"],
-                            "uncertain",
-                            f"Telegram health migration outcome is uncertain: {error}",
-                            claimed_at=delivery.get("claimed_at"),
-                            attempt=delivery.get("attempt"),
+                try:
+                    overflow_document_message_id = target.get("overflow_document_message_id")
+                    if isinstance(overflow_document_message_id, int) and overflow_document_message_id > 0:
+                        receipt = self._telegram.edit_health_card(
+                            payload,
+                            message_id,
+                            chat_id,
+                            overflow_document_message_id=overflow_document_message_id,
                         )
-                        return
+                    else:
+                        receipt = self._telegram.edit_health_card(payload, message_id, chat_id)
+                    self._center.record_health_delivery_migrated(source_delivery_id, receipt)
+                except Exception as error:
                     self._center.complete_delivery(
                         delivery["id"],
-                        "superseded",
-                        "legacy Health card edited in place",
+                        "uncertain",
+                        f"Telegram health migration outcome is uncertain: {error}",
                         claimed_at=delivery.get("claimed_at"),
                         attempt=delivery.get("attempt"),
-                        result=receipt,
                     )
+                    return
+                self._center.complete_delivery(
+                    delivery["id"],
+                    "superseded",
+                    "legacy Health card edited in place",
+                    claimed_at=delivery.get("claimed_at"),
+                    attempt=delivery.get("attempt"),
+                    result=receipt,
+                )
                 return
             if delivery["channel"] in {"telegram.main", "telegram.message"} or str(delivery["channel"]).startswith("telegram.consumer:"):
                 with self._center.delivery_send_lock():
@@ -1110,25 +1110,25 @@ class DeliveryWorker:
                         attempt=int(delivery["attempt"]),
                     ):
                         return
-                    try:
-                        send_result = self._telegram.send(payload)
-                    except Exception as error:
-                        self._center.complete_delivery(
-                            delivery["id"],
-                            "uncertain",
-                            f"Telegram send outcome is uncertain: {error}",
-                            claimed_at=delivery.get("claimed_at"),
-                            attempt=delivery.get("attempt"),
-                        )
-                        return
-                    incident = payload["incident"]
+                try:
+                    send_result = self._telegram.send(payload)
+                except Exception as error:
                     self._center.complete_delivery(
                         delivery["id"],
-                        "sent",
+                        "uncertain",
+                        f"Telegram send outcome is uncertain: {error}",
                         claimed_at=delivery.get("claimed_at"),
                         attempt=delivery.get("attempt"),
-                        result=send_result if isinstance(send_result, dict) else None,
                     )
+                    return
+                incident = payload["incident"]
+                self._center.complete_delivery(
+                    delivery["id"],
+                    "sent",
+                    claimed_at=delivery.get("claimed_at"),
+                    attempt=delivery.get("attempt"),
+                    result=send_result if isinstance(send_result, dict) else None,
+                )
                 if delivery["channel"] == "telegram.main":
                     self._after_telegram_delivery(delivery, incident)
                 return
