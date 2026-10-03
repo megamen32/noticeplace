@@ -4,6 +4,26 @@
 sources. It sends one idempotent `notify.event.v1` request to the durable
 center; it never knows Telegram or Matrix credentials.
 
+## Быстрый контракт для AI и новых сервисов
+
+Сначала прочитайте самодокументируемый контракт: `GET /v1/instructions` или
+вызовите MCP-инструмент `noticeplace_instructions`. Автоматические аварии и
+восстановления идут только через Notice Place; `AskHuman` предназначен для
+вопросов человеку, а прямые Telegram/`notify`-сообщения для мониторов запрещены.
+
+Основной текст пишется по-русски и отвечает на пять вопросов: какой сервис
+сломался, как именно, почему это важно, что происходит сейчас и что требуется
+от человека. Сырые имена событий, счётчики и пути относятся в технические
+ссылки/поля, а не в заголовок.
+
+Чтобы Notice Place показал подписанные кнопки «Наблюдать / Исправить /
+Проверить» и после выбора запустил AI, отправьте `health.degraded` с
+`source_id`, `host_id`, `signal_type`, `correlation_id` и стабильным
+`dedup_key`. Токен проекта должен разрешать `health-diagnosis`; выбранный план
+выполняет центральный профиль `health-remediation`. Восстановление закрывается
+только после `/health/verification` со статусом `healthy`, затем
+`/health/resolve`.
+
 ## Source environment
 
 Each source receives its own mode-`0600` environment file with a token scoped

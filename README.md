@@ -28,6 +28,8 @@ flowchart LR
 codex mcp add notify -- npx -y github:megamen32/noticeplace
 ```
 
-See the [complete feature list](docs/features.md), [production deployment](deploy/README.md), [producer API](docs/producer.md), and [agent jobs](docs/gptadmin-agent-jobs.md).
+For a new integration, call MCP tool `noticeplace_instructions` or
+`GET /v1/instructions`; both return the same short, secret-free producer
+contract. See the [complete feature list](docs/features.md), [production deployment](deploy/README.md), [producer API](docs/producer.md), and [agent jobs](docs/gptadmin-agent-jobs.md).
 
 MIT

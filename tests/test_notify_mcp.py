@@ -96,4 +96,15 @@ class Mcp2ContractTests(unittest.TestCase):
     def test_initialize_negotiates_mcp2_and_ping(self):
         init = notify_mcp.dispatch({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28"}})
         self.assertEqual("2026-07-28", init["result"]["protocolVersion"])
+        self.assertIn("noticeplace_instructions", init["result"]["instructions"])
         self.assertEqual({}, notify_mcp.dispatch({"jsonrpc":"2.0","id":2,"method":"ping","params":{}})["result"])
+
+    def test_noticeplace_instructions_are_short_and_actionable(self):
+        response = notify_mcp.dispatch({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "noticeplace_instructions", "arguments": {}},
+        })
+        result = response["result"]["structuredContent"]
+        self.assertEqual("noticeplace.instructions.v1", result["schema"])
+        self.assertIn("health-diagnosis", result["automatic_repair"])
+        self.assertIn("Кто сломался", result["message_format"][0])

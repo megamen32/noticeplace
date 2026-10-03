@@ -101,6 +101,22 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertNotIn(token.encode(), json.dumps(snapshot).encode())
         self.assertNotIn(token, self.store.audit_path.read_text(encoding="utf-8"))
 
+    def test_project_edit_preserves_allowlisted_agent_jobs(self) -> None:
+        self.primary.write_text(
+            f'NOTIFY_CENTER_DB={self.database}\n'
+            'NOTIFY_CENTER_TOKENS_JSON={"old-token":{"project":"existing","max_severity":"notice","agent_jobs":["health-diagnosis"]}}\n'
+            'OTHER=unchanged\n',
+            encoding="utf-8",
+        )
+        self.store.set_project_severity("existing", "critical", "test")
+        env_line = next(
+            line for line in self.primary.read_text(encoding="utf-8").splitlines()
+            if line.startswith("NOTIFY_CENTER_TOKENS_JSON=")
+        )
+        scopes = json.loads(env_line.split("=", 1)[1])
+        self.assertEqual(["health-diagnosis"], scopes["old-token"]["agent_jobs"])
+        self.assertEqual("critical", scopes["old-token"]["max_severity"])
+
     def test_health_dashboard_is_first_and_projects_live_workflow_state(self) -> None:
         center = self.store._consumer_notification_center()
         workflow = HealthWorkflow(center, callback_secret="x" * 32)

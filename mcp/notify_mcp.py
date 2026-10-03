@@ -24,9 +24,10 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from notification_center.core import DEFAULT_CONSUMER_QUIET_HOURS
+from notification_center.instructions import MCP_INSTRUCTIONS, noticeplace_instructions
 
 SERVER_NAME = "notify-mcp"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 NOTIFY_BIN = Path(os.environ.get("NOTIFY_BIN", "/usr/local/bin/notify"))
 STATE_DIR = Path(os.environ.get("NOTIFY_MCP_STATE_DIR", "~/.local/state/notify-mcp")).expanduser()
 JOBS_DIR = STATE_DIR / "jobs"
@@ -666,6 +667,11 @@ TOOLS = {
         },
         "handler": tool_ask_human,
     },
+    "noticeplace_instructions": {
+        "description": "Короткая инструкция для AI и сервисов: когда использовать Notice Place, какой русский текст писать и как получить автоматические кнопки диагностики и исправления.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": lambda _args: noticeplace_instructions(),
+    },
     "send_message": {
         "description": "Send a plain Telegram message immediately. Preferred use: ping the human at the end of work or right before asking a question, e.g. 'I finished X, please check'. This is only an extra notification; agent-resume handles long waits and context resume.",
         "inputSchema": {
@@ -913,7 +919,12 @@ def dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if method == "tools/call":
             ensure_runtime_ready()
         if method == "initialize":
-            payload = {"protocolVersion": "2026-07-28", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}}
+            payload = {
+                "protocolVersion": "2026-07-28",
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                "instructions": MCP_INSTRUCTIONS,
+            }
         elif method == "tools/list":
             payload = {"tools": tool_specs()}
         elif method == "tools/call":

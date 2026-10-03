@@ -581,7 +581,7 @@ class AdminConfigStore:
             normalized[severity] = {"chat_id": chat_id, "message_thread_id": topic_id}
         self._apply_routes(normalized, actor)
 
-    def _scopes(self) -> dict[str, dict[str, str]]:
+    def _scopes(self) -> dict[str, dict[str, Any]]:
         raw = parse_environment(self.primary_env).get("NOTIFY_CENTER_TOKENS_JSON", "{}")
         try:
             value = json.loads(raw)
@@ -589,14 +589,25 @@ class AdminConfigStore:
             raise ValidationError("producer scope configuration is invalid JSON") from error
         if not isinstance(value, dict):
             raise ValidationError("producer scope configuration is invalid")
-        normalized: dict[str, dict[str, str]] = {}
+        normalized: dict[str, dict[str, Any]] = {}
         for token, scope in value.items():
             if not isinstance(token, str) or not isinstance(scope, dict):
                 raise ValidationError("producer scope configuration is invalid")
             project, severity = str(scope.get("project") or ""), str(scope.get("max_severity") or "notice")
             self._validate_project(project)
             self._validate_severity(severity)
+            agent_jobs = scope.get("agent_jobs", [])
+            if not isinstance(agent_jobs, list) or any(
+                not isinstance(job, str)
+                or not job
+                or len(job) > 128
+                or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for character in job)
+                for job in agent_jobs
+            ):
+                raise ValidationError("producer agent_jobs configuration is invalid")
             normalized[token] = {"project": project, "max_severity": severity}
+            if agent_jobs:
+                normalized[token]["agent_jobs"] = list(dict.fromkeys(agent_jobs))
         return normalized
 
     def _routes(self) -> dict[str, dict[str, Any]]:
@@ -621,7 +632,7 @@ class AdminConfigStore:
             return self._routes()
         return {str(key): dict(route) for key, route in value.items() if isinstance(route, dict)} if isinstance(value, dict) else self._routes()
 
-    def _apply_primary(self, scopes: Mapping[str, Mapping[str, str]], actor: str, action: str, project: str, token: str) -> None:
+    def _apply_primary(self, scopes: Mapping[str, Mapping[str, Any]], actor: str, action: str, project: str, token: str) -> None:
         encoded = json.dumps(scopes, sort_keys=True, separators=(",", ":"))
         self._apply(self.primary_env, {"NOTIFY_CENTER_TOKENS_JSON": encoded}, actor, action, project, token)
 

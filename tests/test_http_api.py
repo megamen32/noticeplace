@@ -71,6 +71,13 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(303, context.exception.code)
         self.assertEqual("/admin/", context.exception.headers.get("Location"))
 
+    def test_public_instructions_explain_api_and_automatic_repair(self) -> None:
+        status, body = self.request("GET", "/v1/instructions")
+        self.assertEqual(200, status)
+        self.assertEqual("noticeplace.instructions.v1", body["schema"])
+        self.assertIn("POST /v1/events", body["api"]["create_or_update"])
+        self.assertIn("health-diagnosis", body["automatic_repair"])
+
     def test_health_and_event_require_separate_bearer_credentials(self) -> None:
         """Protect readiness separately while rejecting an unauthenticated producer."""
         status, response = self.request("GET", "/health")
@@ -471,7 +478,8 @@ class HttpApiTests(unittest.TestCase):
         status, initialize = self.request("POST", "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, Authorization="Bearer mcp-token")
         self.assertEqual(200, status)
         self.assertEqual("notify-mcp", initialize["result"]["serverInfo"]["name"])
-        self.assertEqual("1.2.0", initialize["result"]["serverInfo"]["version"])
+        self.assertEqual("1.3.0", initialize["result"]["serverInfo"]["version"])
+        self.assertIn("noticeplace_instructions", initialize["result"]["instructions"])
 
         status, listed = self.request("POST", "/mcp", {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}, Authorization="Bearer mcp-token")
         self.assertEqual(200, status)

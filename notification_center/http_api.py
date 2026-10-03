@@ -22,6 +22,7 @@ from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, N
 from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import DirectHealthRemediationAdapter, DurableHealthRemediationAdapter, GptAdminAgentJobAdapter
 from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, validate_health_plans
+from .instructions import noticeplace_instructions
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
 from .telegram_format import telegram_html
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
@@ -1206,6 +1207,9 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                 self.send_header("Location", "/admin/")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
+                return
+            if self.path == "/v1/instructions":
+                self._reply(HTTPStatus.OK, noticeplace_instructions())
                 return
             if self.path == "/health":
                 try:
