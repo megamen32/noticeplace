@@ -562,7 +562,13 @@ def _run_health_remediation(profile: dict[str, str], event: dict[str, Any], sess
     poll_seconds = _profile_seconds(profile, "poll_seconds", 1, 0.2, 10)
     last_fingerprint = ""
     while True:
-        progress = _session_json(profile, session_id, "/progress?limit=5&history=auto", runner)
+        try:
+            progress = _session_json(profile, session_id, "/progress?limit=5&history=auto", runner)
+        except TimeoutError:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("health remediation did not produce a terminal receipt before timeout")
+            time.sleep(poll_seconds)
+            continue
         fingerprint = str(progress.get("fingerprint") or "").strip()
         if fingerprint:
             last_fingerprint = fingerprint[:128]
@@ -572,7 +578,13 @@ def _run_health_remediation(profile: dict[str, str], event: dict[str, Any], sess
             # The terminal receipt is the latest assistant turn. Loading five
             # Codex turns also includes large tool traces and can exceed the
             # helper's bounded response guard after a real diagnosis.
-            details = _session_json(profile, session_id, "/details?limit=1&history=auto", runner)
+            try:
+                details = _session_json(profile, session_id, "/details?limit=1&history=auto", runner)
+            except TimeoutError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("health remediation did not produce a terminal receipt before timeout")
+                time.sleep(poll_seconds)
+                continue
             result = _extract_health_remediation(details, plan_id)
             if result is not None:
                 if not last_fingerprint:
