@@ -174,7 +174,7 @@ def _bounded_refs(value: Any, limit: int = 16) -> list[str]:
     return [" ".join(str(item or "").replace("\x00", "").splitlines()).strip()[:128] for item in value[:limit] if str(item or "").strip()]
 
 
-def _load_health_callback(profile: dict[str, str]) -> tuple[str, str]:
+def _load_health_callback(profile: dict[str, str], project: str = "") -> tuple[str, str]:
     """Load the operator-owned callback endpoint without ever returning its token in logs."""
     path = Path(profile.get("callback_file") or os.environ.get("GPTADMIN_HEALTH_CALLBACK_FILE") or _HEALTH_CALLBACK_DEFAULT)
     try:
@@ -187,7 +187,18 @@ def _load_health_callback(profile: dict[str, str]) -> tuple[str, str]:
     if not isinstance(document, dict):
         raise RuntimeError("health callback file is unavailable or invalid")
     base_url = str(document.get("url") or "").strip().rstrip("/")
-    token = str(document.get("token") or "").strip()
+    tokens = document.get("tokens")
+    if tokens is not None and (
+        not isinstance(tokens, dict)
+        or any(not isinstance(key, str) or not isinstance(value, str) for key, value in tokens.items())
+    ):
+        raise RuntimeError("health callback project token map is invalid")
+    if isinstance(tokens, dict) and project:
+        token = str(tokens.get(project) or "").strip()
+        if not token:
+            raise RuntimeError("health callback project token is not configured")
+    else:
+        token = str(document.get("token") or "").strip()
     parsed = urllib.parse.urlsplit(base_url)
     if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "::1", "localhost") or not token:
         raise RuntimeError("health callback endpoint must be authenticated loopback HTTP")
@@ -447,7 +458,8 @@ def _post_health_plans(
 def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], session_id: str, runner: Any, started_at: float) -> dict[str, Any]:
     if profile["orchestrator_requested_model"] != _HEALTH_ORCHESTRATOR_REQUESTED_MODEL or profile["orchestrator_model"] != _HEALTH_ORCHESTRATOR_EFFECTIVE_MODEL or not profile["orchestrator_name"]:
         raise RuntimeError("health diagnosis profile has no approved orchestrator mapping")
-    callback_url, callback_token = _load_health_callback(profile)
+    incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
+    callback_url, callback_token = _load_health_callback(profile, str(incident.get("project") or ""))
     deadline = time.monotonic() + _profile_seconds(profile, "diagnosis_timeout_seconds", 90, 5, 300)
     poll_seconds = _profile_seconds(profile, "poll_seconds", 1, 0.2, 10)
     last_fingerprint = ""
@@ -616,7 +628,7 @@ def run_profile(
     if profile_id == "health-diagnosis":
         # Validate the callback credential before creating a session, avoiding
         # an untracked agent if the result sink is unavailable.
-        _load_health_callback(profile)
+        _load_health_callback(profile, str(incident.get("project") or ""))
     request_body = {
         "harness": profile["harness"],
         "name": _health_session_name(profile, profile_id, event),

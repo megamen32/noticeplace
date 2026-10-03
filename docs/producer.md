@@ -20,7 +20,9 @@ center; it never knows Telegram or Matrix credentials.
 Проверить» и после выбора запустил AI, отправьте `health.degraded` с
 `source_id`, `host_id`, `signal_type`, `correlation_id` и стабильным
 `dedup_key`. Токен проекта должен разрешать `health-diagnosis`; выбранный план
-выполняет центральный профиль `health-remediation`. Восстановление закрывается
+и тот же проект должен быть зарегистрирован в защищённой callback-карте
+диагностического профиля. Выбранный план выполняет центральный профиль
+`health-remediation`. Восстановление закрывается
 только после `/health/verification` со статусом `healthy`, затем
 `/health/resolve`.
 

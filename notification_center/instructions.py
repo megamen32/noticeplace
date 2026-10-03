@@ -31,7 +31,8 @@ def noticeplace_instructions() -> dict[str, Any]:
         "automatic_repair": (
             "Для кнопок «Наблюдать / Исправить / Проверить» отправьте health.degraded "
             "с source_id, host_id, signal_type и correlation_id. Токен проекта должен разрешать "
-            "agent job health-diagnosis; выбранный план выполняет health-remediation."
+            "agent job health-diagnosis и быть зарегистрирован в callback-карте; выбранный план "
+            "выполняет health-remediation."
         ),
         "identity": "dedup_key стабилен для одной поломки; Idempotency-Key повторяется только при точном повторе того же запроса.",
         "exceptions": "Прямой аварийный канал допустим только для независимого сторожа самого Notice Place.",

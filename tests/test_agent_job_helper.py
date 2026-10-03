@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from notification_center import agent_job_helper
 from notification_center.agent_job_helper import _extract_health_remediation, event_from_environment, run_profile
 
 
@@ -28,6 +29,21 @@ class _Response:
 
 
 class AgentJobHelperTests(unittest.TestCase):
+    def test_health_callback_selects_the_incident_project_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            callback = Path(tempdir) / "health-callback.json"
+            callback.write_text(json.dumps({
+                "url": "http://127.0.0.1:8091",
+                "token": "default-token",
+                "tokens": {"health-monitor": "health-token", "winramp": "winramp-token"},
+            }), encoding="utf-8")
+            callback.chmod(0o600)
+            url, token = agent_job_helper._load_health_callback({"callback_file": str(callback)}, "winramp")
+            self.assertEqual("http://127.0.0.1:8091", url)
+            self.assertEqual("winramp-token", token)
+            with self.assertRaisesRegex(RuntimeError, "project token"):
+                agent_job_helper._load_health_callback({"callback_file": str(callback)}, "unknown-project")
+
     def test_documented_health_diagnosis_profile_has_required_orchestrator_mapping(self) -> None:
         document = json.loads((Path(__file__).parents[1] / "docs" / "health-agent-jobs.example.json").read_text(encoding="utf-8"))
         profile = document["profiles"]["health-diagnosis"]

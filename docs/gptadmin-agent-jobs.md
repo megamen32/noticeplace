@@ -48,7 +48,9 @@ job instead of dispatching a second side effect.
 
 Install `bin/notify-agent-job` with the rest of Notify. Its config defaults to
 `/etc/gptadmin/agent-jobs.json`, must be owned by the ShellMCP execution user,
-and must have exact mode `0600`:
+and must have exact mode `0600`. Every parent directory must also be traversable
+by that user (for example `/etc/gptadmin` as `root:<execution-group>` mode
+`0710`); a correct file owner is useless when the parent is mode `0700`:
 
 ```json
 {
@@ -97,6 +99,25 @@ the model to Agent Herder before the first message. The durable NoticePlace
 selection creates exactly one `gptadmin.agent:health-remediation` delivery;
 the delivery worker must have the matching signed GPTAdmin webhook route
 configured before enabling the profile.
+
+The diagnosis callback file may serve several project-scoped producers without
+granting one token cross-project authority. Keep it owned by the ShellMCP
+execution user with mode `0600` and map each repairable project explicitly:
+
+```json
+{
+  "url": "http://127.0.0.1:8091",
+  "token": "legacy-default-project-token",
+  "tokens": {
+    "health-monitor": "health-monitor-token",
+    "winramp": "winramp-token"
+  }
+}
+```
+
+`health-diagnosis` selects `tokens[incident.project]` and never puts the token
+in the agent event. Projects absent from the map cannot attach plans and fail
+closed with HTTP 401.
 
 Configure the GPTAdmin route with `"signature_version":"v2"`, HMAC
 authentication, the fixed
