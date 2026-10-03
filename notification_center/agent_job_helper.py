@@ -52,7 +52,9 @@ def _zcode_quota_exhausted(error: BaseException) -> bool:
 
 
 def _health_model_route(execution: Mapping[str, str]) -> str:
-    return f"{execution['provider']}/{execution['model']}" if execution["runtime"] == "zcode" else execution["model"]
+    if execution["runtime"] == "zcode":
+        return f"{execution['provider']}/{execution['model']}#{execution['reasoning']}"
+    return execution["model"]
 
 
 def event_from_environment() -> dict[str, Any]:

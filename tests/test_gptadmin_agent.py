@@ -909,7 +909,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("completed", result["status"])
         self.assertEqual("zcode", run.call_args.kwargs["profile_override"]["harness"])
         self.assertEqual("queue", run.call_args.kwargs["profile_override"]["mode"])
-        self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash", run.call_args.kwargs["profile_override"]["model"])
+        self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash#high", run.call_args.kwargs["profile_override"]["model"])
         self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
         progress.assert_any_call({"agent_session": {"session_id": "ses-live-1", "harness": "zcode", "plan_id": "plan-003"}})
 

@@ -109,7 +109,7 @@ class DirectHealthRemediationAdapter:
             # longer remediation polling window below.
             "mode": "queue",
             "instruction": "Выполни только выбранный план устранения инцидента и сообщай полезный прогресс. Пользовательские объяснения пиши по-русски. Последним сообщением верни только JSON: {\"status\":\"completed\",\"plan_id\":\"<selected>\",\"step\":\"<done>\",\"observed_state\":\"healthy|degraded|unknown\",\"verification_id\":\"<id>\",\"source_id\":\"<id>\",\"source_fingerprint\":\"<fingerprint>\",\"verifier_id\":\"<distinct id>\",\"evidence_refs\":[\"<ref>\"],\"trace_refs\":[\"<ref>\"]}. Для плана observe допустим observed_state=unknown с непустым evidence_refs без выдуманных verification_id, source_fingerprint и verifier_id; такой результат не закрывает инцидент.",
-            "model": "account:zai-individual-coding-plan/GLM-5.3-Flash",
+            "model": "account:zai-individual-coding-plan/GLM-5.3-Flash#high",
             "reasoning": "high",
             "topic": "health",
             "poll_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_POLL_SECONDS", "1"),

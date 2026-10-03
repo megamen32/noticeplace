@@ -417,8 +417,8 @@ class AgentJobHelperTests(unittest.TestCase):
             with mock.patch("notification_center.agent_job_helper._read_json_request", side_effect=fake_read), mock.patch("notification_center.agent_job_helper.time.sleep"):
                 result = run_profile("health-remediation", event, config, runner=object())
 
-            self.assertEqual("account:zai-start-plan/GLM-5.3-Flash", json.loads(calls[0].data)["model"])
-            self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash", json.loads(calls[1].data)["model"])
+            self.assertEqual("account:zai-start-plan/GLM-5.3-Flash#high", json.loads(calls[0].data)["model"])
+            self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash#high", json.loads(calls[1].data)["model"])
             self.assertEqual("zcode", result["harness"])
             self.assertEqual("account:zai-start-plan", result["fallback_from"])
             self.assertEqual("quota_exhausted", result["fallback_reason"])
