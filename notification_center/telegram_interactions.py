@@ -10,7 +10,7 @@ import urllib.request
 from typing import Any, Callable, Mapping
 
 from .core import NotificationCenter, ValidationError
-from .health_workflow import TelegramHealthPlanCodec
+from .health_workflow import TelegramHealthPlanCodec, health_plan_keyboard
 
 
 class TelegramActionCodec:
@@ -176,6 +176,56 @@ class TelegramInteractionPoller:
                 "reply_markup": payload["reply_markup"],
             })
 
+    def _mark_health_choice_message(
+        self,
+        callback: dict[str, Any],
+        incident_id: str,
+        plan_id: str,
+        label: str,
+        plans: list[Mapping[str, Any]],
+    ) -> None:
+        """Keep all health routes visible and mark the route already selected."""
+        message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+        chat_id = str(message.get("chat", {}).get("id") or "") if isinstance(message.get("chat"), dict) else ""
+        message_id = message.get("message_id")
+        if not chat_id or not isinstance(message_id, int) or message_id <= 0 or self._health_plan_codec is None:
+            return
+        current_text = str(message.get("text") or "").rstrip()
+        lines = current_text.splitlines()
+        while lines and lines[-1].startswith("✅ Выбран путь:"):
+            lines.pop()
+            while lines and not lines[-1].strip():
+                lines.pop()
+        marker = f"✅ Выбран путь: {label[:128]}"
+        base_text = "\n".join(lines).rstrip()
+        base_limit = 4096 - len(marker) - 2
+        if len(base_text) > base_limit:
+            base_text = base_text[:max(0, base_limit - 1)].rstrip() + "…"
+        text = f"{base_text}\n\n{marker}" if base_text else marker
+        keyboard = health_plan_keyboard(self._health_plan_codec, incident_id, plans, selected_plan_id=plan_id)
+        payload = {
+            "chat_id": chat_id,
+            "message_id": str(message_id),
+            "text": text[:4096],
+            "reply_markup": json.dumps(keyboard, ensure_ascii=False, separators=(",", ":")),
+        }
+        if isinstance(message.get("entities"), list):
+            limit = len(payload["text"].encode("utf-16-le")) // 2
+            entities = [entity for entity in message["entities"]
+                        if isinstance(entity, dict)
+                        and isinstance(entity.get("offset"), int)
+                        and isinstance(entity.get("length"), int)
+                        and 0 <= entity["offset"] < entity["offset"] + entity["length"] <= limit]
+            payload["entities"] = json.dumps(entities, ensure_ascii=False)
+        try:
+            self._api("editMessageText", payload)
+        except Exception:
+            self._api("editMessageReplyMarkup", {
+                "chat_id": chat_id,
+                "message_id": str(message_id),
+                "reply_markup": payload["reply_markup"],
+            })
+
     def _handle_callback(self, callback: dict[str, Any]) -> None:
         callback_id = str(callback.get("id") or "")
         actor_id = callback.get("from", {}).get("id")
@@ -191,8 +241,7 @@ class TelegramInteractionPoller:
                     plans = self._center.latest_health_plans(incident_id)
                     title = next((plan.get("title") for plan in plans if str(plan.get("plan_id") or "") == plan_id), "")
                     label = self._health_plan_label(plan_id, title)
-                    if result.get("idempotent") is not True:
-                        self._dismiss_choice_message(callback, label)
+                    self._mark_health_choice_message(callback, incident_id, plan_id, label, plans)
                     self._answer(callback_id, f"✅ Выбрано: {label}")
                     return
             parsed = self._codec.decode(str(callback.get("data") or ""))
@@ -215,8 +264,7 @@ class TelegramInteractionPoller:
                     plans = self._center.latest_health_plans(incident_id)
                     title = next((plan.get("title") for plan in plans if str(plan.get("plan_id") or "") == plan_id), "")
                     label = self._health_plan_label(plan_id, title)
-                    if result.get("idempotent") is not True:
-                        self._dismiss_choice_message(callback, label)
+                    self._mark_health_choice_message(callback, incident_id, plan_id, label, plans)
                     self._answer(callback_id, f"✅ Выбрано: {label}")
                     return
                 if action == "choice":

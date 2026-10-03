@@ -29,6 +29,57 @@ from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
 ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log"))
 SUPPORTED_TELEGRAM_MODES = frozenset((*ACTIVE_TELEGRAM_MODES, "health"))
+TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_CARD_TEXT_LIMIT = 3600
+
+
+def _telegram_text_with_attachment(text: str) -> tuple[str, str | None]:
+    """Keep a Telegram card readable and return the full text for an attachment."""
+    if len(text) <= TELEGRAM_TEXT_LIMIT:
+        return text, None
+    suffix = "\n\n📎 Полный текст приложен файлом."
+    limit = TELEGRAM_CARD_TEXT_LIMIT - len(suffix)
+    cut = max(text.rfind("\n", 0, limit), text.rfind(" ", 0, limit))
+    if cut < limit // 2:
+        cut = limit
+    return text[:cut].rstrip() + suffix, text
+
+
+def _telegram_document_request(
+    token: str,
+    fields: Mapping[str, str],
+    filename: str,
+    content: str,
+) -> urllib.request.Request:
+    """Build one stdlib multipart request for Telegram sendDocument."""
+    boundary = f"noticeplace-{secrets.token_hex(16)}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend([
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+            str(value).encode(),
+            b"\r\n",
+        ])
+    chunks.extend([
+        f"--{boundary}\r\n".encode(),
+        f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'.encode(),
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\n",
+        content.encode("utf-8"),
+        b"\r\n",
+        f"--{boundary}--\r\n".encode(),
+    ])
+    return urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendDocument",
+        data=b"".join(chunks),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+
+
+def _telegram_overflow_filename(incident_id: str) -> str:
+    safe_id = "".join(character if character.isalnum() or character in "-_" else "-" for character in incident_id)
+    return f"noticeplace-{safe_id[:80] or 'message'}.txt"
 
 
 def phone_call_allowed(severity: str, when: datetime, quiet_start_hour: float, quiet_end_hour: float) -> bool:
@@ -251,6 +302,43 @@ class TelegramSender:
             return self._severity_routes
         return value if isinstance(value, dict) else self._severity_routes
 
+    def _send_overflow_document(
+        self,
+        destination: Mapping[str, str],
+        message_id: int,
+        incident_id: str,
+        full_text: str,
+    ) -> dict[str, Any]:
+        fields = {
+            "chat_id": str(destination["chat_id"]),
+            "caption": "📎 Полный текст уведомления",
+            "reply_parameters": json.dumps({"message_id": message_id}, separators=(",", ":")),
+        }
+        if destination.get("message_thread_id"):
+            fields["message_thread_id"] = str(destination["message_thread_id"])
+        request = _telegram_document_request(
+            self._token,
+            fields,
+            _telegram_overflow_filename(incident_id),
+            full_text,
+        )
+        with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f"Telegram returned HTTP {response.status}")
+            try:
+                result = json.loads(response.read())
+            except (TypeError, json.JSONDecodeError) as error:
+                raise RuntimeError("Telegram returned invalid JSON") from error
+        document_message = result.get("result") if isinstance(result, dict) else None
+        document_message_id = document_message.get("message_id") if isinstance(document_message, dict) else None
+        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(document_message_id, int):
+            raise RuntimeError("Telegram returned an invalid sendDocument response")
+        return {
+            "overflow_document_sent": True,
+            "overflow_document_message_id": document_message_id,
+            "overflow_filename": _telegram_overflow_filename(incident_id),
+        }
+
     def send(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Deliver one card and retain the Bot API message identity for audits."""
         if not self._token or not self._chat_id:
@@ -281,7 +369,7 @@ class TelegramSender:
                 f"\n\nИнцидент: {incident['id']}"
             )
         else:
-            text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nIncident: {incident['id']}"
+            text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nИнцидент: {incident['id']}"
         destination = telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes)
         mode = telegram_mode(incident)
         if self._active_modes is not None and mode not in self._active_modes:
@@ -290,7 +378,8 @@ class TelegramSender:
             if mode == "health":
                 raise RuntimeError("Telegram health topic route is not configured")
             raise RuntimeError(f"Telegram destination is not configured: {mode}")
-        request_data: dict[str, str] = {**destination, "text": telegram_html(text), "parse_mode": "HTML", "disable_web_page_preview": "true"}
+        visible_text, overflow_text = _telegram_text_with_attachment(text)
+        request_data: dict[str, str] = {**destination, "text": telegram_html(visible_text), "parse_mode": "HTML", "disable_web_page_preview": "true"}
         health_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
         action_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
         if isinstance(health_outcome, dict):
@@ -374,6 +463,8 @@ class TelegramSender:
                 for button in buttons
                 if self._action_codec is not None and self._action_codec.decode(str(button.get("callback_data") or "")) is not None
             )
+        if overflow_text is not None:
+            receipt.update(self._send_overflow_document(destination, message_id, str(incident["id"]), overflow_text))
         return receipt
 
     def edit_health_card(self, payload: dict[str, Any], message_id: int, chat_id: str) -> dict[str, Any]:
@@ -392,13 +483,15 @@ class TelegramSender:
             if isinstance(plan, dict)
         ]
         note = str(incident.get("operator_note") or "").strip()
-        note_block = f"\n\nNote: {note}" if note else ""
-        text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nPlans:\n" + "\n".join(plan_lines) + f"{note_block}\n\nIncident: {incident['id']}"
+        note_block = f"\n\nПримечание: {note}" if note else ""
+        text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nПланы:\n" + "\n".join(plan_lines) + f"{note_block}\n\nИнцидент: {incident['id']}"
         keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
+        visible_text, overflow_text = _telegram_text_with_attachment(text)
         request_data = {
             "chat_id": str(chat_id),
             "message_id": str(message_id),
-            "text": text,
+            "text": telegram_html(visible_text),
+            "parse_mode": "HTML",
             "disable_web_page_preview": "true",
             "reply_markup": json.dumps(keyboard, separators=(",", ":")),
         }
@@ -420,7 +513,7 @@ class TelegramSender:
         edited_message_id = message.get("message_id")
         if not isinstance(edited_message_id, int) or edited_message_id <= 0:
             edited_message_id = message_id
-        return {
+        receipt = {
             "message_id": edited_message_id,
             "chat_id": str(message.get("chat", {}).get("id") or chat_id) if isinstance(message.get("chat"), dict) else str(chat_id),
             "health_plan_ids": [str(plan.get("plan_id") or "").strip() for plan in health_plans[:3] if isinstance(plan, dict)],
@@ -428,6 +521,14 @@ class TelegramSender:
             "health_signed_callback_count": 3,
             "edited_in_place": True,
         }
+        if overflow_text is not None:
+            receipt.update(self._send_overflow_document(
+                {"chat_id": str(chat_id)},
+                edited_message_id,
+                str(incident["id"]),
+                overflow_text,
+            ))
+        return receipt
 
     @property
     def active_modes(self) -> set[str] | None:
@@ -551,6 +652,45 @@ class TelegramMessageSender:
         self._timeout_seconds = timeout_seconds
         self._runner = runner
 
+    def _send_overflow_document(
+        self,
+        target: Mapping[str, Any],
+        chat_id: str,
+        message_id: int,
+        incident_id: str,
+        full_text: str,
+    ) -> dict[str, Any]:
+        fields = {
+            "chat_id": chat_id,
+            "caption": "📎 Полный текст уведомления",
+            "reply_parameters": json.dumps({"message_id": message_id}, separators=(",", ":")),
+        }
+        topic_id = target.get("topic_id") or target.get("message_thread_id")
+        if topic_id is not None:
+            fields["message_thread_id"] = str(topic_id)
+        request = _telegram_document_request(
+            self._token,
+            fields,
+            _telegram_overflow_filename(incident_id),
+            full_text,
+        )
+        try:
+            with self._runner(request, timeout=self._timeout_seconds) as response:
+                if not 200 <= int(response.status) < 300:
+                    raise RuntimeError(f"Telegram returned HTTP {response.status}")
+                result = json.loads(response.read())
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Telegram returned invalid JSON") from error
+        message = result.get("result") if isinstance(result, dict) else None
+        document_message_id = message.get("message_id") if isinstance(message, dict) else None
+        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(document_message_id, int):
+            raise RuntimeError("Telegram sendDocument response has no valid message_id")
+        return {
+            "overflow_document_sent": True,
+            "overflow_document_message_id": document_message_id,
+            "overflow_filename": _telegram_overflow_filename(incident_id),
+        }
+
     def send(self, payload: dict[str, Any], _delivery_key: str) -> dict[str, Any]:
         target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
         chat_id = str(target.get("chat_id") or self._default_chat_id).strip()
@@ -564,14 +704,19 @@ class TelegramMessageSender:
         if body:
             text += f"\n\n{body}"
         if source:
-            text += f"\n\nSource: {source}"
+            text += f"\n\nИсточник: {source}"
+        visible_text, overflow_text = _telegram_text_with_attachment(text)
+        topic_id = target.get("topic_id") or target.get("message_thread_id")
+        request_fields = {
+            "chat_id": chat_id,
+            "text": visible_text,
+            "disable_web_page_preview": "true",
+        }
+        if topic_id is not None:
+            request_fields["message_thread_id"] = str(topic_id)
         request = urllib.request.Request(
             f"https://api.telegram.org/bot{self._token}/sendMessage",
-            data=urllib.parse.urlencode({
-                "chat_id": chat_id,
-                "text": text[:4096],
-                "disable_web_page_preview": "true",
-            }).encode(),
+            data=urllib.parse.urlencode(request_fields).encode(),
             method="POST",
         )
         try:
@@ -586,7 +731,10 @@ class TelegramMessageSender:
         if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(message_id, int) or message_id <= 0:
             raise RuntimeError("Telegram sendMessage response has no valid message_id")
         resolved_chat_id = str(message.get("chat", {}).get("id") or chat_id) if isinstance(message.get("chat"), dict) else chat_id
-        return {"message_id": message_id, "chat_id": resolved_chat_id}
+        receipt = {"message_id": message_id, "chat_id": resolved_chat_id}
+        if overflow_text is not None:
+            receipt.update(self._send_overflow_document(target, resolved_chat_id, message_id, str(incident.get("id") or "message"), overflow_text))
+        return receipt
 
 
 class WebhookMessageSender:

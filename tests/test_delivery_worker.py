@@ -429,7 +429,43 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertIn("/botbot-token/sendMessage", requests[0][0].full_url)
         request_data = dict(urllib.parse.parse_qsl(requests[0][0].data.decode()))
         self.assertEqual("-1001", request_data["chat_id"])
-        self.assertIn("Source: inbox://matrix/$event", request_data["text"])
+        self.assertIn("Источник: inbox://matrix/$event", request_data["text"])
+
+    def test_generic_telegram_message_sender_attaches_full_text_in_same_topic(self) -> None:
+        requests = []
+
+        class Response:
+            status = 200
+
+            def __init__(self, message_id: int) -> None:
+                self.message_id = message_id
+
+            def __enter__(self): return self
+            def __exit__(self, *_args): return None
+            def read(self) -> bytes:
+                return json.dumps({"ok": True, "result": {"message_id": self.message_id, "chat": {"id": -1001}}}).encode()
+
+        def runner(request, *, timeout):
+            requests.append((request, timeout))
+            return Response(20 + len(requests))
+
+        sender = TelegramMessageSender("bot-token", runner=runner)
+        result = sender.send(
+            {
+                "incident": {"id": "inc-long", "title": "Длинное сообщение", "body": "Детали. " * 1000},
+                "target": {"chat_id": "-1001", "topic_id": 77},
+            },
+            "delivery-key-long",
+        )
+
+        self.assertEqual(2, len(requests))
+        first_data = dict(urllib.parse.parse_qsl(requests[0][0].data.decode()))
+        self.assertEqual("77", first_data["message_thread_id"])
+        self.assertIn("Полный текст приложен файлом", first_data["text"])
+        multipart = requests[1][0].data
+        self.assertIn(b'name="message_thread_id"', multipart)
+        self.assertIn(b"inc-long", multipart)
+        self.assertTrue(result["overflow_document_sent"])
 
     def test_message_adapter_registry_builds_generic_telegram_from_operator_env(self) -> None:
         adapters = message_adapters_from_environment({

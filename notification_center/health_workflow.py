@@ -204,7 +204,12 @@ def _default_health_plans() -> list[dict[str, Any]]:
     ]
 
 
-def health_plan_keyboard(codec: Any, incident: Mapping[str, Any] | str, plans: list[Mapping[str, Any]] | None = None) -> dict[str, list[list[dict[str, str]]]]:
+def health_plan_keyboard(
+    codec: Any,
+    incident: Mapping[str, Any] | str,
+    plans: list[Mapping[str, Any]] | None = None,
+    selected_plan_id: str | None = None,
+) -> dict[str, list[list[dict[str, str]]]]:
     """Render exactly three signed selection buttons."""
     incident_id = str(incident.get("id") if isinstance(incident, Mapping) else incident)
     normalized = validate_health_plans(list(plans)) if plans is not None else _default_health_plans()
@@ -214,7 +219,10 @@ def health_plan_keyboard(codec: Any, incident: Mapping[str, Any] | str, plans: l
             callback_data = codec.encode(incident_id, plan["plan_id"])
         except TypeError:
             callback_data = codec.encode("health_plan", incident_id, plan["plan_id"])
-        buttons.append([{"text": plan["title"], "callback_data": callback_data}])
+        title = plan["title"]
+        if selected_plan_id is not None and plan["plan_id"] == selected_plan_id:
+            title = f"✅ {title}"
+        buttons.append([{"text": title, "callback_data": callback_data}])
     return {"inline_keyboard": buttons}
 
 
