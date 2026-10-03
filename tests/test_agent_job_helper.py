@@ -28,6 +28,14 @@ class _Response:
 
 
 class AgentJobHelperTests(unittest.TestCase):
+    def test_documented_health_diagnosis_profile_has_required_orchestrator_mapping(self) -> None:
+        document = json.loads((Path(__file__).parents[1] / "docs" / "health-agent-jobs.example.json").read_text(encoding="utf-8"))
+        profile = document["profiles"]["health-diagnosis"]
+        self.assertEqual("omniroute/subagent", profile["model"])
+        self.assertEqual("health_orchestrator_100", profile["orchestrator_name"])
+        self.assertEqual("omniroute/orchestrator", profile["orchestrator_requested_model"])
+        self.assertEqual("omniroute/subagent", profile["orchestrator_model"])
+
     def test_health_diagnosis_hands_off_to_orchestrator_and_attaches_three_plans(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()

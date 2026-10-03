@@ -9,6 +9,9 @@
       "model": "omniroute/subagent",
       "reasoning": "high",
       "topic": "health",
+      "orchestrator_name": "health_orchestrator_100",
+      "orchestrator_requested_model": "omniroute/orchestrator",
+      "orchestrator_model": "omniroute/subagent",
       "instruction": "Diagnose the bounded health telemetry read-only. Use OmniRoute for analysis, do not change infrastructure, and return exactly three reversible remediation plans."
     },
     "health-remediation": {
