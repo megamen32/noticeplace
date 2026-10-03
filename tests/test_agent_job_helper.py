@@ -420,6 +420,7 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertEqual("account:zai-start-plan/GLM-5.3-Flash$high", json.loads(calls[0].data)["model"])
             self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash$high", json.loads(calls[1].data)["model"])
             self.assertIn("Последним сообщением верни только один JSON-объект", json.loads(calls[0].data)["message"])
+            self.assertIn("Поле step обязательно", json.loads(calls[0].data)["message"])
             self.assertEqual("zcode", result["harness"])
             self.assertEqual("account:zai-start-plan", result["fallback_from"])
             self.assertEqual("quota_exhausted", result["fallback_reason"])
