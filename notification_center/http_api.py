@@ -900,9 +900,9 @@ class DeliveryWorker:
         self._android_phone_quiet_end_hour = android_phone_quiet_end_hour
         self._android_phone_quiet_timezone = android_phone_quiet_timezone
 
-    def claim_due(self) -> list[dict[str, Any]]:
+    def claim_due(self, limit: int = 20, channel_group: str | None = None) -> list[dict[str, Any]]:
         """Claim a bounded batch without blocking the dispatcher heartbeat."""
-        deliveries = self._center.claim_due_deliveries(lease_seconds=self._lease_seconds)
+        deliveries = self._center.claim_due_deliveries(lease_seconds=self._lease_seconds, limit=limit, channel_group=channel_group)
         self._center.mark_dispatcher_healthy()
         return deliveries
 

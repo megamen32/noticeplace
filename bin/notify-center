@@ -29,15 +29,16 @@ def load_tokens() -> dict[str, dict[str, str]]:
     return tokens
 
 
-def worker_loop(worker: DeliveryWorker) -> None:
-    """Claim often enough to keep health honest while slow call adapters run separately."""
-    max_workers = max(1, int(os.environ.get("NOTIFY_CENTER_DELIVERY_WORKERS", "4")))
+def worker_loop(worker: DeliveryWorker, channel_group: str, max_workers: int) -> None:
+    """Run one bounded channel pool so slow AI/calls cannot starve messages."""
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="notify-delivery") as executor:
         inflight = set()
         while True:
             inflight = {future for future in inflight if not future.done()}
-            for delivery in worker.claim_due():
-                inflight.add(executor.submit(worker.deliver, delivery))
+            capacity = max_workers - len(inflight)
+            if capacity > 0:
+                for delivery in worker.claim_due(limit=capacity, channel_group=channel_group):
+                    inflight.add(executor.submit(worker.deliver, delivery))
             time.sleep(1)
 
 
@@ -58,7 +59,7 @@ def main() -> None:
     telegram = telegram_from_environment(callback_codec, center)
     poller = telegram_interactions_from_environment(center, callback_codec)
     agent_jobs = gptadmin_agent_jobs_from_environment()
-    threading.Thread(target=worker_loop, args=(DeliveryWorker(
+    worker = DeliveryWorker(
         center,
         telegram,
         matrix_call_from_environment(),
@@ -75,7 +76,14 @@ def main() -> None:
         agent_jobs=agent_jobs,
         message_adapters=message_adapters_from_environment(),
         call_adapters=call_adapters_from_environment(),
-    ),), daemon=True).start()
+    )
+    pool_sizes = {
+        "message": max(1, int(os.environ.get("NOTIFY_CENTER_MESSAGE_WORKERS", "2"))),
+        "agent": max(1, int(os.environ.get("NOTIFY_CENTER_AGENT_WORKERS", "2"))),
+        "call": max(1, int(os.environ.get("NOTIFY_CENTER_CALL_WORKERS", "2"))),
+    }
+    for channel_group, max_workers in pool_sizes.items():
+        threading.Thread(target=worker_loop, args=(worker, channel_group, max_workers), daemon=True).start()
     if poller is not None:
         threading.Thread(target=telegram_interaction_loop, args=(poller,), daemon=True).start()
     run_http(

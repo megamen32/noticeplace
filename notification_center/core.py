@@ -1136,16 +1136,24 @@ class NotificationCenter:
                 return None
             return self._schedule_delivery(incident_id, "telegram.main", f"repeat:{sequence}", due_epoch)
 
-    def claim_due_deliveries(self, now_epoch: float | None = None, limit: int = 20, lease_seconds: float = 60) -> list[dict[str, Any]]:
+    def claim_due_deliveries(self, now_epoch: float | None = None, limit: int = 20, lease_seconds: float = 60, channel_group: str | None = None) -> list[dict[str, Any]]:
         """Claim due work and reclaim an expired worker lease after a crash.
 
         The bounded lease intentionally permits a rare duplicate after a worker
         dies mid-send. That is safer than stranding a critical notification.
         """
         now = time.time() if now_epoch is None else now_epoch
+        channel_filters = {
+            None: "1 = 1",
+            "message": "(d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message')",
+            "call": "d.channel LIKE '%.call'",
+            "agent": "d.channel LIKE 'gptadmin.agent:%'",
+        }
+        if channel_group not in channel_filters:
+            raise ValidationError("unsupported delivery channel group")
         with self._lock, self._connection:
             rows = self._connection.execute(
-                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND i.state IN (?, ?) AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key = i.dedup_key AND m.unmuted_at IS NULL)) ORDER BY d.due_at LIMIT ?",
+                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND i.state IN (?, ?) AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key = i.dedup_key AND m.unmuted_at IS NULL)) ORDER BY CASE WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
                 (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, limit),
             ).fetchall()
             result: list[dict[str, Any]] = []

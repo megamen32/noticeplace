@@ -114,6 +114,21 @@ class NotificationCenterTests(unittest.TestCase):
         claimed = self.center.claim_due_deliveries(now_epoch=baseline + 20)
         self.assertEqual([delivery_id], [item["id"] for item in claimed])
 
+    def test_channel_pools_claim_messages_agents_and_calls_independently(self) -> None:
+        created = self.center.create_event("producer-token", "pool-event", self.event(dedup_key="pool-isolation"))
+        self.center._schedule_delivery(created["incident_id"], "gptadmin.agent:health-diagnosis", "pool-agent", 0)
+        self.center._schedule_delivery(created["incident_id"], "matrix.call", "pool-call", 0)
+
+        messages = self.center.claim_due_deliveries(now_epoch=10**12, channel_group="message")
+        agents = self.center.claim_due_deliveries(now_epoch=10**12, channel_group="agent")
+        calls = self.center.claim_due_deliveries(now_epoch=10**12, channel_group="call")
+
+        self.assertEqual(["telegram.main"], [item["channel"] for item in messages])
+        self.assertEqual(["gptadmin.agent:health-diagnosis"], [item["channel"] for item in agents])
+        self.assertEqual(["matrix.call"], [item["channel"] for item in calls])
+        with self.assertRaisesRegex(ValidationError, "channel group"):
+            self.center.claim_due_deliveries(now_epoch=10**12, channel_group="unknown")
+
     def test_expired_worker_lease_is_reclaimed_after_a_crash(self) -> None:
         """Reclaim stale work so a worker crash cannot strand an incident delivery."""
         created = self.center.create_event("producer-token", "request-lease", self.event(dedup_key="lease"))
