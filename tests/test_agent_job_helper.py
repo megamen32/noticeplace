@@ -417,8 +417,9 @@ class AgentJobHelperTests(unittest.TestCase):
             with mock.patch("notification_center.agent_job_helper._read_json_request", side_effect=fake_read), mock.patch("notification_center.agent_job_helper.time.sleep"):
                 result = run_profile("health-remediation", event, config, runner=object())
 
-            self.assertEqual("account:zai-start-plan/GLM-5.3-Flash#high", json.loads(calls[0].data)["model"])
-            self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash#high", json.loads(calls[1].data)["model"])
+            self.assertEqual("account:zai-start-plan/GLM-5.3-Flash$high", json.loads(calls[0].data)["model"])
+            self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash$high", json.loads(calls[1].data)["model"])
+            self.assertIn("Последним сообщением верни только один JSON-объект", json.loads(calls[0].data)["message"])
             self.assertEqual("zcode", result["harness"])
             self.assertEqual("account:zai-start-plan", result["fallback_from"])
             self.assertEqual("quota_exhausted", result["fallback_reason"])
@@ -427,6 +428,64 @@ class AgentJobHelperTests(unittest.TestCase):
                 with self.assertRaises(HealthAgentEndpointError):
                     run_profile("health-remediation", event, config, runner=object())
             self.assertEqual(1, read.call_count)
+
+    def test_stalled_empty_start_plan_is_stopped_then_falls_back_to_individual_glm(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir).resolve()
+            event = {
+                "schema": "notify.agent-job.v1", "job_id": "health-remediation",
+                "incident": {"id": "inc-stalled-quota", "project": "health-monitor", "severity": "notice", "title": "Quota canary", "body": "safe", "dedup_key": "stalled-quota", "occurrences": 1},
+                "health": {"selection": {"plan_id": "observe", "execution": {
+                    "runtime": "zcode", "provider": "account:zai-start-plan", "model": "GLM-5.3-Flash", "reasoning": "high", "topic": "health",
+                }}},
+            }
+            profile = {
+                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "zcode",
+                "name": "health_glm_stalled_quota", "cwd": str(root), "mode": "queue", "instruction": "Observe only.",
+                "model": "account:zai-start-plan/GLM-5.3-Flash$high", "reasoning": "high", "topic": "health",
+                "poll_seconds": "0.2", "remediation_timeout_seconds": "30", "start_plan_failover_seconds": "5",
+            }
+            calls: list[object] = []
+            callbacks: list[dict[str, object]] = []
+            responses: list[object] = [
+                {"ok": True, "created": True, "sessionId": "stalled-start-1", "delivery": "accepted"},
+                {"session": {"status": "running"}, "fingerprint": ""},
+                {"session": {"status": "running"}, "messages": [{"role": "assistant", "text": "", "parts": []}]},
+                {"ok": False, "error": "ZCode RPC request timed out: zcode-task.stopGeneration"},
+                {"ok": True},
+                {"ok": True, "created": True, "sessionId": "individual-glm-2", "delivery": "accepted"},
+                {"session": {"status": "idle"}, "fingerprint": "individual-progress"},
+                {"messages": [{"role": "assistant", "text": json.dumps({
+                    "status": "completed", "plan_id": "observe", "step": "inspection complete",
+                    "observed_state": "unknown", "evidence_refs": ["probe:individual"],
+                })}]},
+            ]
+
+            def fake_read(request: object, _runner: object, timeout: float = 90) -> dict[str, object]:
+                calls.append(request)
+                response = responses.pop(0)
+                return response
+
+            ticks = iter(range(0, 200, 10))
+            with (
+                mock.patch("notification_center.agent_job_helper._read_json_request", side_effect=fake_read),
+                mock.patch("notification_center.agent_job_helper.time.monotonic", side_effect=lambda: next(ticks)),
+                mock.patch("notification_center.agent_job_helper.time.sleep"),
+            ):
+                result = run_profile(
+                    "health-remediation", event, root / "unused.json", profile_override=profile,
+                    runner=object(), session_callback=lambda value: callbacks.append(dict(value)),
+                )
+
+            starts = [json.loads(call.data) for call in calls if call.full_url.endswith("/api/sessions/new-or-resume")]
+            self.assertEqual("account:zai-start-plan/GLM-5.3-Flash$high", starts[0]["model"])
+            self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash$high", starts[1]["model"])
+            self.assertTrue(any(call.full_url.endswith("/stop") for call in calls))
+            self.assertTrue(any(call.full_url.endswith("/terminate") for call in calls))
+            self.assertEqual(["stalled-start-1", "individual-glm-2"], [item["session_id"] for item in callbacks])
+            self.assertEqual("individual-glm-2", result["session_id"])
+            self.assertEqual("account:zai-start-plan", result["fallback_from"])
+            self.assertEqual("start_plan_no_progress", result["fallback_reason"])
 
     def test_health_remediation_rejects_terminal_receipt_without_independent_proof(self) -> None:
         details = {"messages": [{"role": "assistant", "text": json.dumps({

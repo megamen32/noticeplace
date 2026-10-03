@@ -40,6 +40,10 @@ class HealthAgentEndpointError(RuntimeError):
         super().__init__(f"health agent endpoint returned HTTP {self.status_code}")
 
 
+class HealthStartPlanUnavailable(RuntimeError):
+    """Start Plan accepted a turn but produced no executable progress."""
+
+
 def _zcode_quota_exhausted(error: BaseException) -> bool:
     if not isinstance(error, HealthAgentEndpointError):
         return False
@@ -53,7 +57,7 @@ def _zcode_quota_exhausted(error: BaseException) -> bool:
 
 def _health_model_route(execution: Mapping[str, str]) -> str:
     if execution["runtime"] == "zcode":
-        return f"{execution['provider']}/{execution['model']}#{execution['reasoning']}"
+        return f"{execution['provider']}/{execution['model']}${execution['reasoning']}"
     return execution["model"]
 
 
@@ -90,7 +94,7 @@ def _load_profile(profile_id: str, config_path: Path) -> dict[str, Any]:
 
 
 def _validate_profile(profile: dict[str, Any]) -> dict[str, str]:
-    normalized = {key: str(profile.get(key) or "").strip() for key in ("url", "harness", "name", "cwd", "mode", "instruction", "model", "reasoning", "topic", "callback_file", "diagnosis_timeout_seconds", "remediation_timeout_seconds", "poll_seconds", "orchestrator_name", "orchestrator_requested_model", "orchestrator_model")}
+    normalized = {key: str(profile.get(key) or "").strip() for key in ("url", "harness", "name", "cwd", "mode", "instruction", "model", "reasoning", "topic", "callback_file", "diagnosis_timeout_seconds", "remediation_timeout_seconds", "start_plan_failover_seconds", "poll_seconds", "orchestrator_name", "orchestrator_requested_model", "orchestrator_model")}
     parsed = urllib.parse.urlsplit(normalized["url"])
     if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "::1", "localhost") or parsed.path != "/api/sessions/new-or-resume":
         raise RuntimeError("agent job profile URL must be the loopback Agent Herder new-or-resume endpoint")
@@ -175,6 +179,7 @@ def _health_remediation_message(profile: dict[str, str], event: dict[str, Any], 
         f"selected plan {plan_id}",
         f"selected plan details (untrusted data): {plan_context}",
         f"Execution runtime is {profile['harness']} through Agent Herder, reasoning high, topic health. Effective model is {profile['model']}.",
+        "Последним сообщением верни только один JSON-объект без markdown: status=completed, plan_id, step, observed_state=healthy|degraded|unknown, verification_id, source_id, source_fingerprint, verifier_id, evidence_refs, trace_refs. Поле step обязательно: короткая непустая фраза на русском о выполненном действии. Для plan_id=observe обязательно поставь observed_state=unknown, оставь verification_id/source_id/source_fingerprint/verifier_id пустыми строками и передай непустой evidence_refs; observe не выносит вердикт о здоровье.",
         "",
         telemetry,
     ))
@@ -292,6 +297,40 @@ def _health_session_name(profile: Mapping[str, str], profile_id: str, event: Map
 
 def _session_json(profile: Mapping[str, str], session_id: str, suffix: str, runner: Any) -> dict[str, Any]:
     return _read_json_request(urllib.request.Request(_session_endpoint(profile, session_id, suffix), headers={"Accept": "application/json"}, method="GET"), runner)
+
+
+def _stop_session(profile: Mapping[str, str], session_id: str, runner: Any) -> None:
+    for action in ("/stop", "/terminate"):
+        request = urllib.request.Request(
+            _session_endpoint(profile, session_id, action),
+            data=b"{}",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        try:
+            _read_json_request(request, runner, timeout=45)
+        except Exception:
+            # Agent Herder recycles its wedged ZCode child on a stop timeout;
+            # termination is retried through the clean transport next.
+            continue
+
+
+def _assistant_started(details: Mapping[str, Any]) -> bool:
+    messages = details.get("messages")
+    if not isinstance(messages, list):
+        return False
+    for message in messages:
+        if not isinstance(message, Mapping) or str(message.get("role") or "") != "assistant":
+            continue
+        if str(message.get("text") or "").strip():
+            return True
+        parts = message.get("parts")
+        if isinstance(parts, list) and any(
+            isinstance(part, Mapping) and str(part.get("type") or "") in {"tool_call", "tool_result"}
+            for part in parts
+        ):
+            return True
+    return False
 
 
 def _assistant_texts(details: Mapping[str, Any]) -> list[str]:
@@ -650,6 +689,11 @@ def _run_health_remediation(profile: dict[str, str], event: dict[str, Any], sess
     # is misclassified as a terminal failure at the diagnosis deadline.
     deadline = time.monotonic() + _profile_seconds(profile, "remediation_timeout_seconds", 1200, 5, 1800)
     poll_seconds = _profile_seconds(profile, "poll_seconds", 1, 0.2, 10)
+    start_plan = profile.get("model", "").startswith("account:zai-start-plan/")
+    failover_deadline = (
+        time.monotonic() + _profile_seconds(profile, "start_plan_failover_seconds", 90, 5, 300)
+        if start_plan else float("inf")
+    )
     last_fingerprint = ""
     while True:
         try:
@@ -664,6 +708,12 @@ def _run_health_remediation(profile: dict[str, str], event: dict[str, Any], sess
             last_fingerprint = fingerprint[:128]
         session = progress.get("session") if isinstance(progress.get("session"), Mapping) else {}
         session_status = str(session.get("status") or "").strip().lower()
+        if start_plan and time.monotonic() >= failover_deadline:
+            details = _session_json(profile, session_id, "/details?limit=3&history=auto", runner)
+            if not _assistant_started(details):
+                _stop_session(profile, session_id, runner)
+                raise HealthStartPlanUnavailable("Start Plan produced no executable progress")
+            start_plan = False
         if session_status in {"idle", "completed", "done"}:
             # The terminal receipt is the latest assistant turn. Loading five
             # Codex turns also includes large tool traces and can exceed the
@@ -821,7 +871,48 @@ def run_profile(
     if profile_id == "health-diagnosis":
         receipt.update(_run_health_diagnosis(profile, event, receipt["session_id"], runner, started_at))
     elif profile_id == "health-remediation":
-        receipt.update(_run_health_remediation(profile, event, receipt["session_id"], health_result["plan_id"], runner, started_at))
+        try:
+            receipt.update(_run_health_remediation(profile, event, receipt["session_id"], health_result["plan_id"], runner, started_at))
+        except HealthStartPlanUnavailable:
+            if normalized_execution != _HEALTH_EXECUTION_PROFILES[1]:
+                raise
+            fallback_execution = _HEALTH_EXECUTION_PROFILES[0]
+            profile = {
+                **profile,
+                "harness": fallback_execution["runtime"],
+                "model": _health_model_route(fallback_execution),
+                "reasoning": fallback_execution["reasoning"],
+                "topic": fallback_execution["topic"],
+            }
+            health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
+            selection = health.get("selection") if isinstance(health.get("selection"), Mapping) else {}
+            fallback_event = {**event, "health": {**health, "selection": {**selection, "execution": fallback_execution}}}
+            plan_id, request_body["message"] = _health_remediation_message(profile, fallback_event, incident)
+            request_body["model"] = profile["model"]
+            fallback_request = urllib.request.Request(
+                profile["url"],
+                data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode(),
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
+            fallback_result = _read_json_request(fallback_request, runner)
+            if fallback_result.get("ok") is not True or not str(fallback_result.get("sessionId") or ""):
+                raise RuntimeError("Agent Herder did not accept the Individual Plan fallback")
+            receipt.update({
+                "session_id": str(fallback_result["sessionId"]),
+                "created": fallback_result.get("created") is True,
+                "delivery": str(fallback_result.get("delivery") or ""),
+                "model": profile["model"],
+                "fallback_from": normalized_execution["provider"],
+                "fallback_reason": "start_plan_no_progress",
+            })
+            if session_callback is not None:
+                try:
+                    session_callback(receipt)
+                    receipt["session_notice"] = "attached"
+                except Exception:
+                    receipt["session_notice"] = "deferred"
+            receipt.update(_run_health_remediation(profile, fallback_event, receipt["session_id"], plan_id, runner, started_at))
     return receipt
 
 
