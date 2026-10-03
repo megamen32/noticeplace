@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy" / "noticeplace"
+SYNC_CALLBACK_TOKENS = ROOT / "scripts" / "sync-health-callback-tokens.py"
 
 
 def run_deploy(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -38,6 +39,24 @@ def test_persistent_units_have_explicit_resource_budgets() -> None:
     for unit in (main, admin):
         for directive in ("MemoryHigh=", "MemoryMax=", "MemorySwapMax=", "CPUQuota=", "TasksMax=", "IOWeight="):
             assert directive in unit
+
+
+def test_health_callback_map_receives_every_configured_project_token(tmp_path: Path) -> None:
+    environment = tmp_path / "notification-center.env"
+    callback = tmp_path / "health-callback.json"
+    environment.write_text('NOTIFY_CENTER_TOKENS_JSON={"token-a":{"project":"hermes","max_severity":"critical"},"token-b":{"project":"fleet-health","max_severity":"critical","agent_jobs":["health-diagnosis"]}}\n')
+    callback.write_text('{"url":"http://127.0.0.1:8091","token":"legacy","tokens":{"health-monitor":"health-token"}}\n')
+    callback.chmod(0o600)
+
+    subprocess.run([str(SYNC_CALLBACK_TOKENS), str(environment), str(callback)], check=True, text=True, capture_output=True)
+
+    configured = __import__("json").loads(callback.read_text())
+    assert configured["tokens"] == {
+        "fleet-health": "token-b",
+        "health-monitor": "health-token",
+        "hermes": "token-a",
+    }
+    assert callback.stat().st_mode & 0o777 == 0o600
 
 
 def test_managed_deploy_upgrade_rollback_uninstall_and_purge(tmp_path: Path) -> None:

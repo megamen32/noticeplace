@@ -150,6 +150,7 @@ start_services() {
         return
     fi
     configuration_ready || die "configuration contains placeholders; edit /etc/notification-center*.env, then run deploy/noticeplace start"
+    /usr/bin/python3 "$APP_ROOT/scripts/sync-health-callback-tokens.py" "$ETC_ROOT/notification-center.env"
     systemctl enable notification-center.service notification-center-admin.service
     systemctl restart notification-center.service notification-center-admin.service
 }
