@@ -25,9 +25,30 @@ _HEALTH_ORCHESTRATOR_REQUESTED_MODEL = "omniroute/orchestrator"
 _HEALTH_ORCHESTRATOR_EFFECTIVE_MODEL = "omniroute/subagent"
 _HEALTH_PLAN_IDS = ("observe", "repair", "verify")
 _HEALTH_EXECUTION_PROFILES = (
-    {"runtime": "zcode", "provider": "omniroute", "model": "zc/glm-5.3-flash", "reasoning": "high", "topic": "health"},
+    {"runtime": "zcode", "provider": "account:zai-individual-coding-plan", "model": "GLM-5.3-Flash", "reasoning": "high", "topic": "health"},
+    {"runtime": "zcode", "provider": "account:zai-start-plan", "model": "GLM-5.3-Flash", "reasoning": "high", "topic": "health"},
     {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health"},
 )
+
+
+class HealthAgentEndpointError(RuntimeError):
+    """Bounded Agent Herder HTTP failure used for safe fallback decisions."""
+
+    def __init__(self, status_code: int, detail: str = "") -> None:
+        self.status_code = int(status_code)
+        self.detail = " ".join(str(detail or "").splitlines())[:512]
+        super().__init__(f"health agent endpoint returned HTTP {self.status_code}")
+
+
+def _zcode_quota_exhausted(error: BaseException) -> bool:
+    if not isinstance(error, HealthAgentEndpointError):
+        return False
+    detail = error.detail.lower()
+    markers = (
+        "quota", "rate limit", "resource_exhausted", "insufficient credits",
+        "credit balance", "usage limit", "额度", "配额", "限额", "余额不足",
+    )
+    return error.status_code == 429 or any(marker in detail for marker in markers)
 
 
 def _health_model_route(execution: Mapping[str, str]) -> str:
@@ -236,7 +257,15 @@ def _read_json_request(request: urllib.request.Request, runner: Any, timeout: fl
                 raise RuntimeError(f"health agent endpoint response exceeds 65536 bytes at {endpoint}")
             result = json.loads(body)
     except urllib.error.HTTPError as error:
-        raise RuntimeError(f"health agent endpoint returned HTTP {error.code} at {endpoint}") from error
+        detail = ""
+        try:
+            raw = error.read(_RESPONSE_LIMIT + 1)
+            parsed_error = json.loads(raw[:_RESPONSE_LIMIT])
+            if isinstance(parsed_error, dict):
+                detail = str(parsed_error.get("error") or parsed_error.get("message") or "")
+        except Exception:
+            detail = ""
+        raise HealthAgentEndpointError(error.code, detail) from error
     except (urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError) as error:
         raise RuntimeError("health agent endpoint request failed or returned invalid JSON") from error
     if not isinstance(result, dict):
@@ -723,7 +752,48 @@ def run_profile(
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
-    result = _read_json_request(request, runner)
+    try:
+        result = _read_json_request(request, runner)
+    except HealthAgentEndpointError as error:
+        if profile_id != "health-remediation" or profile["harness"] != "zcode" or not _zcode_quota_exhausted(error):
+            raise
+        if normalized_execution == _HEALTH_EXECUTION_PROFILES[0]:
+            fallback_execution = _HEALTH_EXECUTION_PROFILES[1]
+        elif normalized_execution == _HEALTH_EXECUTION_PROFILES[1]:
+            fallback_execution = _HEALTH_EXECUTION_PROFILES[0]
+        else:
+            raise
+        profile = {
+            **profile,
+            "harness": fallback_execution["runtime"],
+            "model": _health_model_route(fallback_execution),
+            "reasoning": fallback_execution["reasoning"],
+            "topic": fallback_execution["topic"],
+        }
+        health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
+        selection = health.get("selection") if isinstance(health.get("selection"), Mapping) else {}
+        fallback_event = {
+            **event,
+            "health": {**health, "selection": {**selection, "execution": fallback_execution}},
+        }
+        plan_id, request_body["message"] = _health_remediation_message(profile, fallback_event, incident)
+        request_body["harness"] = profile["harness"]
+        request_body["model"] = profile["model"]
+        request = urllib.request.Request(
+            profile["url"],
+            data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode(),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        result = _read_json_request(request, runner)
+        health_result = {
+            "plan_id": plan_id,
+            "model": profile["model"],
+            "reasoning": profile["reasoning"],
+            "topic": profile["topic"],
+            "fallback_from": normalized_execution["provider"],
+            "fallback_reason": "quota_exhausted",
+        }
     if result.get("ok") is not True or not str(result.get("sessionId") or ""):
         raise RuntimeError("Agent Herder did not accept the allowlisted session job")
     receipt = {

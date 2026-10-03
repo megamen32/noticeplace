@@ -20,8 +20,16 @@ _BEARER_RE = re.compile(r"(?i)\bbearer\s+\S+")
 
 HEALTH_EXECUTION_PROFILE = {
     "runtime": "zcode",
-    "provider": "omniroute",
-    "model": "zc/glm-5.3-flash",
+    "provider": "account:zai-individual-coding-plan",
+    "model": "GLM-5.3-Flash",
+    "reasoning": "high",
+    "topic": "health",
+}
+
+HEALTH_ALTERNATE_GLM_EXECUTION_PROFILE = {
+    "runtime": "zcode",
+    "provider": "account:zai-start-plan",
+    "model": "GLM-5.3-Flash",
     "reasoning": "high",
     "topic": "health",
 }
@@ -114,8 +122,8 @@ def normalize_health_execution(value: Any) -> dict[str, str]:
         "reasoning": reasoning,
         "topic": topic,
     }
-    if result not in (HEALTH_EXECUTION_PROFILE, HEALTH_FALLBACK_EXECUTION_PROFILE):
-        raise ValidationError("health remediation execution must use ZCode/GLM-5.3-Flash or Codex/GPT-5.6-Sol high")
+    if result not in (HEALTH_EXECUTION_PROFILE, HEALTH_ALTERNATE_GLM_EXECUTION_PROFILE, HEALTH_FALLBACK_EXECUTION_PROFILE):
+        raise ValidationError("health remediation execution must use an approved ZCode/GLM-5.3-Flash plan or explicit Codex/GPT-5.6-Sol high")
     return result
 
 

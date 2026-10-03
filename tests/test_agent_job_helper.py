@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from notification_center import agent_job_helper
-from notification_center.agent_job_helper import _extract_health_remediation, event_from_environment, run_profile
+from notification_center.agent_job_helper import HealthAgentEndpointError, _extract_health_remediation, event_from_environment, run_profile
 
 
 class _Response:
@@ -378,6 +378,55 @@ class AgentJobHelperTests(unittest.TestCase):
 
             self.assertEqual("completed", result["status"])
             self.assertEqual(2, progress_calls)
+
+    def test_empty_start_plan_falls_back_to_individual_glm_but_other_errors_do_not(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir).resolve()
+            config = root / "agent-jobs.json"
+            config.write_text(json.dumps({"profiles": {"health-remediation": {
+                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "zcode",
+                "name": "health_glm_quota", "cwd": str(root), "mode": "queue", "instruction": "Observe only.",
+                "poll_seconds": "0.2", "remediation_timeout_seconds": "30",
+            }}}))
+            config.chmod(0o600)
+            event = {
+                "schema": "notify.agent-job.v1", "job_id": "health-remediation",
+                "incident": {"id": "inc-quota", "project": "health-monitor", "severity": "notice", "title": "Quota canary", "body": "safe", "dedup_key": "quota-canary", "occurrences": 1},
+                "health": {"selection": {"plan_id": "observe", "execution": {
+                    "runtime": "zcode", "provider": "account:zai-start-plan", "model": "GLM-5.3-Flash", "reasoning": "high", "topic": "health",
+                }}},
+            }
+            calls: list[object] = []
+            responses: list[object] = [
+                HealthAgentEndpointError(429, "quota exhausted"),
+                {"ok": True, "created": True, "sessionId": "individual-glm-1", "delivery": "accepted"},
+                {"session": {"status": "idle"}, "fingerprint": "fallback-progress"},
+                {"messages": [{"role": "assistant", "text": json.dumps({
+                    "status": "completed", "plan_id": "observe", "step": "inspection complete",
+                    "observed_state": "unknown", "evidence_refs": ["probe:fallback"],
+                })}]},
+            ]
+
+            def fake_read(request: object, _runner: object, timeout: float = 90) -> dict[str, object]:
+                calls.append(request)
+                response = responses.pop(0)
+                if isinstance(response, Exception):
+                    raise response
+                return response
+
+            with mock.patch("notification_center.agent_job_helper._read_json_request", side_effect=fake_read), mock.patch("notification_center.agent_job_helper.time.sleep"):
+                result = run_profile("health-remediation", event, config, runner=object())
+
+            self.assertEqual("account:zai-start-plan/GLM-5.3-Flash", json.loads(calls[0].data)["model"])
+            self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash", json.loads(calls[1].data)["model"])
+            self.assertEqual("zcode", result["harness"])
+            self.assertEqual("account:zai-start-plan", result["fallback_from"])
+            self.assertEqual("quota_exhausted", result["fallback_reason"])
+
+            with mock.patch("notification_center.agent_job_helper._read_json_request", side_effect=HealthAgentEndpointError(502, "model not found")) as read:
+                with self.assertRaises(HealthAgentEndpointError):
+                    run_profile("health-remediation", event, config, runner=object())
+            self.assertEqual(1, read.call_count)
 
     def test_health_remediation_rejects_terminal_receipt_without_independent_proof(self) -> None:
         details = {"messages": [{"role": "assistant", "text": json.dumps({
