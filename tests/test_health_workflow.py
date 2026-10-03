@@ -327,6 +327,49 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertEqual(3, len(buttons))
         self.assertEqual(3, receipt["health_signed_callback_count"])
 
+    def test_telegram_sender_replaces_old_overflow_document_after_health_edit(self) -> None:
+        sender = TelegramSender("bot-token", "-100123", action_codec=TelegramActionCodec("x" * 32), active_modes={"health"})
+        requests: list[object] = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, result: object) -> None:
+                self.result = result
+
+            def __enter__(self) -> "FakeResponse": return self
+            def __exit__(self, *_exc: object) -> None: return None
+            def read(self) -> bytes: return json.dumps({"ok": True, "result": self.result}).encode()
+
+        def fake_urlopen(request: object, timeout: float = 0) -> FakeResponse:
+            requests.append(request)
+            url = getattr(request, "full_url")
+            if url.endswith("/editMessageText"):
+                return FakeResponse({"message_id": 88, "chat": {"id": -100123}})
+            if url.endswith("/sendDocument"):
+                return FakeResponse({"message_id": 90, "chat": {"id": -100123}})
+            return FakeResponse(True)
+
+        self.workflow.attach_plans(self.created["incident_id"], "plans-overflow-edit", self._plans(), actor="gptadmin")
+        incident = self._incident()
+        incident["body"] = "Полные данные инцидента. " * 300
+        with patch("notification_center.http_api.urllib.request.urlopen", fake_urlopen):
+            receipt = sender.edit_health_card(
+                {"incident": incident, "health_plans": self.center.latest_health_plans(self.created["incident_id"])},
+                88,
+                "-100123",
+                overflow_document_message_id=89,
+            )
+
+        self.assertEqual(
+            ["editMessageText", "sendDocument", "deleteMessage"],
+            [getattr(request, "full_url").rsplit("/", 1)[1] for request in requests],
+        )
+        delete_data = urllib.parse.parse_qs(getattr(requests[2], "data").decode())
+        self.assertEqual(["89"], delete_data["message_id"])
+        self.assertEqual(90, receipt["overflow_document_message_id"])
+        self.assertTrue(receipt["previous_overflow_document_deleted"])
+
     def test_plan_selection_is_signed_and_idempotent(self) -> None:
         codec = TelegramActionCodec("x" * 32)
         calls: list[tuple[str, dict[str, object]]] = []

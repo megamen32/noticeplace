@@ -3106,7 +3106,11 @@ class NotificationCenter:
         chat_id = str(result.get("chat_id") or "").strip()
         if not isinstance(message_id, int) or message_id <= 0 or not chat_id:
             return None
-        return {"chat_id": chat_id, "message_id": message_id, "source_delivery_id": str(row["id"])}
+        target = {"chat_id": chat_id, "message_id": message_id, "source_delivery_id": str(row["id"])}
+        overflow_document_message_id = result.get("overflow_document_message_id")
+        if isinstance(overflow_document_message_id, int) and overflow_document_message_id > 0:
+            target["overflow_document_message_id"] = overflow_document_message_id
+        return target
 
     def _health_events(self, incident_id: str, event_type: str | None = None) -> list[dict[str, Any]]:
         """Return bounded health events newest first."""

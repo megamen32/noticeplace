@@ -955,7 +955,11 @@ class DeliveryWorkerTests(unittest.TestCase):
         )
         source_id = self.center._schedule_delivery(created["incident_id"], "telegram.main", "initial", 0)
         claimed = self.center.claim_due_deliveries(now_epoch=10**12)
-        self.center.complete_delivery(source_id, "sent", result={"message_id": 88, "chat_id": "-100123"})
+        self.center.complete_delivery(source_id, "sent", result={
+            "message_id": 88,
+            "chat_id": "-100123",
+            "overflow_document_message_id": 89,
+        })
         self.center.record_health_update(
             created["incident_id"],
             "health-legacy-edit-plans",
@@ -976,11 +980,17 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertIn('"source_delivery_id": "' + source_id + '"', edit["target_json"])
         self.assertEqual([source_id], [item["id"] for item in claimed])
 
-        edited: list[tuple[int, str]] = []
+        edited: list[tuple[int, str, int | None]] = []
 
         class Telegram:
-            def edit_health_card(self, _payload: dict[str, object], message_id: int, chat_id: str) -> dict[str, object]:
-                edited.append((message_id, chat_id))
+            def edit_health_card(
+                self,
+                _payload: dict[str, object],
+                message_id: int,
+                chat_id: str,
+                overflow_document_message_id: int | None = None,
+            ) -> dict[str, object]:
+                edited.append((message_id, chat_id, overflow_document_message_id))
                 return {
                     "message_id": message_id,
                     "chat_id": chat_id,
@@ -992,7 +1002,7 @@ class DeliveryWorkerTests(unittest.TestCase):
 
         worker = DeliveryWorker(self.center, Telegram())
         self.assertEqual(1, worker.run_once())
-        self.assertEqual([(88, "-100123")], edited)
+        self.assertEqual([(88, "-100123", 89)], edited)
         source_result = self.center._connection.execute(
             "SELECT result_json FROM deliveries WHERE id = ?", (source_id,)
         ).fetchone()["result_json"]

@@ -339,6 +339,21 @@ class TelegramSender:
             "overflow_filename": _telegram_overflow_filename(incident_id),
         }
 
+    def _delete_message_best_effort(self, chat_id: str, message_id: int) -> bool:
+        request = urllib.request.Request(
+            f"https://api.telegram.org/bot{self._token}/deleteMessage",
+            data=urllib.parse.urlencode({"chat_id": chat_id, "message_id": str(message_id)}).encode(),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+                if not 200 <= response.status < 300:
+                    return False
+                result = json.loads(response.read())
+        except (OSError, TypeError, json.JSONDecodeError):
+            return False
+        return isinstance(result, dict) and result.get("ok") is True
+
     def send(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Deliver one card and retain the Bot API message identity for audits."""
         if not self._token or not self._chat_id:
@@ -467,7 +482,13 @@ class TelegramSender:
             receipt.update(self._send_overflow_document(destination, message_id, str(incident["id"]), overflow_text))
         return receipt
 
-    def edit_health_card(self, payload: dict[str, Any], message_id: int, chat_id: str) -> dict[str, Any]:
+    def edit_health_card(
+        self,
+        payload: dict[str, Any],
+        message_id: int,
+        chat_id: str,
+        overflow_document_message_id: int | None = None,
+    ) -> dict[str, Any]:
         """Edit an existing Health card in place with the signed three-plan keyboard."""
         if not self._token or not self._chat_id:
             raise RuntimeError("Telegram sender is not configured")
@@ -528,6 +549,14 @@ class TelegramSender:
                 str(incident["id"]),
                 overflow_text,
             ))
+            if overflow_document_message_id is not None:
+                receipt["previous_overflow_document_deleted"] = self._delete_message_best_effort(
+                    str(chat_id), overflow_document_message_id
+                )
+        elif overflow_document_message_id is not None:
+            receipt["previous_overflow_document_deleted"] = self._delete_message_best_effort(
+                str(chat_id), overflow_document_message_id
+            )
         return receipt
 
     @property
@@ -993,7 +1022,16 @@ class DeliveryWorker:
                     ):
                         return
                     try:
-                        receipt = self._telegram.edit_health_card(payload, message_id, chat_id)
+                        overflow_document_message_id = target.get("overflow_document_message_id")
+                        if isinstance(overflow_document_message_id, int) and overflow_document_message_id > 0:
+                            receipt = self._telegram.edit_health_card(
+                                payload,
+                                message_id,
+                                chat_id,
+                                overflow_document_message_id=overflow_document_message_id,
+                            )
+                        else:
+                            receipt = self._telegram.edit_health_card(payload, message_id, chat_id)
                         self._center.record_health_delivery_migrated(source_delivery_id, receipt)
                     except Exception as error:
                         self._center.complete_delivery(
