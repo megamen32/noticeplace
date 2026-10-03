@@ -134,6 +134,25 @@ class HealthWorkflowTests(unittest.TestCase):
         )
         self.workflow.attach_plans(created["incident_id"], "typed-selected-plans", self._plans(), actor="gptadmin")
         self.workflow.select_plan(created["incident_id"], "typed-selected-choice", "repair", actor="telegram:42")
+        repeated = self.center.create_event(
+            "producer-token",
+            "typed-selected-health-down-repeat",
+            {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "me",
+                "kind": "incident",
+                "severity": "critical",
+                "title": "Load check failed again",
+                "dedup_key": "health:site-selected:load",
+                "event_type": "health.degraded",
+                "source_id": "external-site:site-selected",
+                "host_id": "site-selected",
+                "signal_type": "load",
+                "correlation_id": "external-site:site-selected:transition-2",
+            },
+        )
+        self.assertEqual(created["incident_id"], repeated["incident_id"])
 
         resolved = self.center.resolve_event(
             "producer-token",
@@ -148,7 +167,7 @@ class HealthWorkflowTests(unittest.TestCase):
                 "source_id": "external-site:site-selected",
                 "host_id": "site-selected",
                 "signal_type": "load",
-                "correlation_id": "external-site:site-selected:transition-1",
+                "correlation_id": "external-site:site-selected:transition-2",
             },
         )
 

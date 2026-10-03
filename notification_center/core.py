@@ -450,19 +450,21 @@ class NotificationCenter:
         recovery_identity = {key: str(event.get(key) or "").strip() for key in keys}
         if not all(recovery_identity.values()):
             return False
-        original = self._connection.execute(
-            "SELECT payload_json FROM events WHERE incident_id = ? ORDER BY created_at, event_id LIMIT 1",
+        rows = self._connection.execute(
+            "SELECT payload_json FROM events WHERE incident_id = ? ORDER BY created_at DESC, rowid DESC",
             (incident_id,),
-        ).fetchone()
-        if original is None:
-            return False
-        try:
-            original_event = json.loads(str(original["payload_json"]))
-        except (TypeError, json.JSONDecodeError):
-            return False
-        return isinstance(original_event, dict) and all(
-            str(original_event.get(key) or "").strip() == recovery_identity[key] for key in keys
-        )
+        ).fetchall()
+        for row in rows:
+            try:
+                source_event = json.loads(str(row["payload_json"]))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(source_event, dict) or str(source_event.get("event_type") or "") == "health.recovered":
+                continue
+            if not all(str(source_event.get(key) or "").strip() for key in keys):
+                continue
+            return all(str(source_event.get(key) or "").strip() == recovery_identity[key] for key in keys)
+        return False
 
     def _audit(self, incident_id: str | None, event_type: str, actor: str | None, payload: Mapping[str, Any]) -> None:
         """Record an immutable state transition for later human and machine audit."""
