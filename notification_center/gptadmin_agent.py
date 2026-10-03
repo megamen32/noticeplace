@@ -98,7 +98,7 @@ class DirectHealthRemediationAdapter:
     ) -> dict[str, Any]:
         if not idempotency_key.strip() or len(idempotency_key) > 512:
             raise RuntimeError("direct health remediation requires a bounded idempotency key")
-        from .agent_job_helper import default_profile_path, run_profile
+        from .agent_job_helper import default_profile_path, post_health_session_started, run_profile
         started_at = time.monotonic()
         direct_profile = {
             "url": os.environ.get("NOTIFY_HEALTH_REMEDIATION_URL", "http://127.0.0.1:18787/api/sessions/new-or-resume"),
@@ -121,6 +121,11 @@ class DirectHealthRemediationAdapter:
             self._config_path or default_profile_path(),
             runner=self._runner,
             profile_override=direct_profile,
+            session_callback=(
+                (lambda session: progress_callback({"agent_session": dict(session)}))
+                if progress_callback is not None
+                else (lambda session: post_health_session_started(_agent_job_event(self.job_id, payload), session))
+            ),
         )
         if progress_callback is not None:
             progress_callback({"status": "completed", "agent_receipt": receipt})

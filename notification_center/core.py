@@ -8,6 +8,7 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.parse
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -1554,6 +1555,19 @@ class NotificationCenter:
         """Persist useful progress snapshots observed while a remediation runs."""
         selection = payload.get("health_selection") if isinstance(payload.get("health_selection"), Mapping) else {}
         selected_plan = self._health_text(selection.get("plan_id") or "", 64)
+        agent_session = job.get("agent_session") if isinstance(job.get("agent_session"), Mapping) else None
+        if selected_plan and agent_session is not None:
+            session_id = self._health_text(agent_session.get("session_id") or agent_session.get("sessionId") or "", 128)
+            harness = self._health_text(agent_session.get("harness") or "", 32)
+            if session_id and harness:
+                self.record_health_agent_session(
+                    incident_id,
+                    f"{incident_id}:health.remediation_session:{harness}:{session_id}",
+                    selected_plan,
+                    harness,
+                    session_id,
+                    "https://agent.bezrabotnyi.com",
+                )
         entries = job.get("progress")
         if not selected_plan or not isinstance(entries, list):
             return []
@@ -1599,6 +1613,50 @@ class NotificationCenter:
                 continue
             recorded.append(result)
         return recorded
+
+    def record_health_agent_session(
+        self,
+        incident_id: str,
+        idempotency_key: str,
+        plan_id: str,
+        harness: str,
+        session_id: str,
+        public_base_url: str,
+        actor: str = "agent-herder",
+    ) -> dict[str, Any]:
+        """Persist a remediation session and queue one durable transcript link."""
+        incident = self.get_incident(incident_id)
+        if incident is None or not str(incident.get("event_type") or "").startswith("health."):
+            raise ValidationError("health remediation session requires a health incident")
+        safe_plan = self._health_text(plan_id, 64)
+        safe_harness = self._health_text(harness, 32).lower()
+        safe_session = self._health_text(session_id, 128)
+        if safe_plan not in HEALTH_PLAN_IDS or safe_harness not in {"zcode", "codex", "opencode", "hermes"} or not safe_session:
+            raise ValidationError("health remediation session identity is invalid")
+        selected = self.latest_health_selection(incident_id) or {}
+        if str(selected.get("plan_id") or "") != safe_plan:
+            raise ValidationError("health remediation session plan does not match the selected plan")
+        parsed = urllib.parse.urlsplit(public_base_url.strip().rstrip("/"))
+        if parsed.scheme != "https" or not parsed.hostname or parsed.query or parsed.fragment:
+            raise ValidationError("Agent Herder public URL must be HTTPS")
+        base_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+        session_url = f"{base_url}/#{urllib.parse.quote(safe_harness, safe='')}/{urllib.parse.quote(safe_session, safe='')}"
+        result = self.record_health_update(
+            incident_id,
+            idempotency_key,
+            "health.remediation_session_started",
+            {"plan_id": safe_plan, "harness": safe_harness, "session_id": safe_session, "session_url": session_url},
+            actor=actor,
+        )
+        with self._lock, self._connection:
+            delivery_id = self._schedule_delivery(
+                incident_id,
+                "telegram.main",
+                f"health.remediation_session:{safe_harness}:{safe_session}",
+                time.time(),
+                {"health_session": {"plan_id": safe_plan, "harness": safe_harness, "session_id": safe_session, "session_url": session_url}},
+            )
+        return {**result, "session_url": session_url, "session_delivery_id": delivery_id}
 
     def _record_health_remediation_receipt(
         self,
@@ -1798,12 +1856,23 @@ class NotificationCenter:
         if isinstance(selection, Mapping):
             summary["plan_id"] = self._health_text(selection.get("plan_id") or result.get("plan_id") or "", 64)
         if isinstance(execution, Mapping):
+            summary["harness"] = self._health_text(result.get("harness") or execution.get("runtime") or "", 32)
             summary["model"] = self._health_text(execution.get("model") or result.get("model") or "", 128)
             summary["reasoning"] = self._health_text(execution.get("reasoning") or result.get("reasoning") or "", 16)
             summary["topic"] = self._health_text(execution.get("topic") or result.get("topic") or "", 64)
         with self._lock, self._connection:
             event_type = "agent_job_failed" if summary["status"] == "failed" else "agent_job_completed"
             self._audit(incident_id, event_type, "worker", summary)
+        if job_name == HEALTH_REMEDIATION_AGENT_JOB and summary.get("session_id") and summary.get("plan_id"):
+            self.record_health_agent_session(
+                incident_id,
+                f"{incident_id}:health.remediation_session:{summary.get('harness') or 'zcode'}:{summary['session_id']}",
+                str(summary["plan_id"]),
+                str(summary.get("harness") or "zcode"),
+                str(summary["session_id"]),
+                "https://agent.bezrabotnyi.com",
+                actor="worker",
+            )
         if job_name == HEALTH_REMEDIATION_AGENT_JOB and summary["status"] == "completed" and isinstance(health_context, Mapping):
             workflow_result = self._record_health_remediation_receipt(incident_id, delivery_id, receipt, health_context)
             if not workflow_result.get("accepted"):
@@ -2710,6 +2779,8 @@ class NotificationCenter:
                 payload["target"] = target
                 if isinstance(target.get("health_outcome"), dict):
                     payload["health_outcome"] = self._health_value(target["health_outcome"])
+                if isinstance(target.get("health_session"), dict):
+                    payload["health_session"] = self._health_value(target["health_session"])
         if str(incident.get("event_type") or "").startswith("health."):
             original = self._health_original_event(str(incident["id"]))
             if isinstance(original, dict):
@@ -2725,7 +2796,7 @@ class NotificationCenter:
                         if self._health_text(ref, 128)
                     ],
                 }
-            latest_plans = None if isinstance(payload.get("health_outcome"), dict) else self.latest_health_event(str(incident["id"]), "health.plans_attached")
+            latest_plans = None if isinstance(payload.get("health_outcome"), dict) or isinstance(payload.get("health_session"), dict) else self.latest_health_event(str(incident["id"]), "health.plans_attached")
             if latest_plans is not None:
                 plan_payload = latest_plans["payload"]
                 plans = plan_payload.get("plans")
@@ -2901,8 +2972,10 @@ class NotificationCenter:
 
         result: dict[str, Any] = {}
         for key, value in payload.items():
-            if key in {"step", "progress_fingerprint", "plan_id", "source_id", "verification_id", "observed_state", "selected_plan_id", "selected_by", "event_type", "correlation_id", "actor", "source_state"} and value is not None:
+            if key in {"step", "progress_fingerprint", "plan_id", "source_id", "verification_id", "observed_state", "selected_plan_id", "selected_by", "event_type", "correlation_id", "actor", "source_state", "harness", "session_id"} and value is not None:
                 result[key] = _bounded_text(value, 128)
+            elif key == "session_url" and value is not None:
+                result[key] = _bounded_text(value, 512)
             elif key in {"title", "summary", "body", "reason"} and value is not None:
                 result[key] = _bounded_summary(value)
             elif key in {"evidence_refs", "trace_refs"}:

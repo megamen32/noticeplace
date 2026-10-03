@@ -238,6 +238,45 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertEqual("77", captured["message_thread_id"])
         self.assertNotIn("reply_markup", captured)
 
+    def test_remediation_session_sends_a_clickable_agent_herder_transcript_link(self) -> None:
+        self.workflow.attach_plans(self.created["incident_id"], "plans-session", self._plans(), actor="gptadmin")
+        self.workflow.select_plan(self.created["incident_id"], "selection-session", "repair", "telegram:42")
+        recorded = self.center.record_health_agent_session(
+            self.created["incident_id"],
+            "session-started-1",
+            "repair",
+            "zcode",
+            "ses/with spaces",
+            "https://agent.bezrabotnyi.com",
+        )
+        self.assertEqual("https://agent.bezrabotnyi.com/#zcode/ses%2Fwith%20spaces", recorded["session_url"])
+        delivery = self.center._connection.execute(
+            "SELECT * FROM deliveries WHERE id = ?", (recorded["session_delivery_id"],)
+        ).fetchone()
+        payload = self.center.delivery_payload(dict(delivery))
+        self.assertEqual(recorded["session_url"], payload["health_session"]["session_url"])
+
+        self.center.set_runtime_setting("telegram_topics_json", json.dumps({"health": {"chat_id": "-100123", "message_thread_id": 77}}))
+        captured: dict[str, str] = {}
+
+        class FakeResponse:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *_args): return None
+            def read(self) -> bytes: return json.dumps({"ok": True, "result": {"message_id": 77, "chat": {"id": -100123}}}).encode()
+
+        def fake_urlopen(request: object, timeout: float = 0) -> FakeResponse:
+            captured.update({key: values[0] for key, values in urllib.parse.parse_qs(getattr(request, "data").decode()).items()})
+            return FakeResponse()
+
+        with patch("notification_center.http_api.urllib.request.urlopen", fake_urlopen):
+            TelegramSender("bot-token", "-100123", action_codec=TelegramActionCodec("x" * 32), center=self.center).send(payload)
+
+        self.assertIn("Исправление началось", captured["text"])
+        keyboard = json.loads(captured["reply_markup"])
+        self.assertEqual("Смотреть исправление", keyboard["inline_keyboard"][0][0]["text"])
+        self.assertEqual(recorded["session_url"], keyboard["inline_keyboard"][0][0]["url"])
+
     def test_telegram_sender_attaches_full_text_when_card_does_not_fit(self) -> None:
         sender = TelegramSender(
             "bot-token",

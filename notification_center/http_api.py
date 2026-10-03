@@ -370,6 +370,7 @@ class TelegramSender:
         health_plans = payload.get("health_plans")
         choice_options = payload.get("choices")
         health_outcome = payload.get("health_outcome")
+        health_session = payload.get("health_session")
         plan_block = ""
         if isinstance(health_plans, list) and health_plans:
             plan_lines = [
@@ -379,7 +380,16 @@ class TelegramSender:
             ]
             if plan_lines:
                 plan_block = "\n\nПланы:\n" + "\n".join(plan_lines)
-        if isinstance(health_outcome, dict) and str(health_outcome.get("observed_state") or "") == "degraded":
+        if isinstance(health_session, dict):
+            plan_labels = {"observe": "Наблюдать", "repair": "Исправить", "verify": "Проверить"}
+            plan_id = str(health_session.get("plan_id") or "")[:64]
+            text = (
+                f"🤖 Исправление началось · {incident['project']}\n\n"
+                f"Путь: {plan_labels.get(plan_id, plan_id or 'выбранный')}\n"
+                "Agent Herder создал отдельную сессию. По ссылке видно сообщения, команды и текущий прогресс."
+                f"\n\nИнцидент: {incident['id']}"
+            )
+        elif isinstance(health_outcome, dict) and str(health_outcome.get("observed_state") or "") == "degraded":
             plan_id = str(health_outcome.get("plan_id") or "выбранный план")[:64]
             step = str(health_outcome.get("step") or "выполнено")[:128]
             text = (
@@ -403,7 +413,14 @@ class TelegramSender:
         request_data: dict[str, str] = {**destination, "text": telegram_html(visible_text), "parse_mode": "HTML", "disable_web_page_preview": "true"}
         health_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
         action_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
-        if isinstance(health_outcome, dict):
+        if isinstance(health_session, dict):
+            session_url = str(health_session.get("session_url") or "").strip()
+            parsed_session_url = urllib.parse.urlsplit(session_url)
+            if parsed_session_url.scheme != "https" or parsed_session_url.hostname != "agent.bezrabotnyi.com":
+                raise RuntimeError("Agent Herder session URL is invalid")
+            action_keyboard = {"inline_keyboard": [[{"text": "Смотреть исправление", "url": session_url}]]}
+            request_data["reply_markup"] = json.dumps(action_keyboard, ensure_ascii=False, separators=(",", ":"))
+        elif isinstance(health_outcome, dict):
             pass
         elif self._action_codec is not None:
             if isinstance(health_plans, list) and health_plans:
@@ -1552,6 +1569,16 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                             evidence_refs=body.get("evidence_refs") if isinstance(body.get("evidence_refs"), list) else [],
                             progress_fingerprint=str(body.get("progress_fingerprint") or body.get("fingerprint") or ""),
                             heartbeat_at=float(body["heartbeat_at"]) if body.get("heartbeat_at") is not None else None,
+                            actor=actor,
+                        )
+                    elif action == "session":
+                        result = center.record_health_agent_session(
+                            incident_id,
+                            key,
+                            plan_id=str(body.get("plan_id") or ""),
+                            harness=str(body.get("harness") or ""),
+                            session_id=str(body.get("session_id") or ""),
+                            public_base_url=os.environ.get("AGENT_HERDER_PUBLIC_URL", "https://agent.bezrabotnyi.com"),
                             actor=actor,
                         )
                     elif action == "verification":

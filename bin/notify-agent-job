@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from notification_center.agent_job_helper import default_profile_path, event_from_environment, run_profile
+from notification_center.agent_job_helper import default_profile_path, event_from_environment, post_health_session_started, run_profile
 
 
 def main() -> int:
@@ -21,7 +21,12 @@ def main() -> int:
     args = parser.parse_args()
     try:
         event = event_from_environment()
-        result = run_profile(args.profile, event, args.config)
+        result = run_profile(
+            args.profile,
+            event,
+            args.config,
+            session_callback=(lambda session: post_health_session_started(event, session)) if args.profile == "health-remediation" else None,
+        )
     except RuntimeError as error:
         print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1

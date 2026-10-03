@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 
 _TELEMETRY_FIELDS = ("id", "project", "severity", "title", "body", "dedup_key", "occurrences")
@@ -475,6 +475,45 @@ def _post_health_plans(
     }
 
 
+def post_health_session_started(
+    event: Mapping[str, Any],
+    session: Mapping[str, Any],
+    runner: Any = urllib.request.urlopen,
+) -> dict[str, Any]:
+    """Publish a safe, durable transcript link as soon as Herder accepts a session."""
+    incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
+    health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
+    selection = health.get("selection") if isinstance(health.get("selection"), Mapping) else {}
+    incident_id = str(incident.get("id") or "").strip()
+    project = str(incident.get("project") or "").strip()
+    plan_id = str(selection.get("plan_id") or session.get("plan_id") or "").strip()
+    harness = str(session.get("harness") or "").strip()
+    session_id = str(session.get("session_id") or session.get("sessionId") or "").strip()
+    if not incident_id or not project or plan_id not in _HEALTH_PLAN_IDS or not harness or not session_id:
+        raise RuntimeError("health remediation session identity is incomplete")
+    callback_url, callback_token = _load_health_callback({}, project)
+    key = f"{incident_id}:health.remediation_session:{harness}:{session_id}"
+    body = json.dumps({
+        "plan_id": plan_id,
+        "harness": harness,
+        "session_id": session_id,
+        "actor": "agent-herder",
+    }, ensure_ascii=False, separators=(",", ":")).encode()
+    request = urllib.request.Request(
+        f"{callback_url}/v1/incidents/{urllib.parse.quote(incident_id, safe='')}/health/session",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {callback_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Idempotency-Key": key,
+        },
+        method="POST",
+    )
+    response = _read_json_request(request, runner)
+    return {"status": "session_link_attached", "event_id": str(response.get("event_id") or "")[:128]}
+
+
 def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], session_id: str, runner: Any, started_at: float) -> dict[str, Any]:
     if profile["orchestrator_requested_model"] != _HEALTH_ORCHESTRATOR_REQUESTED_MODEL or profile["orchestrator_model"] != _HEALTH_ORCHESTRATOR_EFFECTIVE_MODEL or not profile["orchestrator_name"]:
         raise RuntimeError("health diagnosis profile has no approved orchestrator mapping")
@@ -636,6 +675,7 @@ def run_profile(
     config_path: Path,
     runner: Any = urllib.request.urlopen,
     profile_override: dict[str, Any] | None = None,
+    session_callback: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
     """Execute one allowlisted profile; Agent Herder validates canonical CWD."""
     if event.get("schema") != "notify.agent-job.v1" or event.get("job_id") != profile_id:
@@ -697,6 +737,15 @@ def run_profile(
         **({"model": profile["model"]} if profile["model"] else {}),
         **health_result,
     }
+    if profile_id == "health-remediation" and session_callback is not None:
+        try:
+            session_callback(receipt)
+            receipt["session_notice"] = "attached"
+        except Exception:
+            # The remediation must keep running after Agent Herder accepted it.
+            # record_agent_job_result will retry the same durable link from the
+            # terminal receipt if this immediate callback was unavailable.
+            receipt["session_notice"] = "deferred"
     if profile_id == "health-diagnosis":
         receipt.update(_run_health_diagnosis(profile, event, receipt["session_id"], runner, started_at))
     elif profile_id == "health-remediation":

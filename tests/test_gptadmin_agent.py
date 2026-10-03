@@ -885,11 +885,15 @@ class GptAdminAgentJobTests(unittest.TestCase):
 
     def test_direct_remediation_does_not_read_gptadmin_profile_file(self) -> None:
         adapter = DirectHealthRemediationAdapter(config_path=Path("/definitely/unreadable/gptadmin.json"))
+        progress = mock.Mock()
         with (
             mock.patch("notification_center.agent_job_helper.run_profile") as run,
             mock.patch.dict(os.environ, {}, clear=True),
         ):
-            run.return_value = {"status": "completed", "useful_progress": True, "evidence_refs": ["probe:1"]}
+            def fake_run(*_args: object, **kwargs: object) -> dict[str, object]:
+                kwargs["session_callback"]({"session_id": "ses-live-1", "harness": "zcode", "plan_id": "plan-003"})
+                return {"status": "completed", "useful_progress": True, "evidence_refs": ["probe:1"]}
+            run.side_effect = fake_run
             result = adapter.send_with_progress(
                 {
                     "incident": {"id": "inc-direct"},
@@ -900,12 +904,14 @@ class GptAdminAgentJobTests(unittest.TestCase):
                     },
                 },
                 "delivery-direct-1",
+                progress,
             )
         self.assertEqual("completed", result["status"])
         self.assertEqual("zcode", run.call_args.kwargs["profile_override"]["harness"])
         self.assertEqual("queue", run.call_args.kwargs["profile_override"]["mode"])
         self.assertEqual("omniroute/zc/glm-5.3-flash", run.call_args.kwargs["profile_override"]["model"])
         self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
+        progress.assert_any_call({"agent_session": {"session_id": "ses-live-1", "harness": "zcode", "plan_id": "plan-003"}})
 
     def test_supervisor_classifies_useful_progress_and_ignores_heartbeat_only_updates(self) -> None:
         supervisor = HealthProgressSupervisor(stale_after_seconds=10, now=lambda: 110)

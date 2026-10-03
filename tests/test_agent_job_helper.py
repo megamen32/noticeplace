@@ -44,6 +44,33 @@ class AgentJobHelperTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "project token"):
                 agent_job_helper._load_health_callback({"callback_file": str(callback)}, "unknown-project")
 
+    def test_remediation_session_is_announced_through_the_project_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            callback = Path(tempdir) / "health-callback.json"
+            callback.write_text(json.dumps({
+                "url": "http://127.0.0.1:8091",
+                "tokens": {"hermes": "project-token"},
+            }))
+            callback.chmod(0o600)
+            requests = []
+
+            def runner(request: object, **_kwargs: object) -> _Response:
+                requests.append(request)
+                return _Response({"event_id": "evt-session-1"})
+
+            with mock.patch.dict("os.environ", {"GPTADMIN_HEALTH_CALLBACK_FILE": str(callback)}, clear=False):
+                result = agent_job_helper.post_health_session_started({
+                    "incident": {"id": "inc-session-1", "project": "hermes"},
+                    "health": {"selection": {"plan_id": "repair"}},
+                }, {
+                    "session_id": "ses-zcode-1", "harness": "zcode", "plan_id": "repair",
+                }, runner=runner)
+
+        self.assertEqual("session_link_attached", result["status"])
+        self.assertTrue(requests[0].full_url.endswith("/v1/incidents/inc-session-1/health/session"))
+        self.assertEqual("Bearer project-token", requests[0].headers["Authorization"])
+        self.assertEqual("ses-zcode-1", json.loads(requests[0].data)["session_id"])
+
     def test_documented_health_diagnosis_profile_has_required_orchestrator_mapping(self) -> None:
         document = json.loads((Path(__file__).parents[1] / "docs" / "health-agent-jobs.example.json").read_text(encoding="utf-8"))
         profile = document["profiles"]["health-diagnosis"]
