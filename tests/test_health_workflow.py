@@ -113,6 +113,48 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertTrue(resolved["resolved"])
         self.assertEqual("resolved", self.center.get_incident(created["incident_id"])["state"])
 
+    def test_matching_typed_source_recovery_closes_after_a_plan_was_selected(self) -> None:
+        created = self.center.create_event(
+            "producer-token",
+            "typed-selected-health-down",
+            {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "me",
+                "kind": "incident",
+                "severity": "critical",
+                "title": "Load check failed",
+                "dedup_key": "health:site-selected:load",
+                "event_type": "health.degraded",
+                "source_id": "external-site:site-selected",
+                "host_id": "site-selected",
+                "signal_type": "load",
+                "correlation_id": "external-site:site-selected:transition-1",
+            },
+        )
+        self.workflow.attach_plans(created["incident_id"], "typed-selected-plans", self._plans(), actor="gptadmin")
+        self.workflow.select_plan(created["incident_id"], "typed-selected-choice", "repair", actor="telegram:42")
+
+        resolved = self.center.resolve_event(
+            "producer-token",
+            "typed-selected-health-recovered",
+            {
+                "schema": "notify.event.v1",
+                "action": "resolve",
+                "project": "hermes",
+                "recipient": "me",
+                "dedup_key": "health:site-selected:load",
+                "event_type": "health.recovered",
+                "source_id": "external-site:site-selected",
+                "host_id": "site-selected",
+                "signal_type": "load",
+                "correlation_id": "external-site:site-selected:transition-1",
+            },
+        )
+
+        self.assertTrue(resolved["resolved"])
+        self.assertEqual("resolved", self.center.get_incident(created["incident_id"])["state"])
+
     def test_mismatched_typed_source_cannot_bypass_health_resolution_gate(self) -> None:
         created = self.center.create_event(
             "producer-token",

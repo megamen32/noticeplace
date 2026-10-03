@@ -1008,7 +1008,7 @@ class NotificationCenter:
             incident_id = str(row["id"]) if row is not None else None
             if incident_id is not None:
                 self._require_severity(self._scope(token, project), str(row["severity"]))
-                if self._health_selected_plan(incident_id) or not self._source_health_recovery_matches(incident_id, event):
+                if not self._source_health_recovery_matches(incident_id, event):
                     self._require_health_resolution_gate(incident_id)
                 self._transition(incident_id, "resolved", "producer")
             self._connection.execute(
