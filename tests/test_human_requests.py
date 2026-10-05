@@ -137,13 +137,13 @@ class HumanRequestTests(unittest.TestCase):
         """Allow only one answer across independent SQLite connections."""
         self.center.create_human_request("token", self.request())
         other = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"token": {"project": "hermes", "max_severity": "critical"}})
-        def resolve(value: str) -> str:
+        def resolve(center: NotificationCenter, value: str) -> str:
             try:
-                return str(other.resolve_human_request("token", "deploy-1", "telegram:42", value)["response_value"])
+                return str(center.resolve_human_request("token", "deploy-1", "telegram:42", value)["response_value"])
             except ValidationError:
                 return "conflict"
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(lambda pair: pair[0].resolve_human_request("token", "deploy-1", "telegram:42", pair[1])["response_value"] if pair[0] is self.center else resolve(pair[1]), [(self.center, "now"), (other, "later")]))
+            results = list(pool.map(lambda pair: resolve(*pair), [(self.center, "now"), (other, "later")]))
         winner = str(self.center.get_human_request("token", "deploy-1")["response_value"])
         self.assertIn(winner, {"now", "later"})
         self.assertIn(winner, results)

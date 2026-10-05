@@ -149,7 +149,7 @@ class HealthWorkflowTests(unittest.TestCase):
                 "source_id": "external-site:site-selected",
                 "host_id": "site-selected",
                 "signal_type": "load",
-                "correlation_id": "external-site:site-selected:transition-2",
+                "correlation_id": "external-site:site-selected:transition-1",
             },
         )
         self.assertEqual(created["incident_id"], repeated["incident_id"])
@@ -167,12 +167,61 @@ class HealthWorkflowTests(unittest.TestCase):
                 "source_id": "external-site:site-selected",
                 "host_id": "site-selected",
                 "signal_type": "load",
-                "correlation_id": "external-site:site-selected:transition-2",
+                "correlation_id": "external-site:site-selected:transition-1",
             },
         )
 
         self.assertTrue(resolved["resolved"])
         self.assertEqual("resolved", self.center.get_incident(created["incident_id"])["state"])
+
+    def test_new_health_correlation_creates_a_separate_episode_and_recovers_only_it(self) -> None:
+        def degraded(correlation_id: str) -> dict[str, object]:
+            return {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "me",
+                "kind": "incident",
+                "severity": "critical",
+                "title": "Host load is critical",
+                "dedup_key": "health:host-a:load",
+                "event_type": "health.degraded",
+                "source_id": "host:host-a",
+                "host_id": "host-a",
+                "signal_type": "load",
+                "correlation_id": correlation_id,
+            }
+
+        first = self.center.create_event("producer-token", "episode-a-open", degraded("episode-a"))
+        repeated = self.center.create_event("producer-token", "episode-a-repeat", degraded("episode-a"))
+        second = self.center.create_event("producer-token", "episode-b-open", degraded("episode-b"))
+
+        self.assertEqual(first["incident_id"], repeated["incident_id"])
+        self.assertTrue(repeated["deduplicated"])
+        self.assertNotEqual(first["incident_id"], second["incident_id"])
+        self.assertFalse(second["deduplicated"])
+        self.assertNotEqual(first["initial_delivery_id"], second["initial_delivery_id"])
+        self.assertEqual(2, self.center.get_incident(first["incident_id"])["occurrences"])
+
+        recovered = self.center.resolve_event(
+            "producer-token",
+            "episode-b-recovered",
+            {
+                "schema": "notify.event.v1",
+                "action": "resolve",
+                "project": "hermes",
+                "recipient": "me",
+                "dedup_key": "health:host-a:load",
+                "event_type": "health.recovered",
+                "source_id": "host:host-a",
+                "host_id": "host-a",
+                "signal_type": "load",
+                "correlation_id": "episode-b",
+            },
+        )
+
+        self.assertEqual(second["incident_id"], recovered["incident_id"])
+        self.assertEqual("open", self.center.get_incident(first["incident_id"])["state"])
+        self.assertEqual("resolved", self.center.get_incident(second["incident_id"])["state"])
 
     def test_mismatched_typed_source_cannot_bypass_health_resolution_gate(self) -> None:
         created = self.center.create_event(
@@ -194,7 +243,7 @@ class HealthWorkflowTests(unittest.TestCase):
             },
         )
 
-        with self.assertRaisesRegex(ValidationError, "explicit plan selection"):
+        with self.assertRaisesRegex(ValidationError, "correlation_id does not match"):
             self.center.resolve_event(
                 "producer-token",
                 "typed-health-recovered-mismatch",

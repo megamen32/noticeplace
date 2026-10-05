@@ -304,9 +304,11 @@ class NotificationCenter:
                 if column not in policy_columns:
                     self._connection.execute(f"ALTER TABLE consumer_policy_stages ADD COLUMN {column} {definition}")
             self._connection.execute("DROP INDEX IF EXISTS incidents_open_dedup")
+            self._connection.execute("DROP INDEX IF EXISTS incidents_open_dedup_scope")
             self._connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS incidents_open_dedup_scope "
-                "ON incidents(project, recipient, IFNULL(consumer_id, ''), dedup_key) WHERE state != 'resolved'"
+                "ON incidents(project, recipient, IFNULL(consumer_id, ''), dedup_key, IFNULL(correlation_id, '')) "
+                "WHERE state != 'resolved'"
             )
             self._ensure_builtin_profiles()
 
@@ -978,7 +980,20 @@ class NotificationCenter:
                     if parent is None or str(parent["project"]) != project or str(parent["recipient"]) != recipient:
                         raise ValidationError("parent_event_id must reference an incident in the same project and recipient")
                 parent_incident_id = str(parent["id"])
-            existing = self._connection.execute("SELECT id FROM incidents WHERE project = ? AND recipient = ? AND IFNULL(consumer_id, '') = IFNULL(?, '') AND dedup_key = ? AND state != 'resolved'", (project, recipient, consumer_id, dedup_key)).fetchone()
+            episode_scoped = event_type.startswith("health.") and correlation_id is not None
+            if episode_scoped:
+                existing = self._connection.execute(
+                    "SELECT id FROM incidents WHERE project = ? AND recipient = ? "
+                    "AND IFNULL(consumer_id, '') = IFNULL(?, '') AND dedup_key = ? "
+                    "AND correlation_id = ? AND state != 'resolved'",
+                    (project, recipient, consumer_id, dedup_key, correlation_id),
+                ).fetchone()
+            else:
+                existing = self._connection.execute(
+                    "SELECT id FROM incidents WHERE project = ? AND recipient = ? "
+                    "AND IFNULL(consumer_id, '') = IFNULL(?, '') AND dedup_key = ? AND state != 'resolved'",
+                    (project, recipient, consumer_id, dedup_key),
+                ).fetchone()
             deduplicated = existing is not None
             if existing is None:
                 incident_id = f"inc_{uuid.uuid4().hex}"
@@ -1042,10 +1057,27 @@ class NotificationCenter:
                     "state": incident["state"] if incident else "not_found",
                     "idempotent": True,
                 }
-            row = self._connection.execute(
-                "SELECT id, severity FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? AND state != 'resolved'",
-                (project, recipient, dedup_key),
-            ).fetchone()
+            correlation_id = str(event.get("correlation_id") or "")[:256] or None
+            event_type = str(event.get("event_type") or "")[:128]
+            if event_type.startswith("health.") and correlation_id is not None:
+                row = self._connection.execute(
+                    "SELECT id, severity FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? "
+                    "AND correlation_id = ? AND state != 'resolved'",
+                    (project, recipient, dedup_key, correlation_id),
+                ).fetchone()
+                if row is None:
+                    conflicting = self._connection.execute(
+                        "SELECT id FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? "
+                        "AND state != 'resolved' LIMIT 1",
+                        (project, recipient, dedup_key),
+                    ).fetchone()
+                    if conflicting is not None:
+                        raise ValidationError("health recovery correlation_id does not match an active episode")
+            else:
+                row = self._connection.execute(
+                    "SELECT id, severity FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? AND state != 'resolved'",
+                    (project, recipient, dedup_key),
+                ).fetchone()
             event_id = f"evt_{uuid.uuid4().hex}"
             incident_id = str(row["id"]) if row is not None else None
             if incident_id is not None:
