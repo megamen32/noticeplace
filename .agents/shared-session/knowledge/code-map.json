@@ -3,9 +3,9 @@
     "phone-voice-ack": {
       "confidence": "verified",
       "evidence": [
-        "focused phone ACK/negative/restart and timeout/receipt regression tests; live proof pending"
+        "73 phone/delivery plus 10 policy tests; real phone call 23ecbed8: explicit remote confirmation -> durable phone ACK 0.037s -> escalation cancelled; MiniMax reply 2.31s; UserIO clean end"
       ],
-      "git_head": "effa0cfbdb9cf6fe48f1941ca5cb6b3f70006f7b",
+      "git_head": "6f8e0e002a1f66e0c955af28e21c30c741e0a663",
       "key": "phone-voice-ack",
       "kind": "failure-shield",
       "locations": [
@@ -38,8 +38,8 @@
           "symbol": "main"
         }
       ],
-      "summary": "phone delivery receipt -> gateway remote transcript subscriber -> acknowledge_phone_receipt -> durable incident ACK cancels repeats; uncertain call transport never automatically redials same delivery",
-      "verified_at": "2026-10-05T14:36:57.739667+03:00"
+      "summary": "phone delivery receipt -> gateway remote transcript subscriber -> acknowledge_phone_receipt -> durable incident ACK cancels repeats; uncertain call transport does not automatically redial same delivery",
+      "verified_at": "2026-10-05T14:55:53.526830+03:00"
     }
   },
   "schema_version": 1
