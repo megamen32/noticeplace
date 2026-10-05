@@ -9,3 +9,5 @@ __pycache__/
 dist/
 *.tgz
 **/graphify-out/
+.tmp/
+.agents/shared-session/knowledge/code-map.lock
