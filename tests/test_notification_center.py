@@ -68,6 +68,19 @@ class NotificationCenterTests(unittest.TestCase):
         self.assertEqual(2, incident["occurrences"])
         self.assertEqual(1, len(self.center.claim_due_deliveries(now_epoch=10**12)))
 
+    def test_health_queries_have_bounded_lookup_indexes(self) -> None:
+        indexes = {
+            str(row["name"])
+            for row in self.center._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+        self.assertTrue({
+            "events_incident_type_created",
+            "deliveries_status",
+            "deliveries_incident_channel_status",
+        }.issubset(indexes))
+
     def test_rejects_idempotency_key_reused_for_different_event(self) -> None:
         """Reject a dangerous retry-key collision rather than replaying stale content."""
         self.center.create_event("producer-token", "request-1", self.event())

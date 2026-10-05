@@ -310,6 +310,17 @@ class NotificationCenter:
                 "ON incidents(project, recipient, IFNULL(consumer_id, ''), dedup_key, IFNULL(correlation_id, '')) "
                 "WHERE state != 'resolved'"
             )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS events_incident_type_created "
+                "ON events(incident_id, event_type, created_at DESC)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS deliveries_status ON deliveries(status)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS deliveries_incident_channel_status "
+                "ON deliveries(incident_id, channel, status)"
+            )
             self._ensure_builtin_profiles()
 
     def _ensure_builtin_profiles(self) -> None:
