@@ -1194,7 +1194,23 @@ class DeliveryWorker:
                     return
                 if delivery["channel"] == "android.phone.call":
                     self._send_critical_pre_call_context(payload)
-                self._android_phone.phone_call(payload)
+                if not self._center.reserve_delivery_send(
+                    str(delivery["id"]), claimed_at=float(delivery["claimed_at"]), attempt=int(delivery["attempt"]),
+                ):
+                    return
+                try:
+                    result = self._android_phone.phone_call(payload)
+                except (TimeoutError, ConnectionResetError, BrokenPipeError):
+                    self._center.complete_delivery(
+                        delivery["id"], "uncertain", "Phone call outcome unknown; automatic redial suppressed",
+                        claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    )
+                    return
+                self._center.complete_delivery(
+                    delivery["id"], "sent", claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    result=result if isinstance(result, Mapping) else None,
+                )
+                return
             elif str(delivery["channel"]).endswith(".call"):
                 adapter = self._call_adapters.get(str(delivery["channel"]))
                 if adapter is None:

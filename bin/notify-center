@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from notification_center.core import NotificationCenter
+from notification_center.agentcall_phone import AgentCallPhoneAdapter
 from notification_center.http_api import DeliveryWorker, android_phone_from_environment, call_adapters_from_environment, gptadmin_agent_jobs_from_environment, matrix_call_from_environment, message_adapters_from_environment, run_http, telegram_action_codec_from_environment, telegram_from_environment, telegram_interactions_from_environment
 
 
@@ -59,11 +60,15 @@ def main() -> None:
     telegram = telegram_from_environment(callback_codec, center)
     poller = telegram_interactions_from_environment(center, callback_codec)
     agent_jobs = gptadmin_agent_jobs_from_environment()
+    android_phone = android_phone_from_environment()
+    if isinstance(android_phone, AgentCallPhoneAdapter):
+        threading.Thread(target=android_phone.watch_voice_acknowledgements,
+                         args=(center,), name="voice-ack", daemon=True).start()
     worker = DeliveryWorker(
         center,
         telegram,
         matrix_call_from_environment(),
-        android_phone_from_environment(),
+        android_phone,
         critical_repeat_seconds=float(os.environ.get("TELEGRAM_CRITICAL_REPEAT_SECONDS", "0")),
         critical_call_escalation_seconds=float(os.environ.get("MATRIX_CALL_CRITICAL_ESCALATION_SECONDS", os.environ.get("MATRIX_CALL_ESCALATION_SECONDS", "0"))),
         emergency_call_escalation_seconds=float(os.environ.get("MATRIX_CALL_EMERGENCY_ESCALATION_SECONDS", "0")),

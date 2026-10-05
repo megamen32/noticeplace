@@ -1490,6 +1490,24 @@ class NotificationCenter:
                 return None
             return self._transition(incident_id, "acknowledged", actor)
 
+    def acknowledge_phone_receipt(self, call_id: str) -> dict[str, Any] | None:
+        """Bind a voice ACK only to a durable receipt of that exact phone call."""
+        if not call_id or len(call_id) > 128:
+            return None
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT incident_id FROM deliveries WHERE channel IN ('phone.call', 'android.phone.call') "
+                "AND (json_extract(result_json, '$.call_id') = ? OR json_extract(result_json, '$.receipt_id') = ?) "
+                "ORDER BY created_at DESC LIMIT 1",
+                (call_id, call_id),
+            ).fetchone()
+            if row is None:
+                return None
+            incident = self.get_incident(str(row["incident_id"]))
+            if incident is not None and incident["state"] == "acknowledged":
+                return incident
+            return self.acknowledge_if_active(str(row["incident_id"]), f"phone:{call_id}")
+
     def resolve(self, incident_id: str, actor: str) -> dict[str, Any]:
         """Resolve an incident and prevent future delivery from its prior state."""
         self._require_health_resolution_gate(incident_id)
