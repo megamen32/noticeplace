@@ -56,18 +56,61 @@ class HumanRequestTests(unittest.TestCase):
         return payload
 
     def test_modes_choice_bounds_and_actor_binding(self) -> None:
-        """Accept three modes while enforcing the bounded choice and actor contracts."""
+        """Accept four internal choices while enforcing bounded choice and actor contracts."""
         created = self.center.create_human_request("token", self.request())
         self.assertEqual("pending", created["state"])
         self.assertEqual("choice", created["mode"])
         for mode in ("notify", "question"):
             result = self.center.create_human_request("token", self.request(request_id=f"mode-{mode}", mode=mode, choices=None))
             self.assertEqual(mode, result["mode"])
-        for choices in ([{"label": "One", "value": "one"}], self.request()["choices"] * 2):
-            with self.assertRaisesRegex(ValidationError, "two or three"):
+        four_choices = [
+            {"label": f"Option {index}", "value": f"option-{index}"}
+            for index in range(4)
+        ]
+        accepted = self.center.create_human_request(
+            "token", self.request(request_id="four-choices", choices=four_choices)
+        )
+        self.assertEqual(four_choices, accepted["choices"])
+        five_choices = four_choices + [{"label": "Option 5", "value": "option-5"}]
+        for choices in ([{"label": "One", "value": "one"}], five_choices):
+            with self.assertRaisesRegex(ValidationError, "between two and four"):
                 self.center.create_human_request("token", self.request(request_id=f"bad-{len(choices)}", choices=choices))
         with self.assertRaisesRegex(ValidationError, "not allowed"):
             self.center.resolve_human_request("token", "deploy-1", "telegram:7", "now")
+
+    def test_create_is_exactly_idempotent_and_rejects_payload_conflicts(self) -> None:
+        """Return the durable request on exact replay and reject every changed identity field."""
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "idempotent.sqlite3",
+            {"wildcard": {"project": "*", "max_severity": "critical"}},
+        )
+        expires_at = time.time() + 60
+        payload = self.request(request_id="idempotent-replay", expires_at=expires_at)
+        created = center.create_human_request("wildcard", payload)
+        replayed = center.create_human_request("wildcard", dict(payload))
+        self.assertFalse(created["idempotent"])
+        self.assertTrue(replayed["idempotent"])
+        self.assertEqual(
+            {key: value for key, value in created.items() if key != "idempotent"},
+            {key: value for key, value in replayed.items() if key != "idempotent"},
+        )
+
+        conflicts = [
+            {"project": "other"},
+            {"recipient": "another-operator"},
+            {"mode": "question", "choices": None},
+            {"message": "Deploy later?"},
+            {"choices": [{"label": "Yes", "value": "yes"}, {"label": "No", "value": "no"}]},
+            {"allowed_actors": ["telegram:7"]},
+            {"expires_at": expires_at + 1},
+        ]
+        for index, changes in enumerate(conflicts):
+            with self.subTest(changes=changes):
+                request_id = f"idempotency-conflict-{index}"
+                original = self.request(request_id=request_id, expires_at=expires_at)
+                center.create_human_request("wildcard", original)
+                with self.assertRaisesRegex(ValidationError, "idempotency conflict"):
+                    center.create_human_request("wildcard", {**original, **changes})
 
     def test_single_winner_is_idempotent_immutable_and_replayable(self) -> None:
         """Persist one stable answer and reject a conflicting callback without mutation."""
@@ -178,6 +221,50 @@ class HumanRequestHttpTests(unittest.TestCase):
         status, read = self.call("GET", "/v1/human-requests/deploy-1")
         self.assertEqual(200, status)
         self.assertEqual(resolved, read)
+
+    def test_create_route_allows_four_choices_and_is_exactly_idempotent(self) -> None:
+        """Keep HTTP retries safe without widening the public AskHuman MCP schema."""
+        payload = HumanRequestTests.request(  # type: ignore[arg-type]
+            self,
+            request_id="http-idempotent",
+            choices=[
+                {"label": f"Option {index}", "value": f"option-{index}"}
+                for index in range(4)
+            ],
+        )
+        payload.pop("allowed_actors")
+        telegram_calls: list[tuple[str, dict[str, object]]] = []
+
+        def telegram(_token: str, method: str, request: dict[str, object]) -> dict[str, object]:
+            telegram_calls.append((method, request))
+            return {"ok": True, "result": {"message_id": 808, "chat": {"id": 42}}}
+
+        from unittest.mock import patch
+        with patch.dict(os.environ, {
+            "TELEGRAM_BOT_TOKEN": "fixture-bot",
+            "TELEGRAM_CHAT_ID": "42",
+            "TELEGRAM_CALLBACK_SECRET": "x" * 32,
+            "TELEGRAM_CALLBACK_ALLOWED_USER_IDS": "42",
+        }, clear=False), patch("notification_center.http_api.telegram_api", side_effect=telegram):
+            status, created = self.call("POST", "/v1/human-requests", payload)
+            self.assertEqual(201, status)
+            self.assertEqual(4, len(created["choices"]))
+            self.assertFalse(created["idempotent"])
+            self.assertEqual({"status": "sent", "chat_id": "42", "message_id": 808}, created["telegram"])
+
+            status, replayed = self.call("POST", "/v1/human-requests", payload)
+            self.assertEqual(201, status)
+            self.assertTrue(replayed["idempotent"])
+            self.assertEqual(created["telegram"], replayed["telegram"])
+            self.assertEqual("42", replayed["telegram_chat_id"])
+            self.assertEqual(808, replayed["telegram_message_id"])
+            self.assertEqual(1, len(telegram_calls))
+
+            status, conflict = self.call(
+                "POST", "/v1/human-requests", {**payload, "message": "Different message"}
+            )
+        self.assertEqual(400, status)
+        self.assertIn("idempotency conflict", str(conflict["error"]))
 
     def test_ask_human_tool_returns_selected_button_value(self) -> None:
         """Use the actual MCP handler over HTTP and return the chosen value."""

@@ -1339,8 +1339,9 @@ def send_human_request_telegram(
     response_chat_id = str(message.get("chat", {}).get("id") or chat_id) if isinstance(message, dict) else chat_id
     if not isinstance(message_id, int) or message_id <= 0:
         raise RuntimeError("Telegram AskHuman sendMessage returned no message id")
-    if mode == "question":
-        center.bind_human_request_message(producer_token, str(request["request_id"]), response_chat_id, message_id)
+    center.bind_human_request_message(
+        producer_token, str(request["request_id"]), response_chat_id, message_id
+    )
     return {"status": "sent", "chat_id": response_chat_id, "message_id": message_id}
 
 
@@ -1509,7 +1510,16 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         }
                         body["allowed_actors"] = [f"telegram:{actor}" for actor in sorted(configured_actors)]
                     created = center.create_human_request(token, body)
-                    created["telegram"] = send_human_request_telegram(center, token, created)
+                    if created["idempotent"]:
+                        chat_id = str(created.get("telegram_chat_id") or "")
+                        message_id = created.get("telegram_message_id")
+                        created["telegram"] = (
+                            {"status": "sent", "chat_id": chat_id, "message_id": message_id}
+                            if chat_id and isinstance(message_id, int) and message_id > 0
+                            else {"status": "not_configured"}
+                        )
+                    else:
+                        created["telegram"] = send_human_request_telegram(center, token, created)
                     self._reply(HTTPStatus.CREATED, created)
                     return
                 parts = self.path.split("/")

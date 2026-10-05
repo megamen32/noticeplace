@@ -522,8 +522,8 @@ class NotificationCenter:
         raw_choices = request.get("choices")
         choices: list[dict[str, str]] = []
         if mode == "choice":
-            if not isinstance(raw_choices, list) or len(raw_choices) not in {2, 3}:
-                raise ValidationError("choice requests require two or three choices")
+            if not isinstance(raw_choices, list) or not 2 <= len(raw_choices) <= 4:
+                raise ValidationError("choice requests require between two and four choices")
             seen_values: set[str] = set()
             for raw in raw_choices:
                 if not isinstance(raw, Mapping):
@@ -544,17 +544,49 @@ class NotificationCenter:
             raise ValidationError("human request actors must be unique bounded values")
         expires_at = request.get("expires_at")
         expires = float(expires_at) if expires_at is not None else None
+        recipient = str(request["recipient"]).strip()
+        message = str(request["message"]).strip()[:4000]
+
+        def matches_existing(row: sqlite3.Row) -> bool:
+            return (
+                str(row["project"]) == project
+                and str(row["recipient"]) == recipient
+                and str(row["mode"]) == mode
+                and str(row["message"]) == message
+                and json.loads(str(row["choices_json"])) == choices
+                and json.loads(str(row["allowed_actors_json"])) == actors
+                and row["expires_at"] == expires
+            )
+
         now = time.time()
         with self._lock, self._connection:
+            existing = self._connection.execute(
+                "SELECT * FROM human_requests WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if existing is not None:
+                if not matches_existing(existing):
+                    raise ValidationError("human request idempotency conflict")
+                result = self._human_request_result(self._expire_human_request(existing))
+                result["idempotent"] = True
+                return result
             try:
                 self._connection.execute(
                     "INSERT INTO human_requests(request_id, project, recipient, mode, message, choices_json, allowed_actors_json, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-                    (request_id, project, str(request["recipient"]).strip(), mode, str(request["message"]).strip()[:4000], json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires),
+                    (request_id, project, recipient, mode, message, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires),
                 )
             except sqlite3.IntegrityError as error:
-                raise ValidationError("human request already exists") from error
+                existing = self._connection.execute(
+                    "SELECT * FROM human_requests WHERE request_id = ?", (request_id,)
+                ).fetchone()
+                if existing is None or not matches_existing(existing):
+                    raise ValidationError("human request idempotency conflict") from error
+                result = self._human_request_result(self._expire_human_request(existing))
+                result["idempotent"] = True
+                return result
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
-            return self._human_request_result(self._expire_human_request(row))
+            result = self._human_request_result(self._expire_human_request(row))
+            result["idempotent"] = False
+            return result
 
     def get_human_request(self, token: str, request_id: str) -> dict[str, Any]:
         """Return the stable current state of one authorized human request."""
@@ -570,19 +602,27 @@ class NotificationCenter:
             return self._human_request_result(self._expire_human_request(row))
 
     def bind_human_request_message(self, token: str, request_id: str, chat_id: str, message_id: int) -> dict[str, Any]:
-        """Bind one sent Telegram message so a ForceReply can resolve its request."""
+        """Bind one sent Telegram message once for callbacks and delivery proof."""
         chat_id = str(chat_id).strip()
         if not chat_id or not isinstance(message_id, int) or message_id <= 0:
             raise ValidationError("valid Telegram chat and message ids are required")
         with self._lock, self._connection:
             row = self._expire_human_request(self._human_request_row(token, request_id))
-            if row["state"] != "pending":
-                raise ValidationError(f"human request is {row['state']}")
-            self._connection.execute(
-                "UPDATE human_requests SET telegram_chat_id = ?, telegram_message_id = ? WHERE request_id = ?",
+            existing_chat_id = str(row["telegram_chat_id"] or "")
+            existing_message_id = row["telegram_message_id"]
+            if existing_chat_id or existing_message_id is not None:
+                if existing_chat_id == chat_id and existing_message_id == message_id:
+                    return self._human_request_result(row)
+                raise ValidationError("human request Telegram message is already bound")
+            update = self._connection.execute(
+                "UPDATE human_requests SET telegram_chat_id = ?, telegram_message_id = ? WHERE request_id = ? AND telegram_chat_id IS NULL AND telegram_message_id IS NULL",
                 (chat_id, message_id, request_id),
             )
             current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            if update.rowcount != 1:
+                if str(current["telegram_chat_id"] or "") == chat_id and current["telegram_message_id"] == message_id:
+                    return self._human_request_result(current)
+                raise ValidationError("human request Telegram message is already bound")
             return self._human_request_result(current)
 
     def _resolve_human_request_row(self, row: sqlite3.Row, actor: str, value: str) -> dict[str, Any]:
