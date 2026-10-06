@@ -709,6 +709,43 @@ class NotificationCenter:
                 raise ValidationError("human request Telegram document is already bound")
             return self._human_request_result(current)
 
+    def enrich_human_request_original(self, token: str, request_id: str, original_text: str, actor: str = "operator") -> dict[str, Any]:
+        """Attach a verified original to a sent legacy card without changing its decision."""
+        if not isinstance(original_text, str) or not original_text or len(original_text.encode("utf-8")) > 100_000:
+            raise ValidationError("human request original_text must be between 1 and 100000 UTF-8 bytes")
+        with self._lock, self._connection:
+            row = self._expire_human_request(self._human_request_row(token, request_id))
+            if not row["telegram_chat_id"] or not isinstance(row["telegram_message_id"], int) or row["telegram_message_id"] <= 0:
+                raise ValidationError("original backfill requires an existing Telegram card receipt")
+            if row["original_text"] is not None:
+                if row["original_text"] != original_text:
+                    raise ValidationError("human request original text is already bound")
+                return self._human_request_result(row)
+            if row["telegram_document_state"] in {"sending", "uncertain"}:
+                raise ValidationError("human request document outcome requires reconciliation")
+            self._connection.execute(
+                "UPDATE human_requests SET original_text=? WHERE request_id=? AND original_text IS NULL",
+                (original_text, request_id),
+            )
+            self._audit(None, "human_request.original_enriched", str(actor)[:128], {
+                "request_id": request_id, "original_bytes": len(original_text.encode("utf-8")),
+                "original_sha256": hashlib.sha256(original_text.encode("utf-8")).hexdigest(),
+            })
+            return self._human_request_result(self._human_request_row(token, request_id))
+
+    def reserve_human_request_document(self, token: str, request_id: str) -> bool:
+        """Reserve one missing original document; unknown outcomes never get replayed."""
+        with self._lock, self._connection:
+            row = self._human_request_row(token, request_id)
+            if row["telegram_document_message_id"] is not None:
+                return False
+            if row["telegram_document_state"] is not None:
+                raise ValidationError("human request document outcome requires reconciliation")
+            return self._connection.execute(
+                "UPDATE human_requests SET telegram_document_state='sending' WHERE request_id=? AND telegram_document_message_id IS NULL AND telegram_document_state IS NULL",
+                (request_id,),
+            ).rowcount == 1
+
     def set_human_request_document_state(self, token: str, request_id: str, state: str) -> dict[str, Any]:
         """Record whether a required Telegram document is in flight or uncertain."""
         if state not in {"sending", "uncertain"}:

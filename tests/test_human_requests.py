@@ -225,7 +225,7 @@ class HumanRequestTests(unittest.TestCase):
             receipt = send_human_request_telegram(self.center, "token", created, api=send_api)
 
         self.assertTrue(str(calls[0]["text"]).startswith("Исходное сообщение (начало):"))
-        self.assertIn("Файл с полным текстом приложен ниже", str(calls[0]["text"]))
+        self.assertIn("разбор приложены Markdown-файлом", str(calls[0]["text"]))
         self.assertIn("Разбор:\nDeploy now?", str(calls[0]["text"]))
         self.assertEqual(602, receipt["document_message_id"])
         stored = self.center.get_human_request("token", "long-source")
@@ -233,7 +233,8 @@ class HumanRequestTests(unittest.TestCase):
         self.assertEqual("sent", stored["telegram_document_state"])
         args = send_document.call_args.args
         self.assertEqual("human-request-long-source.md", args[2])
-        self.assertEqual(original, args[3])
+        self.assertIn(original, args[3])
+        self.assertIn("## Разбор и варианты действий\n\nDeploy now?", args[3])
         self.assertEqual(601, args[5])
 
     def test_short_original_is_visible_in_card_without_document(self) -> None:

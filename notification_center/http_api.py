@@ -24,6 +24,7 @@ from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import DirectHealthRemediationAdapter, DurableHealthRemediationAdapter, GptAdminAgentJobAdapter
 from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, validate_health_plans
 from .instructions import noticeplace_instructions
+from .human_request_original import render_human_request_original
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
 from .telegram_format import telegram_html
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
@@ -1546,26 +1547,7 @@ def send_human_request_telegram(
                 "chat_id": route_chat_id,
                 "message_thread_id": str(route_thread_id),
             }
-    card_text = str(request["message"])
-    original_text = request.get("original_text")
-    document_text: str | None = None
-    if isinstance(original_text, str) and original_text:
-        if not _human_request_requires_document(card_text, original_text):
-            card_text = f"Исходное сообщение:\n{original_text}\n\nРазбор:\n{card_text}"
-        else:
-            document_text = original_text
-            preview = _telegram_truncate_utf16(original_text, 800)
-            if preview != original_text:
-                preview = preview.rstrip() + "…"
-            prefix = (
-                f"Исходное сообщение (начало):\n{preview}\n\n"
-                "📎 Файл с полным текстом приложен ниже.\n\nРазбор:\n"
-            )
-            card_text = prefix + _telegram_truncate_utf16(
-                card_text, TELEGRAM_TEXT_LIMIT - _telegram_utf16_length(prefix)
-            ).rstrip()
-    else:
-        card_text = _telegram_truncate_utf16(card_text, TELEGRAM_TEXT_LIMIT)
+    card_text, document_text = render_human_request_original(request)
     payload: dict[str, Any] = {**destination, "text": card_text}
     mode = str(request["mode"])
     if mode == "choice":
@@ -1597,7 +1579,7 @@ def send_human_request_telegram(
                 {**destination, "chat_id": response_chat_id},
                 _human_request_document_filename(str(request["request_id"])),
                 document_text,
-                "📎 Полный исходный текст",
+                "📎 Полное сообщение и разбор",
                 message_id,
             )
         except Exception:
@@ -1618,12 +1600,80 @@ def send_human_request_telegram(
     return receipt
 
 
+def refresh_human_request_original(
+    center: NotificationCenter, token: str, request_id: str, original_text: str,
+    actor: str = "operator", api: Any | None = None,
+) -> dict[str, Any]:
+    """Enrich and edit the existing card; never create a second decision request."""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not bot_token:
+        raise ValidationError("Telegram HumanRequest delivery is not configured")
+    send = api or (lambda method, body: telegram_api(bot_token, method, body))
+    with center.delivery_send_lock():
+        request = center.enrich_human_request_original(token, request_id, original_text, actor)
+        card_text, document_text = render_human_request_original(request)
+        if document_text is not None and request.get("telegram_document_message_id") is None and request.get("telegram_document_state") is not None:
+            raise ValidationError("human request document outcome requires reconciliation")
+        chat_id, message_id = str(request["telegram_chat_id"]), int(request["telegram_message_id"])
+        payload: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": card_text}
+        rows = []
+        if request["state"] == "pending" and request["mode"] == "choice":
+            secret = os.environ.get("TELEGRAM_CALLBACK_SECRET", "").strip()
+            if not secret:
+                raise ValidationError("Telegram callback secret is not configured")
+            codec = TelegramActionCodec(secret)
+            rows = [[{"text": choice["label"], "callback_data": codec.encode("human_choice", request_id, choice_id=str(index))}]
+                    for index, choice in enumerate(request["choices"])]
+        if request["mode"] == "choice" or request["state"] != "pending":
+            payload["reply_markup"] = json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
+        try:
+            response = send("editMessageText", payload)
+        except Exception as error:
+            description = str(error)
+            if isinstance(error, urllib.error.HTTPError) and error.code == 400:
+                try:
+                    failure = json.loads(error.read(4096))
+                    if failure.get("ok") is False and failure.get("error_code") == 400:
+                        description = str(failure.get("description") or "")
+                except (ValueError, AttributeError):
+                    pass
+            if not description.lower().startswith("bad request: message is not modified"):
+                raise
+            response = {"ok": True, "result": {"message_id": message_id, "chat": {"id": chat_id}}}
+        edited = response.get("result") if isinstance(response, dict) else None
+        if (not isinstance(response, dict) or response.get("ok") is not True
+                or not isinstance(edited, dict) or edited.get("message_id") != message_id
+                or str(edited.get("chat", {}).get("id")) != chat_id):
+            raise RuntimeError("Telegram original edit returned a mismatched card receipt")
+        if document_text is not None and request.get("telegram_document_message_id") is None:
+            target = {"chat_id": chat_id}
+            thread_id = edited.get("message_thread_id")
+            if type(thread_id) is int and thread_id > 0:
+                target["message_thread_id"] = str(thread_id)
+            else:
+                chat = edited.get("chat", {})
+                if chat.get("type") not in {"private", "group"} and not (
+                    chat.get("type") == "supergroup" and chat.get("is_forum") is False
+                ):
+                    raise ValidationError("original topic receipt is required before document backfill")
+            if not center.reserve_human_request_document(token, request_id):
+                return _human_request_http_result(center.get_human_request(token, request_id))
+            try:
+                receipt = TelegramSender(bot_token, chat_id).send_document(
+                    target, _human_request_document_filename(request_id), document_text,
+                    "📎 Полное сообщение и разбор", message_id,
+                )
+                center.bind_human_request_document(token, request_id, int(receipt["message_id"]), receipt.get("file_id"))
+            except Exception:
+                center.set_human_request_document_state(token, request_id, "uncertain")
+                raise
+        return _human_request_http_result(center.get_human_request(token, request_id))
+
+
 def _human_request_http_result(request: Mapping[str, Any]) -> dict[str, Any]:
     """Expose the document requirement computed from the persisted card inputs."""
     result = dict(request)
-    result["telegram_document_required"] = bool(_human_request_requires_document(
-        str(result["message"]), result.get("original_text")
-    ))
+    result["telegram_document_required"] = render_human_request_original(result)[1] is not None
     return result
 
 
@@ -1812,9 +1862,7 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                                 ),
                             }
                             if (
-                                _human_request_requires_document(
-                                    str(created["message"]), created.get("original_text")
-                                )
+                                render_human_request_original(created)[1] is not None
                                 and not isinstance(document_message_id, int)
                             ):
                                 created["telegram"]["status"] = "uncertain"
@@ -1831,7 +1879,13 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                 parts = self.path.split("/")
                 if len(parts) == 5 and parts[:3] == ["", "v1", "human-requests"]:
                     request_id, action = parts[3], parts[4]
-                    if action == "resolve":
+                    if action == "original":
+                        if set(body) - {"original_text", "actor"}:
+                            raise ValidationError("original backfill accepts only original_text and actor")
+                        result = refresh_human_request_original(
+                            center, token, request_id, body.get("original_text"), str(body.get("actor") or "operator"),
+                        )
+                    elif action == "resolve":
                         result = center.resolve_human_request(token, request_id, str(body.get("actor") or ""), str(body.get("value") or ""))
                     elif action == "cancel":
                         result = center.cancel_human_request(token, request_id, str(body.get("actor") or "api"))

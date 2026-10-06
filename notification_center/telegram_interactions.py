@@ -360,16 +360,28 @@ class TelegramInteractionPoller:
                     self._answer(callback_id, f"choice: {str(result.get('status') or 'accepted')}")
                     return
                 if action == "human_choice":
-                    request = self._center.get_human_request_from_telegram(incident_id)
-                    choices = request.get("choices") if isinstance(request.get("choices"), list) else []
-                    try:
-                        selected = choices[int(plan_id)]
-                    except (IndexError, TypeError, ValueError):
-                        raise ValidationError("human request choice is invalid")
-                    result = self._center.resolve_human_request_from_telegram(
-                        incident_id, f"telegram:{actor_id}", str(selected.get("value") or "")
-                    )
-                    self._dismiss_choice_message(callback, str(selected.get("label") or selected.get("value") or ""))
+                    with self._center.delivery_send_lock():
+                        request = self._center.get_human_request_from_telegram(incident_id)
+                        if request.get("original_text"):
+                            message = callback.get("message") or {}
+                            if (str(message.get("chat", {}).get("id")) != str(request.get("telegram_chat_id"))
+                                    or message.get("message_id") != request.get("telegram_message_id")):
+                                raise ValidationError("human request callback does not match its original card")
+                        choices = request.get("choices") if isinstance(request.get("choices"), list) else []
+                        try:
+                            selected = choices[int(plan_id)]
+                        except (IndexError, TypeError, ValueError):
+                            raise ValidationError("human request choice is invalid")
+                        result = self._center.resolve_human_request_from_telegram(
+                            incident_id, f"telegram:{actor_id}", str(selected.get("value") or "")
+                        )
+                        if result.get("original_text"):
+                            from .human_request_original import render_human_request_original
+                            text, _ = render_human_request_original({**result, "state": "pending"})
+                            message = {**callback.get("message", {}), "text": text}
+                            message.pop("entities", None)
+                            callback = {**callback, "message": message}
+                        self._dismiss_choice_message(callback, str(selected.get("label") or selected.get("value") or ""))
                     self._answer(callback_id, f"choice: {result['state']}")
                     return
             self._answer(callback_id, "Недопустимое действие")
