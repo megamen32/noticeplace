@@ -1,6 +1,6 @@
 # Agent Herder session links in Notice Place
 
-Status: session links deployed and delivered; full chain verification in progress.
+Status: delivered and accepted through the native consumer and browser paths.
 
 The user receives phone explanations that imply work has started, but cannot
 open the agent session from Notice Place. Confirmed gaps:
@@ -58,3 +58,38 @@ stops the launch; no provider guessing. Continuation is independent.
 Current explicit policy: Codex/ZCode, preferred Codex, gpt-5.6-sol / native
 ZCode Individual GLM route. Waiting for the owning Herder session's API rollout
 and combined build/restart before one final native read-only consumer chain.
+
+Final acceptance: incident inc_ee4ade42399b4a39bf91c1f7c8673512, Hub
+72c67c6642dfd803a059b8ffb64522cd completed, three plans. Diagnosis
+01a1103b-3efd-71f3-91cc-61621bd2565a and planner
+01a1103b-803f-7d60-9748-bff6fe3cdc62 both actually ran Codex/gpt-5.6-sol.
+Telegram receipts5638/5639 were read through the approved secondary account
+Careviolan; both message bodies contain copyable canonical URLs, and the
+planner button has the same URL. The primary Noonenowhereneverever could not
+resolve this private group's entity even after a bounded group-list read;
+the original active primary account was restored. No account binding, login,
+join, message send or phone call was performed through Telegram Helper.
+
+The native chain completed before ACK, so its two links were delivered before
+ACK. The earlier real incident inc_f50168a90c4a44759503ee99cd15d027/message5604
+separately proves delivery after ACK. Do not misreport native timing.
+
+Web acceptance after final Herder code9a7299a: exact planner fragment, matching
+health_orchestrator_100_38fcda58a68b title, Codex/gpt-5.6-sol, idle state and
+actual plan JSON rendered. Policy form showed only Codex/ZCode checked, Codex
+preferred and exact models. Saving unchanged returned 'Настройки сохранены'
+and GET returned the identical policy. Screenshots and metadata-only proof:
+.tmp/session-links-20261006/native-planner-exact-chat.png,
+launch-policy-saved-controls.png and native-proof.json. Browser closed.
+
+Optional S21 receiver UI probe found no reverse ADB listener at22221 and only
+a Linux agent-device target. Guarded bootstrap returned Connection refused;
+no phone session/app/runtime was changed. Lease acquired and released. The
+user explicitly redirected verification to both Telegram Helper accounts and
+confirmed phone proof is unnecessary; receiver verification succeeded there.
+
+Source checks passed: 111 related tests before final small changes; 64 final
+helper/health tests, plus the focused clickable-card check. Runtime cf476f4
+matched exact managed source bytes before the one native canary. Final changes
+are evidence-only; no further rebuild or restart is required. Historic eight
+unknown-outcome deliveries remain recorded above, with no blind relaunch.

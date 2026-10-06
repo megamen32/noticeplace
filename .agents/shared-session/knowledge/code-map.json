@@ -40,6 +40,43 @@
       ],
       "summary": "phone delivery receipt -> gateway remote transcript subscriber -> acknowledge_phone_receipt -> durable incident ACK cancels repeats; uncertain call transport does not automatically redial same delivery",
       "verified_at": "2026-10-05T14:55:53.526830+03:00"
+    },
+    "noticeplace-agent-session-links": {
+      "key": "noticeplace-agent-session-links",
+      "kind": "failure-shield",
+      "confidence": "verified",
+      "git_head": "cf476f4b1e4b7e743f0bcf8c356e66c6fb06b206",
+      "verified_at": "2026-10-06T08:25:20.022118+00:00",
+      "summary": "Announce real diagnosis/planner/remediation sessions immediately; preserve informational links after ACK; choose native harness/model from the independent web launch policy; text and button use canonical encoded session key; separately bound one-turn details metadata. Herder preserves linked historical chats outside quick active list and accepts old URLs.",
+      "locations": [
+        {
+          "path": "notification_center/core.py",
+          "symbol": "record_health_agent_session/claim_due_deliveries",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "0a88b14da7956cc699579da7ea2da31dddf793eedbad8c0a7933c585527bbba0"
+        },
+        {
+          "path": "notification_center/agent_job_helper.py",
+          "symbol": "_launch_policy_profile/run_profile/post_health_session_started",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "59dd0a636339baf068bbf2012100b5ed5c08c1fd29a0053ed40cb45854272877"
+        },
+        {
+          "path": "notification_center/http_api.py",
+          "symbol": "TelegramSender.send",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "86655c6299c85627eddff9e3972ae5ce3457aa6ad6d76a5c8aab4fee279b0458"
+        }
+      ],
+      "evidence": [
+        "111 related tests; 64 final helper/health tests; 31 policy/helper checks",
+        "Native incident inc_ee4ade42399b4a39bf91c1f7c8673512; Hub72c67c6642dfd803a059b8ffb64522cd completed with three plans; two Codex gpt-5.6-sol sessions",
+        "Actual Telegram receiver Careviolan read messages5638/5639: visible canonical URL in both bodies; button5639 same URL",
+        "Browser policy Save unchanged/API200; exact planner chat/model/transcript after runtime9a7299a; prior real message5604 delivered after ACK"
+      ]
     }
   },
   "schema_version": 1
