@@ -390,6 +390,7 @@ class TelegramSender:
             details = f"Агент: {agent_label}" + (f" · {model}" if model else "")
             text = (
                 f"🤖 {stage_label} · {incident['project']}\n\n"
+                + f"Задача: {str(incident.get('title') or 'Проверка состояния сервиса')[:500]}\n"
                 + (f"Путь: {plan_labels.get(plan_id, plan_id)}\n" if plan_id else "")
                 + f"{details}\n"
                 + "Сессия создана в Agent Herder. По ссылке видно фактическое состояние, сообщения, команды и текущий прогресс."
