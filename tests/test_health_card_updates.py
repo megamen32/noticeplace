@@ -71,6 +71,18 @@ class HealthCardUpdateTests(unittest.TestCase):
             **self.event, "action": "resolve", "event_type": "health.recovered"})
         self.assertIn("Состояние восстановилось", self.send(session["session_delivery_id"])["text"][0])
 
+    def test_severity_phase_change_never_claims_recovery_even_for_late_card(self):
+        session = self.center.record_health_agent_session(self.incident, 'phase', '', 'codex', 'phase',
+            'https://agent.bezrabotnyi.com', stage='health-diagnosis')
+        self.center.resolve_event('producer', 'phase-change', {**self.event, 'action': 'resolve',
+            'event_type': 'health.phase_changed', 'next_severity': 'important'})
+        for row in self.center._connection.execute("SELECT id FROM deliveries WHERE json_extract(target_json,'$.health_outcome.status')='phase_changed'"):
+            text = self.send(row['id'])['text'][0]
+            self.assertIn('Сигнал ещё активен', text)
+            self.assertNotIn('Состояние восстановилось', text)
+        text = self.send(session['session_delivery_id'])['text'][0]
+        self.assertIn('Сигнал ещё активен', text)
+
     def test_unconfirmed_receipt_does_not_choose_edit_destination(self):
         self.center._connection.execute("UPDATE deliveries SET status='uncertain',result_json=NULL WHERE id=?",
             (self.created['initial_delivery_id'],))

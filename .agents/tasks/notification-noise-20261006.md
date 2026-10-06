@@ -57,7 +57,36 @@ upgrade/launch/canary. После готовности: один согласо�
 сессией01a110c6; она готовит узкий patch после публикации данного slice.
 send_human_request_telegram и HumanRequest route/storage не менялись здесь.
 
-Следующее независимое улучшение: пересмотреть producer fleet-health, который
-помечает даже краткий CPU/load скачок critical. Не объявлять общую AI-фильтрацию
-всех producer внедрённой только по исправлению Herder done; нужна точная
-классификация истинных критических с сохранением обхода AI и звонков.
+## Обычные health-сигналы сначала оценивает диагностика
+
+Scope строго health.degraded/kind=incident/notice или important, четыре полных
+source/host/signal/correlation поля, allowlisted health-diagnosis. Initial
+карточка ждёт решения; callback сохраняет принятый native ID тихо. Strict
+notify_user=false сохраняет audit/receipt/инцидент и завершённую диагностику,
+не создавая карточку/планировщик. notify=true даёт одну исходную карточку с
+причиной и ссылкой; ошибки диагностики/missing decision не скрывают проблему.
+Critical/emergency, ручное AI и untyped explicit diagnostic остаются прямыми.
+Review нашёл и исправил ошибку predicate, которая могла прятать untyped events;
+её воспроизведение и исключающие регрессии включены. source gates/native IDs/
+sourceSessions/model policy/manual authority не менялись.
+Другой review исправил ложное recovery при смене severity: только новый typed
+health.phase_changed с точной source identity и отличающимся next_severity
+закрывает прежний этап. Он обновляет старую карточку текстом «сигнал ещё активен»,
+никогда не выдаёт «восстановилось». Genuine disappearance сохраняет recovered,
+независимый verified repair сохраняет resolved. Поздние этапы не меняют вывод.
+Краткие заголовки severity Telegram теперь по-русски.
+
+Три bounded subset проверки:84 helper/GPT/source,118 core/card/worker,
+32 HTTP/HumanRequest. Один полный запуск был остановлен60s budget; последние
+review/phase delta93 и финальные sender/decision/HTTP40 прошли отдельно.
+UserIO287933f уже в общей ancestry.
+Производитель fleet-health получает отдельный scoped классификатор severity;
+предупреждения важны для AI-review, действительное исчерпание ресурсов остаётся
+critical. Статус/блокер установки записан в инфраструктурном owning tracker.
+Source producer8a97c96 +corrective39fb33f опубликованы,15 checks green; watcher
+ещё не установлен до Notice contract и освобождения infra clean checkout.
+
+Автограм owner1: новая форумная тема5796 группы-1004322359393 и consumer_f9cc6bad25d9458585132b4158531259,
+Telegram-only (phone off), maxcritical. Приватный новый token сохранён только
+в autoseller-noticeplace.env с0600roomhacker; старые ключи/consumer_e9c… сохранены.
+Это authorized routing setup: ни событий, ни звонков при создании не было.

@@ -469,7 +469,8 @@ class NotificationCenter:
             HEALTH_DIAGNOSIS_AGENT_JOB in allowed_jobs
             and str(event.get("kind") or "") == "incident"
             and str(event.get("event_type") or "").startswith("health.")
-            and str(event.get("severity") or "") in {"critical", "emergency"}
+            and (str(event.get("severity") or "") in {"critical", "emergency"}
+                 or (event.get('event_type') == 'health.degraded' and event.get('severity') in {'notice', 'important'}))
             and all(str(event.get(field) or "").strip() for field in required_health_identity)
         ):
             return HEALTH_DIAGNOSIS_AGENT_JOB
@@ -477,7 +478,9 @@ class NotificationCenter:
 
     def _source_health_recovery_matches(self, incident_id: str, event: Mapping[str, Any]) -> bool:
         """Accept an unselected health incident's recovery only from the same typed source."""
-        if str(event.get("event_type") or "") != "health.recovered":
+        if str(event.get("event_type") or "") not in {'health.recovered', 'health.phase_changed'}:
+            return False
+        if event.get('event_type') == 'health.phase_changed' and event.get('next_severity') not in {'important', 'critical'}:
             return False
         keys = ("source_id", "host_id", "signal_type", "correlation_id")
         recovery_identity = {key: str(event.get(key) or "").strip() for key in keys}
@@ -1044,7 +1047,13 @@ class NotificationCenter:
             ingress.update({"project": project, "profile_id": consumer_id, "severity": str(event["severity"]), "event_type": event_type, "producer": producer, "plugin": plugin, "correlation_id": correlation_id, "parent_incident_id": parent_incident_id, "parent_event_id": parent_event_id})
             self._audit(incident_id, "event_ingress", "producer", ingress)
             notifications_muted = self._notification_scope_muted(project, recipient, dedup_key)
-            delivery_id = None if notifications_muted else self._schedule_consumer_policy(incident_id, consumer_id, now)
+            review_required = (agent_job == HEALTH_DIAGNOSIS_AGENT_JOB and event.get('kind') == 'incident'
+                and event_type == 'health.degraded' and event.get('severity') in {'notice', 'important'}
+                and all(str(event.get(field) or '').strip() for field in ('source_id', 'host_id', 'signal_type', 'correlation_id')))
+            if review_required and not self.health_notification_decision(incident_id):
+                self._audit(incident_id, "health_notification_waiting_ai", "policy", {})
+            review_quiet = self.health_notification_review_required(incident_id) and not (self.health_notification_decision(incident_id) or {}).get("notify_user")
+            delivery_id = None if notifications_muted or review_quiet else self._schedule_consumer_policy(incident_id, consumer_id, now)
             if notifications_muted:
                 self._audit(incident_id, "notification_suppressed", "policy", {"reason": "operator_mute", "dedup_key": dedup_key})
             agent_step = "incident" if agent_job == HEALTH_DIAGNOSIS_AGENT_JOB else f"event:{event_id}"
@@ -1113,11 +1122,16 @@ class NotificationCenter:
             incident_id = str(row["id"]) if row is not None else None
             if incident_id is not None:
                 self._require_severity(self._scope(token, project), str(row["severity"]))
-                if not self._source_health_recovery_matches(incident_id, event):
+                if event_type == 'health.phase_changed' and (event.get('next_severity') not in {'important', 'critical'} or event.get('next_severity') == row['severity']):
+                    raise ValidationError('health severity phase must change to a different valid level')
+                source_matches = self._source_health_recovery_matches(incident_id, event)
+                if event_type == 'health.phase_changed' and not source_matches:
+                    raise ValidationError('health severity phase requires the matching typed source')
+                if not source_matches:
                     self._require_health_resolution_gate(incident_id)
                 self._transition(incident_id, "resolved", "producer")
                 if event_type.startswith("health."):
-                    self.schedule_health_outcome(incident_id, "recovered", "producer-recovery")
+                    self.schedule_health_outcome(incident_id, 'phase_changed' if event_type == 'health.phase_changed' else 'recovered', 'producer-phase' if event_type == 'health.phase_changed' else 'producer-recovery')
             self._connection.execute(
                 "INSERT INTO resolution_events(idempotency_key, event_id, project, recipient, dedup_key, payload_json, incident_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (idempotency_key, event_id, project, recipient, dedup_key, payload_json, incident_id, now),
@@ -1744,6 +1758,20 @@ class NotificationCenter:
             ).fetchone()
         return json.loads(row["payload_json"]) if row else None
 
+    def health_notification_decision(self, incident_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute("SELECT payload_json FROM audit_events WHERE incident_id=? "
+                "AND type='health_notification_decision' ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident_id,)).fetchone()
+        return json.loads(row['payload_json']) if row else None
+
+    def health_notification_review_required(self, incident_id: str) -> bool:
+        incident = self.get_incident(incident_id)
+        if not incident or incident['severity'] in {'critical', 'emergency'} or self.manual_ai_requested(incident_id):
+            return False
+        with self._lock:
+            return self._connection.execute("SELECT 1 FROM audit_events WHERE incident_id=? "
+                "AND type='health_notification_waiting_ai' LIMIT 1", (incident_id,)).fetchone() is not None
+
     def record_telegram_ask(self, incident_id: str, actor: str, question: str) -> None:
         """Audit an operator question without treating its text as executable input."""
         normalized = question.strip()
@@ -1912,6 +1940,8 @@ class NotificationCenter:
                 "WHERE id=? AND status='cancelled'",
                 (time.time(), json.dumps(target, ensure_ascii=False), time.time(), delivery_id),
             )
+            if self.health_notification_review_required(incident_id) and original_card is None:
+                self._connection.execute("UPDATE deliveries SET status='cancelled',last_error='notification awaiting AI decision/original card' WHERE id=?", (delivery_id,))
         return {**result, "session_url": session_url, "session_delivery_id": delivery_id}
 
     def _record_health_remediation_receipt(
@@ -2083,6 +2113,16 @@ class NotificationCenter:
         if self.get_incident(incident_id) is None:
             raise ValidationError("incident not found")
         result = receipt.get("agent_receipt") if isinstance(receipt.get("agent_receipt"), Mapping) else {}
+        if job_name == HEALTH_DIAGNOSIS_AGENT_JOB and self.health_notification_review_required(incident_id):
+            # Only a real boolean false suppresses delivery. Missing/invalid
+            # judgement fails open for operator review, never hides a failure.
+            decision = {"notify_user": result.get("notify_user") is not False,
+                        "reason": self._health_text(result.get("notification_reason") or "Диагностика не дала решения об уведомлении.", 500)}
+            with self._lock, self._connection:
+                self._audit(incident_id, 'health_notification_decision', 'worker', decision)
+                current = self.get_incident(incident_id)
+                if decision['notify_user'] and current['state'] != 'resolved' and not current.get('notifications_muted'):
+                    self._schedule_consumer_policy(incident_id, str(current['consumer_id']), time.time())
         context = health_context if isinstance(health_context, Mapping) else {}
         try:
             elapsed_ms = max(0, min(86_400_000, int(receipt.get("elapsed_ms") or 0)))
@@ -2162,10 +2202,17 @@ class NotificationCenter:
             manual_stop = status in {"human_stopped", "source_blocked"} and self.manual_ai_requested(incident_id)
             if incident is None or (original is None and not manual_stop):
                 return None
+            if self.health_notification_review_required(incident_id) and self.original_telegram_card(incident_id) is None:
+                if status in {'failed', 'unknown', 'interrupted'} and not self.health_notification_decision(incident_id):
+                    self._audit(incident_id, 'health_notification_decision', 'worker',
+                        {'notify_user': True, 'reason': 'Диагностика не завершилась. Нужна проверка причины.'})
+                    if incident['state'] != 'resolved' and not incident.get('notifications_muted'):
+                        self._schedule_consumer_policy(incident_id, str(incident['consumer_id']), time.time())
+                return None
             original = original or {}
             if str(original.get("correlation_id") or "").startswith("corr:live-health-canary:"):
                 return None
-            if incident["state"] == "resolved" and status not in {"resolved", "recovered"}:
+            if incident["state"] == "resolved" and status not in {"resolved", "recovered", 'phase_changed'}:
                 return None
             outcome: dict[str, Any] = {"status": status}
             row = self._connection.execute(
@@ -3108,12 +3155,18 @@ class NotificationCenter:
             payload["ai_card"] = card
             payload["ai_session"] = self.latest_agent_session(str(incident["id"]))
         if str(incident.get("event_type") or "").startswith("health.") or self.manual_ai_requested(str(incident["id"])):
+            if self.health_notification_review_required(str(incident['id'])):
+                payload['notification_decision'] = self.health_notification_decision(str(incident['id']))
             payload["ai_session"] = self.latest_agent_session(str(incident["id"]))
             if isinstance(payload.get("health_session"), dict) and isinstance(payload["ai_session"], dict):
                 payload["health_session"] = payload["ai_session"]
             if incident["state"] == "resolved" and ("health_session" in payload or "health_outcome" in payload):
                 payload.pop("health_session", None)
-                payload["health_outcome"] = {"status": "recovered", "session_url": (payload["ai_session"] or {}).get("session_url", "")}
+                conclusion = 'resolved' if self.latest_health_event(str(incident['id']), 'health.resolved') else 'recovered'
+                phase = self._connection.execute("SELECT payload_json FROM resolution_events WHERE incident_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident['id'],)).fetchone()
+                if phase and json.loads(phase['payload_json']).get('event_type') == 'health.phase_changed':
+                    conclusion = 'phase_changed'
+                payload["health_outcome"] = {"status": conclusion, "session_url": (payload["ai_session"] or {}).get("session_url", "")}
             original = self._health_original_event(str(incident["id"]))
             if isinstance(original, dict):
                 payload["health_context"] = {
@@ -3130,6 +3183,7 @@ class NotificationCenter:
                 }
             if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
                 payload.setdefault("health_context", {})["source_sessions"] = self._health_source_sessions(str(incident["id"]))
+                payload["health_context"]["notification_review_required"] = self.health_notification_review_required(str(incident["id"]))
             outcome = payload.get("health_outcome")
             show_plans = not isinstance(outcome, dict) or outcome.get("status") == "plans_ready"
             latest_plans = self.latest_health_event(str(incident["id"]), "health.plans_attached") if show_plans and not isinstance(payload.get("health_session"), dict) else None

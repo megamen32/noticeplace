@@ -30,6 +30,8 @@ from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
 ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log"))
 SUPPORTED_TELEGRAM_MODES = frozenset((*ACTIVE_TELEGRAM_MODES, "health"))
+SEVERITY_TITLES = {'debug': 'Отладка', 'info': 'Информация', 'notice': 'Обратите внимание',
+                   'important': 'Важно', 'critical': 'Критично', 'emergency': 'Срочно'}
 TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_CARD_TEXT_LIMIT = 3600
 
@@ -411,6 +413,7 @@ class TelegramSender:
         elif isinstance(health_outcome, dict):
             status = str(health_outcome.get("status") or "unknown")
             conclusions = {
+                'phase_changed': ('Изменилась срочность проблемы', 'Сигнал ещё активен. Прежний этап закрыт, дальнейшее уведомление зависит от новой срочности. Восстановление не подтверждено.'),
                 "recovered": ("Состояние восстановилось", "Мониторинг исходного источника больше не видит проблему. Инцидент закрыт; действий от вас не требуется. Это подтверждение мониторинга, а не заявление, что агент выполнил ремонт."),
                 "resolved": ("Исправление подтверждено", "Работа по выбранному плану выполнена, независимая проверка подтвердила восстановление исходного источника. Инцидент закрыт; действий от вас не требуется."),
                 "plans_ready": ("Разбор завершён — выберите план", "Подготовлены три плана. Исправление ещё не выполнено: для продолжения выберите план кнопкой ниже."),
@@ -430,7 +433,19 @@ class TelegramSender:
                 + f"\n\nИнцидент: {incident['id']}"
             )
         else:
-            text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nИнцидент: {incident['id']}"
+            text = f"{SEVERITY_TITLES.get(str(incident['severity']), 'Уведомление')} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nИнцидент: {incident['id']}"
+        latest_session_url = ''
+        if not isinstance(health_session, dict) and not isinstance(health_outcome, dict):
+            decision = payload.get('notification_decision')
+            if isinstance(decision, dict) and decision.get('notify_user') is True:
+                text += f"\n\nПочему требуется внимание: {str(decision.get('reason') or '')}"
+            latest_session = payload.get('ai_session')
+            if isinstance(latest_session, dict):
+                latest_session_url = str(latest_session.get('session_url') or '')
+                parsed = urllib.parse.urlsplit(latest_session_url)
+                if parsed.scheme != 'https' or parsed.hostname != 'agent.bezrabotnyi.com':
+                    raise RuntimeError('Agent Herder session URL is invalid')
+                text += f'\n\nСсылка на сессию: {latest_session_url}'
         incident_card = (payload.get("target") or {}).get("incident_card") if isinstance(health_session, dict) or isinstance(health_outcome, dict) else None
         destination = ({"chat_id": str(incident_card["chat_id"])} if isinstance(incident_card, dict)
                        else telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes))
@@ -472,6 +487,10 @@ class TelegramSender:
                 request_data["reply_markup"] = json.dumps(action_keyboard, separators=(",", ":"))
         elif mode == "health":
             raise RuntimeError("Telegram health delivery requires signed plan callback configuration")
+        if latest_session_url:
+            keyboard = health_keyboard or action_keyboard or {'inline_keyboard': []}
+            keyboard['inline_keyboard'].append([{'text': 'Открыть сессию', 'url': latest_session_url}])
+            request_data['reply_markup'] = json.dumps(keyboard, ensure_ascii=False)
         ai_card = payload.get("ai_card") if isinstance(health_session, dict) else None
         if isinstance(ai_card, dict):
             session = payload.get("ai_session") or health_session
@@ -613,7 +632,7 @@ class TelegramSender:
         ]
         note = str(incident.get("operator_note") or "").strip()
         note_block = f"\n\nПримечание: {note}" if note else ""
-        text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nПланы:\n" + "\n".join(plan_lines) + f"{note_block}\n\nИнцидент: {incident['id']}"
+        text = f"{SEVERITY_TITLES.get(str(incident['severity']), 'Уведомление')} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nПланы:\n" + "\n".join(plan_lines) + f"{note_block}\n\nИнцидент: {incident['id']}"
         ai_session = payload.get("ai_session")
         if isinstance(ai_session, dict):
             marker = "✅ Выбрано: решение через AI.\n" if isinstance(payload.get("ai_card"), dict) else ""

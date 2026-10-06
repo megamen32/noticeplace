@@ -53,6 +53,8 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
             "source_fingerprint": _safe_health_ref(health_context.get("source_fingerprint")),
             "trace_refs": [_safe_health_ref(ref) for ref in health_context.get("trace_refs", [])[:16]] if isinstance(health_context.get("trace_refs"), list) else [],
         }
+        if isinstance(health_context.get('notification_review_required'), bool):
+            bounded_health['notification_review_required'] = health_context['notification_review_required']
         plans = payload.get("health_plans")
         if isinstance(plans, list):
             bounded_health["plans"] = [

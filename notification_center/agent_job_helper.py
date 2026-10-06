@@ -448,11 +448,15 @@ def _extract_health_diagnosis(details: Mapping[str, Any]) -> dict[str, Any] | No
             status = str(candidate.get("status") or "diagnosis_complete")[:32]
             if status not in {"diagnosis_complete", "completed"}:
                 continue
+            if 'notify_user' in candidate and type(candidate['notify_user']) is not bool:
+                continue
             return {
                 "status": status,
                 "diagnosis": diagnosis[:3000],
                 "evidence_refs": _bounded_refs(candidate.get("evidence_refs")),
                 "trace_refs": _bounded_refs(candidate.get("trace_refs")),
+                "notify_user": candidate.get('notify_user', True),
+                "notification_reason": str(candidate.get('notification_reason') or candidate.get('reason') or '')[:500],
             }
     return None
 
@@ -656,6 +660,14 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
             raise RuntimeError("health diagnosis did not produce a diagnosis before timeout")
         time.sleep(poll_seconds)
 
+    health = event.get('health') if isinstance(event.get('health'), Mapping) else {}
+    decision = {'notify_user': diagnosis.get('notify_user') is not False,
+                'notification_reason': diagnosis.get('notification_reason', '')}
+    if health.get('notification_review_required') is True and not decision['notify_user']:
+        return {'status': 'completed', 'session_id': session_id, 'diagnosis_session_id': session_id,
+                'elapsed_ms': max(0, int((time.monotonic() - started_at) * 1000)),
+                'useful_progress': bool(last_fingerprint), 'progress_fingerprint': last_fingerprint,
+                'diagnosis': diagnosis['diagnosis'], **decision}
     orchestrator_started_at = diagnosis_completed_at
     planner_profile = _launch_policy_profile(profile, runner, require_preferred=True)
     profile = {**profile, "orchestrator_model": planner_profile["model"], "orchestrator_requested_model": planner_profile["model"]}
@@ -729,6 +741,7 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
         "elapsed_ms": completion_elapsed_ms,
         "useful_progress": bool(last_fingerprint),
         "progress_fingerprint": last_fingerprint,
+        **decision,
         **callback,
     }
 
@@ -848,6 +861,15 @@ def run_profile(
         "mode": profile["mode"],
         "message": _telemetry_message(profile["instruction"], incident),
     }
+    if profile_id == 'health-diagnosis':
+        request_body['message'] += (
+            '\n\nОцени, требуется ли внимание человека. В итоговый JSON диагностики добавь '
+            'notify_user (настоящий boolean true/false) и notification_reason (короткое объяснение по-русски). '
+            'Выбирай false для краткого скачка или известного стабильного состояния без влияния на сервис '
+            'и без действия человека; true при заметном влиянии, необходимости решения или нехватке '
+            'данных для безопасного вывода. Не объявляй инцидент исправленным без проверки источника. '
+            'Это решение об обычном уведомлении; критические события уже доставлены напрямую.'
+        )
     health_result: dict[str, str] = {}
     if profile_id == "health-remediation":
         plan_id, request_body["message"] = _health_remediation_message(profile, event, incident)

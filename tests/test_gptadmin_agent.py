@@ -128,7 +128,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(1, rows["count"])
 
-    def test_health_policy_does_not_auto_diagnose_incomplete_or_noncritical_signals(self) -> None:
+    def test_ordinary_health_waits_for_diagnosis_but_incomplete_signal_does_not_launch(self) -> None:
         center = NotificationCenter(
             Path(self.tempdir.name) / "health-policy.sqlite3",
             {"health-token": {"project": "health-monitor", "max_severity": "critical", "agent_jobs": ["health-diagnosis"]}},
@@ -142,7 +142,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
             "title": "Health warning",
             "body": "bounded observation",
             "dedup_key": "health:host:server-100:disk",
-            "event_type": "health.disk",
+            "event_type": "health.degraded",
             "source_id": "host:server-100",
             "host_id": "server-100",
             "signal_type": "disk",
@@ -154,7 +154,8 @@ class GptAdminAgentJobTests(unittest.TestCase):
             "health-policy-incomplete",
             {**base, "severity": "critical", "dedup_key": "health:incomplete", "correlation_id": ""},
         )
-        self.assertIsNone(important["agent_job_delivery_id"])
+        self.assertIsNotNone(important["agent_job_delivery_id"])
+        self.assertIsNone(important["initial_delivery_id"])
         self.assertIsNone(incomplete["agent_job_delivery_id"])
 
     def test_crash_reopen_reclaims_same_delivery_key_and_same_hub_job(self) -> None:
