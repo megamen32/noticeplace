@@ -1680,7 +1680,7 @@ class NotificationCenter:
             if session_id and harness:
                 self.record_health_agent_session(
                     incident_id,
-                    f"{incident_id}:{stage}_session:{harness}:{session_id}:v2",
+                    f"{incident_id}:{stage}_session:{harness}:{session_id}:v3",
                     selected_plan,
                     harness,
                     session_id,
@@ -2002,7 +2002,7 @@ class NotificationCenter:
         if job_name in {"health-diagnosis", HEALTH_REMEDIATION_AGENT_JOB} and summary.get("session_id") and summary.get("harness"):
             self.record_health_agent_session(
                 incident_id,
-                f"{incident_id}:{job_name}_session:{summary['harness']}:{summary['session_id']}:v2",
+                f"{incident_id}:{job_name}_session:{summary['harness']}:{summary['session_id']}:v3",
                 str(summary["plan_id"]),
                 str(summary.get("harness") or "zcode"),
                 str(summary["session_id"]),

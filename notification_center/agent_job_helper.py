@@ -596,7 +596,7 @@ def post_health_session_started(
     if stage != "health-remediation":
         plan_id = ""
     callback_url, callback_token = _load_health_callback({}, project)
-    key = f"{incident_id}:{stage}_session:{harness}:{session_id}:v2"
+    key = f"{incident_id}:{stage}_session:{harness}:{session_id}:v3"
     body = json.dumps({
         "plan_id": plan_id,
         "stage": stage,
