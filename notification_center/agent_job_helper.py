@@ -600,7 +600,7 @@ def post_health_session_started(
     body = json.dumps({
         "plan_id": plan_id,
         "stage": stage,
-        "model": str(session.get("model") or "")[:128],
+        "model": str(session.get("model") or "")[:256],
         "harness": harness,
         "session_id": session_id,
         "actor": "agent-herder",

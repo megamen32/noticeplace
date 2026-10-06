@@ -386,7 +386,7 @@ class TelegramSender:
             stage = str(health_session.get("stage") or "health-remediation")
             stage_label = {"health-diagnosis": "Диагностика", "health-orchestrator": "Подготовка плана", "health-remediation": "Исправление"}.get(stage, "Работа агента")
             agent_label = str(health_session.get("harness") or "")[:64]
-            model = str(health_session.get("model") or "")[:128]
+            model = str(health_session.get("model") or "")[:256]
             details = f"Агент: {agent_label}" + (f" · {model}" if model else "")
             text = (
                 f"🤖 {stage_label} · {incident['project']}\n\n"

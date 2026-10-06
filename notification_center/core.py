@@ -1770,7 +1770,7 @@ class NotificationCenter:
         session_key = urllib.parse.quote(f"{safe_harness}:{safe_session}", safe="")
         session_url = f"{base_url}/#/session/{session_key}"
         session = {"plan_id": safe_plan, "stage": stage, "harness": safe_harness, "session_id": safe_session,
-                   "session_url": session_url, "model": self._health_text(model, 128)}
+                   "session_url": session_url, "model": self._health_text(model, 256)}
         result = self.record_health_update(
             incident_id,
             idempotency_key,
