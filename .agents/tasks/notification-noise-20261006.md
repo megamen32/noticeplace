@@ -219,3 +219,11 @@ acceptance found repeated terminal choices and injected coordination notes
 mistaken for task context. Narrow index.ts/core regression fix is owned here;
 root manages one build/restart after review. Signed human selection and final
 held state must be proved after this correction; see Herder task tracker.
+
+After the external user-manager reset recovered to Herder666185, strict
+context again reported false for both owned quiet controllers. Each received
+ONE archive200/exactID and immediate details200/3messages; all owned Codex
+controller cleanup is complete. Evidence is final-controller-archives.json
+in the task's private Codex visualizations directory. No archive replay.
+Herder terminal/coordination-noise correction8a151ff is reviewed/pushed;
+root owns the one intentional final build/restart and same-ID canary follows.
