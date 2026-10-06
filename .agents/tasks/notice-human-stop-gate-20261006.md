@@ -1,6 +1,6 @@
 # Notice: запрет продолжения остановленных сессий
 
-Статус: source implementation; API root NOT READY, deploy/canary forbidden until ready.
+Статус: source gate deployed and read-only live acceptance passed; terminal AIquiet correction remains separately owned/pending.
 
 Own Notice producer/helper/telemetry/tests only. Herder WIP belongs to root and is read-only.
 
@@ -15,3 +15,13 @@ Source verification:128 first related checks passed; 11 direct admission regress
 Source GET budget:≤5s per request,15s total,64KiB response; max32 source identities. Source records come from accepted diagnosis/planner/remediation session events and legacy accepted plan-batch native IDs, no title/status/trace guessing. All-source union preserved across initial related retry, planner handoff, quota retry and accepted-session start-plan replacement; original native harness/ID retained when chosen target differs. HumanRequested input is ignored; never present in request bodies. Held/missing/invalid authority rejects before POST; >32 raises manual-handling error rather than truncating.
 
 Shared source:manual-card ee4f599 captured core/http_api receipt/terminal-hook hunks while source_gate was untracked. Owner confirmed no runtime changes; retain its card marker/url/in-place migration. This scoped publication supplies the complete module/helper/Hub dependencies. Herder API is still NOT READY; source checks do not claim live native stop acceptance. No deploy/canary or settings writes.
+
+## Live acceptance after root API-ready
+
+Root announced Herder480750a437fc337233cb026fb3299b6d41547f22/PID3125891, preserved native daemon2262581, actual stop/resume/restart admission checks and strict top-level humanStopHeld. Notice owner01a1106f performed the coordinated d0a54673acb396abc9e510f89ac3a1e17dba8b1f upgrade, release20261006T112818Z-d0a54673acb3-3206756, PIDs3208469/3208473. This owner performed no deployment/restart/new session/call.
+
+Actual source_launch_fields network reads to GET /api/coordination/context with consume=0: owned root Codex01a11036-e2e7-72a2-9d01-323e2990f4b7 and ZCode sess_eb89671b-ba76-41fc-ae75-20727bdfcdf7 returned strict boolean true; both were rejected with human_stop_held before producing launch fields or sending POST. Evidence .tmp/source-stop-live-20261006/held-live-readonly.json,15/5ms. These ZCode reads preceded the root's later reservation of its ZCode fixture; no further ZCode action was performed. Root's all-source atomic admission/native proof remains separate from these Notice consumer checks.
+
+Authorized UI check used only the existing root Codex ID: real Resume button→HTTP200/humanRequested:true→same native ID running and actual assistant reply. The native turn finished before the attempted Stop click; supported idle Stop API200 restored hold. One bounded same-ID human browser message requesting only sleep30/no writes/no network then allowed an actual visible Stop click→HTTP200/humanRequested:false. Final inspector showed explicit stop and actual GET returned strict held=true. Source_launch_fields was run again after the browser; human_stop_held before POST persisted (.tmp/source-stop-live-20261006/post-browser-held.json). All owned browsers closed; root notified that fixture ownership is released and its autopilot override is untouched/off.
+
+Herder browser screenshots/action JSON are under .tmp/ui-timings-20261006/stop-resume in the owning Herder checkout; before-held/after-resume/controlled-running/controlled-final-held images inspected. No guessed native ancestry or synthetic created session. Own source-stop slice is accepted. Overall noise/AIquiet is not accepted: real quiet fixture5824 exposed terminal GptAdmin adapter dropping notify_user:false/reason; owner01a1106f received narrow parser release and is fixing the actual seam before corrective reload/new real canary. Manual5822 was reported accepted by its owner; no claim of phone proof or 210-session bulk verification.
