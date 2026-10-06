@@ -335,10 +335,31 @@ class AdminConfigStore:
         self._consumer_notification_center().set_runtime_setting("telegram_topics_json", json.dumps(routes, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "topic_deleted", "subject": topic_id})
 
+    def _live_delivery_defaults(self) -> dict[str, str]:
+        """Read timing defaults from the managed worker, including systemd drop-ins."""
+        if self.primary_env != Path("/etc/notification-center.env"):
+            return {}
+        try:
+            pid = int(subprocess.check_output(
+                ["systemctl", "show", "notification-center.service", "--property=MainPID", "--value"],
+                text=True, timeout=2,
+            ).strip())
+            if pid <= 0:
+                return {}
+            environment = dict(
+                item.split("=", 1) for item in Path(f"/proc/{pid}/environ").read_bytes().decode().split("\0") if "=" in item
+            )
+            allowed = set(RUNTIME_SETTING_ENV.values()) | {"MATRIX_CALL_ESCALATION_SECONDS"}
+            return {key: value for key, value in environment.items() if key in allowed}
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return {}
+
     def runtime_settings(self) -> dict[str, str]:
         """Return live timing controls with startup env values as migration defaults."""
         center = self._consumer_notification_center()
         env = parse_environment(self.primary_env)
+        env.update(self._live_delivery_defaults())
+        env.setdefault("MATRIX_CALL_CRITICAL_ESCALATION_SECONDS", env.get("MATRIX_CALL_ESCALATION_SECONDS", "0"))
         return {
             key: center.get_runtime_setting(key, "3600" if key == "call_repeat_min_interval_seconds" else env.get(env_key, "0")) or "0"
             for key, env_key in RUNTIME_SETTING_ENV.items()

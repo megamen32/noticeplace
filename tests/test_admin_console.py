@@ -206,6 +206,24 @@ class AdminConsoleTests(unittest.TestCase):
                 self.store.set_runtime_settings({**values, 'call_repeat_min_interval_seconds': value}, 'sso:operator')
         self.assertEqual('3600', self.store.runtime_settings()['call_repeat_min_interval_seconds'])
 
+    def test_settings_save_preserves_effective_dropin_defaults_and_database_overrides(self) -> None:
+        center = self.store._consumer_notification_center()
+        center.set_runtime_setting('android_phone_quiet_end_hour', '12')
+        with mock.patch.object(self.store, '_live_delivery_defaults', return_value={
+            'MATRIX_CALL_CRITICAL_ESCALATION_SECONDS': '3600',
+            'MATRIX_CALL_EMERGENCY_ESCALATION_SECONDS': '600',
+            'TELEGRAM_CRITICAL_REPEAT_SECONDS': '600',
+            'ANDROID_PHONE_QUIET_END_HOUR': '0',
+        }):
+            values = self.store.runtime_settings()
+            self.assertEqual('3600', values['matrix_call_critical_escalation_seconds'])
+            self.assertEqual('600', values['matrix_call_emergency_escalation_seconds'])
+            self.assertEqual('600', values['telegram_critical_repeat_seconds'])
+            self.assertEqual('12', values['android_phone_quiet_end_hour'])
+            self.store.set_runtime_settings(values, 'sso:operator')
+        self.assertEqual(values, self.store.runtime_settings())
+        self.assertEqual(0, self.restarts)
+
     def test_operator_can_change_live_delivery_timers_without_restart(self) -> None:
         values = {
             "call_repeat_min_interval_seconds": "3600",
