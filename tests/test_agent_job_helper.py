@@ -29,6 +29,13 @@ class _Response:
 
 
 class AgentJobHelperTests(unittest.TestCase):
+    def test_automatic_diagnosis_rejects_opencode_before_any_request(self) -> None:
+        runner = mock.Mock()
+        with self.assertRaisesRegex(RuntimeError, "Codex or ZCode"):
+            run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis", "incident": {"id": "inc-denied"}}, Path("unused"),
+                        profile_override={"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode", "name": "denied", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "Read only."}, runner=runner)
+        runner.assert_not_called()
+
     def test_session_result_accepts_bounded_history_metadata(self) -> None:
         payload = {"history": {"metadata": "x" * 132_000}, "messages": [{"role": "assistant", "text": json.dumps({"status": "diagnosis_complete", "diagnosis": "Проверка завершена", "evidence_refs": ["evidence:read-only"]})}]}
         result = agent_job_helper._session_json(
@@ -99,7 +106,8 @@ class AgentJobHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             config = Path(tempdir) / "profiles.json"
             config.write_text(json.dumps({"profiles": {"health-diagnosis": {
-                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
+                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "codex",
+                "orchestrator_name": "planner", "orchestrator_model": "gpt-5.6-sol", "orchestrator_requested_model": "gpt-5.6-sol",
                 "name": "diagnosis-test", "cwd": tempdir, "mode": "queue", "instruction": "Read only.",
             }}}))
             config.chmod(0o600)
@@ -118,10 +126,10 @@ class AgentJobHelperTests(unittest.TestCase):
     def test_documented_health_diagnosis_profile_has_required_orchestrator_mapping(self) -> None:
         document = json.loads((Path(__file__).parents[1] / "docs" / "health-agent-jobs.example.json").read_text(encoding="utf-8"))
         profile = document["profiles"]["health-diagnosis"]
-        self.assertEqual("omniroute/subagent", profile["model"])
+        self.assertEqual("gpt-5.6-sol", profile["model"])
         self.assertEqual("health_orchestrator_100", profile["orchestrator_name"])
-        self.assertEqual("omniroute/orchestrator", profile["orchestrator_requested_model"])
-        self.assertEqual("omniroute/subagent", profile["orchestrator_model"])
+        self.assertEqual("gpt-5.6-sol", profile["orchestrator_requested_model"])
+        self.assertEqual("gpt-5.6-sol", profile["orchestrator_model"])
 
     def test_health_diagnosis_hands_off_to_orchestrator_and_attaches_three_plans(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -130,13 +138,13 @@ class AgentJobHelperTests(unittest.TestCase):
             callback = root / "health-callback.json"
             config.write_text(json.dumps({"profiles": {"health-diagnosis": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
-                "harness": "opencode", "name": "health_diagnosis_test", "cwd": str(root), "mode": "queue",
-                "model": "omniroute/subagent", "reasoning": "high", "topic": "health",
+                "harness": "codex", "name": "health_diagnosis_test", "cwd": str(root), "mode": "queue",
+                "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health",
                 "callback_file": str(callback), "diagnosis_timeout_seconds": "5", "poll_seconds": "0.2",
                 "instruction": "Return exactly one diagnosis JSON object.",
                 "orchestrator_name": "health_orchestrator_test",
-                "orchestrator_requested_model": "omniroute/orchestrator",
-                "orchestrator_model": "omniroute/subagent",
+                "orchestrator_requested_model": "gpt-5.6-sol",
+                "orchestrator_model": "gpt-5.6-sol",
             }}}), encoding="utf-8")
             config.chmod(0o600)
             callback.write_text(json.dumps({"url": "http://127.0.0.1:8091", "token": "health-callback-token"}), encoding="utf-8")
@@ -169,25 +177,25 @@ class AgentJobHelperTests(unittest.TestCase):
                 if url.endswith("/api/sessions/new-or-resume"):
                     session_calls += 1
                     if session_calls == 1:
-                        return _Response({"ok": True, "created": True, "sessionId": "opencode-health-diagnosis-1", "delivery": "accepted", "model": "omniroute/subagent"})
+                        return _Response({"ok": True, "created": True, "sessionId": "codex-health-diagnosis-1", "delivery": "accepted", "model": "gpt-5.6-sol"})
                     body = json.loads(getattr(request, "data").decode())
-                    self.assertEqual("omniroute/subagent", body["model"])
-                    self.assertEqual("sync", body["mode"])
+                    self.assertEqual("gpt-5.6-sol", body["model"])
+                    self.assertEqual("queue", body["mode"])
                     self.assertIn("bounded synthetic diagnosis", body["message"])
-                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-orchestrator-1", "delivery": "accepted", "model": "omniroute/subagent"})
+                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-orchestrator-1", "delivery": "accepted", "model": "gpt-5.6-sol"})
                 if "/progress?" in url:
-                    fingerprint = "progress:diagnosis-1" if "opencode-health-diagnosis-1" in url else "progress:orchestrator-1"
+                    fingerprint = "progress:diagnosis-1" if "codex-health-diagnosis-1" in url else "progress:orchestrator-1"
                     return _Response({"session": {"status": "idle"}, "fingerprint": fingerprint})
                 if "/details?" in url:
-                    text = diagnosis if "opencode-health-diagnosis-1" in url else plans
+                    text = diagnosis if "codex-health-diagnosis-1" in url else plans
                     return _Response({"messages": [{"role": "assistant", "text": text}]})
                 self.assertTrue(url.endswith("/v1/incidents/inc-health-1/health/plans"))
                 self.assertEqual("Bearer health-callback-token", getattr(request, "headers", {}).get("Authorization"))
                 body = json.loads(getattr(request, "data").decode())
-                self.assertEqual("omniroute/orchestrator", body["orchestration"]["orchestrator_requested_model"])
-                self.assertEqual("omniroute/subagent", body["orchestration"]["orchestrator_effective_model"])
+                self.assertEqual("gpt-5.6-sol", body["orchestration"]["orchestrator_requested_model"])
+                self.assertEqual("gpt-5.6-sol", body["orchestration"]["orchestrator_effective_model"])
                 self.assertEqual(["observe", "repair", "verify"], [plan["plan_id"] for plan in body["plans"]])
-                self.assertRegex(getattr(request, "headers", {}).get("Idempotency-key", ""), r"^health-diagnosis:inc-health-1:opencode-health-orchestrator-1:[0-9a-f]{12}$")
+                self.assertRegex(getattr(request, "headers", {}).get("Idempotency-key", ""), r"^health-diagnosis:inc-health-1:codex-health-orchestrator-1:[0-9a-f]{12}$")
                 return _Response({"event_id": "evt-plans-1"})
 
             result = run_profile(
@@ -201,14 +209,14 @@ class AgentJobHelperTests(unittest.TestCase):
                 config,
                 runner=runner,
             )
-            self.assertEqual("opencode-health-diagnosis-1", result["session_id"])
-            self.assertEqual("opencode-health-orchestrator-1", result["orchestrator_session_id"])
+            self.assertEqual("codex-health-diagnosis-1", result["session_id"])
+            self.assertEqual("codex-health-orchestrator-1", result["orchestrator_session_id"])
             self.assertEqual(3, result["plans_count"])
             self.assertEqual("plans_attached", result["callback_status"])
-            self.assertIn("trace:agent-herder:opencode-health-diagnosis-1", result["trace_refs"])
-            self.assertIn("trace:agent-herder:opencode-health-orchestrator-1", result["trace_refs"])
-            self.assertIn("trace:opencode:opencode-health-diagnosis-1", result["trace_refs"])
-            self.assertIn("trace:opencode:opencode-health-orchestrator-1", result["trace_refs"])
+            self.assertIn("trace:agent-herder:codex-health-diagnosis-1", result["trace_refs"])
+            self.assertIn("trace:agent-herder:codex-health-orchestrator-1", result["trace_refs"])
+            self.assertIn("trace:codex:codex-health-diagnosis-1", result["trace_refs"])
+            self.assertIn("trace:codex:codex-health-orchestrator-1", result["trace_refs"])
             self.assertGreaterEqual(result["orchestration"]["diagnosis_elapsed_ms"], 0)
             self.assertGreaterEqual(result["orchestration"]["orchestrator_elapsed_ms"], 0)
             self.assertNotIn("health-callback-token", json.dumps(result))
@@ -232,7 +240,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-1", "delivery": "accepted", "model": "openai-codex/gpt-5.6-luna"})
+                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "openai-codex/gpt-5.6-luna"})
                 if "/progress?" in url:
                     return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
                 if "/details?" in url:
@@ -254,7 +262,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 config,
                 runner=runner,
             )
-            self.assertEqual("opencode-health-1", result["session_id"])
+            self.assertEqual("codex-health-1", result["session_id"])
             self.assertEqual("gpt-5.6-sol", result["model"])
             body = json.loads(requests[0].data)
             self.assertEqual("codex", body["harness"])
@@ -292,7 +300,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-1", "delivery": "accepted", "model": "openai-codex/gpt-5.6-luna"})
+                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "openai-codex/gpt-5.6-luna"})
                 if "/progress?" in url:
                     return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
                 if "/details?" in url:

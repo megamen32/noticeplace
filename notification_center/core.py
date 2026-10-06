@@ -1767,7 +1767,8 @@ class NotificationCenter:
         if parsed.scheme != "https" or not parsed.hostname or parsed.query or parsed.fragment:
             raise ValidationError("Agent Herder public URL must be HTTPS")
         base_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
-        session_url = f"{base_url}/#{urllib.parse.quote(safe_harness, safe='')}/{urllib.parse.quote(safe_session, safe='')}"
+        session_key = urllib.parse.quote(f"{safe_harness}:{safe_session}", safe="")
+        session_url = f"{base_url}/#/session/{session_key}"
         session = {"plan_id": safe_plan, "stage": stage, "harness": safe_harness, "session_id": safe_session,
                    "session_url": session_url, "model": self._health_text(model, 128)}
         result = self.record_health_update(

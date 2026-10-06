@@ -378,7 +378,7 @@ class HealthWorkflowTests(unittest.TestCase):
         for harness in ("claude", "qoder", "fast-agent", "chatgpt"):
             result = self.center.record_health_agent_session(self.created["incident_id"], f"diagnosis:{harness}",
                 "", harness, "session-test", "https://agent.bezrabotnyi.com", stage="health-diagnosis")
-            self.assertIn(f"#{harness}/session-test", result["session_url"])
+            self.assertIn(f"#/session/{harness}%3Asession-test", result["session_url"])
         with self.assertRaises(ValidationError):
             self.center.record_health_agent_session(self.created["incident_id"], "unselected", "repair",
                 "claude", "session-other", "https://agent.bezrabotnyi.com")
@@ -394,7 +394,7 @@ class HealthWorkflowTests(unittest.TestCase):
             "ses/with spaces",
             "https://agent.bezrabotnyi.com",
         )
-        self.assertEqual("https://agent.bezrabotnyi.com/#zcode/ses%2Fwith%20spaces", recorded["session_url"])
+        self.assertEqual("https://agent.bezrabotnyi.com/#/session/zcode%3Ases%2Fwith%20spaces", recorded["session_url"])
         delivery = self.center._connection.execute(
             "SELECT * FROM deliveries WHERE id = ?", (recorded["session_delivery_id"],)
         ).fetchone()
@@ -420,6 +420,7 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertIn("Исправление", captured["text"])
         self.assertIn("Агент: zcode", captured["text"])
         self.assertIn("фактическое состояние", captured["text"])
+        self.assertIn(recorded["session_url"], captured["text"])
         keyboard = json.loads(captured["reply_markup"])
         self.assertEqual("Открыть сессию", keyboard["inline_keyboard"][0][0]["text"])
         self.assertEqual(recorded["session_url"], keyboard["inline_keyboard"][0][0]["url"])

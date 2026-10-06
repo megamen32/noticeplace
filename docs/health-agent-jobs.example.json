@@ -2,17 +2,18 @@
   "profiles": {
     "health-diagnosis": {
       "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
-      "harness": "opencode",
+      "harness": "codex",
       "name": "health_diagnosis_100",
       "cwd": "/home/roomhacker/ServersAdministartion",
       "mode": "queue",
-      "model": "omniroute/subagent",
+      "model": "gpt-5.6-sol",
       "reasoning": "high",
       "topic": "health",
       "orchestrator_name": "health_orchestrator_100",
-      "orchestrator_requested_model": "omniroute/orchestrator",
-      "orchestrator_model": "omniroute/subagent",
-      "instruction": "Диагностируй только переданную проблему в режиме чтения. Не меняй инфраструктуру и не запускай исправления. Последним сообщением верни один JSON-объект: status=diagnosis_complete, diagnosis (краткий вывод по-русски), evidence_refs и trace_refs (массивы ссылок на фактические проверки). Не составляй планы: их готовит отдельная сессия планирования."
+      "orchestrator_requested_model": "gpt-5.6-sol",
+      "orchestrator_model": "gpt-5.6-sol",
+      "instruction": "Диагностируй только переданную проблему в режиме чтения. Не меняй инфраструктуру и не запускай исправления. Последним сообщением верни один JSON-объект: status=diagnosis_complete, diagnosis (краткий вывод по-русски), evidence_refs и trace_refs (массивы ссылок на фактические проверки). Не составляй планы: их готовит отдельная сессия планирования.",
+      "diagnosis_timeout_seconds": 300
     },
     "health-remediation": {
       "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
@@ -20,7 +21,7 @@
       "name": "health_remediation_100",
       "cwd": "/home/roomhacker/ServersAdministartion",
       "mode": "queue",
-      "model": "o3",
+      "model": "gpt-5.6-sol",
       "reasoning": "high",
       "topic": "health",
       "remediation_timeout_seconds": 1200,

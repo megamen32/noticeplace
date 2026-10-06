@@ -393,6 +393,7 @@ class TelegramSender:
                 + (f"Путь: {plan_labels.get(plan_id, plan_id)}\n" if plan_id else "")
                 + f"{details}\n"
                 + "Сессия создана в Agent Herder. По ссылке видно фактическое состояние, сообщения, команды и текущий прогресс."
+                + f"\n\nСсылка на сессию: {str(health_session.get('session_url') or '')}"
                 f"\n\nИнцидент: {incident['id']}"
             )
         elif isinstance(health_outcome, dict) and str(health_outcome.get("observed_state") or "") == "degraded":

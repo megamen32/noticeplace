@@ -22,8 +22,6 @@ _SESSION_DETAILS_LIMIT = 1024 * 1024
 _HEALTH_CALLBACK_DEFAULT = "/home/roomhacker/.config/gptadmin/health-callback.json"
 _HEALTH_JOB_IDS = {"health-diagnosis", "health-remediation"}
 _HEALTH_STAGE_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
-_HEALTH_ORCHESTRATOR_REQUESTED_MODEL = "omniroute/orchestrator"
-_HEALTH_ORCHESTRATOR_EFFECTIVE_MODEL = "omniroute/subagent"
 _HEALTH_PLAN_IDS = ("observe", "repair", "verify")
 _HEALTH_EXECUTION_PROFILES = (
     {"runtime": "zcode", "provider": "account:zai-individual-coding-plan", "model": "GLM-5.3-Flash", "reasoning": "high", "topic": "health"},
@@ -508,9 +506,9 @@ def _post_health_plans(
     health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
     trace_refs = [
         f"trace:agent-herder:{diagnosis_session_id}",
-        f"trace:opencode:{diagnosis_session_id}",
+        f"trace:{profile['harness']}:{diagnosis_session_id}",
         f"trace:agent-herder:{orchestrator_session_id}",
-        f"trace:opencode:{orchestrator_session_id}",
+        f"trace:{profile['harness']}:{orchestrator_session_id}",
     ] + _bounded_refs(health.get("trace_refs")) + _bounded_refs(diagnosis.get("trace_refs")) + _bounded_refs(result.get("trace_refs"))
     unique_trace_refs = list(dict.fromkeys(trace_refs))[:16]
     correlation_id = str(health.get("correlation_id") or event.get("correlation_id") or "").strip()[:128]
@@ -598,7 +596,7 @@ def post_health_session_started(
 
 
 def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], session_id: str, runner: Any, started_at: float, session_callback: Callable[[Mapping[str, Any]], Any] | None = None) -> dict[str, Any]:
-    if profile["orchestrator_requested_model"] != _HEALTH_ORCHESTRATOR_REQUESTED_MODEL or profile["orchestrator_model"] != _HEALTH_ORCHESTRATOR_EFFECTIVE_MODEL or not profile["orchestrator_name"]:
+    if not profile["orchestrator_name"] or not profile["orchestrator_model"] or profile["orchestrator_requested_model"] != profile["orchestrator_model"]:
         raise RuntimeError("health diagnosis profile has no approved orchestrator mapping")
     incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
     callback_url, callback_token = _load_health_callback(profile, str(incident.get("project") or ""))
@@ -629,11 +627,8 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
         "harness": profile["harness"],
         "name": _health_session_name(profile, "health-orchestrator", event),
         "cwd": profile["cwd"],
-        # OpenCode can acknowledge prompt_async before the selected routed
-        # model actually starts, leaving an idle session with only the user
-        # turn. The orchestrator is one bounded response, so wait for its
-        # delivery before polling the durable transcript.
-        "mode": "sync",
+        # Announce the accepted native session before awaiting its result.
+        "mode": "queue",
         "model": profile["orchestrator_model"],
         "message": _health_orchestrator_message(profile, event, event["incident"], diagnosis),
     }
@@ -782,6 +777,8 @@ def run_profile(
     if not isinstance(incident, dict):
         raise RuntimeError("agent job event is missing incident telemetry")
     profile = _validate_profile(profile_override if profile_override is not None else _load_profile(profile_id, config_path))
+    if profile_id == "health-diagnosis" and profile["harness"] not in {"codex", "zcode"}:
+        raise RuntimeError("automatic health diagnosis requires Codex or ZCode; no OpenCode fallback")
     if profile_id == "health-remediation":
         health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
         selection = health.get("selection") if isinstance(health.get("selection"), Mapping) else {}
@@ -798,6 +795,8 @@ def run_profile(
         }
     started_at = time.monotonic()
     if profile_id == "health-diagnosis":
+        if not profile["orchestrator_name"] or not profile["orchestrator_model"] or profile["orchestrator_requested_model"] != profile["orchestrator_model"]:
+            raise RuntimeError("health diagnosis profile has no approved orchestrator mapping")
         # Validate the callback credential before creating a session, avoiding
         # an untracked agent if the result sink is unavailable.
         _load_health_callback(profile, str(incident.get("project") or ""))

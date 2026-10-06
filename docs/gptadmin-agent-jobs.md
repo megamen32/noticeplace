@@ -184,3 +184,26 @@ service ceiling. No CPU, process, swap or service-memory quota is raised.
 No response body is written to disk; private metadata-only proof files remain
 in ignored `.tmp/`. A read-only diagnosis/orchestrator consumer canary verifies
 this budget change after deployment. Larger responses still fail explicitly.
+
+The one-tab UI acceptance probe runs serially after the chain finishes, inside
+the existing operator session guard (6/8 GiB soft/hard RAM, 1 GiB swap, eight
+CPUs and 4096 tasks shared with the harness). Before this probe the session
+measured 5.16 GiB and 292 tasks, with zero instantaneous memory PSI. Permit
+only one browser, at most two renderer processes, no GPU workload and a
+60-second command timeout; close the dedicated session afterwards. Store its
+profile/evidence under `.tmp/session-links-20261006/`, with a 256 MiB disk/cache
+budget and no downloads. Stop rather than add browsers when the shared guard
+shows pressure; this does not raise or escape the existing session limits.
+
+## Automatic health runtime policy (2026-10-06)
+
+The user permits automatic diagnosis and planning only on Codex or ZCode.
+Notice Place rejects OpenCode before creating a session; there is no fallback
+to it. The deployed diagnosis/planner uses Codex `gpt-5.6-sol`, already present
+in the approved health execution routes. Requested and effective planner
+models must match explicitly. Native queued admission publishes identity
+before result polling. Existing remediation switches stay within the approved
+Codex/ZCode profiles. Every session card includes a copyable URL in its text
+and the same URL in its button: `/#/session/<encoded harness:session-id>`.
+Agent Herder accepts legacy links and preserves explicitly linked sessions
+when they are absent from its quick active list.
