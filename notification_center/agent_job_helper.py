@@ -14,6 +14,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .source_gate import event_sources, source_chain, source_launch_fields
+
 
 _TELEMETRY_FIELDS = ("id", "project", "severity", "title", "body", "dedup_key", "occurrences")
 _EVENT_LIMIT = 64 * 1024
@@ -660,6 +662,8 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
     }
     if profile["orchestrator_model"]:
         orchestrator_body["model"] = profile["orchestrator_model"]
+    sources = source_chain([{"harness": profile["harness"], "sessionId": session_id}], event_sources(event))
+    orchestrator_body.update(source_launch_fields(profile, sources, lambda request, **options: _read_json_request(request, runner, **options)))
     orchestrator_request = urllib.request.Request(
         profile["url"],
         data=json.dumps(orchestrator_body, ensure_ascii=False, separators=(",", ":")).encode(),
@@ -844,6 +848,9 @@ def run_profile(
         health_result = {"plan_id": plan_id, "model": profile["model"], "reasoning": profile["reasoning"], "topic": profile["topic"]}
     elif profile["model"]:
         request_body["model"] = profile["model"]
+    sources = event_sources(event) if profile_id in _HEALTH_JOB_IDS else []
+    if profile_id in _HEALTH_JOB_IDS:
+        request_body.update(source_launch_fields(profile, sources, lambda request, **options: _read_json_request(request, runner, **options)))
     request = urllib.request.Request(
         profile["url"],
         data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode(),
@@ -877,13 +884,9 @@ def run_profile(
         plan_id, request_body["message"] = _health_remediation_message(profile, fallback_event, incident)
         request_body["harness"] = profile["harness"]
         request_body["model"] = profile["model"]
-        request = urllib.request.Request(
-            profile["url"],
-            data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode(),
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
-        )
         _launch_policy_profile(profile, runner)
+        request_body.update(source_launch_fields(profile, sources, lambda request, **options: _read_json_request(request, runner, **options)))
+        request = urllib.request.Request(profile["url"], data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST")
         result = _read_json_request(request, runner)
         health_result = {
             "plan_id": plan_id,
@@ -925,6 +928,7 @@ def run_profile(
         except HealthStartPlanUnavailable:
             if normalized_execution != _HEALTH_EXECUTION_PROFILES[1]:
                 raise
+            sources = source_chain([{"harness": receipt["harness"], "sessionId": receipt["session_id"]}], sources)
             fallback_execution = _HEALTH_EXECUTION_PROFILES[0]
             profile = {
                 **profile,
@@ -938,13 +942,9 @@ def run_profile(
             fallback_event = {**event, "health": {**health, "selection": {**selection, "execution": fallback_execution}}}
             plan_id, request_body["message"] = _health_remediation_message(profile, fallback_event, incident)
             request_body["model"] = profile["model"]
-            fallback_request = urllib.request.Request(
-                profile["url"],
-                data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode(),
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-                method="POST",
-            )
             _launch_policy_profile(profile, runner)
+            request_body.update(source_launch_fields(profile, sources, lambda request, **options: _read_json_request(request, runner, **options)))
+            fallback_request = urllib.request.Request(profile["url"], data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST")
             fallback_result = _read_json_request(fallback_request, runner)
             if fallback_result.get("ok") is not True or not str(fallback_result.get("sessionId") or ""):
                 raise RuntimeError("Agent Herder did not accept the Individual Plan fallback")

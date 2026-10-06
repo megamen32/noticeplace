@@ -231,3 +231,20 @@ preserves explicitly linked sessions absent from the quick active list.
 verification, source fingerprint и useful progress. Ссылки на сессии и итоги
 сохраняются после ACK; они не считаются дубликатами карточки аварии при
 публикации/миграции трёх планов и проверке полноты карточки.
+
+## Остановленные человеком сессии
+
+Перед связанным запуском Notice Place проверяет `humanStopHeld` всех известных
+исходных сессий через `/api/coordination/context` с `consume=0`. Inbox не
+потребляется. Native ID и harness берутся из сохранённых session/plan receipts,
+включая обычную карточку с ручным нажатием AI. Названия чатов и тексты сообщений
+не используются для угадывания исходной сессии.
+
+Planner, remediation, retry и quota/start-plan replacement передают весь
+`sourceSessions` и непосредственный `sourceHarness/sourceSessionId` в named
+launch. Сервер повторно проверяет полный список на admission. Максимум32;
+более длинная цепочка требует ручной обработки и не обрезается. Недоступный
+endpoint, отсутствующий/неверный boolean и удержанный stop запрещают запуск.
+Новая несвязанная диагностика может иметь пустой список. Notice не передаёт
+`humanRequested` и не снимает stop: это делает явное возобновление или доверенный
+новый пользовательский prompt в исходном Agent Herder чате.

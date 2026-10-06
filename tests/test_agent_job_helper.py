@@ -124,6 +124,8 @@ class AgentJobHelperTests(unittest.TestCase):
             requests = []
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if "/api/coordination/context?" in request.full_url:
+                    return _Response({"humanStopHeld": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
                     return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
@@ -212,6 +214,8 @@ class AgentJobHelperTests(unittest.TestCase):
             session_calls = 0
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if "/api/coordination/context?" in request.full_url:
+                    return _Response({"humanStopHeld": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
                     return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal session_calls
@@ -280,6 +284,8 @@ class AgentJobHelperTests(unittest.TestCase):
             requests: list[object] = []
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if "/api/coordination/context?" in request.full_url:
+                    return _Response({"humanStopHeld": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
                     return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
@@ -342,6 +348,8 @@ class AgentJobHelperTests(unittest.TestCase):
             })
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if "/api/coordination/context?" in request.full_url:
+                    return _Response({"humanStopHeld": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
                     return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
@@ -401,6 +409,8 @@ class AgentJobHelperTests(unittest.TestCase):
             })
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if "/api/coordination/context?" in request.full_url:
+                    return _Response({"humanStopHeld": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
                     return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
@@ -449,6 +459,8 @@ class AgentJobHelperTests(unittest.TestCase):
             })
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if "/api/coordination/context?" in request.full_url:
+                    return _Response({"humanStopHeld": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
                     return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
@@ -512,7 +524,11 @@ class AgentJobHelperTests(unittest.TestCase):
 
             policy_reads = 0
             def fake_read(request: object, _runner: object, timeout: float = 90, **_options: object) -> dict[str, object]:
+                if "/api/coordination/context?" in request.full_url:
+                    return {"humanStopHeld": False}
                 nonlocal policy_reads
+                if "/api/coordination/context?" in request.full_url:
+                    return _Response({"humanStopHeld": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
                     policy_reads += 1
                     # A retry may use another native model only after the
@@ -575,7 +591,11 @@ class AgentJobHelperTests(unittest.TestCase):
 
             policy_reads = 0
             def fake_read(request: object, _runner: object, timeout: float = 90, **_options: object) -> dict[str, object]:
+                if "/api/coordination/context?" in request.full_url:
+                    return {"humanStopHeld": False}
                 nonlocal policy_reads
+                if "/api/coordination/context?" in request.full_url:
+                    return _Response({"humanStopHeld": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
                     policy_reads += 1
                     # A retry may use another native model only after the
@@ -663,6 +683,8 @@ class AgentJobHelperTests(unittest.TestCase):
             requests: list[object] = []
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if "/api/coordination/context?" in request.full_url:
+                    return _Response({"humanStopHeld": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
                     return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
@@ -711,6 +733,8 @@ class AgentJobHelperTests(unittest.TestCase):
             requests: list[object] = []
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if "/api/coordination/context?" in request.full_url:
+                    return _Response({"humanStopHeld": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
                     return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)

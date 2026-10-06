@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .health_workflow import HEALTH_EXECUTION_PROFILE, normalize_health_execution, sanitize_bounded_text
+from .source_gate import source_chain
 
 
 _INCIDENT_FIELDS = ("id", "project", "severity", "title", "body", "dedup_key", "occurrences")
@@ -44,6 +45,7 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     health_context = payload.get("health_context")
     if isinstance(health_context, dict):
         bounded_health: dict[str, Any] = {
+            "source_sessions": source_chain(health_context.get("source_sessions")),
             "source_id": _safe_health_ref(health_context.get("source_id")),
             "host_id": _safe_health_ref(health_context.get("host_id")),
             "signal_type": _safe_health_ref(health_context.get("signal_type"), 64),

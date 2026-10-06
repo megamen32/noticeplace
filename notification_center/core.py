@@ -2137,8 +2137,10 @@ class NotificationCenter:
         with self._lock, self._connection:
             incident = self.get_incident(incident_id)
             original = self._health_original_event(incident_id)
-            if incident is None or original is None:
+            manual_stop = status in {"human_stopped", "source_blocked"} and self.manual_ai_requested(incident_id)
+            if incident is None or (original is None and not manual_stop):
                 return None
+            original = original or {}
             if str(original.get("correlation_id") or "").startswith("corr:live-health-canary:"):
                 return None
             if incident["state"] == "resolved" and status not in {"resolved", "recovered"}:
@@ -2256,12 +2258,13 @@ class NotificationCenter:
         # Older receipts stored native identities with the accepted plan batch.
         plans = self.latest_health_event(incident_id, "health.plans_attached")
         orchestration = plans["payload"].get("orchestration") if plans else None
+        legacy: list[dict[str, str]] = []
         if isinstance(orchestration, Mapping):
             for role in ("orchestrator", "diagnosis"):
                 native_id = orchestration.get(f"{role}_session_id")
                 if native_id:
-                    sources.append({"harness": orchestration.get(f"{role}_harness") or orchestration.get("harness"), "sessionId": native_id})
-        return source_chain(sources)
+                    legacy.append({"harness": orchestration.get(f"{role}_harness") or orchestration.get("harness"), "sessionId": native_id})
+        return source_chain(sources, legacy)
 
     def health_incident_is_synthetic(self, incident_id: str) -> bool:
         """Classify synthetic health incidents from their persisted source event."""
@@ -3089,8 +3092,8 @@ class NotificationCenter:
                         if self._health_text(ref, 128)
                     ],
                 }
-                if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
-                    payload["health_context"]["source_sessions"] = self._health_source_sessions(str(incident["id"]))
+            if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
+                payload.setdefault("health_context", {})["source_sessions"] = self._health_source_sessions(str(incident["id"]))
             outcome = payload.get("health_outcome")
             show_plans = not isinstance(outcome, dict) or outcome.get("status") == "plans_ready"
             latest_plans = self.latest_health_event(str(incident["id"]), "health.plans_attached") if show_plans and not isinstance(payload.get("health_session"), dict) else None
