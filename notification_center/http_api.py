@@ -416,6 +416,8 @@ class TelegramSender:
                 "failed": ("Работа остановилась", "Сервис выполнения сообщил об ошибке. Результат не получен, восстановление не подтверждено. Требуется повторный разбор причины остановки."),
                 "unknown": ("Восстановление не подтверждено", "Полученных данных недостаточно, чтобы закрыть инцидент. Требуется проверка исходного источника; исправление пока не подтверждено."),
                 "interrupted": ("Нет подтверждённого результата разбора", "Не удалось дождаться ответа сервиса выполнения. Сессия могла продолжить работу. Исправление пока не подтверждено."),
+                "human_stopped": ("Автопродолжение остановлено", "Исходная сессия помечена остановленной. Продолжение, новый планировщик и замена сессии не запущены. Возобновить работу можно явным действием в исходном чате Agent Herder."),
+                "source_blocked": ("Автозапуск заблокирован", "Не удалось безопасно проверить исходные сессии, либо цепочка содержит больше 32 сессий. Требуется ручная проверка цепочки в Agent Herder; автоматического продолжения не будет."),
             }
             heading, explanation = conclusions.get(status, conclusions["unknown"])
             session_url = str(health_outcome.get("session_url") or "")
@@ -465,8 +467,36 @@ class TelegramSender:
                 request_data["reply_markup"] = json.dumps(action_keyboard, separators=(",", ":"))
         elif mode == "health":
             raise RuntimeError("Telegram health delivery requires signed plan callback configuration")
+        ai_card = payload.get("ai_card") if isinstance(health_session, dict) else None
+        if isinstance(ai_card, dict):
+            session = payload.get("ai_session") or health_session
+            session_url = str(session.get("session_url") or "")
+            parsed = urllib.parse.urlsplit(session_url)
+            if parsed.scheme != "https" or parsed.hostname != "agent.bezrabotnyi.com":
+                raise RuntimeError("Agent Herder session URL is invalid")
+            stage = str(session.get("stage") or "")
+            status = {"health-diagnosis": "AI проводит диагностику.",
+                      "health-orchestrator": "AI готовит варианты решения.",
+                      "health-remediation": "AI выполняет выбранный план."}.get(stage, "AI начал работу.")
+            suffix = f"\n\n✅ Выбрано: решение через AI.\n{status}\nСсылка на сессию: {session_url}"
+            budget = 4096 - len(suffix.encode("utf-16-le")) // 2
+            base = str(ai_card.get("text") or "").encode("utf-16-le")[:max(0, budget) * 2].decode("utf-16-le", errors="ignore")
+            text = base + suffix
+            base_units = len(base.encode("utf-16-le")) // 2
+            entities = [e for e in ai_card.get("entities", []) if isinstance(e, dict)
+                        and isinstance(e.get("offset"), int) and isinstance(e.get("length"), int)
+                        and 0 <= e["offset"] < e["offset"] + e["length"] <= base_units]
+            entities.append({"type": "url", "offset": len(text[:text.rfind(session_url)].encode("utf-16-le")) // 2,
+                             "length": len(session_url.encode("utf-16-le")) // 2})
+            action_keyboard = {"inline_keyboard": [[{"text": "Открыть сессию", "url": session_url}]]}
+            destination = {"chat_id": str(ai_card["chat_id"])}
+            request_data = {**destination, "message_id": str(ai_card["message_id"]), "text": text,
+                            "entities": json.dumps(entities, ensure_ascii=False), "disable_web_page_preview": "true",
+                            "reply_markup": json.dumps(action_keyboard, ensure_ascii=False)}
+            overflow_text = None
         data = urllib.parse.urlencode(request_data).encode()
-        request = urllib.request.Request(f"https://api.telegram.org/bot{self._token}/sendMessage", data=data, method="POST")
+        method = "editMessageText" if isinstance(ai_card, dict) else "sendMessage"
+        request = urllib.request.Request(f"https://api.telegram.org/bot{self._token}/{method}", data=data, method="POST")
         with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
             if not 200 <= response.status < 300:
                 raise RuntimeError(f"Telegram returned HTTP {response.status}")
@@ -484,6 +514,8 @@ class TelegramSender:
             "message_id": message_id,
             "chat_id": str(message.get("chat", {}).get("id") or destination["chat_id"]) if isinstance(message.get("chat"), dict) else destination["chat_id"],
         }
+        if isinstance(ai_card, dict):
+            receipt["edited_in_place"] = True
         action_buttons = [
             button
             for row in (action_keyboard or {}).get("inline_keyboard", [])
@@ -564,9 +596,14 @@ class TelegramSender:
         note = str(incident.get("operator_note") or "").strip()
         note_block = f"\n\nПримечание: {note}" if note else ""
         text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nПланы:\n" + "\n".join(plan_lines) + f"{note_block}\n\nИнцидент: {incident['id']}"
+        ai_session = payload.get("ai_session")
+        if isinstance(payload.get("ai_card"), dict) and isinstance(ai_session, dict):
+            text += f"\n\n✅ Выбрано: решение через AI.\nСсылка на сессию: {str(ai_session.get('session_url') or '')}"
         keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
         controls = telegram_inline_keyboard(self._action_codec, incident)
         keyboard["inline_keyboard"].extend(controls["inline_keyboard"][-1:])
+        if isinstance(ai_session, dict) and isinstance(payload.get("ai_card"), dict):
+            keyboard["inline_keyboard"].append([{"text": "Открыть сессию", "url": str(ai_session["session_url"])}])
         visible_text, overflow_text = _telegram_text_with_attachment(text)
         request_data = {
             "chat_id": str(chat_id),
@@ -1322,6 +1359,12 @@ class DeliveryWorker:
                 claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
             )
         except Exception as error:
+            from .source_gate import HealthSourceGateBlocked
+            if isinstance(error, HealthSourceGateBlocked):
+                status = "human_stopped" if error.reason == "human_stop_held" else "source_blocked"
+                self._center.schedule_health_outcome(str(delivery["incident_id"]), status, f"agent-result:{delivery['id']}")
+                self._center.complete_delivery(delivery["id"], "cancelled", str(error), claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"))
+                return
             if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
                 self._center.schedule_health_outcome(str(delivery["incident_id"]), "interrupted", f"agent-interrupted:{delivery['id']}")
             delay = min(300, 5 * (2 ** min(int(delivery["attempt"]), 6)))

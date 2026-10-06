@@ -1637,7 +1637,7 @@ class NotificationCenter:
                     (str(next_offset), time.time()),
                 )
 
-    def apply_telegram_action(self, incident_id: str, action: str, actor: str) -> dict[str, Any]:
+    def apply_telegram_action(self, incident_id: str, action: str, actor: str, telegram_message: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Apply an authorized compact Telegram control action to one active incident."""
         if action in {"mute", "unmute"}:
             result = self.set_incident_notifications_muted(incident_id, action == "mute", actor)
@@ -1684,6 +1684,15 @@ class NotificationCenter:
                     )
                 else:
                     delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}", "incident", now)
+                if isinstance(telegram_message, Mapping) and (previous is None or restarted):
+                    chat = telegram_message.get("chat")
+                    message_id = telegram_message.get("message_id")
+                    if isinstance(chat, Mapping) and chat.get("id") and isinstance(message_id, int) and message_id > 0:
+                        card = {"chat_id": str(chat["id"]), "message_id": message_id,
+                                "text": str(telegram_message.get("text") or "")[:4096],
+                                "entities": telegram_message.get("entities") if isinstance(telegram_message.get("entities"), list) else []}
+                        self._connection.execute("UPDATE deliveries SET target_json=? WHERE id=?",
+                            (json.dumps({"ai_card": card}, ensure_ascii=False), delivery_id))
                 self._audit(
                     incident_id,
                     "telegram_ai_requested",
@@ -1692,6 +1701,29 @@ class NotificationCenter:
                 )
             return {"action": action, "state": incident["state"], "idempotent": previous is not None and not restarted, "restarted": restarted, "agent_job_delivery_id": delivery_id}
         raise ValidationError("unsupported Telegram action")
+
+    def manual_ai_card(self, incident_id: str) -> dict[str, Any] | None:
+        """Recover the clicked card from the durable manual diagnosis request."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT target_json FROM deliveries WHERE incident_id=? AND channel=? "
+                "AND json_type(target_json, '$.ai_card')='object' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}"),
+            ).fetchone()
+        return json.loads(row["target_json"])["ai_card"] if row else None
+
+    def manual_ai_requested(self, incident_id: str) -> bool:
+        with self._lock:
+            return self._connection.execute("SELECT 1 FROM audit_events WHERE incident_id=? AND type='telegram_ai_requested' LIMIT 1", (incident_id,)).fetchone() is not None
+
+    def latest_agent_session(self, incident_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload_json FROM events WHERE incident_id=? AND event_type IN "
+                "('health.diagnosis_session_started','health.orchestrator_session_started','health.remediation_session_started') "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1", (incident_id,),
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
 
     def record_telegram_ask(self, incident_id: str, actor: str, question: str) -> None:
         """Audit an operator question without treating its text as executable input."""
@@ -1810,7 +1842,7 @@ class NotificationCenter:
     ) -> dict[str, Any]:
         """Persist an accepted health-agent session and its durable progress link."""
         incident = self.get_incident(incident_id)
-        if incident is None or not str(incident.get("event_type") or "").startswith("health."):
+        if incident is None or (not str(incident.get("event_type") or "").startswith("health.") and not self.manual_ai_requested(incident_id)):
             raise ValidationError("health remediation session requires a health incident")
         safe_plan = self._health_text(plan_id, 64)
         safe_harness = self._health_text(harness, 64).lower()
@@ -1841,18 +1873,22 @@ class NotificationCenter:
             actor=actor,
         )
         with self._lock, self._connection:
+            target = {"health_session": session}
+            card = self.manual_ai_card(incident_id)
+            if card is not None:
+                target["ai_card"] = card
             delivery_id = self._schedule_delivery(
                 incident_id,
                 "telegram.main",
                 f"{stage.replace('health-', 'health.')}_session:{safe_harness}:{safe_session}",
                 time.time(),
-                {"health_session": session},
+                target,
             )
             # Older ACK handling cancelled these informational deliveries.
             self._connection.execute(
                 "UPDATE deliveries SET status='queued', due_at=?, last_error=NULL, target_json=?, updated_at=? "
                 "WHERE id=? AND status='cancelled'",
-                (time.time(), json.dumps({"health_session": session}, ensure_ascii=False), time.time(), delivery_id),
+                (time.time(), json.dumps(target, ensure_ascii=False), time.time(), delivery_id),
             )
         return {**result, "session_url": session_url, "session_delivery_id": delivery_id}
 
@@ -2037,6 +2073,8 @@ class NotificationCenter:
             "route_id": self._health_text(receipt.get("route_id") or "", 128),
             "status": self._health_text(receipt.get("status") or "", 32),
             "session_id": self._health_text(result.get("session_id") or result.get("sessionId") or "", 128),
+            "harness": self._health_text(result.get("harness") or "", 32),
+            "model": self._health_text(result.get("model") or "", 128),
             "created": result.get("created") is True,
             "delivery": self._health_text(result.get("delivery") or "", 32),
             "elapsed_ms": elapsed_ms,
@@ -2203,6 +2241,27 @@ class NotificationCenter:
         except json.JSONDecodeError:
             return None
         return payload if isinstance(payload, dict) else None
+
+    def _health_source_sessions(self, incident_id: str) -> list[dict[str, str]]:
+        """Use persisted native receipts, never infer ancestry from names or status."""
+        from .source_gate import source_chain
+        rows = self._connection.execute(
+            "SELECT payload_json FROM events WHERE rowid IN ("
+            "SELECT MAX(rowid) FROM events WHERE incident_id = ? AND event_type IN "
+            "('health.diagnosis_session_started','health.orchestrator_session_started','health.remediation_session_started') "
+            "GROUP BY json_extract(payload_json, '$.harness'), json_extract(payload_json, '$.session_id')) "
+            "ORDER BY rowid DESC LIMIT 33", (incident_id,),
+        ).fetchall()
+        sources = [{"harness": data.get("harness"), "sessionId": data.get("session_id")} for row in rows if isinstance(data := json.loads(row["payload_json"]), dict)]
+        # Older receipts stored native identities with the accepted plan batch.
+        plans = self.latest_health_event(incident_id, "health.plans_attached")
+        orchestration = plans["payload"].get("orchestration") if plans else None
+        if isinstance(orchestration, Mapping):
+            for role in ("orchestrator", "diagnosis"):
+                native_id = orchestration.get(f"{role}_session_id")
+                if native_id:
+                    sources.append({"harness": orchestration.get(f"{role}_harness") or orchestration.get("harness"), "sessionId": native_id})
+        return source_chain(sources)
 
     def health_incident_is_synthetic(self, incident_id: str) -> bool:
         """Classify synthetic health incidents from their persisted source event."""
@@ -3011,7 +3070,11 @@ class NotificationCenter:
                     payload["health_outcome"] = self._health_value(target["health_outcome"])
                 if isinstance(target.get("health_session"), dict):
                     payload["health_session"] = self._health_value(target["health_session"])
-        if str(incident.get("event_type") or "").startswith("health."):
+        card = self.manual_ai_card(str(incident["id"]))
+        if card is not None:
+            payload["ai_card"] = card
+            payload["ai_session"] = self.latest_agent_session(str(incident["id"]))
+        if str(incident.get("event_type") or "").startswith("health.") or self.manual_ai_requested(str(incident["id"])):
             original = self._health_original_event(str(incident["id"]))
             if isinstance(original, dict):
                 payload["health_context"] = {
@@ -3026,6 +3089,8 @@ class NotificationCenter:
                         if self._health_text(ref, 128)
                     ],
                 }
+                if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
+                    payload["health_context"]["source_sessions"] = self._health_source_sessions(str(incident["id"]))
             outcome = payload.get("health_outcome")
             show_plans = not isinstance(outcome, dict) or outcome.get("status") == "plans_ready"
             latest_plans = self.latest_health_event(str(incident["id"]), "health.plans_attached") if show_plans and not isinstance(payload.get("health_session"), dict) else None

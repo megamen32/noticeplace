@@ -89,6 +89,46 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertEqual(["failed", "queued"], [row["status"] for row in rows])
         self.assertIsNone(rows[1]["last_error"])
 
+    def test_manual_ai_marks_the_card_before_queueing_and_keeps_its_identity(self) -> None:
+        codec = TelegramActionCodec("x" * 32)
+        calls = []
+        callback = {"id": "ai-card", "from": {"id": 42},
+                    "data": codec.encode("ai", self.created["incident_id"]),
+                    "message": {"message_id": 12, "chat": {"id": -100123},
+                                "text": "Исходное уведомление", "entities": []}}
+        def api(method, payload):
+            calls.append((method, payload))
+            return {"ok": True, "result": True}
+        poller = TelegramInteractionPoller(self.center, "bot-token", {"42"}, codec, api=api)
+        poller._handle_callback(callback)
+        edits = [p for m, p in calls if m == "editMessageText"]
+        self.assertEqual(1, len(edits))
+        self.assertIn("✅ Выбрано: решение через AI", edits[0]["text"])
+        self.assertEqual([], json.loads(edits[0]["reply_markup"])["inline_keyboard"])
+        job = self.center._connection.execute("SELECT target_json FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'").fetchone()
+        self.assertEqual(12, json.loads(job[0])["ai_card"]["message_id"])
+        poller._handle_callback(callback)
+        self.assertEqual(1, len([p for m, p in calls if m == "editMessageText"]))
+        recorded = self.center.record_health_agent_session(self.created["incident_id"], "manual-session",
+            "", "codex", "session-id", "https://agent.bezrabotnyi.com", stage="health-diagnosis")
+        row = self.center._connection.execute("SELECT * FROM deliveries WHERE id=?", (recorded["session_delivery_id"],)).fetchone()
+        payload = self.center.delivery_payload(dict(row))
+        self.assertEqual(12, payload["target"]["ai_card"]["message_id"])
+        self.assertIn("codex%3Asession-id", payload["health_session"]["session_url"])
+
+    def test_ai_marker_survives_a_full_length_message_with_emoji(self) -> None:
+        codec = TelegramActionCodec("x" * 32)
+        edits = []
+        def api(method, payload):
+            if method == "editMessageText":
+                edits.append(payload)
+            return {"ok": True, "result": True}
+        callback = {"id": "long-ai", "from": {"id": 42}, "data": codec.encode("ai", self.created["incident_id"]),
+                    "message": {"message_id": 12, "chat": {"id": -100123}, "text": "🙂" * 2048}}
+        TelegramInteractionPoller(self.center, "bot-token", {"42"}, codec, api=api)._handle_callback(callback)
+        self.assertIn("✅ Выбрано: решение через AI", edits[0]["text"])
+        self.assertLessEqual(len(edits[0]["text"].encode("utf-16-le")) // 2, 4096)
+
     def test_native_reply_is_attached_to_the_replied_incident_card(self) -> None:
         self.center.complete_delivery(
             self.created["initial_delivery_id"],

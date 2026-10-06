@@ -114,6 +114,47 @@
         "Controlled incident inc_d1fbeda36c4c440e9e7c8d5db4488cb4 resolved; Telegram5693/5694 actual receiver read; calls and agents=0; no restarts after final canary"
       ],
       "tracker": ".agents/tasks/incident-call-budget-outcomes-20261006.md"
+    },
+    "noticeplace.manual-ai-card": {
+      "confidence": "verified",
+      "evidence": [
+        "python3 -m pytest tests/test_manual_ai_card.py tests/test_telegram_interactions.py -q"
+      ],
+      "git_head": "387853cb944ef7fe14a930ce53071a409fa0f27c",
+      "key": "noticeplace.manual-ai-card",
+      "kind": "failure-shield",
+      "locations": [
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "16513623aff234cf9eff03efd61f104eda7df6c682a1911aceace956157d62ed",
+          "path": "notification_center/telegram_interactions.py",
+          "symbol": ""
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "de3f1c3083c588b630f0e0a532d26693ace6cf2eb1c4ada1c06cc9a223226c35",
+          "path": "notification_center/core.py",
+          "symbol": ""
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "9aae0ab5ed475959f64b4bb3a2827e9c20eedaf3accfc1cb273512ae225329a1",
+          "path": "notification_center/http_api.py",
+          "symbol": ""
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5ead1712055cbe0fbfaa1cc179c53776944732df2e91410d2c38f7ffbf346795",
+          "path": "tests/test_manual_ai_card.py",
+          "symbol": ""
+        }
+      ],
+      "summary": "Manual AI must persist the clicked card and mark selection before session delivery; ordinary incidents with a manual request need immediate session registration and terminal harness/model fallback. TelegramSender edits the original ID; plan migration retains URL.",
+      "verified_at": "2026-10-06T12:19:51.767410+03:00"
     }
   },
   "schema_version": 1

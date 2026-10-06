@@ -159,6 +159,8 @@ class TelegramInteractionPoller:
             return
         current_text = str(message.get("text") or "").rstrip()
         marker = f"✅ Выбрано: {label[:128]}"
+        budget = 4096 - len(marker.encode("utf-16-le")) // 2 - 2
+        current_text = current_text.encode("utf-16-le")[:max(0, budget) * 2].decode("utf-16-le", errors="ignore")
         text = f"{current_text}\n\n{marker}" if current_text else marker
         payload = {
             "chat_id": chat_id,
@@ -168,7 +170,7 @@ class TelegramInteractionPoller:
         }
         # Callback text is already rendered; retain its formatting on edit.
         if isinstance(message.get("entities"), list):
-            limit = len(payload["text"].encode("utf-16-le")) // 2
+            limit = len(current_text.encode("utf-16-le")) // 2
             entities = [entity for entity in message["entities"]
                         if isinstance(entity, dict)
                         and isinstance(entity.get("offset"), int)
@@ -299,10 +301,20 @@ class TelegramInteractionPoller:
             parsed = self._codec.decode(str(callback.get("data") or ""))
             if parsed is not None and len(parsed) == 2:
                 action, incident_id = parsed
-                result = self._center.apply_telegram_action(incident_id, action, f"telegram:{actor_id}")
                 if action == "ai":
+                    # Hold the same queue lock used for final delivery admission:
+                    # the checkmark must be visible before a session can edit it.
+                    with self._center.delivery_send_lock():
+                        result = self._center.apply_telegram_action(incident_id, action, f"telegram:{actor_id}",
+                            telegram_message=callback.get("message"))
+                        if result.get("agent_job_delivery_id") and not result.get("idempotent"):
+                            self._dismiss_choice_message(callback, "решение через AI. Создаётся сессия…")
+                    if result.get("state") == "inactive":
+                        self._answer(callback_id, "Инцидент уже закрыт; запуск не требуется")
+                        return
                     self._answer(callback_id, "AI уже запущен" if result.get("idempotent") else "AI начал диагностику")
                     return
+                result = self._center.apply_telegram_action(incident_id, action, f"telegram:{actor_id}")
                 if action in {"mute", "unmute"}:
                     self._refresh_action_keyboard(callback, incident_id)
                     self._answer(
