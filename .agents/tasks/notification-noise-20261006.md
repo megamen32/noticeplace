@@ -227,3 +227,14 @@ controller cleanup is complete. Evidence is final-controller-archives.json
 in the task's private Codex visualizations directory. No archive replay.
 Herder terminal/coordination-noise correction8a151ff is reviewed/pushed;
 root owns the one intentional final build/restart and same-ID canary follows.
+
+2026-10-06 17:50 MSK owner instruction supersedes the prior TGC gate tracking:
+TelegramAuto work is handed off completely to ZCode
+sess_e6d8e941-5787-4c51-a3a1-c578e7825245; publication/runtime pickup decisions
+are his. Codex stops TelegramAuto edits, checks, monitors and control. Prior
+source/test receipts are historical evidence, not current constraints. No
+further TelegramAuto checkout access or publication by this agent.
+
+The subsequent reviewed original-backfill/composite-MD ONE managed Notice
+upgrade is explicitly handed to 01a10bc5, after his coherent clean source and
+foreign phone-owner slice publication. No duplicate upgrade by this agent.
