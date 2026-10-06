@@ -166,3 +166,21 @@ rather than splicing event text into shell source or exposing it in argv.
 Use a stable producer `Idempotency-Key` when retrying the same event. A new
 observation that should deliver updated telemetry gets a new producer key while
 keeping the same `dedup_key`.
+
+## Bounded session-result reads
+
+Agent Herder returns history metadata even with `details?limit=1&history=auto`.
+The October 6 live diagnosis measured 129,182 bytes for one final turn
+(131,704 bytes for three); its valid JSON receipt was rejected by the former
+64 KiB guard. Only session-details GETs now allow at most 1 MiB, read with a
+one-byte overflow sentinel. Other responses and error bodies stay at 64 KiB.
+Diagnosis and orchestration request only the latest turn; no full-history fetch.
+
+The existing main service measured about 25 MiB with 12 tasks against its
+512 MiB/1 GiB RAM, 256 MiB swap, two-CPU and 256-task budget. With two delivery
+workers, at most two sequential bounded reads add 2 MiB raw response storage
+plus JSON allocations; reserve 32 MiB for these readers within the existing
+service ceiling. No CPU, process, swap or service-memory quota is raised.
+No response body is written to disk; private metadata-only proof files remain
+in ignored `.tmp/`. A read-only diagnosis/orchestrator consumer canary verifies
+this budget change after deployment. Larger responses still fail explicitly.

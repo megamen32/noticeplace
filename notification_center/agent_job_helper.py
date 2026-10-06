@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping
 _TELEMETRY_FIELDS = ("id", "project", "severity", "title", "body", "dedup_key", "occurrences")
 _EVENT_LIMIT = 64 * 1024
 _RESPONSE_LIMIT = 64 * 1024
+_SESSION_DETAILS_LIMIT = 1024 * 1024
 _HEALTH_CALLBACK_DEFAULT = "/home/roomhacker/.config/gptadmin/health-callback.json"
 _HEALTH_JOB_IDS = {"health-diagnosis", "health-remediation"}
 _HEALTH_STAGE_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
@@ -253,15 +254,15 @@ def _profile_seconds(profile: Mapping[str, str], key: str, default: float, minim
     return max(minimum, min(maximum, value))
 
 
-def _read_json_request(request: urllib.request.Request, runner: Any, timeout: float = 90) -> dict[str, Any]:
+def _read_json_request(request: urllib.request.Request, runner: Any, timeout: float = 90, *, response_limit: int = _RESPONSE_LIMIT) -> dict[str, Any]:
     endpoint = urllib.parse.urlsplit(request.full_url).path or "loopback"
     try:
         with runner(request, timeout=timeout) as response:
             if not 200 <= int(response.status) < 300:
                 raise RuntimeError(f"health agent endpoint returned HTTP {response.status}")
-            body = response.read(_RESPONSE_LIMIT + 1)
-            if len(body) > _RESPONSE_LIMIT:
-                raise RuntimeError(f"health agent endpoint response exceeds 65536 bytes at {endpoint}")
+            body = response.read(response_limit + 1)
+            if len(body) > response_limit:
+                raise RuntimeError(f"health agent endpoint response exceeds {response_limit} bytes at {endpoint}")
             result = json.loads(body)
     except urllib.error.HTTPError as error:
         detail = ""
@@ -296,7 +297,12 @@ def _health_session_name(profile: Mapping[str, str], profile_id: str, event: Map
 
 
 def _session_json(profile: Mapping[str, str], session_id: str, suffix: str, runner: Any) -> dict[str, Any]:
-    return _read_json_request(urllib.request.Request(_session_endpoint(profile, session_id, suffix), headers={"Accept": "application/json"}, method="GET"), runner)
+    request = urllib.request.Request(_session_endpoint(profile, session_id, suffix), headers={"Accept": "application/json"}, method="GET")
+    if suffix.split("?", 1)[0] == "/details":
+        # Even one turn includes adapter history metadata (129 KiB measured).
+        # Keep this endpoint separately bounded; callbacks/progress stay 64 KiB.
+        return _read_json_request(request, runner, response_limit=_SESSION_DETAILS_LIMIT)
+    return _read_json_request(request, runner)
 
 
 def _stop_session(profile: Mapping[str, str], session_id: str, runner: Any) -> None:
@@ -608,10 +614,8 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
             last_fingerprint = fingerprint
         session = progress.get("session") if isinstance(progress.get("session"), Mapping) else {}
         if str(session.get("status") or "") in {"idle", "completed", "done"}:
-            # The native OpenCode adapter already returns bounded recent turns;
-            # asking for the full logical history can exceed the helper's
-            # response guard without adding anything needed for the final JSON.
-            details = _session_json(profile, session_id, "/details?limit=3&history=auto", runner)
+            # Only the latest turn is needed for the terminal JSON receipt.
+            details = _session_json(profile, session_id, "/details?limit=1&history=auto", runner)
             diagnosis = _extract_health_diagnosis(details)
             if diagnosis is not None:
                 diagnosis_completed_at = time.monotonic()
@@ -658,7 +662,7 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
             last_fingerprint = f"orchestrator:{fingerprint}"
         session = progress.get("session") if isinstance(progress.get("session"), Mapping) else {}
         if str(session.get("status") or "") in {"idle", "completed", "done"}:
-            details = _session_json(profile, orchestrator_session_id, "/details?limit=3&history=auto", runner)
+            details = _session_json(profile, orchestrator_session_id, "/details?limit=1&history=auto", runner)
             plan_result = _extract_health_result(details)
             if plan_result is not None:
                 break

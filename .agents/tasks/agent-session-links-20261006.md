@@ -1,6 +1,6 @@
 # Agent Herder session links in Notice Place
 
-Status: source verified; deployment and real session/card proof pending.
+Status: session links deployed and delivered; full chain verification in progress.
 
 The user receives phone explanations that imply work has started, but cannot
 open the agent session from Notice Place. Confirmed gaps:
@@ -31,3 +31,11 @@ Validation artifacts and private configuration remain under ignored `.tmp/`.
 The reviewed Notice Place main-service budget remains 512 MiB/1 GiB RAM,
 256 MiB swap, two CPUs and 256 tasks. Tests run serially with a timeout; the
 live check may launch at most one read-only diagnosis/orchestrator chain.
+
+First live cycle: accepted OpenCode diagnosis `ses_eeffe7b1dffeRNByTAk3Bym1uY`
+and its Telegram session card were delivered. The final diagnosis JSON was
+valid, but the details response exceeded 64 KiB because of adapter metadata.
+The captured failure starts a new fix cycle: only details reads get a measured
+1 MiB hard cap; latest-turn requests minimize transcript volume. No Agent
+Herder changes: its concurrent dirty work and unpublished commits are preserved.
+A second read-only chain is the final consumer canary for this cycle.

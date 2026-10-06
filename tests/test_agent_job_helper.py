@@ -29,6 +29,30 @@ class _Response:
 
 
 class AgentJobHelperTests(unittest.TestCase):
+    def test_session_result_accepts_bounded_history_metadata(self) -> None:
+        payload = {"history": {"metadata": "x" * 132_000}, "messages": [{"role": "assistant", "text": json.dumps({"status": "diagnosis_complete", "diagnosis": "Проверка завершена", "evidence_refs": ["evidence:read-only"]})}]}
+        result = agent_job_helper._session_json(
+            {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode"},
+            "session-test", "/details?limit=1&history=auto", lambda *_a, **_k: _Response(payload),
+        )
+        self.assertIsNotNone(agent_job_helper._extract_health_diagnosis(result))
+
+    def test_session_result_keeps_a_hard_response_budget(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "exceeds"):
+            agent_job_helper._session_json(
+                {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode"},
+                "session-test", "/details?limit=1&history=auto",
+                lambda *_a, **_k: _Response({"history": "x" * (1024 * 1024 + 1)}),
+            )
+
+    def test_non_details_endpoint_retains_64k_response_budget(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "exceeds 65536"):
+            agent_job_helper._session_json(
+                {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode"},
+                "session-test", "/progress?limit=5&history=auto",
+                lambda *_a, **_k: _Response({"history": "x" * 132_000}),
+            )
+
     def test_health_callback_selects_the_incident_project_token(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             callback = Path(tempdir) / "health-callback.json"
@@ -427,7 +451,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 })}]},
             ]
 
-            def fake_read(request: object, _runner: object, timeout: float = 90) -> dict[str, object]:
+            def fake_read(request: object, _runner: object, timeout: float = 90, **_options: object) -> dict[str, object]:
                 calls.append(request)
                 response = responses.pop(0)
                 if isinstance(response, Exception):
@@ -482,7 +506,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 })}]},
             ]
 
-            def fake_read(request: object, _runner: object, timeout: float = 90) -> dict[str, object]:
+            def fake_read(request: object, _runner: object, timeout: float = 90, **_options: object) -> dict[str, object]:
                 calls.append(request)
                 response = responses.pop(0)
                 return response
