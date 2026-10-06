@@ -53,6 +53,21 @@ class AgentCallPhoneAdapter:
         body = " ".join(str(incident.get("body") or "Подробности отсутствуют").split())[:1200]
         severity = str(incident.get("severity") or "critical")
         event_type = str(incident.get("event_type") or "")
+        ai_session = payload.get("ai_session") if isinstance(payload.get("ai_session"), dict) else {}
+        health_context = payload.get("health_context") if isinstance(payload.get("health_context"), dict) else {}
+        agent_context = {
+            "incident_id": str(incident.get("id") or "")[:128],
+            "event_type": event_type[:128],
+            "severity": severity[:32],
+            "title": title,
+            "body": body,
+            "session_id": str(ai_session.get("session_id") or "")[:256],
+            "session_harness": str(ai_session.get("harness") or "")[:32],
+            "source_id": str(health_context.get("source_id") or "")[:128],
+            "host_id": str(health_context.get("host_id") or "")[:128],
+            "signal_type": str(health_context.get("signal_type") or "")[:64],
+            "correlation_id": str(health_context.get("correlation_id") or "")[:256],
+        }
         call_test = event_type == "operator.call_test"
         opening = (
             "Проверка связи." if call_test else
@@ -63,12 +78,13 @@ class AgentCallPhoneAdapter:
             "message": f"{opening} {title}. {body}",
             "context": (
                 f"Уровень {severity}. {title}. {body}\n"
-                "У голосового ассистента нет инструментов запуска работ или управления агентами. "
-                "Не обещай, что начал проверку или исправление. Объясняй только сведения из уведомления. "
-                "Фактический запуск и прогресс работы подтверждаются сессией Agent Herder в карточке Notice Place."
+                "Если привязана сессия Agent Herder, голосовой Fast Agent может читать её статус и "
+                "по явной просьбе пользователя передать ей продолжение работы. Не выдумывай прогресс: "
+                "сообщай только сведения из уведомления и фактические ответы инструментов."
             ),
             "repeat": 1 if call_test else 2,
             "incident_id": str(incident.get("id") or "")[:128],
+            "agent_context": agent_context,
         }
         raw = self._requester(
             self._socket_path,

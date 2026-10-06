@@ -43,10 +43,22 @@ class AgentCallPhoneAdapterTests(unittest.TestCase):
         result = adapter.phone_call({
             "incident": {
                 "id": "incident-1",
+                "event_type": "health.degraded",
                 "severity": "critical",
                 "title": "Сервер 88 недоступен",
                 "body": "Три проверки завершились ошибкой.",
-            }
+            },
+            "ai_session": {
+                "session_id": "session-88",
+                "harness": "codex",
+                "session_url": "https://agent.example/session-88",
+            },
+            "health_context": {
+                "source_id": "host:88",
+                "host_id": "server-88",
+                "signal_type": "cpu",
+                "correlation_id": "episode-88",
+            },
         })
 
         self.assertTrue(adapter.can_phone_call)
@@ -55,6 +67,12 @@ class AgentCallPhoneAdapterTests(unittest.TestCase):
         self.assertIn("Сломалось что-то", requests[0]["message"])
         self.assertIn("Сервер 88 недоступен", requests[0]["message"])
         self.assertIn("Три проверки", requests[0]["context"])
+        self.assertNotIn("нет инструментов", requests[0]["context"])
+        self.assertEqual("session-88", requests[0]["agent_context"]["session_id"])
+        self.assertEqual("codex", requests[0]["agent_context"]["session_harness"])
+        self.assertEqual("server-88", requests[0]["agent_context"]["host_id"])
+        self.assertEqual("episode-88", requests[0]["agent_context"]["correlation_id"])
+        self.assertNotIn("session_url", requests[0]["agent_context"])
 
     def test_environment_prefers_agentcall_over_legacy_adb_settings(self) -> None:
         with mock.patch.dict(os.environ, {
