@@ -24,3 +24,11 @@ User request: show the original incoming text, and immediately deliver a complet
 - Recipient Helper downloaded metadata: human-request-userio-39649.md, text/markdown,7053 bytes, SHA256 0e777c1f85b20a7be0213ddf50c1cef3a29691150458921342b13f2aedb916ea. Bounded official getFile/download of this own benign file matched all7053 original UTF-8 bytes, including final marker. No token/body secret printed.
 - Both claims completed on first attempt with confirmed receipts; no partial/quarantine in these healthy canaries. No root reply-button click or external email/Matrix send.
 - Final evidence: current thread userio-original-message-md-final.json and userio-original-long-received.md; executable safe probe retained alongside proof.
+
+## Latest requested historical and combined-file acceptance
+
+- Peer original-backfill source a7cfef7 reviewed by root gpt-6-sol; old-thread fail-closed regression passed before document reservation. Full Notice suite411 passed including new phone owner scope; one managed release daa39d2 live main955716/admin955719, active/NRestarts0.
+- Existing cards5842/event39461,5845/event39472,5849/event39515 now contain complete original7/2/330 characters on SAME message IDs; immutable actors/choices/expiry/recipient preserved. Root independently read all three asNikita.5849 resolved Send1 remains visible, no callback/reply repeated.
+- User clarified full MD combines ORIGINAL+AI analysis. Peer modeNotify/nochoices benign proof card5899/document5900 exacttopic5764 contains full4000-character original and full AIcard text. Recipient Helper download7955 bytes SHA256 cb32f77313df8f5364a33b570c740374902e3e57a7c08d5f2eb110d3728ef96a equals peer independent Bot download and expected composition. Root independently verified recipient MIME/name/size/hash and exact native thread link https://t.me/c/4322359393/5764/5900.
+- Prior raw7053-byte proof5862 remains a historical first-phase receipt; new format is combined Markdown. No additional root DM/AI/call or reply-button action during historical repair.
+- Explicit user same-child resume used followup_task for existing /root/matrix_owner_trace; native01a111a2-3201-7883-83fb-5a976e37bc0d confirmed through agent_info and child session_meta. No replacement/session was created. Matrix ownership trace and subsequent readonly phone-writer trace completed; all dirty external work preserved.
