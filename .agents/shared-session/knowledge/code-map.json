@@ -77,6 +77,43 @@
         "Actual Telegram receiver Careviolan read messages5638/5639: visible canonical URL in both bodies; button5639 same URL",
         "Browser policy Save unchanged/API200; exact planner chat/model/transcript after runtime9a7299a; prior real message5604 delivered after ACK"
       ]
+    },
+    "noticeplace-call-budget-and-outcomes": {
+      "key": "noticeplace-call-budget-and-outcomes",
+      "kind": "failure-shield",
+      "confidence": "verified",
+      "git_head": "89aa85d40164add6f110a2ae8eaaa39fe406bc05",
+      "verified_at": "2026-10-06T09:08:56.614303+00:00",
+      "summary": "Cross-episode/cross-channel durable hourly call reservation keyed by project+recipient+host+signal family (CPU/load one pain). Informational terminal health outcomes survive ACK/resolve without escalation; only independently verified repair can claim fixed. Session/outcome cards excluded from alarm plan reconciliation; successful in-place edit is not a second original card. Admin uses effective worker drop-in defaults, DB overrides win.",
+      "locations": [
+        {
+          "path": "notification_center/core.py",
+          "symbol": "reserve_delivery_send/_reserve_problem_call/schedule_health_outcome/record_health_update/health",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "4993d9a18e6b71bd9c8a9ee0dcb5aab9df77e102ef7e864571fd0ca1441c016e"
+        },
+        {
+          "path": "notification_center/http_api.py",
+          "symbol": "DeliveryWorker.deliver/_after_telegram_delivery/TelegramSender.send",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "264aaf81d3da252386c212b0b94a9c356000c530bfc68d3b6fdf382a0fd0f54d"
+        },
+        {
+          "path": "notification_center/admin.py",
+          "symbol": "_live_delivery_defaults/runtime_settings",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "4211e8d0f3521cd74cc07bcc7bae5982a423c83ed046afe83a6e008244ad7df5"
+        }
+      ],
+      "evidence": [
+        "208 related tests passed; extra admin repair18/18; 14 new core/worker regressions",
+        "Browser Save3600 retained all effective timers; screenshot settings-saved.png inspected; owned browser closed",
+        "Controlled incident inc_d1fbeda36c4c440e9e7c8d5db4488cb4 resolved; Telegram5693/5694 actual receiver read; calls and agents=0; no restarts after final canary"
+      ],
+      "tracker": ".agents/tasks/incident-call-budget-outcomes-20261006.md"
     }
   },
   "schema_version": 1

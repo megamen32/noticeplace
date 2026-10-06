@@ -1,6 +1,6 @@
 # Повторные звонки и понятный итог инцидента
 
-Статус: реализация и проверка.
+Статус: завершено, код опубликован и живой consumer проверен.
 
 Пользователь просит звонить об одной боли не чаще раза в час, дать видимый итог разбора/исправления и возможность проверить работу.
 
@@ -21,3 +21,13 @@ Source acceptance: итоговый serial run 208/208 passed (75.356s), вкл�
 09:01 UTC: code457f148 published/deployed, Notice main/admin active, exact core/http bytes matched. Before any settings write/browser canary, live UI exposed another confirmed defect: it rendered Matrix defaults0/0 and Telegram repeat0 from primary env, but worker systemd drop-ins actually supplied3600/600/600. Existing DB quiet-end12 remained authoritative. Screenshot captured/inspected before navigation, browser closed; no settings were saved, no final canary had started. Repair: protected admin reads only timing defaults from the managed worker PID environment (drop-ins included), then DB overrides win. Added consumer regression for Save unchanged with native defaults and an explicit DB override; no preference/config migration guesses, no global runtime changes.
 
 Additional admin repair verified:18/18 admin checks passed (11.288s). Fresh protected read of new code returns exact worker defaults Matrix3600/600, repeat600 and DB quiet0–12; call budget3600. Review: only allowlisted timing environment keys returned, no secret fields; current DB values always override defaults; managed PID and read bounded to2s; tests with custom env paths do not read production process state. No browser settings write/canary occurred before this repair.
+
+
+## Финальная приёмка
+
+- Source commits457f148 +89aa85d published на main; runtime89aa85d40164add6f110a2ae8eaaa39fe406bc05. Managed release20261006T090531Z-89aa85d40164-1638736; Notice mainPID1640479/adminPID1640480 active/NRestarts0. Herder/Codex/Mac не перезапускались.
+- 208/208 related tests, затем дополнительный scoped admin repair18/18; source check passed. Ограничение звонков доказано на реальной core/queue/worker boundary с fake phone provider: новые эпизоды CPU/load дают только один вызов; durable interval после restart/cross-connection race. Дополнительного настоящего звонка пользователю не делали.
+- После последней выкладки открыта настоящая операторская web UI через её loopback admin boundary, нажата Save live settings. Интервал3600 сохранён; все прочие effective timings до/после равны (Matrix3600/600, Telegram repeat600, quiet0–12). СервисPID не изменился. Снимок .tmp/incident-outcomes-20261006/settings-saved.png снят и визуально проверен; собственная браузерная сессия noticeplace-outcomes-20261006 закрыта. Чужую todo-live-inspect не трогали.
+- ONE final controlled HTTP Notice chain: inc_d1fbeda36c4c440e9e7c8d5db4488cb4, initial Telegram5693; matching producer recovery evt_de7b9d7f4c814825a71d101b14dbb11f; final delivery dlv_f1c49104e7dd485392018fc5443ff6b2 sent/Telegram5694, incident resolved. Оба сообщения прочитаны через пользовательский TelegramHelper аккаунт11; primary восстановлен после чтения. Реальный текст5694: «Состояние восстановилось», мониторинг больше не видит проблему, действий не требуется; это planned notification check, не фиктивное исправление бизнес-сервера. No calls/agent jobs for this incident (0).
+- Receipt links: https://t.me/c/4322359393/5693 и https://t.me/c/4322359393/5694. Подробные безопасные артефакты: .tmp/incident-outcomes-20261006/live-proof.json, receiver-readback.txt, settings-effective-before.json, settings-effective-after.json, related.log, admin-final.log, deploy-final.log.
+- После начала final canary ни runtime restart, ни config changes не выполнялись. Исторические неопределённые задания не переигрывались; новые настройки глобального continuation/watchdog не менялись.
