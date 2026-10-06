@@ -303,6 +303,29 @@ def _session_json(profile: Mapping[str, str], session_id: str, suffix: str, runn
     return _read_json_request(request, runner)
 
 
+def _launch_policy_profile(profile: dict[str, str], runner: Any, *, choose_preferred: bool = False, require_preferred: bool = False) -> dict[str, str]:
+    """Use the web-configured creation policy; never infer a runtime fallback."""
+    parsed = urllib.parse.urlsplit(profile["url"])
+    url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/api/automation/launch-policy", "", ""))
+    policy = _read_json_request(urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET"), runner)
+    allowed = policy.get("allowedHarnesses")
+    preferred = policy.get("preferredHarness")
+    if policy.get("version") != 1 or not isinstance(allowed, list) or not allowed or not all(isinstance(item, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", item) for item in allowed) or not isinstance(preferred, str) or preferred not in allowed:
+        raise RuntimeError("Agent Herder automatic launch policy is unavailable or invalid")
+    harness = preferred if choose_preferred else profile["harness"]
+    if harness not in allowed or (require_preferred and harness != preferred):
+        raise RuntimeError("Agent Herder web settings do not allow this automatic launch; no runtime fallback")
+    if choose_preferred or require_preferred:
+        models = policy.get("models")
+        model = models.get(harness) if isinstance(models, dict) else None
+        if not isinstance(model, str) or not model.strip() or len(model) > 128 or "\x00" in model or "\n" in model:
+            raise RuntimeError("Agent Herder launch policy has no valid native model for the selected harness")
+        # Use the selected harness's own explicit model route, never forward
+        # a model from the previously configured execution profile.
+        return {**profile, "harness": harness, "model": model.strip(), "orchestrator_model": model.strip(), "orchestrator_requested_model": model.strip()}
+    return profile
+
+
 def _stop_session(profile: Mapping[str, str], session_id: str, runner: Any) -> None:
     for action in ("/stop", "/terminate"):
         request = urllib.request.Request(
@@ -596,7 +619,7 @@ def post_health_session_started(
 
 
 def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], session_id: str, runner: Any, started_at: float, session_callback: Callable[[Mapping[str, Any]], Any] | None = None) -> dict[str, Any]:
-    if not profile["orchestrator_name"] or not profile["orchestrator_model"] or profile["orchestrator_requested_model"] != profile["orchestrator_model"]:
+    if not profile["orchestrator_name"] or profile["orchestrator_requested_model"] != profile["orchestrator_model"]:
         raise RuntimeError("health diagnosis profile has no approved orchestrator mapping")
     incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
     callback_url, callback_token = _load_health_callback(profile, str(incident.get("project") or ""))
@@ -623,15 +646,18 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
         time.sleep(poll_seconds)
 
     orchestrator_started_at = diagnosis_completed_at
+    planner_profile = _launch_policy_profile(profile, runner, require_preferred=True)
+    profile = {**profile, "orchestrator_model": planner_profile["model"], "orchestrator_requested_model": planner_profile["model"]}
     orchestrator_body = {
         "harness": profile["harness"],
         "name": _health_session_name(profile, "health-orchestrator", event),
         "cwd": profile["cwd"],
         # Announce the accepted native session before awaiting its result.
         "mode": "queue",
-        "model": profile["orchestrator_model"],
         "message": _health_orchestrator_message(profile, event, event["incident"], diagnosis),
     }
+    if profile["orchestrator_model"]:
+        orchestrator_body["model"] = profile["orchestrator_model"]
     orchestrator_request = urllib.request.Request(
         profile["url"],
         data=json.dumps(orchestrator_body, ensure_ascii=False, separators=(",", ":")).encode(),
@@ -777,8 +803,8 @@ def run_profile(
     if not isinstance(incident, dict):
         raise RuntimeError("agent job event is missing incident telemetry")
     profile = _validate_profile(profile_override if profile_override is not None else _load_profile(profile_id, config_path))
-    if profile_id == "health-diagnosis" and profile["harness"] not in {"codex", "zcode"}:
-        raise RuntimeError("automatic health diagnosis requires Codex or ZCode; no OpenCode fallback")
+    if profile_id == "health-diagnosis":
+        profile = _launch_policy_profile(profile, runner, choose_preferred=True)
     if profile_id == "health-remediation":
         health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
         selection = health.get("selection") if isinstance(health.get("selection"), Mapping) else {}
@@ -794,8 +820,10 @@ def run_profile(
             "topic": normalized_execution["topic"],
         }
     started_at = time.monotonic()
+    if profile_id == "health-remediation":
+        _launch_policy_profile(profile, runner)
     if profile_id == "health-diagnosis":
-        if not profile["orchestrator_name"] or not profile["orchestrator_model"] or profile["orchestrator_requested_model"] != profile["orchestrator_model"]:
+        if not profile["orchestrator_name"] or profile["orchestrator_requested_model"] != profile["orchestrator_model"]:
             raise RuntimeError("health diagnosis profile has no approved orchestrator mapping")
         # Validate the callback credential before creating a session, avoiding
         # an untracked agent if the result sink is unavailable.
@@ -853,6 +881,7 @@ def run_profile(
             headers={"Content-Type": "application/json", "Accept": "application/json"},
             method="POST",
         )
+        _launch_policy_profile(profile, runner)
         result = _read_json_request(request, runner)
         health_result = {
             "plan_id": plan_id,
@@ -913,6 +942,7 @@ def run_profile(
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
                 method="POST",
             )
+            _launch_policy_profile(profile, runner)
             fallback_result = _read_json_request(fallback_request, runner)
             if fallback_result.get("ok") is not True or not str(fallback_result.get("sessionId") or ""):
                 raise RuntimeError("Agent Herder did not accept the Individual Plan fallback")

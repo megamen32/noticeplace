@@ -39,3 +39,22 @@ The captured failure starts a new fix cycle: only details reads get a measured
 1 MiB hard cap; latest-turn requests minimize transcript volume. No Agent
 Herder changes: its concurrent dirty work and unpublished commits are preserved.
 A second read-only chain is the final consumer canary for this cycle.
+
+The real second chain completed with three plans and Telegram receipts for
+its diagnosis/orchestrator cards, including the orchestrator card after ACK.
+UI acceptance then exposed two remaining causes: legacy producer URL format
+and selection clearing when a finished session is absent from the active list.
+Notice now emits canonical encoded keys; Herder commit 0cffab5 preserves linked
+selection and accepts legacy aliases. Actual user-reported message5607 maps to
+inc_d5a3cd1ee5864096916519c8352bf114 and ses_eeff33290ffelR252khDht84ma;
+its exact chat/transcript rendered in the browser after the frontend update.
+
+The user requires a visible copyable URL and web-owned execution settings.
+Cards now include URL in text and button. The launch policy contract is
+GET/PUT /api/automation/launch-policy, version1, allowedHarnesses, preferredHarness,
+models by harness. Notice reads it before each diagnosis/planner creation and
+uses models[preferredHarness]. Disabled/missing policy or changed preference
+stops the launch; no provider guessing. Continuation is independent.
+Current explicit policy: Codex/ZCode, preferred Codex, gpt-5.6-sol / native
+ZCode Individual GLM route. Waiting for the owning Herder session's API rollout
+and combined build/restart before one final native read-only consumer chain.

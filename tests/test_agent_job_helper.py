@@ -29,12 +29,36 @@ class _Response:
 
 
 class AgentJobHelperTests(unittest.TestCase):
-    def test_automatic_diagnosis_rejects_opencode_before_any_request(self) -> None:
-        runner = mock.Mock()
-        with self.assertRaisesRegex(RuntimeError, "Codex or ZCode"):
+    def test_web_policy_changes_harness_without_forwarding_foreign_model(self) -> None:
+        profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "codex", "model": "gpt-5.6-sol", "orchestrator_model": "gpt-5.6-sol", "orchestrator_requested_model": "gpt-5.6-sol"}
+        selected = agent_job_helper._launch_policy_profile(profile, lambda *_a, **_k: _Response({"version": 1, "preferredHarness": "zcode", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}}), choose_preferred=True)
+        self.assertEqual("zcode", selected["harness"])
+        self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash$high", selected["model"])
+        self.assertEqual(selected["model"], selected["orchestrator_model"])
+        self.assertEqual("gpt-5.6-sol", profile["model"])
+
+    def test_web_policy_blocks_disabled_or_changed_runtime_without_fallback(self) -> None:
+        profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "codex"}
+        runner = lambda *_a, **_k: _Response({"version": 1, "preferredHarness": "zcode", "allowedHarnesses": ["zcode"]})
+        with self.assertRaisesRegex(RuntimeError, "no runtime fallback"):
+            agent_job_helper._launch_policy_profile(profile, runner)
+        with self.assertRaisesRegex(RuntimeError, "no runtime fallback"):
+            agent_job_helper._launch_policy_profile(profile, lambda *_a, **_k: _Response({"version": 1, "preferredHarness": "zcode", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}}), require_preferred=True)
+
+    def test_disabled_policy_and_missing_native_model_do_not_launch(self) -> None:
+        profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "codex", "model": "gpt-5.6-sol"}
+        for policy in ({"version": 1, "allowedHarnesses": [], "preferredHarness": "codex", "models": {}},
+                       {"version": 1, "allowedHarnesses": ["zcode"], "preferredHarness": "zcode", "models": {"codex": "gpt-5.6-sol"}}):
+            with self.subTest(policy=policy), self.assertRaisesRegex(RuntimeError, "policy"):
+                agent_job_helper._launch_policy_profile(profile, lambda *_a, **_k: _Response(policy), choose_preferred=True)
+
+    def test_automatic_diagnosis_fails_closed_without_web_policy(self) -> None:
+        runner = mock.Mock(return_value=_Response({}))
+        with self.assertRaisesRegex(RuntimeError, "launch policy"):
             run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis", "incident": {"id": "inc-denied"}}, Path("unused"),
                         profile_override={"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode", "name": "denied", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "Read only."}, runner=runner)
-        runner.assert_not_called()
+        self.assertEqual(1, runner.call_count)
+        self.assertTrue(runner.call_args[0][0].full_url.endswith("/api/automation/launch-policy"))
 
     def test_session_result_accepts_bounded_history_metadata(self) -> None:
         payload = {"history": {"metadata": "x" * 132_000}, "messages": [{"role": "assistant", "text": json.dumps({"status": "diagnosis_complete", "diagnosis": "Проверка завершена", "evidence_refs": ["evidence:read-only"]})}]}
@@ -86,6 +110,8 @@ class AgentJobHelperTests(unittest.TestCase):
             requests = []
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if request.full_url.endswith("/api/automation/launch-policy"):
+                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 return _Response({"event_id": "evt-session-1"})
 
@@ -112,7 +138,8 @@ class AgentJobHelperTests(unittest.TestCase):
             }}}))
             config.chmod(0o600)
             callback = mock.Mock()
-            with mock.patch.object(agent_job_helper, "_load_health_callback"), \
+            with mock.patch.object(agent_job_helper, "_launch_policy_profile", side_effect=lambda profile, *_a, **_k: profile), \
+                 mock.patch.object(agent_job_helper, "_load_health_callback"), \
                  mock.patch.object(agent_job_helper, "_run_health_diagnosis", side_effect=RuntimeError("later failure")):
                 with self.assertRaisesRegex(RuntimeError, "later failure"):
                     run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
@@ -171,6 +198,8 @@ class AgentJobHelperTests(unittest.TestCase):
             session_calls = 0
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if request.full_url.endswith("/api/automation/launch-policy"):
+                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal session_calls
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
@@ -237,6 +266,8 @@ class AgentJobHelperTests(unittest.TestCase):
             requests: list[object] = []
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if request.full_url.endswith("/api/automation/launch-policy"):
+                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
@@ -297,6 +328,8 @@ class AgentJobHelperTests(unittest.TestCase):
             })
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if request.full_url.endswith("/api/automation/launch-policy"):
+                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
@@ -354,6 +387,8 @@ class AgentJobHelperTests(unittest.TestCase):
             })
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if request.full_url.endswith("/api/automation/launch-policy"):
+                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
@@ -400,6 +435,8 @@ class AgentJobHelperTests(unittest.TestCase):
             })
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if request.full_url.endswith("/api/automation/launch-policy"):
+                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
@@ -460,6 +497,8 @@ class AgentJobHelperTests(unittest.TestCase):
             ]
 
             def fake_read(request: object, _runner: object, timeout: float = 90, **_options: object) -> dict[str, object]:
+                if request.full_url.endswith("/api/automation/launch-policy"):
+                    return {"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}}
                 calls.append(request)
                 response = responses.pop(0)
                 if isinstance(response, Exception):
@@ -515,6 +554,8 @@ class AgentJobHelperTests(unittest.TestCase):
             ]
 
             def fake_read(request: object, _runner: object, timeout: float = 90, **_options: object) -> dict[str, object]:
+                if request.full_url.endswith("/api/automation/launch-policy"):
+                    return {"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}}
                 calls.append(request)
                 response = responses.pop(0)
                 return response
@@ -596,6 +637,8 @@ class AgentJobHelperTests(unittest.TestCase):
             requests: list[object] = []
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if request.full_url.endswith("/api/automation/launch-policy"):
+                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
@@ -642,6 +685,8 @@ class AgentJobHelperTests(unittest.TestCase):
             requests: list[object] = []
 
             def runner(request: object, **_kwargs: object) -> _Response:
+                if request.full_url.endswith("/api/automation/launch-policy"):
+                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 return _Response({"ok": True, "created": False, "sessionId": "codex-1", "delivery": "accepted"})
 

@@ -197,13 +197,21 @@ shows pressure; this does not raise or escape the existing session limits.
 
 ## Automatic health runtime policy (2026-10-06)
 
-The user permits automatic diagnosis and planning only on Codex or ZCode.
-Notice Place rejects OpenCode before creating a session; there is no fallback
-to it. The deployed diagnosis/planner uses Codex `gpt-5.6-sol`, already present
-in the approved health execution routes. Requested and effective planner
-models must match explicitly. Native queued admission publishes identity
-before result polling. Existing remediation switches stay within the approved
-Codex/ZCode profiles. Every session card includes a copyable URL in its text
-and the same URL in its button: `/#/session/<encoded harness:session-id>`.
-Agent Herder accepts legacy links and preserves explicitly linked sessions
-when they are absent from its quick active list.
+The Agent Herder web interface owns new automatic launches through an
+independent persisted `GET/PUT /api/automation/launch-policy` contract:
+`version:1`, `allowedHarnesses`, `preferredHarness`, and native `models` by
+harness. The current explicit policy permits Codex/ZCode and prefers Codex.
+Continuation retains its separate `/api/session-autostart` toggles.
+
+Notice Place reads the latest policy immediately before diagnosis and planning
+creation; it uses the selected harness's own model from that policy. A missing
+policy (503), disabled empty allowlist, missing model, excluded runtime or a
+changed preference during a chain fails closed. It never guesses a substitute
+provider or silently falls back to OpenCode. Approved remediation selections
+and quota recovery remain bound to their selected Codex/ZCode profile and must
+pass the current runtime allowlist again before any new session.
+
+Native queued admission publishes identity before result polling. Every session
+card includes a copyable URL in its text and the same URL in its button:
+`/#/session/<encoded harness:session-id>`. Agent Herder accepts legacy links and
+preserves explicitly linked sessions absent from the quick active list.
