@@ -238,3 +238,23 @@ further TelegramAuto checkout access or publication by this agent.
 The subsequent reviewed original-backfill/composite-MD ONE managed Notice
 upgrade is explicitly handed to 01a10bc5, after his coherent clean source and
 foreign phone-owner slice publication. No duplicate upgrade by this agent.
+
+Latest original-message clarification is COMPLETE via delegated owner receipt:
+live daa39d2ceaae712871854df2c7cfef8debc0d1c7,
+release20261006T150303Z-daa39d2ceaae-953960, main955716/admin955719,
+active/NRestarts0. Nine protected/new source files byte-equal, env/settings
+preserved. Backfill SAME old Telegram IDs5842/5845/5849 shows exact originals;
+resolved5849 retains Отправить1 and actors/choices/expiry/recipients/timestamps.
+One authorized benign composite proof: card5899/document5900 in topic5764,
+7955 UTF-8 bytes, SHA256
+cb32f77313df8f5364a33b570c740374902e3e57a7c08d5f2eb110d3728ef96a
+matches recipient read, independent Bot API download and expected formatter.
+Full4000-character original and persisted AI analysis are both present.
+URL https://t.me/c/4322359393/5764/5900. Independent UserIO root accepted.
+No DM/AI/call/reply/account switch. Prior raw document5862 stays intact.
+Current source0cc1f0165930126e3de460504b1cda25be84a5d9 docs-only after runtime,
+fetched clean HEADorigin before this task's final documentation update.
+No further Notice upgrade is needed for this slice. Full delegated evidence:
+docs/human-request-originals.md and owner04358ca/0cc1f01.
+Remaining original umbrella acceptance is Herder same-ID ZCode cold-resume/
+signed-selection proof; TelegramAuto work was explicitly handed to ZCode.
