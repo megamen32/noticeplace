@@ -209,7 +209,9 @@ policy (503), disabled empty allowlist, missing model, excluded runtime or a
 changed preference during a chain fails closed. It never guesses a substitute
 provider or silently falls back to OpenCode. Approved remediation selections
 and quota recovery remain bound to their selected Codex/ZCode profile and must
-pass the current runtime allowlist again before any new session.
+pass the current runtime allowlist and exact configured native-model route
+again before any new session; a quota fallback cannot bypass the web model
+choice.
 
 Native queued admission publishes identity before result polling. Every session
 card includes a copyable URL in its text and the same URL in its button:

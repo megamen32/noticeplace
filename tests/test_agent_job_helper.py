@@ -61,6 +61,11 @@ class AgentJobHelperTests(unittest.TestCase):
             with self.subTest(model=model), self.assertRaisesRegex(RuntimeError, "native model"):
                 select(model)
 
+    def test_quota_fallback_cannot_bypass_the_web_native_model_choice(self) -> None:
+        profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "zcode", "model": "account:zai-start-plan/GLM-5.3-Flash$high"}
+        with self.assertRaisesRegex(RuntimeError, "no model fallback"):
+            agent_job_helper._launch_policy_profile(profile, lambda *_a, **_k: _Response({"version": 1, "preferredHarness": "zcode", "allowedHarnesses": ["zcode"], "models": {"zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}}))
+
     def test_automatic_diagnosis_fails_closed_without_web_policy(self) -> None:
         runner = mock.Mock(return_value=_Response({}))
         with self.assertRaisesRegex(RuntimeError, "launch policy"):
@@ -505,9 +510,15 @@ class AgentJobHelperTests(unittest.TestCase):
                 })}]},
             ]
 
+            policy_reads = 0
             def fake_read(request: object, _runner: object, timeout: float = 90, **_options: object) -> dict[str, object]:
+                nonlocal policy_reads
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return {"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}}
+                    policy_reads += 1
+                    # A retry may use another native model only after the
+                    # latest web policy explicitly authorizes that route.
+                    route = "account:zai-start-plan/GLM-5.3-Flash$high" if policy_reads == 1 else "account:zai-individual-coding-plan/GLM-5.3-Flash$high"
+                    return {"version": 1, "preferredHarness": "zcode", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": route}}
                 calls.append(request)
                 response = responses.pop(0)
                 if isinstance(response, Exception):
@@ -562,9 +573,15 @@ class AgentJobHelperTests(unittest.TestCase):
                 })}]},
             ]
 
+            policy_reads = 0
             def fake_read(request: object, _runner: object, timeout: float = 90, **_options: object) -> dict[str, object]:
+                nonlocal policy_reads
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return {"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}}
+                    policy_reads += 1
+                    # A retry may use another native model only after the
+                    # latest web policy explicitly authorizes that route.
+                    route = "account:zai-start-plan/GLM-5.3-Flash$high" if policy_reads == 1 else "account:zai-individual-coding-plan/GLM-5.3-Flash$high"
+                    return {"version": 1, "preferredHarness": "zcode", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": route}}
                 calls.append(request)
                 response = responses.pop(0)
                 return response
