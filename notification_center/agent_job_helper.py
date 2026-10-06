@@ -318,7 +318,7 @@ def _launch_policy_profile(profile: dict[str, str], runner: Any, *, choose_prefe
     if choose_preferred or require_preferred:
         models = policy.get("models")
         model = models.get(harness) if isinstance(models, dict) else None
-        if not isinstance(model, str) or not model.strip() or len(model) > 128 or "\x00" in model or "\n" in model:
+        if not isinstance(model, str) or not model.strip() or len(model) > 256 or any(ord(char) < 32 for char in model):
             raise RuntimeError("Agent Herder launch policy has no valid native model for the selected harness")
         # Use the selected harness's own explicit model route, never forward
         # a model from the previously configured execution profile.

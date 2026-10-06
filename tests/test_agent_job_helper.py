@@ -52,6 +52,15 @@ class AgentJobHelperTests(unittest.TestCase):
             with self.subTest(policy=policy), self.assertRaisesRegex(RuntimeError, "policy"):
                 agent_job_helper._launch_policy_profile(profile, lambda *_a, **_k: _Response(policy), choose_preferred=True)
 
+    def test_native_model_budget_matches_the_web_policy_contract(self) -> None:
+        profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "codex"}
+        def select(model: str) -> dict[str, str]:
+            return agent_job_helper._launch_policy_profile(profile, lambda *_a, **_k: _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex"], "models": {"codex": model}}), choose_preferred=True)
+        self.assertEqual("x" * 256, select("x" * 256)["model"])
+        for model in ("x" * 257, "model\nother", "model\rroute", "model\x00route"):
+            with self.subTest(model=model), self.assertRaisesRegex(RuntimeError, "native model"):
+                select(model)
+
     def test_automatic_diagnosis_fails_closed_without_web_policy(self) -> None:
         runner = mock.Mock(return_value=_Response({}))
         with self.assertRaisesRegex(RuntimeError, "launch policy"):
