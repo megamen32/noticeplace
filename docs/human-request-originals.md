@@ -45,8 +45,31 @@ HTTP route, immutable source/project scope, сохранённый выбран�
 stale callback, native HTTP400 replay, strict receipt, unknown send fence и
 route A/current B red→green regression.
 
-Подтверждённые старые карточки со скриншота: `5842/userio-39461`,
-`5845/userio-39472`, `5849/userio-39515`. Их UserIO body извлечены по точному seq,
-без изменения claims/triage/Send1; размеры 7/2/330 символов. Runtime edits
-и финальная проверка composite MD ожидают reviewed publication и завершения
-соседнего signed-choice acceptance. Личные тексты и секреты не помещаются в Git.
+## Реальная доставка принята 2026-10-06
+
+Reviewed исходник `a7cfef7` вошёл в coherent release `daa39d2`; один managed
+upgrade создал `20261006T150303Z-daa39d2ceaae-953960`. Main/admin PID
+`955716/955719`, active/NRestarts 0. Девять необходимых source/runtime модулей,
+включая новый formatter, совпали побайтно. EnvironmentFile и все runtime
+settings сохранены. Общая suite владельца phone slice: 411 passed.
+
+Три карточки со скриншота реально отредактированы на **прежних** местах:
+`5842/userio-39461`, `5845/userio-39472`, `5849/userio-39515`. Их UserIO body
+извлечены по точному seq; размеры 7/2/330 символов. Recipient Helper на аккаунте
+`11/Careviolan` прочитал полный оригинал в каждой карточке. У `5849` сохранены
+resolved/«Отправить 1»; recipient, actors, choices, expiry, ответ и время ответа
+сверены до/после. Claims, triage и Send1 повторно не выполнялись.
+
+Один benign длинный notify без choices подтвердил новый документный контракт:
+request `userio-original-composite-proof-20261006`, card `5899`, document `5900`,
+topic `5764`. Recipient Helper получил файл `text/markdown`, 7955 байт,
+SHA256 `cb32f77313df8f5364a33b570c740374902e3e57a7c08d5f2eb110d3728ef96a`.
+Независимое скачивание дало те же байты и hash; сверены полный original
+(4000 символов), весь persisted AI card text и оба Markdown-раздела.
+Исторический raw-MD `5862` не менялся.
+
+Helper account не переключался. Звонков, DM собеседникам, AI job/session
+launch и повторного выбора не было. Acceptance END передан владельцам,
+Notice больше не перезапускается в этом цикле. Protected доказательства:
+`.tmp/userio-original-repair-20261006/acceptance-result.json` и
+`received-md-proof.json`; личные тексты и секреты не помещаются в Git.
