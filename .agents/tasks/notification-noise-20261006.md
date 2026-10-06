@@ -136,3 +136,45 @@ UserIO root получил PIDs/Helperwindow, own dispatcher4567622 restart и �
 Telegram-only (phone off), maxcritical. Приватный новый token сохранён только
 в autoseller-noticeplace.env с0600roomhacker; старые ключи/consumer_e9c… сохранены.
 Это authorized routing setup: ни событий, ни звонков при создании не было.
+
+## Final deployed acceptance
+
+Corrective release d2361084cd3945d25e793929dd73340445380182 is live at
+/opt/noticeplace-releases/20261006T115443Z-d2361084cd39-3453531,
+main3455401/admin3455402 active/NRestarts0. Actual final quiet incident
+inc_8748be7099304b029397d58e3521b9a6 completed via Hub5fda0ed782c28cdef462c1c1c85ba9b3
+and native Codex01a11112-b1a4-7ac0-b1b0-023c16bc0f00 in42114ms. Its durable
+decision is notify_user=false; Telegram delivery cancelled, zero sent messages,
+zero calls and no planner. Result captured before Herder's next restart.
+
+Authorized AutoGram ordinary routing card delivered5811 in topic5796, no
+customer-interest event or call fabricated. UserIO owner separately proved
+Secretary2304→Nikita1981441→event39515→HumanRequest userio-39515→topic5764
+message5849; thresholds unchanged, ordinary39507 remained silent.
+
+Ten-minute recipient delivery observation12:26:40–12:36:40 UTC captured11
+deliveries:2 owned ZCode test decisions,7 TG Commentator per-batch loss alerts,
+one unrelated genuine choice and one existing fleet external-site card edited
+in place. TG producer violates its promised hourly bound and is owned in
+TGC/account_loss_notifier.py, preserving every loss fact. No global muting.
+
+Quiet test incidents and owned manual5822 incident were explicitly closed;
+real AutoSeller customer-interest inc564f remains untouched. Quiet resolve
+retains the cancelled Telegram receipt and creates no recovery card.
+
+Production archiver is confirmed running: real CPU diagnosis native
+01a11112-b90e-7f53-a7e1-050be7d0888f has durable health_controller_archive
+status=archived, incidentinc_429a848a5beb4561afd6e2c48bd55fda; it appears in
+desktop archived tasks. Additional resolved readonly controllers continue
+archiving in the bounded existing daemon pool.
+
+Found native contract defect during owned explicit test cleanup: first archive
+POST01a110fb-a704-7302-a03f-0fa8100cb466 returned502; native desktop lists it
+archived, while Herder details uses its now-missing old sessions rollout path
+and returnsENOENT. No archive replay/SQL/fallback performed. Herder native
+adapter owner01a10b3f owns the exact-ID archive/read repair; remaining3 owned
+test controllers' cleanup waits that coherent correction. This blocks full
+archive contract acceptance despite native archive visibility being proven.
+
+ZCode queue source ad971cd published separately; root owns its manual-vs-timeout
+origin integration and one combined restart. Real final queue proof pending.
