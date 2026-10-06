@@ -85,6 +85,11 @@ UserIO287933f уже в общей ancestry.
 critical. Статус/блокер установки записан в инфраструктурном owning tracker.
 Source producer8a97c96 +corrective39fb33f опубликованы,15 checks green; watcher
 ещё не установлен до Notice contract и освобождения infra clean checkout.
+Runtime inspection обнаружил несовпадение прав архива: Notice daemon работает
+как notification-center, а Hub profile принадлежит roomhacker/0600. Consumer
+теперь использует существующий локальный NOTIFY_HEALTH_REMEDIATION_URL/CWD
+configuration seam без чтения приватного Hub profile. Loopback endpoint и
+absolute CWD проверяются; external URL запрещён. Native IDs/stop gates прежние.
 
 Автограм owner1: новая форумная тема5796 группы-1004322359393 и consumer_f9cc6bad25d9458585132b4158531259,
 Telegram-only (phone off), maxcritical. Приватный новый token сохранён только

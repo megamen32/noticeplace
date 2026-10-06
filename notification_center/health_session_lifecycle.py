@@ -2,13 +2,28 @@
 from __future__ import annotations
 
 import json
+import os
 import time
+import urllib.parse
 import urllib.request
 from typing import Any
 
-from .agent_job_helper import (_load_profile, _validate_profile, default_profile_path,
-    _read_json_request, _session_endpoint, _extract_health_diagnosis, _extract_health_result)
+from .agent_job_helper import (_read_json_request, _session_endpoint,
+    _extract_health_diagnosis, _extract_health_result)
 from .source_gate import source_launch_fields
+
+
+def _archive_profile() -> dict[str, str]:
+    # Reuse the Notice service's existing direct-Herder seam. Hub helper
+    # profiles belong to roomhacker/0600 and are unreadable by this daemon.
+    url = os.environ.get('NOTIFY_HEALTH_REMEDIATION_URL', 'http://127.0.0.1:18787/api/sessions/new-or-resume')
+    cwd = os.environ.get('NOTIFY_HEALTH_REMEDIATION_CWD', '/home/roomhacker/ServersAdministartion')
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', '::1', 'localhost'}
+            or parsed.path != '/api/sessions/new-or-resume' or parsed.query or parsed.fragment
+            or not os.path.isabs(cwd) or '\x00' in cwd):
+        raise ValueError('Archive requires the configured local Herder seam')
+    return {'url': url, 'cwd': os.path.normpath(cwd), 'harness': 'codex'}
 
 
 class HealthSessionArchiver:
@@ -56,7 +71,7 @@ class HealthSessionArchiver:
                 continue
             status, reason = 'deferred', 'endpoint_unavailable'
             try:
-                profile = dict(self.profile or _validate_profile(_load_profile('health-diagnosis', default_profile_path())))
+                profile = dict(self.profile or _archive_profile())
                 profile['harness'] = 'codex'
                 def read(request: Any, **kwargs: Any) -> dict[str, Any]:
                     return _read_json_request(request, self.runner, timeout=kwargs.pop('timeout', 5), **kwargs)

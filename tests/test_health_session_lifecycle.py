@@ -95,6 +95,20 @@ class HealthSessionLifecycleTests(unittest.TestCase):
         self.assertEqual(1, sum(request.get_method() == 'POST' for request in calls))
         self.assertEqual((0, []), self.run_archive())
 
+    def test_daemon_uses_existing_local_seam_without_reading_private_hub_profile(self):
+        self.resolve()
+        with patch('notification_center.health_session_lifecycle._read_json_request', return_value={'humanStopHeld': True}) as read, \
+             patch('notification_center.agent_job_helper._load_profile', side_effect=PermissionError('private profile')):
+            self.assertEqual(0, HealthSessionArchiver(self.center).run_once())
+        self.assertIn('http://127.0.0.1:18787/api/coordination/context?', read.call_args.args[0].full_url)
+
+    def test_archive_does_not_send_receipts_to_an_external_configured_host(self):
+        self.resolve()
+        with patch.dict('os.environ', {'NOTIFY_HEALTH_REMEDIATION_URL': 'https://other.example/api/sessions/new-or-resume'}), \
+             patch('notification_center.health_session_lifecycle._read_json_request') as read:
+            self.assertEqual(0, HealthSessionArchiver(self.center).run_once())
+        read.assert_not_called()
+
     def test_human_title_preserves_incident_and_bounded_secondary_identity(self):
         profile = {'name': 'health_diagnosis_100'}
         event = {'incident': {'id': 'one', 'title': 'Нагрузка\nна сервере 100 token=secret-value'}}
