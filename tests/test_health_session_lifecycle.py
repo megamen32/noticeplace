@@ -1,9 +1,11 @@
 """Native receipt identity, source stops and read-only archive scope."""
 import json
+import importlib.machinery
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from notification_center.core import NotificationCenter
 from notification_center.agent_job_helper import _health_session_name
@@ -81,6 +83,11 @@ class HealthSessionLifecycleTests(unittest.TestCase):
         self.center._connection.execute("UPDATE events SET event_type='health.remediation_session_started' WHERE event_type='health.diagnosis_session_started'")
         self.assertEqual((0, []), self.run_archive())
 
+    def test_explicit_test_receipts_are_excluded_without_guessing_from_titles(self):
+        self.resolve()
+        self.center._connection.execute("UPDATE events SET payload_json=json_set(payload_json,'$.test',json('true')) WHERE event_type='health.degraded'")
+        self.assertEqual((0, []), self.run_archive())
+
     def test_missing_completed_result_does_not_archive(self):
         self.resolve()
         with patch('notification_center.health_session_lifecycle._extract_health_diagnosis', return_value=None):
@@ -108,6 +115,40 @@ class HealthSessionLifecycleTests(unittest.TestCase):
              patch('notification_center.health_session_lifecycle._read_json_request') as read:
             self.assertEqual(0, HealthSessionArchiver(self.center).run_once())
         read.assert_not_called()
+
+    def test_production_agent_pool_runs_real_archiver_without_an_extra_thread(self):
+        self.resolve()
+        loader = importlib.machinery.SourceFileLoader('notice_archive_daemon', str(Path(__file__).resolve().parents[1] / 'bin' / 'notify-center'))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        daemon = importlib.util.module_from_spec(spec)
+        loader.exec_module(daemon)
+        requests = []
+        def read(request, *_args, **_kwargs):
+            requests.append(request)
+            if '/coordination/context?' in request.full_url:
+                return {'humanStopHeld': False}
+            if '/details?' in request.full_url:
+                return {'messages': [{'role': 'assistant', 'text': '{"diagnosis":"Сервис проверен."}'}]}
+            return {'ok': True, 'sessionId': 'native-id'}
+        class Executor:
+            def __init__(self, **kwargs): self.workers = kwargs['max_workers']
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def submit(self, action, *args):
+                action(*args)
+                return Mock(done=lambda: True)
+        worker = Mock(_center=self.center)
+        worker.claim_due.return_value = []
+        with patch.object(daemon, 'ThreadPoolExecutor', Executor), \
+             patch.object(daemon.time, 'monotonic', side_effect=[0, 61]), \
+             patch.object(daemon.time, 'sleep', side_effect=StopIteration('one bounded iteration')), \
+             patch('notification_center.health_session_lifecycle._read_json_request', side_effect=read):
+            with self.assertRaises(StopIteration):
+                daemon.worker_loop(worker, 'agent', 1)
+        self.assertEqual(1, sum(r.get_method() == 'POST' for r in requests))
+        audit = self.center._connection.execute("SELECT payload_json FROM audit_events WHERE type='health_controller_archive'").fetchone()
+        self.assertEqual('archived', json.loads(audit['payload_json'])['status'])
+        worker.deliver.assert_not_called()
 
     def test_human_title_preserves_incident_and_bounded_secondary_identity(self):
         profile = {'name': 'health_diagnosis_100'}

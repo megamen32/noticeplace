@@ -90,6 +90,15 @@ Runtime inspection обнаружил несовпадение прав архи
 теперь использует существующий локальный NOTIFY_HEALTH_REMEDIATION_URL/CWD
 configuration seam без чтения приватного Hub profile. Loopback endpoint и
 absolute CWD проверяются; external URL запрещён. Native IDs/stop gates прежние.
+Extensionless bin/notify-center production wiring подтверждён integration
+regression: настоящий worker_loop→реальный archive consumer→mocked API→durable
+audit, без новых потоков/agent delivery. Последний lifecycle subset13/13;
+явный persisted test=true тоже исключает auto cleanup без догадок по имени.
+
+Herder API READY480750a437fc337233cb026fb3299b6d41547f22/PID3125891 объявлен root:
+real stop/held/blocked automation/explicit same-ID resume прошли Codex/ZCode,
+hold пережил restart. ONE Notice managed upgrade и serial manual/quiet canaries
+теперь разрешены. Phone/calls отложены.
 
 Автограм owner1: новая форумная тема5796 группы-1004322359393 и consumer_f9cc6bad25d9458585132b4158531259,
 Telegram-only (phone off), maxcritical. Приватный новый token сохранён только

@@ -39,8 +39,10 @@ class HealthSessionArchiver:
             active = self.center._connection.execute(
                 "SELECT 1 FROM deliveries WHERE incident_id=? AND channel LIKE 'gptadmin.agent:%' "
                 "AND status IN ('queued','claimed','sending','retry','uncertain') LIMIT 1", (incident_id,)).fetchone()
+        original = self.center._health_original_event(incident_id) or {}
         return bool(row and row['state'] == 'resolved' and str(row['event_type']).startswith('health.')
-                    and not active and not self.center.health_incident_is_synthetic(incident_id))
+                    and not active and original.get('test') is not True
+                    and not self.center.health_incident_is_synthetic(incident_id))
 
     def run_once(self, limit: int = 2) -> int:
         now = time.time()
