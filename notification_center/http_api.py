@@ -6,6 +6,7 @@ import json
 import hashlib
 import ipaddress
 import os
+import re
 import secrets
 import time
 import urllib.parse
@@ -1434,10 +1435,31 @@ def send_human_request_telegram(
 ) -> dict[str, Any]:
     """Send one AskHuman request through the service's existing Telegram bot."""
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    if not bot_token or not chat_id:
+    default_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not bot_token or not default_chat_id:
         return {"status": "not_configured"}
-    payload: dict[str, Any] = {"chat_id": chat_id, "text": str(request["message"])[:4096]}
+    destination: dict[str, str] = {"chat_id": default_chat_id}
+    raw_routes = center.get_runtime_setting("telegram_topics_json")
+    if raw_routes:
+        try:
+            routes = json.loads(raw_routes)
+        except json.JSONDecodeError:
+            routes = {}
+        project_route = routes.get(str(request.get("project") or "")) if isinstance(routes, dict) else None
+        if isinstance(project_route, dict):
+            if project_route.get("enabled") is False:
+                raise RuntimeError("Telegram HumanRequest project route is disabled")
+            route_chat_id = str(project_route.get("chat_id") or "").strip()
+            route_thread_id = project_route.get("message_thread_id")
+            if not re.fullmatch(r"-?[0-9]+", route_chat_id):
+                raise RuntimeError("Telegram HumanRequest project route has an invalid chat_id")
+            if type(route_thread_id) is not int or route_thread_id <= 0:
+                raise RuntimeError("Telegram HumanRequest project route has an invalid message_thread_id")
+            destination = {
+                "chat_id": route_chat_id,
+                "message_thread_id": str(route_thread_id),
+            }
+    payload: dict[str, Any] = {**destination, "text": str(request["message"])[:4096]}
     mode = str(request["mode"])
     if mode == "choice":
         secret = os.environ.get("TELEGRAM_CALLBACK_SECRET", "").strip()
@@ -1454,7 +1476,7 @@ def send_human_request_telegram(
     response = (api or (lambda method, body: telegram_api(bot_token, method, body)))("sendMessage", payload)
     message = response.get("result") if isinstance(response, dict) else None
     message_id = message.get("message_id") if isinstance(message, dict) else None
-    response_chat_id = str(message.get("chat", {}).get("id") or chat_id) if isinstance(message, dict) else chat_id
+    response_chat_id = str(message.get("chat", {}).get("id") or destination["chat_id"]) if isinstance(message, dict) else destination["chat_id"]
     if not isinstance(message_id, int) or message_id <= 0:
         raise RuntimeError("Telegram AskHuman sendMessage returned no message id")
     center.bind_human_request_message(

@@ -185,6 +185,44 @@ class HumanRequestTests(unittest.TestCase):
         TelegramInteractionPoller(self.center, "bot", {"42"}, codec, api=poll_api).poll_once()
         self.assertEqual("later", self.center.get_human_request("token", "deploy-1")["response_value"])
 
+    def test_project_topic_routes_human_request_without_changing_other_projects(self) -> None:
+        """Use the durable project topic and keep the global chat as the fallback."""
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "project-routes.sqlite3",
+            {"wildcard": {"project": "*", "max_severity": "critical"}},
+        )
+        center.set_runtime_setting("telegram_topics_json", json.dumps({
+            "userio": {
+                "name": "Разбор UserIO", "chat_id": "-1004322359393",
+                "message_thread_id": 5764, "enabled": True,
+            },
+        }))
+        userio = center.create_human_request(
+            "wildcard", self.request(request_id="userio-route", project="userio")
+        )
+        other = center.create_human_request(
+            "wildcard", self.request(request_id="other-route")
+        )
+        calls: list[dict[str, object]] = []
+
+        def send_api(_method: str, payload: dict[str, object]) -> dict[str, object]:
+            calls.append(payload)
+            return {"ok": True, "result": {
+                "message_id": 502, "chat": {"id": payload["chat_id"]},
+            }}
+
+        with mock.patch.dict(os.environ, {
+            "TELEGRAM_BOT_TOKEN": "fixture-bot", "TELEGRAM_CHAT_ID": "42",
+            "TELEGRAM_CALLBACK_SECRET": "x" * 32,
+        }, clear=False):
+            send_human_request_telegram(center, "wildcard", userio, api=send_api)
+            send_human_request_telegram(center, "wildcard", other, api=send_api)
+
+        self.assertEqual("-1004322359393", calls[0]["chat_id"])
+        self.assertEqual("5764", calls[0]["message_thread_id"])
+        self.assertEqual("42", calls[1]["chat_id"])
+        self.assertNotIn("message_thread_id", calls[1])
+
 class HumanRequestHttpTests(unittest.TestCase):
     """Prove the same contract through the real loopback HTTP surface."""
 
