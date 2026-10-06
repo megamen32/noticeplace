@@ -301,3 +301,9 @@ Preserved and excluded from staging here; global-clean completion remains
 blocked by that independent owner's publication. Voice source itself is
 published and installed. Independent evidence is stored under this Codex
 session's private visualizations directory as agentcall-silero-independent-readback.json.
+
+Final owner installed-module proof received after publication: all4 natural
+end requests bypassed pipeline.reply and awaited exact-UUID hangup; all3
+negative task/check/no-hangup phrases stayed non-hangup. This7-case proof ran
+against /usr/local/lib/agentcall/agentcall_realtime_bridge.py, not only source.
+PID1592438/NRestarts0/channels0/free lease retained; no extra physical call.
