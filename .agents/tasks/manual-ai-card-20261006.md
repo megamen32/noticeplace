@@ -35,8 +35,8 @@ preserved entities, matching text/button URLs, migration retention, terminal
 receipt fallback after ACK, and rejection without a manual request.
 Managed rollout and Telegram Helper acceptance are pending.
 
-Current deployment dependency: parallel human-stop gate is uncommitted in
-agent_job_helper.py, gptadmin_agent.py, source_gate.py and its tests/tracker.
+Current deployment dependency: parallel human-stop producer gate is published
+in complete source9d5e3d6; its Herder API remains NOT READY.
 Its owner explicitly recorded API NOT READY / deployment prohibited. Preserve
 that slice and existing live release; coordinate with Codex session
 01a10b3f-b648-74d0-8265-023d1ae85312 for scoped publication and API-ready handoff,

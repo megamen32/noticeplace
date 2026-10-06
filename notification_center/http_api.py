@@ -430,7 +430,9 @@ class TelegramSender:
             )
         else:
             text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nИнцидент: {incident['id']}"
-        destination = telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes)
+        incident_card = (payload.get("target") or {}).get("incident_card") if isinstance(health_session, dict) or isinstance(health_outcome, dict) else None
+        destination = ({"chat_id": str(incident_card["chat_id"])} if isinstance(incident_card, dict)
+                       else telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes))
         mode = telegram_mode(incident)
         if self._active_modes is not None and mode not in self._active_modes:
             raise RuntimeError(f"Telegram mode is inactive: {mode}")
@@ -440,6 +442,8 @@ class TelegramSender:
             raise RuntimeError(f"Telegram destination is not configured: {mode}")
         visible_text, overflow_text = _telegram_text_with_attachment(text)
         request_data: dict[str, str] = {**destination, "text": telegram_html(visible_text), "parse_mode": "HTML", "disable_web_page_preview": "true"}
+        if isinstance(incident_card, dict):
+            request_data["message_id"] = str(incident_card["message_id"])
         health_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
         action_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
         if isinstance(health_session, dict):
@@ -495,15 +499,28 @@ class TelegramSender:
                             "reply_markup": json.dumps(action_keyboard, ensure_ascii=False)}
             overflow_text = None
         data = urllib.parse.urlencode(request_data).encode()
-        method = "editMessageText" if isinstance(ai_card, dict) else "sendMessage"
+        method = "editMessageText" if isinstance(ai_card, dict) or isinstance(incident_card, dict) else "sendMessage"
         request = urllib.request.Request(f"https://api.telegram.org/bot{self._token}/{method}", data=data, method="POST")
-        with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
-            if not 200 <= response.status < 300:
-                raise RuntimeError(f"Telegram returned HTTP {response.status}")
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+                if not 200 <= response.status < 300:
+                    raise RuntimeError(f"Telegram returned HTTP {response.status}")
+                try:
+                    result = json.loads(response.read())
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise RuntimeError("Telegram returned invalid JSON") from error
+        except urllib.error.HTTPError as error:
+            # Telegram confirms an identical edit is already applied. Do not
+            # mark that exact, known message as an uncertain new delivery.
             try:
-                result = json.loads(response.read())
-            except (TypeError, json.JSONDecodeError) as error:
-                raise RuntimeError("Telegram returned invalid JSON") from error
+                failure = json.loads(error.read(4096))
+            except (ValueError, TypeError):
+                raise error
+            if (method != "editMessageText" or error.code != 400 or not isinstance(failure, dict)
+                    or not str(failure.get("description") or "").lower().startswith("bad request: message is not modified")):
+                raise
+            result = {"ok": True, "result": {"message_id": int(request_data["message_id"]),
+                                            "chat": {"id": destination["chat_id"]}}}
         message = result.get("result") if isinstance(result, dict) else None
         if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(message, dict):
             raise RuntimeError("Telegram returned an invalid sendMessage response")
@@ -514,7 +531,7 @@ class TelegramSender:
             "message_id": message_id,
             "chat_id": str(message.get("chat", {}).get("id") or destination["chat_id"]) if isinstance(message.get("chat"), dict) else destination["chat_id"],
         }
-        if isinstance(ai_card, dict):
+        if method == "editMessageText":
             receipt["edited_in_place"] = True
         action_buttons = [
             button
@@ -597,12 +614,13 @@ class TelegramSender:
         note_block = f"\n\nПримечание: {note}" if note else ""
         text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nПланы:\n" + "\n".join(plan_lines) + f"{note_block}\n\nИнцидент: {incident['id']}"
         ai_session = payload.get("ai_session")
-        if isinstance(payload.get("ai_card"), dict) and isinstance(ai_session, dict):
-            text += f"\n\n✅ Выбрано: решение через AI.\nСсылка на сессию: {str(ai_session.get('session_url') or '')}"
+        if isinstance(ai_session, dict):
+            marker = "✅ Выбрано: решение через AI.\n" if isinstance(payload.get("ai_card"), dict) else ""
+            text += f"\n\n{marker}Ссылка на сессию: {str(ai_session.get('session_url') or '')}"
         keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
         controls = telegram_inline_keyboard(self._action_codec, incident)
         keyboard["inline_keyboard"].extend(controls["inline_keyboard"][-1:])
-        if isinstance(ai_session, dict) and isinstance(payload.get("ai_card"), dict):
+        if isinstance(ai_session, dict):
             keyboard["inline_keyboard"].append([{"text": "Открыть сессию", "url": str(ai_session["session_url"])}])
         visible_text, overflow_text = _telegram_text_with_attachment(text)
         request_data = {

@@ -1712,6 +1712,25 @@ class NotificationCenter:
             ).fetchone()
         return json.loads(row["target_json"])["ai_card"] if row else None
 
+    def original_telegram_card(self, incident_id: str) -> dict[str, Any] | None:
+        """Use only a confirmed original alarm receipt, never producer routing."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT result_json FROM deliveries WHERE incident_id=? AND status='sent' "
+                "AND channel LIKE 'telegram.%' AND NOT " + _SESSION_NOTICE_SQL +
+                " ORDER BY created_at, rowid", (incident_id,),
+            ).fetchall()
+        for row in rows:
+            try:
+                receipt = json.loads(row["result_json"] or "{}")
+                message_id = receipt.get("message_id")
+                chat_id = str(receipt.get("chat_id") or "")
+                if type(message_id) is int and message_id > 0 and re.fullmatch(r"-?[0-9]+", chat_id):
+                    return {"chat_id": chat_id, "message_id": message_id}
+            except (ValueError, TypeError, AttributeError):
+                continue
+        return None
+
     def manual_ai_requested(self, incident_id: str) -> bool:
         with self._lock:
             return self._connection.execute("SELECT 1 FROM audit_events WHERE incident_id=? AND type='telegram_ai_requested' LIMIT 1", (incident_id,)).fetchone() is not None
@@ -1877,6 +1896,9 @@ class NotificationCenter:
             card = self.manual_ai_card(incident_id)
             if card is not None:
                 target["ai_card"] = card
+            original_card = self.original_telegram_card(incident_id)
+            if original_card is not None:
+                target["incident_card"] = original_card
             delivery_id = self._schedule_delivery(
                 incident_id,
                 "telegram.main",
@@ -2154,7 +2176,11 @@ class NotificationCenter:
             if row is not None:
                 outcome["session_url"] = json.loads(row["target_json"])["health_session"].get("session_url", "")
             step = "health.resolved" if status == "resolved" else f"health.outcome:{key}"
-            return self._schedule_delivery(incident_id, "telegram.main", step, time.time(), {"health_outcome": outcome})
+            target = {"health_outcome": outcome}
+            card = self.original_telegram_card(incident_id)
+            if card is not None:
+                target["incident_card"] = card
+            return self._schedule_delivery(incident_id, "telegram.main", step, time.time(), target)
 
     @staticmethod
     def _health_text(value: Any, limit: int = 256) -> str:
@@ -3069,6 +3095,10 @@ class NotificationCenter:
                 target = None
             if isinstance(target, dict):
                 payload["target"] = target
+                if isinstance(target.get("health_session"), dict) or isinstance(target.get("health_outcome"), dict):
+                    confirmed_card = self.original_telegram_card(str(incident["id"]))
+                    if confirmed_card is not None:
+                        target["incident_card"] = confirmed_card
                 if isinstance(target.get("health_outcome"), dict):
                     payload["health_outcome"] = self._health_value(target["health_outcome"])
                 if isinstance(target.get("health_session"), dict):
@@ -3078,6 +3108,12 @@ class NotificationCenter:
             payload["ai_card"] = card
             payload["ai_session"] = self.latest_agent_session(str(incident["id"]))
         if str(incident.get("event_type") or "").startswith("health.") or self.manual_ai_requested(str(incident["id"])):
+            payload["ai_session"] = self.latest_agent_session(str(incident["id"]))
+            if isinstance(payload.get("health_session"), dict) and isinstance(payload["ai_session"], dict):
+                payload["health_session"] = payload["ai_session"]
+            if incident["state"] == "resolved" and ("health_session" in payload or "health_outcome" in payload):
+                payload.pop("health_session", None)
+                payload["health_outcome"] = {"status": "recovered", "session_url": (payload["ai_session"] or {}).get("session_url", "")}
             original = self._health_original_event(str(incident["id"]))
             if isinstance(original, dict):
                 payload["health_context"] = {

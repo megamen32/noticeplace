@@ -287,13 +287,20 @@ def _session_endpoint(profile: Mapping[str, str], session_id: str, suffix: str) 
 
 
 def _health_session_name(profile: Mapping[str, str], profile_id: str, event: Mapping[str, Any]) -> str:
+    from .health_workflow import sanitize_bounded_text
     if profile_id not in _HEALTH_STAGE_IDS:
         return profile["name"]
     incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
     incident_id = str(incident.get("id") or "unknown")
     suffix = hashlib.sha256(incident_id.encode()).hexdigest()[:12]
-    base = profile.get("orchestrator_name") if profile_id == "health-orchestrator" else profile["name"]
-    return f"{base or profile['name']}_{suffix}"[:128]
+    stage = {"health-diagnosis": "Диагностика", "health-orchestrator": "План решения",
+             "health-remediation": "Исправление"}[profile_id]
+    title = " ".join(str(incident.get("title") or "Проверка состояния сервиса").split())
+    title = sanitize_bounded_text(title, 100)
+    if title.lower() == "external site down":
+        title = "Сайт недоступен"
+    prefix = f"{stage}: "
+    return f"{prefix}{title[:128 - len(prefix) - len(suffix) - 3]} · {suffix}"
 
 
 def _session_json(profile: Mapping[str, str], session_id: str, suffix: str, runner: Any) -> dict[str, Any]:

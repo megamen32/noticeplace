@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from notification_center.core import NotificationCenter
 from notification_center.agentcall_phone import AgentCallPhoneAdapter
+from notification_center.health_session_lifecycle import HealthSessionArchiver
 from notification_center.http_api import DeliveryWorker, android_phone_from_environment, call_adapters_from_environment, gptadmin_agent_jobs_from_environment, matrix_call_from_environment, message_adapters_from_environment, run_http, telegram_action_codec_from_environment, telegram_from_environment, telegram_interactions_from_environment
 
 
@@ -34,12 +35,17 @@ def worker_loop(worker: DeliveryWorker, channel_group: str, max_workers: int) ->
     """Run one bounded channel pool so slow AI/calls cannot starve messages."""
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="notify-delivery") as executor:
         inflight = set()
+        archive = HealthSessionArchiver(worker._center) if channel_group == "agent" else None
+        archive_due = time.monotonic() + 60
         while True:
             inflight = {future for future in inflight if not future.done()}
             capacity = max_workers - len(inflight)
             if capacity > 0:
                 for delivery in worker.claim_due(limit=capacity, channel_group=channel_group):
                     inflight.add(executor.submit(worker.deliver, delivery))
+                if archive is not None and len(inflight) < max_workers and time.monotonic() >= archive_due:
+                    inflight.add(executor.submit(archive.run_once))
+                    archive_due = time.monotonic() + 60
             time.sleep(1)
 
 
