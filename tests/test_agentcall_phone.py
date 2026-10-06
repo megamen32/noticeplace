@@ -15,6 +15,23 @@ from notification_center.http_api import DeliveryWorker, android_phone_from_envi
 
 
 class AgentCallPhoneAdapterTests(unittest.TestCase):
+    def test_operator_call_test_is_spoken_once_without_false_outage(self) -> None:
+        requests: list[dict[str, object]] = []
+
+        def requester(_path: str, payload: bytes, _timeout: float) -> bytes:
+            requests.append(json.loads(payload))
+            return b'{"ok":true,"call_id":"test-call"}\n'
+
+        adapter = AgentCallPhoneAdapter("/run/agentcall/control.sock", requester=requester)
+        adapter.phone_call({"incident": {
+            "id": "operator-test", "event_type": "operator.call_test",
+            "severity": "critical", "title": "Телефон подключён",
+            "body": "Это один тестовый звонок по вашей просьбе.",
+        }})
+        self.assertTrue(str(requests[0]["message"]).startswith("Проверка связи."))
+        self.assertNotIn("Сломалось", requests[0]["message"])
+        self.assertEqual(1, requests[0]["repeat"])
+
     def test_incident_context_is_spoken_twice_through_local_control_socket(self) -> None:
         requests: list[dict[str, object]] = []
 

@@ -52,8 +52,13 @@ class AgentCallPhoneAdapter:
         title = " ".join(str(incident.get("title") or "Инцидент").split())[:500]
         body = " ".join(str(incident.get("body") or "Подробности отсутствуют").split())[:1200]
         severity = str(incident.get("severity") or "critical")
-        lead_notification = str(incident.get("event_type") or "") == "lead.created"
-        opening = "Новая заявка." if lead_notification else "Внимание. Сломалось что-то."
+        event_type = str(incident.get("event_type") or "")
+        call_test = event_type == "operator.call_test"
+        opening = (
+            "Проверка связи." if call_test else
+            "Новая заявка." if event_type == "lead.created" else
+            "Внимание. Сломалось что-то."
+        )
         request = {
             "message": f"{opening} {title}. {body}",
             "context": (
@@ -62,7 +67,7 @@ class AgentCallPhoneAdapter:
                 "Не обещай, что начал проверку или исправление. Объясняй только сведения из уведомления. "
                 "Фактический запуск и прогресс работы подтверждаются сессией Agent Herder в карточке Notice Place."
             ),
-            "repeat": 2,
+            "repeat": 1 if call_test else 2,
             "incident_id": str(incident.get("id") or "")[:128],
         }
         raw = self._requester(
