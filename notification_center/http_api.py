@@ -36,6 +36,30 @@ TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_CARD_TEXT_LIMIT = 3600
 
 
+def _telegram_utf16_length(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _telegram_truncate_utf16(text: str, limit: int) -> str:
+    used = 0
+    characters: list[str] = []
+    for character in text:
+        width = 2 if ord(character) > 0xFFFF else 1
+        if used + width > limit:
+            break
+        characters.append(character)
+        used += width
+    return "".join(characters)
+
+
+def _human_request_requires_document(message: str, original_text: Any) -> bool:
+    if not isinstance(original_text, str) or not original_text:
+        return False
+    return _telegram_utf16_length(
+        f"Исходное сообщение:\n{original_text}\n\nРазбор:\n{message}"
+    ) > TELEGRAM_TEXT_LIMIT
+
+
 def _telegram_text_with_attachment(text: str) -> tuple[str, str | None]:
     """Keep a Telegram card readable and return the full text for an attachment."""
     if len(text) <= TELEGRAM_TEXT_LIMIT:
@@ -67,7 +91,7 @@ def _telegram_document_request(
     chunks.extend([
         f"--{boundary}\r\n".encode(),
         f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'.encode(),
-        b"Content-Type: text/plain; charset=utf-8\r\n\r\n",
+        f"Content-Type: {'text/markdown' if filename.lower().endswith('.md') else 'text/plain'}; charset=utf-8\r\n\r\n".encode(),
         content.encode("utf-8"),
         b"\r\n",
         f"--{boundary}--\r\n".encode(),
@@ -83,6 +107,11 @@ def _telegram_document_request(
 def _telegram_overflow_filename(incident_id: str) -> str:
     safe_id = "".join(character if character.isalnum() or character in "-_" else "-" for character in incident_id)
     return f"noticeplace-{safe_id[:80] or 'message'}.txt"
+
+
+def _human_request_document_filename(request_id: str) -> str:
+    safe_id = "".join(character if character.isalnum() or character in "-_" else "-" for character in request_id)
+    return f"human-request-{safe_id[:80] or 'message'}.md"
 
 
 def phone_call_allowed(severity: str, when: datetime, quiet_start_hour: float, quiet_end_hour: float) -> bool:
@@ -346,6 +375,42 @@ class TelegramSender:
             "overflow_document_sent": True,
             "overflow_document_message_id": document_message_id,
             "overflow_filename": _telegram_overflow_filename(incident_id),
+        }
+
+    def send_document(
+        self,
+        destination: Mapping[str, str],
+        filename: str,
+        content: str,
+        caption: str,
+        reply_to_message_id: int,
+    ) -> dict[str, Any]:
+        """Send one UTF-8 text document in the card's chat and topic."""
+        fields = {
+            "chat_id": str(destination["chat_id"]),
+            "caption": caption,
+            "reply_parameters": json.dumps({"message_id": reply_to_message_id}, separators=(",", ":")),
+        }
+        if destination.get("message_thread_id"):
+            fields["message_thread_id"] = str(destination["message_thread_id"])
+        request = _telegram_document_request(self._token, fields, filename, content)
+        with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f"Telegram returned HTTP {response.status}")
+            try:
+                result = json.loads(response.read())
+            except (TypeError, json.JSONDecodeError) as error:
+                raise RuntimeError("Telegram returned invalid JSON") from error
+        message = result.get("result") if isinstance(result, dict) else None
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(message_id, int):
+            raise RuntimeError("Telegram sendDocument response has no valid message_id")
+        document = message.get("document") if isinstance(message, dict) else None
+        file_id = document.get("file_id") if isinstance(document, dict) else None
+        return {
+            "message_id": message_id,
+            "filename": filename,
+            **({"file_id": file_id} if isinstance(file_id, str) and file_id else {}),
         }
 
     def _delete_message_best_effort(self, chat_id: str, message_id: int) -> bool:
@@ -1481,7 +1546,27 @@ def send_human_request_telegram(
                 "chat_id": route_chat_id,
                 "message_thread_id": str(route_thread_id),
             }
-    payload: dict[str, Any] = {**destination, "text": str(request["message"])[:4096]}
+    card_text = str(request["message"])
+    original_text = request.get("original_text")
+    document_text: str | None = None
+    if isinstance(original_text, str) and original_text:
+        if not _human_request_requires_document(card_text, original_text):
+            card_text = f"Исходное сообщение:\n{original_text}\n\nРазбор:\n{card_text}"
+        else:
+            document_text = original_text
+            preview = _telegram_truncate_utf16(original_text, 800)
+            if preview != original_text:
+                preview = preview.rstrip() + "…"
+            prefix = (
+                f"Исходное сообщение (начало):\n{preview}\n\n"
+                "📎 Файл с полным текстом приложен ниже.\n\nРазбор:\n"
+            )
+            card_text = prefix + _telegram_truncate_utf16(
+                card_text, TELEGRAM_TEXT_LIMIT - _telegram_utf16_length(prefix)
+            ).rstrip()
+    else:
+        card_text = _telegram_truncate_utf16(card_text, TELEGRAM_TEXT_LIMIT)
+    payload: dict[str, Any] = {**destination, "text": card_text}
     mode = str(request["mode"])
     if mode == "choice":
         secret = os.environ.get("TELEGRAM_CALLBACK_SECRET", "").strip()
@@ -1504,7 +1589,42 @@ def send_human_request_telegram(
     center.bind_human_request_message(
         producer_token, str(request["request_id"]), response_chat_id, message_id
     )
-    return {"status": "sent", "chat_id": response_chat_id, "message_id": message_id}
+    receipt = {"status": "sent", "chat_id": response_chat_id, "message_id": message_id}
+    if document_text is not None:
+        center.set_human_request_document_state(producer_token, str(request["request_id"]), "sending")
+        try:
+            document = TelegramSender(bot_token, response_chat_id).send_document(
+                {**destination, "chat_id": response_chat_id},
+                _human_request_document_filename(str(request["request_id"])),
+                document_text,
+                "📎 Полный исходный текст",
+                message_id,
+            )
+        except Exception:
+            center.set_human_request_document_state(producer_token, str(request["request_id"]), "uncertain")
+            raise
+        document_message_id = int(document["message_id"])
+        document_file_id = document.get("file_id")
+        center.bind_human_request_document(
+            producer_token,
+            str(request["request_id"]),
+            document_message_id,
+            str(document_file_id) if document_file_id is not None else None,
+        )
+        receipt["document_message_id"] = document_message_id
+        receipt["document_filename"] = str(document["filename"])
+        if isinstance(document_file_id, str) and document_file_id:
+            receipt["document_file_id"] = document_file_id
+    return receipt
+
+
+def _human_request_http_result(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose the document requirement computed from the persisted card inputs."""
+    result = dict(request)
+    result["telegram_document_required"] = bool(_human_request_requires_document(
+        str(result["message"]), result.get("original_text")
+    ))
+    return result
 
 
 def build_handler(center: NotificationCenter, health_token: str, mcp_token: str | None = None) -> type[BaseHTTPRequestHandler]:
@@ -1629,7 +1749,9 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
             if self.path.startswith("/v1/human-requests/"):
                 try:
                     request_id = self.path.rsplit("/", 1)[-1]
-                    self._reply(HTTPStatus.OK, center.get_human_request(_bearer(self), request_id))
+                    self._reply(HTTPStatus.OK, _human_request_http_result(
+                        center.get_human_request(_bearer(self), request_id)
+                    ))
                 except AuthorizationError as error:
                     self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
                 except ValidationError as error:
@@ -1672,17 +1794,39 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         }
                         body["allowed_actors"] = [f"telegram:{actor}" for actor in sorted(configured_actors)]
                     created = center.create_human_request(token, body)
+                    idempotent = bool(created["idempotent"])
                     if created["idempotent"]:
                         chat_id = str(created.get("telegram_chat_id") or "")
                         message_id = created.get("telegram_message_id")
-                        created["telegram"] = (
-                            {"status": "sent", "chat_id": chat_id, "message_id": message_id}
-                            if chat_id and isinstance(message_id, int) and message_id > 0
-                            else {"status": "not_configured"}
-                        )
+                        document_message_id = created.get("telegram_document_message_id")
+                        document_file_id = created.get("telegram_document_file_id")
+                        if chat_id and isinstance(message_id, int) and message_id > 0:
+                            created["telegram"] = {
+                                "status": "sent", "chat_id": chat_id, "message_id": message_id,
+                                **(
+                                    {"document_message_id": document_message_id,
+                                     "document_filename": _human_request_document_filename(str(created["request_id"])),
+                                     **({"document_file_id": document_file_id}
+                                        if isinstance(document_file_id, str) and document_file_id else {})}
+                                    if isinstance(document_message_id, int) else {}
+                                ),
+                            }
+                            if (
+                                _human_request_requires_document(
+                                    str(created["message"]), created.get("original_text")
+                                )
+                                and not isinstance(document_message_id, int)
+                            ):
+                                created["telegram"]["status"] = "uncertain"
+                        else:
+                            created["telegram"] = {"status": "not_configured"}
                     else:
                         created["telegram"] = send_human_request_telegram(center, token, created)
-                    self._reply(HTTPStatus.CREATED, created)
+                    telegram_receipt = created["telegram"]
+                    refreshed = center.get_human_request(token, str(created["request_id"]))
+                    refreshed["idempotent"] = idempotent
+                    refreshed["telegram"] = telegram_receipt
+                    self._reply(HTTPStatus.CREATED, _human_request_http_result(refreshed))
                     return
                 parts = self.path.split("/")
                 if len(parts) == 5 and parts[:3] == ["", "v1", "human-requests"]:

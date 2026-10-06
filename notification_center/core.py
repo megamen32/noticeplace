@@ -243,6 +243,7 @@ class NotificationCenter:
                     recipient TEXT NOT NULL,
                     mode TEXT NOT NULL,
                     message TEXT NOT NULL,
+                    original_text TEXT,
                     choices_json TEXT NOT NULL,
                     allowed_actors_json TEXT NOT NULL,
                     state TEXT NOT NULL,
@@ -254,7 +255,10 @@ class NotificationCenter:
                     cancelled_at REAL,
                     cancelled_by TEXT,
                     telegram_chat_id TEXT,
-                    telegram_message_id INTEGER
+                    telegram_message_id INTEGER,
+                    telegram_document_message_id INTEGER,
+                    telegram_document_file_id TEXT,
+                    telegram_document_state TEXT
                 );
                 """
             )
@@ -278,6 +282,14 @@ class NotificationCenter:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_chat_id TEXT")
             if "telegram_message_id" not in human_request_columns:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_message_id INTEGER")
+            if "original_text" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN original_text TEXT")
+            if "telegram_document_message_id" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_document_message_id INTEGER")
+            if "telegram_document_state" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_document_state TEXT")
+            if "telegram_document_file_id" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_document_file_id TEXT")
             for column, definition in (
                 ("policy_step_id", "TEXT"),
                 ("repeat_number", "INTEGER"),
@@ -582,6 +594,12 @@ class NotificationCenter:
         expires = float(expires_at) if expires_at is not None else None
         recipient = str(request["recipient"]).strip()
         message = str(request["message"]).strip()[:4000]
+        raw_original_text = request.get("original_text")
+        if raw_original_text is not None and not isinstance(raw_original_text, str):
+            raise ValidationError("human request original_text must be a string")
+        original_text = raw_original_text
+        if original_text is not None and (not original_text or len(original_text.encode("utf-8")) > 100_000):
+            raise ValidationError("human request original_text must be between 1 and 100000 UTF-8 bytes")
 
         def matches_existing(row: sqlite3.Row) -> bool:
             return (
@@ -589,6 +607,7 @@ class NotificationCenter:
                 and str(row["recipient"]) == recipient
                 and str(row["mode"]) == mode
                 and str(row["message"]) == message
+                and row["original_text"] == original_text
                 and json.loads(str(row["choices_json"])) == choices
                 and json.loads(str(row["allowed_actors_json"])) == actors
                 and row["expires_at"] == expires
@@ -607,8 +626,8 @@ class NotificationCenter:
                 return result
             try:
                 self._connection.execute(
-                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, choices_json, allowed_actors_json, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-                    (request_id, project, recipient, mode, message, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires),
+                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires),
                 )
             except sqlite3.IntegrityError as error:
                 existing = self._connection.execute(
@@ -659,6 +678,50 @@ class NotificationCenter:
                 if str(current["telegram_chat_id"] or "") == chat_id and current["telegram_message_id"] == message_id:
                     return self._human_request_result(current)
                 raise ValidationError("human request Telegram message is already bound")
+            return self._human_request_result(current)
+
+    def bind_human_request_document(
+        self, token: str, request_id: str, message_id: int, file_id: str | None = None
+    ) -> dict[str, Any]:
+        """Persist one confirmed Telegram document receipt without permitting replacement."""
+        if not isinstance(message_id, int) or message_id <= 0:
+            raise ValidationError("valid Telegram document message id is required")
+        if file_id is not None and (not isinstance(file_id, str) or not file_id or len(file_id) > 512):
+            raise ValidationError("Telegram document file id must be a bounded string")
+        with self._lock, self._connection:
+            row = self._expire_human_request(self._human_request_row(token, request_id))
+            existing_message_id = row["telegram_document_message_id"]
+            if existing_message_id is not None:
+                existing_file_id = row["telegram_document_file_id"]
+                if existing_message_id == message_id and (
+                    file_id is None or existing_file_id == file_id
+                ):
+                    return self._human_request_result(row)
+                raise ValidationError("human request Telegram document is already bound")
+            update = self._connection.execute(
+                "UPDATE human_requests SET telegram_document_message_id = ?, telegram_document_file_id = ?, telegram_document_state = 'sent' WHERE request_id = ? AND telegram_document_message_id IS NULL",
+                (message_id, file_id, request_id),
+            )
+            current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            if update.rowcount != 1:
+                if current["telegram_document_message_id"] == message_id:
+                    return self._human_request_result(current)
+                raise ValidationError("human request Telegram document is already bound")
+            return self._human_request_result(current)
+
+    def set_human_request_document_state(self, token: str, request_id: str, state: str) -> dict[str, Any]:
+        """Record whether a required Telegram document is in flight or uncertain."""
+        if state not in {"sending", "uncertain"}:
+            raise ValidationError("unsupported Telegram document state")
+        with self._lock, self._connection:
+            row = self._expire_human_request(self._human_request_row(token, request_id))
+            if row["telegram_document_message_id"] is not None:
+                return self._human_request_result(row)
+            self._connection.execute(
+                "UPDATE human_requests SET telegram_document_state = ? WHERE request_id = ? AND telegram_document_message_id IS NULL",
+                (state, request_id),
+            )
+            current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             return self._human_request_result(current)
 
     def _resolve_human_request_row(self, row: sqlite3.Row, actor: str, value: str) -> dict[str, Any]:
