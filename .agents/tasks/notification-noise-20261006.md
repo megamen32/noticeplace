@@ -178,3 +178,44 @@ archive contract acceptance despite native archive visibility being proven.
 
 ZCode queue source ad971cd published separately; root owns its manual-vs-timeout
 origin integration and one combined restart. Real final queue proof pending.
+
+## Subsequent real-path receipts and remaining gates
+
+Final attachment/voice release df4befeb0b60203c012a7363f4c0ce2617385463
+installed once: /opt/noticeplace-releases/20261006T133411Z-df4befeb0b60-172262,
+main173733/admin173743. Existing source/quiet/card/native gates preserved.
+UserIO owner proved short original5860 and long document5862 in topic5764;
+7053 UTF-8 bytes match the exact original by recipient read and independent
+Bot API download. A later explicit request adds old-card backfill5842/5845/5849
+and composite original+AI Markdown; this next source/acceptance slice is owned
+by 01a10bc5. No unreviewed reload or duplicate messages by this agent.
+
+The phone owner alone performed the newly authorized one loud call after the
+phone returned online: dlv_932dc89f7f3745b68652998cb2089c64 sent/attempt1,
+call42e0e2f5-502c-4d8c-b88c-c1968dbfa275 answered with actual "Да, я услышал".
+Owner confirmed channels0/calls0 and durable acknowledgement. Historical
+uncertain receipts remain unchanged; this agent made no physical calls.
+
+Herder0a4f846 immediate archive contract now passed for owned readonly planner
+01a110fc-07d7-7b82-bb96-51a8dda8602f: archive200/ok/exactID, immediate
+GET details200 with3messages. Root separately verified already archived
+01a110fb GET200; archive was not repeated. Two remaining synthetic readonly
+quiet controllers remain unarchived: 01a110fc-5046-7192-984a-7b0f40a8afb5 and
+01a11112-b1a4-7ac0-b1b0-023c16bc0f00. Their incidents are resolved with0active
+agent deliveries; details200/idle/no permissions and native SQLite archived0.
+Cleanup preflight context subsequently timed out/reset when the user manager
+and Herder runtime changed; no archive POST reached. Resume cleanup only after
+strict context/readiness is restored, and preserve exact native IDs/history.
+
+TGC source dadd04a+7809815 is committed and tested (8+6 focused checks), but
+its main publication/runtime is owned by canonical TGC owner
+sess_e6d8e941-5787-4c51-a3a1-c578e7825245. Required gates: quorum review,
+HA cutover receipt and explicit protective-stop release. No TGC restart,
+pre-push bypass or parent gitlink publication by this agent. This remains an
+external completion blocker; source-only is not a deployed noise fix.
+
+Owned ZCode sess5af9 real off/same-ID queue and archive checks passed. Final
+acceptance found repeated terminal choices and injected coordination notes
+mistaken for task context. Narrow index.ts/core regression fix is owned here;
+root manages one build/restart after review. Signed human selection and final
+held state must be proved after this correction; see Herder task tracker.
