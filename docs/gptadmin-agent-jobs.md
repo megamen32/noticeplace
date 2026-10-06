@@ -44,6 +44,23 @@ Notify uses HMAC v2 over method, exact request path, Unix timestamp,
 or ambiguous timeout retries the same body and key, so Hub returns the original
 job instead of dispatching a second side effect.
 
+## Session visibility
+
+As soon as Agent Herder accepts a diagnosis, plan-orchestrator, or remediation
+session, the helper posts its real session identity to Notice Place. The card
+shows the stage, harness, configured model and **Открыть сессию** link. Creating
+a session does not claim that a queued model turn has already started; its
+actual state and transcript remain visible in Agent Herder.
+
+Session cards are informational: incident acknowledgement cancels calls and
+escalation while preserving these cards, including a link received after ACK.
+The link API accepts safe Agent Herder harness identifiers rather than a fixed
+four-harness list. Execution still follows the fixed allowlisted job profiles;
+publishing a link grants no permission to select another model or run commands.
+
+The phone assistant explains the alert and cannot itself launch a diagnostic
+or repair. It must not promise that work has started without session evidence.
+
 ## Host profile
 
 Install `bin/notify-agent-job` with the rest of Notify. Its config defaults to

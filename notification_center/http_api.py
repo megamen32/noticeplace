@@ -383,10 +383,16 @@ class TelegramSender:
         if isinstance(health_session, dict):
             plan_labels = {"observe": "Наблюдать", "repair": "Исправить", "verify": "Проверить"}
             plan_id = str(health_session.get("plan_id") or "")[:64]
+            stage = str(health_session.get("stage") or "health-remediation")
+            stage_label = {"health-diagnosis": "Диагностика", "health-orchestrator": "Подготовка плана", "health-remediation": "Исправление"}.get(stage, "Работа агента")
+            agent_label = str(health_session.get("harness") or "")[:64]
+            model = str(health_session.get("model") or "")[:128]
+            details = f"Агент: {agent_label}" + (f" · {model}" if model else "")
             text = (
-                f"🤖 Исправление началось · {incident['project']}\n\n"
-                f"Путь: {plan_labels.get(plan_id, plan_id or 'выбранный')}\n"
-                "Agent Herder создал отдельную сессию. По ссылке видно сообщения, команды и текущий прогресс."
+                f"🤖 {stage_label} · {incident['project']}\n\n"
+                + (f"Путь: {plan_labels.get(plan_id, plan_id)}\n" if plan_id else "")
+                + f"{details}\n"
+                + "Сессия создана в Agent Herder. По ссылке видно фактическое состояние, сообщения, команды и текущий прогресс."
                 f"\n\nИнцидент: {incident['id']}"
             )
         elif isinstance(health_outcome, dict) and str(health_outcome.get("observed_state") or "") == "degraded":
@@ -418,7 +424,7 @@ class TelegramSender:
             parsed_session_url = urllib.parse.urlsplit(session_url)
             if parsed_session_url.scheme != "https" or parsed_session_url.hostname != "agent.bezrabotnyi.com":
                 raise RuntimeError("Agent Herder session URL is invalid")
-            action_keyboard = {"inline_keyboard": [[{"text": "Смотреть исправление", "url": session_url}]]}
+            action_keyboard = {"inline_keyboard": [[{"text": "Открыть сессию", "url": session_url}]]}
             request_data["reply_markup"] = json.dumps(action_keyboard, ensure_ascii=False, separators=(",", ":"))
         elif isinstance(health_outcome, dict):
             pass
@@ -1242,7 +1248,7 @@ class DeliveryWorker:
                     attempt=int(delivery["attempt"]),
                 ):
                     return
-                if job_name == "health-remediation" and callable(getattr(adapter, "send_with_progress", None)):
+                if job_name in {"health-diagnosis", "health-remediation"} and callable(getattr(adapter, "send_with_progress", None)):
                     receipt = adapter.send_with_progress(
                         payload,
                         str(delivery["delivery_key"]),
@@ -1606,6 +1612,8 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                             session_id=str(body.get("session_id") or ""),
                             public_base_url=os.environ.get("AGENT_HERDER_PUBLIC_URL", "https://agent.bezrabotnyi.com"),
                             actor=actor,
+                            stage=str(body.get("stage") or "health-remediation"),
+                            model=str(body.get("model") or ""),
                         )
                     elif action == "verification":
                         result = health_workflow.record_verification(

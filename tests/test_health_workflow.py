@@ -348,6 +348,41 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertEqual("77", captured["message_thread_id"])
         self.assertNotIn("reply_markup", captured)
 
+    def test_diagnosis_link_can_be_delivered_after_voice_ack(self) -> None:
+        self.center.acknowledge(self.created["incident_id"], "phone:confirmed")
+        initial = self.center._connection.execute("SELECT status FROM deliveries WHERE id=?", (self.created["initial_delivery_id"],)).fetchone()
+        self.assertEqual("cancelled", initial[0])
+        recorded = self.center.record_health_agent_session(
+            self.created["incident_id"], "diagnosis-started", "", "claude", "session-real",
+            "https://agent.bezrabotnyi.com", stage="health-diagnosis",
+        )
+        due = self.center.claim_due_deliveries(channel_group="message")
+        self.assertEqual([recorded["session_delivery_id"]], [d["id"] for d in due])
+        self.center.complete_delivery(due[0]["id"], "sent", claimed_at=due[0]["claimed_at"], attempt=due[0]["attempt"])
+        row = self.center._connection.execute("SELECT status FROM deliveries WHERE id=?", (due[0]["id"],)).fetchone()
+        self.assertEqual("sent", row[0])
+        self.assertEqual("acknowledged", self._incident()["state"])
+
+    def test_queued_session_link_survives_ack_and_is_idempotent(self) -> None:
+        self.workflow.attach_plans(self.created["incident_id"], "plans-survive", self._plans(), actor="gptadmin")
+        self.workflow.select_plan(self.created["incident_id"], "selection-survive", "repair", "telegram:42")
+        first = self.center.record_health_agent_session(self.created["incident_id"], "session-survive",
+            "repair", "zcode", "session-live", "https://agent.bezrabotnyi.com")
+        self.center.acknowledge(self.created["incident_id"], "phone:confirmed")
+        second = self.center.record_health_agent_session(self.created["incident_id"], "session-survive",
+            "repair", "zcode", "session-live", "https://agent.bezrabotnyi.com")
+        self.assertEqual(first["session_delivery_id"], second["session_delivery_id"])
+        self.assertEqual([first["session_delivery_id"]], [d["id"] for d in self.center.claim_due_deliveries(channel_group="message")])
+
+    def test_link_accepts_other_herder_harnesses_and_rejects_unselected_repairs(self) -> None:
+        for harness in ("claude", "qoder", "fast-agent", "chatgpt"):
+            result = self.center.record_health_agent_session(self.created["incident_id"], f"diagnosis:{harness}",
+                "", harness, "session-test", "https://agent.bezrabotnyi.com", stage="health-diagnosis")
+            self.assertIn(f"#{harness}/session-test", result["session_url"])
+        with self.assertRaises(ValidationError):
+            self.center.record_health_agent_session(self.created["incident_id"], "unselected", "repair",
+                "claude", "session-other", "https://agent.bezrabotnyi.com")
+
     def test_remediation_session_sends_a_clickable_agent_herder_transcript_link(self) -> None:
         self.workflow.attach_plans(self.created["incident_id"], "plans-session", self._plans(), actor="gptadmin")
         self.workflow.select_plan(self.created["incident_id"], "selection-session", "repair", "telegram:42")
@@ -382,9 +417,11 @@ class HealthWorkflowTests(unittest.TestCase):
         with patch("notification_center.http_api.urllib.request.urlopen", fake_urlopen):
             TelegramSender("bot-token", "-100123", action_codec=TelegramActionCodec("x" * 32), center=self.center).send(payload)
 
-        self.assertIn("Исправление началось", captured["text"])
+        self.assertIn("Исправление", captured["text"])
+        self.assertIn("Агент: zcode", captured["text"])
+        self.assertIn("фактическое состояние", captured["text"])
         keyboard = json.loads(captured["reply_markup"])
-        self.assertEqual("Смотреть исправление", keyboard["inline_keyboard"][0][0]["text"])
+        self.assertEqual("Открыть сессию", keyboard["inline_keyboard"][0][0]["text"])
         self.assertEqual(recorded["session_url"], keyboard["inline_keyboard"][0][0]["url"])
 
     def test_telegram_sender_attaches_full_text_when_card_does_not_fit(self) -> None:

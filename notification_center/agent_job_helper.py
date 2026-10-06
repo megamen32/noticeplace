@@ -557,14 +557,21 @@ def post_health_session_started(
     incident_id = str(incident.get("id") or "").strip()
     project = str(incident.get("project") or "").strip()
     plan_id = str(selection.get("plan_id") or session.get("plan_id") or "").strip()
+    stage = str(session.get("profile") or event.get("job_id") or "health-remediation")
     harness = str(session.get("harness") or "").strip()
     session_id = str(session.get("session_id") or session.get("sessionId") or "").strip()
-    if not incident_id or not project or plan_id not in _HEALTH_PLAN_IDS or not harness or not session_id:
+    if not incident_id or not project or stage not in _HEALTH_STAGE_IDS or not harness or not session_id:
         raise RuntimeError("health remediation session identity is incomplete")
+    if stage == "health-remediation" and plan_id not in _HEALTH_PLAN_IDS:
+        raise RuntimeError("health remediation session requires the selected plan")
+    if stage != "health-remediation":
+        plan_id = ""
     callback_url, callback_token = _load_health_callback({}, project)
-    key = f"{incident_id}:health.remediation_session:{harness}:{session_id}"
+    key = f"{incident_id}:{stage}_session:{harness}:{session_id}:v2"
     body = json.dumps({
         "plan_id": plan_id,
+        "stage": stage,
+        "model": str(session.get("model") or "")[:128],
         "harness": harness,
         "session_id": session_id,
         "actor": "agent-herder",
@@ -584,7 +591,7 @@ def post_health_session_started(
     return {"status": "session_link_attached", "event_id": str(response.get("event_id") or "")[:128]}
 
 
-def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], session_id: str, runner: Any, started_at: float) -> dict[str, Any]:
+def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], session_id: str, runner: Any, started_at: float, session_callback: Callable[[Mapping[str, Any]], Any] | None = None) -> dict[str, Any]:
     if profile["orchestrator_requested_model"] != _HEALTH_ORCHESTRATOR_REQUESTED_MODEL or profile["orchestrator_model"] != _HEALTH_ORCHESTRATOR_EFFECTIVE_MODEL or not profile["orchestrator_name"]:
         raise RuntimeError("health diagnosis profile has no approved orchestrator mapping")
     incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
@@ -636,6 +643,12 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
     if orchestrator_result.get("ok") is not True or not str(orchestrator_result.get("sessionId") or ""):
         raise RuntimeError("Agent Herder did not accept the health orchestrator session")
     orchestrator_session_id = str(orchestrator_result["sessionId"])
+    if session_callback is not None:
+        try:
+            session_callback({"profile": "health-orchestrator", "harness": profile["harness"],
+                              "session_id": orchestrator_session_id, "model": profile["orchestrator_model"]})
+        except Exception:
+            pass  # Diagnosis completion retains the orchestrator identity for retry.
 
     plan_result: dict[str, Any] | None = None
     while True:
@@ -847,7 +860,9 @@ def run_profile(
             "fallback_reason": "quota_exhausted",
         }
     if result.get("ok") is not True or not str(result.get("sessionId") or ""):
-        raise RuntimeError("Agent Herder did not accept the allowlisted session job")
+        from .health_workflow import sanitize_bounded_text
+        reason = sanitize_bounded_text(result.get("error") or "no session identity", 256)
+        raise RuntimeError(f"Agent Herder did not accept the allowlisted session job: {reason}")
     receipt = {
         "ok": True,
         "profile": profile_id,
@@ -859,7 +874,7 @@ def run_profile(
         **({"model": profile["model"]} if profile["model"] else {}),
         **health_result,
     }
-    if profile_id == "health-remediation" and session_callback is not None:
+    if profile_id in _HEALTH_JOB_IDS and session_callback is not None:
         try:
             session_callback(receipt)
             receipt["session_notice"] = "attached"
@@ -869,7 +884,7 @@ def run_profile(
             # terminal receipt if this immediate callback was unavailable.
             receipt["session_notice"] = "deferred"
     if profile_id == "health-diagnosis":
-        receipt.update(_run_health_diagnosis(profile, event, receipt["session_id"], runner, started_at))
+        receipt.update(_run_health_diagnosis(profile, event, receipt["session_id"], runner, started_at, session_callback))
     elif profile_id == "health-remediation":
         try:
             receipt.update(_run_health_remediation(profile, event, receipt["session_id"], health_result["plan_id"], runner, started_at))

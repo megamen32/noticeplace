@@ -25,7 +25,7 @@ def main() -> int:
             args.profile,
             event,
             args.config,
-            session_callback=(lambda session: post_health_session_started(event, session)) if args.profile == "health-remediation" else None,
+            session_callback=(lambda session: post_health_session_started(event, session)) if args.profile in {"health-diagnosis", "health-remediation"} else None,
         )
     except RuntimeError as error:
         print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False), file=sys.stderr)

@@ -20,6 +20,20 @@ from zoneinfo import ZoneInfo
 SEVERITIES = ("debug", "info", "notice", "important", "critical", "emergency")
 OPEN_STATES = ("open", "acknowledged", "snoozed")
 DELIVERABLE_STATES = ("open", "snoozed")
+# Session links report existing work; receiving an alert must not hide them.
+_SESSION_NOTICE_SQL = "(channel = 'telegram.main' AND COALESCE(json_type(COALESCE(target_json, '{}'), '$.health_session'), '') = 'object')"
+
+
+def _is_session_notice(delivery: Mapping[str, Any]) -> bool:
+    if delivery["channel"] != "telegram.main":
+        return False
+    try:
+        target = json.loads(delivery["target_json"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(target, dict) and isinstance(target.get("health_session"), dict)
+
+
 DEFAULT_CONSUMER_QUIET_HOURS = (
     {"start": "01:00", "end": "09:00", "timezone": "Europe/Moscow", "suppress": ["call"]},
 )
@@ -1239,7 +1253,7 @@ class NotificationCenter:
             raise ValidationError("unsupported delivery channel group")
         with self._lock, self._connection:
             rows = self._connection.execute(
-                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND i.state IN (?, ?) AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key = i.dedup_key AND m.unmuted_at IS NULL)) ORDER BY CASE WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
+                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key = i.dedup_key AND m.unmuted_at IS NULL)) ORDER BY CASE WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
                 (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, limit),
             ).fetchall()
             result: list[dict[str, Any]] = []
@@ -1376,7 +1390,7 @@ class NotificationCenter:
         safe_error = " ".join((error or "").replace("\x00", "").splitlines())[-1000:] or None
         result_json = json.dumps(dict(result), ensure_ascii=False, sort_keys=True)[:4000] if isinstance(result, Mapping) else None
         with self._lock, self._connection:
-            row = self._connection.execute("SELECT d.id, d.status, d.claimed_at, d.attempt, d.incident_id, d.channel, d.delivery_key, d.policy_step_id, d.repeat_number, i.state, i.consumer_id, i.event_type FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
+            row = self._connection.execute("SELECT d.id, d.status, d.claimed_at, d.attempt, d.incident_id, d.channel, d.delivery_key, d.policy_step_id, d.repeat_number, d.target_json, i.state, i.consumer_id, i.event_type FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
             if row is None:
                 raise ValidationError("delivery not found")
             if str(row["status"]) == "cancelled":
@@ -1389,14 +1403,14 @@ class NotificationCenter:
                 return
             if attempt is not None and int(row["attempt"] or 0) != int(attempt):
                 return
-            if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES:
+            if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES and not _is_session_notice(row):
                 outcome = "cancelled"
                 safe_error = safe_error or "incident is no longer active"
             if outcome == "retry":
                 self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), safe_error, now, delivery_id))
             else:
                 self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, result_json = COALESCE(?, result_json), updated_at = ? WHERE id = ?", (outcome, safe_error, result_json, now, delivery_id))
-            if outcome in {"failed", "retry", "uncertain"} and str(row["state"]) in DELIVERABLE_STATES:
+            if outcome in {"failed", "retry", "uncertain"} and str(row["state"]) in DELIVERABLE_STATES and not _is_session_notice(row):
                 self._schedule_failure_neighbours(row, now)
             if outcome == "sent" and row["policy_step_id"] is not None and str(row["state"]) in DELIVERABLE_STATES:
                 try:
@@ -1461,10 +1475,10 @@ class NotificationCenter:
             now = time.time()
             if state == "acknowledged":
                 self._connection.execute("UPDATE incidents SET state = ?, acknowledged_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
-                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending')", (now, incident_id))
+                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
             elif state == "resolved":
                 self._connection.execute("UPDATE incidents SET state = ?, resolved_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
-                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending')", (now, incident_id))
+                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
             else:
                 self._connection.execute("UPDATE incidents SET state = ?, snoozed_until = ?, updated_at = ? WHERE id = ?", (state, snoozed_until, now, incident_id))
             self._audit(incident_id, f"incident_{state}", actor, {"snoozed_until": snoozed_until})
@@ -1659,17 +1673,20 @@ class NotificationCenter:
         selection = payload.get("health_selection") if isinstance(payload.get("health_selection"), Mapping) else {}
         selected_plan = self._health_text(selection.get("plan_id") or "", 64)
         agent_session = job.get("agent_session") if isinstance(job.get("agent_session"), Mapping) else None
-        if selected_plan and agent_session is not None:
+        if agent_session is not None:
             session_id = self._health_text(agent_session.get("session_id") or agent_session.get("sessionId") or "", 128)
             harness = self._health_text(agent_session.get("harness") or "", 32)
+            stage = str(agent_session.get("profile") or ("health-remediation" if selected_plan else "health-diagnosis"))
             if session_id and harness:
                 self.record_health_agent_session(
                     incident_id,
-                    f"{incident_id}:health.remediation_session:{harness}:{session_id}",
+                    f"{incident_id}:{stage}_session:{harness}:{session_id}:v2",
                     selected_plan,
                     harness,
                     session_id,
                     "https://agent.bezrabotnyi.com",
+                    stage=stage,
+                    model=str(agent_session.get("model") or ""),
                 )
         entries = job.get("progress")
         if not selected_plan or not isinstance(entries, list):
@@ -1726,38 +1743,53 @@ class NotificationCenter:
         session_id: str,
         public_base_url: str,
         actor: str = "agent-herder",
+        stage: str = "health-remediation",
+        model: str = "",
     ) -> dict[str, Any]:
-        """Persist a remediation session and queue one durable transcript link."""
+        """Persist an accepted health-agent session and its durable progress link."""
         incident = self.get_incident(incident_id)
         if incident is None or not str(incident.get("event_type") or "").startswith("health."):
             raise ValidationError("health remediation session requires a health incident")
         safe_plan = self._health_text(plan_id, 64)
-        safe_harness = self._health_text(harness, 32).lower()
+        safe_harness = self._health_text(harness, 64).lower()
         safe_session = self._health_text(session_id, 128)
-        if safe_plan not in HEALTH_PLAN_IDS or safe_harness not in {"zcode", "codex", "opencode", "hermes"} or not safe_session:
+        if stage not in {"health-diagnosis", "health-orchestrator", "health-remediation"}:
+            raise ValidationError("health agent session stage is invalid")
+        if not re.fullmatch(r"[a-z][a-z0-9._:@-]{0,63}", safe_harness) or not safe_session:
             raise ValidationError("health remediation session identity is invalid")
-        selected = self.latest_health_selection(incident_id) or {}
-        if str(selected.get("plan_id") or "") != safe_plan:
-            raise ValidationError("health remediation session plan does not match the selected plan")
+        if stage == "health-remediation":
+            selected = self.latest_health_selection(incident_id) or {}
+            if safe_plan not in HEALTH_PLAN_IDS or str(selected.get("plan_id") or "") != safe_plan:
+                raise ValidationError("health remediation session plan does not match the selected plan")
+        elif safe_plan:
+            raise ValidationError("diagnosis and orchestrator sessions do not select a repair plan")
         parsed = urllib.parse.urlsplit(public_base_url.strip().rstrip("/"))
         if parsed.scheme != "https" or not parsed.hostname or parsed.query or parsed.fragment:
             raise ValidationError("Agent Herder public URL must be HTTPS")
         base_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
         session_url = f"{base_url}/#{urllib.parse.quote(safe_harness, safe='')}/{urllib.parse.quote(safe_session, safe='')}"
+        session = {"plan_id": safe_plan, "stage": stage, "harness": safe_harness, "session_id": safe_session,
+                   "session_url": session_url, "model": self._health_text(model, 128)}
         result = self.record_health_update(
             incident_id,
             idempotency_key,
-            "health.remediation_session_started",
-            {"plan_id": safe_plan, "harness": safe_harness, "session_id": safe_session, "session_url": session_url},
+            stage.replace("health-", "health.") + "_session_started",
+            session,
             actor=actor,
         )
         with self._lock, self._connection:
             delivery_id = self._schedule_delivery(
                 incident_id,
                 "telegram.main",
-                f"health.remediation_session:{safe_harness}:{safe_session}",
+                f"{stage.replace('health-', 'health.')}_session:{safe_harness}:{safe_session}",
                 time.time(),
-                {"health_session": {"plan_id": safe_plan, "harness": safe_harness, "session_id": safe_session, "session_url": session_url}},
+                {"health_session": session},
+            )
+            # Older ACK handling cancelled these informational deliveries.
+            self._connection.execute(
+                "UPDATE deliveries SET status='queued', due_at=?, last_error=NULL, target_json=?, updated_at=? "
+                "WHERE id=? AND status='cancelled'",
+                (time.time(), json.dumps({"health_session": session}, ensure_ascii=False), time.time(), delivery_id),
             )
         return {**result, "session_url": session_url, "session_delivery_id": delivery_id}
 
@@ -1966,15 +1998,17 @@ class NotificationCenter:
         with self._lock, self._connection:
             event_type = "agent_job_failed" if summary["status"] == "failed" else "agent_job_completed"
             self._audit(incident_id, event_type, "worker", summary)
-        if job_name == HEALTH_REMEDIATION_AGENT_JOB and summary.get("session_id") and summary.get("plan_id"):
+        if job_name in {"health-diagnosis", HEALTH_REMEDIATION_AGENT_JOB} and summary.get("session_id") and summary.get("harness"):
             self.record_health_agent_session(
                 incident_id,
-                f"{incident_id}:health.remediation_session:{summary.get('harness') or 'zcode'}:{summary['session_id']}",
+                f"{incident_id}:{job_name}_session:{summary['harness']}:{summary['session_id']}:v2",
                 str(summary["plan_id"]),
                 str(summary.get("harness") or "zcode"),
                 str(summary["session_id"]),
                 "https://agent.bezrabotnyi.com",
                 actor="worker",
+                stage=job_name,
+                model=str(summary.get("model") or ""),
             )
         if job_name == HEALTH_REMEDIATION_AGENT_JOB and summary["status"] == "completed" and isinstance(health_context, Mapping):
             workflow_result = self._record_health_remediation_receipt(incident_id, delivery_id, receipt, health_context)

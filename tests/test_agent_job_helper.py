@@ -71,6 +71,26 @@ class AgentJobHelperTests(unittest.TestCase):
         self.assertEqual("Bearer project-token", requests[0].headers["Authorization"])
         self.assertEqual("ses-zcode-1", json.loads(requests[0].data)["session_id"])
 
+    def test_diagnosis_link_is_published_before_a_later_polling_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            config = Path(tempdir) / "profiles.json"
+            config.write_text(json.dumps({"profiles": {"health-diagnosis": {
+                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
+                "name": "diagnosis-test", "cwd": tempdir, "mode": "queue", "instruction": "Read only.",
+            }}}))
+            config.chmod(0o600)
+            callback = mock.Mock()
+            with mock.patch.object(agent_job_helper, "_load_health_callback"), \
+                 mock.patch.object(agent_job_helper, "_run_health_diagnosis", side_effect=RuntimeError("later failure")):
+                with self.assertRaisesRegex(RuntimeError, "later failure"):
+                    run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
+                                "incident": {"id": "incident-test", "project": "test"}}, config,
+                                runner=lambda *_a, **_k: _Response({"ok": True, "sessionId": "session-live", "created": True}),
+                                session_callback=callback)
+            callback.assert_called_once()
+            self.assertEqual("session-live", callback.call_args[0][0]["session_id"])
+            self.assertEqual("health-diagnosis", callback.call_args[0][0]["profile"])
+
     def test_documented_health_diagnosis_profile_has_required_orchestrator_mapping(self) -> None:
         document = json.loads((Path(__file__).parents[1] / "docs" / "health-agent-jobs.example.json").read_text(encoding="utf-8"))
         profile = document["profiles"]["health-diagnosis"]

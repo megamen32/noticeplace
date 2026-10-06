@@ -56,7 +56,12 @@ class AgentCallPhoneAdapter:
         opening = "Новая заявка." if lead_notification else "Внимание. Сломалось что-то."
         request = {
             "message": f"{opening} {title}. {body}",
-            "context": f"Уровень {severity}. {title}. {body}",
+            "context": (
+                f"Уровень {severity}. {title}. {body}\n"
+                "У голосового ассистента нет инструментов запуска работ или управления агентами. "
+                "Не обещай, что начал проверку или исправление. Объясняй только сведения из уведомления. "
+                "Фактический запуск и прогресс работы подтверждаются сессией Agent Herder в карточке Notice Place."
+            ),
             "repeat": 2,
             "incident_id": str(incident.get("id") or "")[:128],
         }

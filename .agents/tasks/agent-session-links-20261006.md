@@ -1,0 +1,33 @@
+# Agent Herder session links in Notice Place
+
+Status: source verified; deployment and real session/card proof pending.
+
+The user receives phone explanations that imply work has started, but cannot
+open the agent session from Notice Place. Confirmed gaps:
+
+- Only remediation sessions were announced. Diagnosis and plan-orchestrator
+  sessions had no immediate callback.
+- Session-link delivery shared the incident's alert queue, so ACK could cancel
+  it or prevent it from being claimed after work began.
+- Link registration allowed only four harness names although Agent Herder also
+  registers Claude, Qoder, Fast Agent and other adapters.
+- The phone LLM has no agent-launch tools and must not promise that it started
+  work. Its incident context now states that boundary explicitly.
+
+The fix posts each accepted session immediately, shows stage/harness/model and
+an open-session button, preserves informational links after ACK/resolution,
+and leaves call cancellation and remediation-plan authority intact.
+
+Current runtime audit: recent diagnosis webhook jobs fail without a session
+receipt. A bounded live canary must distinguish failed launch from an actual
+working session; a queue acknowledgement or link alone is not acceptance.
+There are also eight historic `sending` diagnosis rows (two from August and
+six from October 2–3), with no matching receipt found in the current Hub state.
+They are preserved without relaunch: their exact external outcome is unknown.
+Smallest next action for those old rows is to recover their old Hub receipts or
+session identities before reconciliation; never redial or relaunch blindly.
+
+Validation artifacts and private configuration remain under ignored `.tmp/`.
+The reviewed Notice Place main-service budget remains 512 MiB/1 GiB RAM,
+256 MiB swap, two CPUs and 256 tasks. Tests run serially with a timeout; the
+live check may launch at most one read-only diagnosis/orchestrator chain.
