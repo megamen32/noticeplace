@@ -258,3 +258,46 @@ No further Notice upgrade is needed for this slice. Full delegated evidence:
 docs/human-request-originals.md and owner04358ca/0cc1f01.
 Remaining original umbrella acceptance is Herder same-ID ZCode cold-resume/
 signed-selection proof; TelegramAuto work was explicitly handed to ZCode.
+
+
+Final merged acceptance, 2026-10-06 16:17 UTC
+--------------------------------------------
+Herder final owner window is END, published tracker ea083dc. One authorized
+same-ID diagnostic actually replied ПРОВЕРКА ПОЛУЧЕНА; not repeated. Owned
+browser intercepted502 retained the exact draft and200 cleared it, zero native
+submissions for those fixtures. Final native question completed but signed
+selection was not proven: global Autopilot master was persisted off. Root
+explicitly directed preserving that policy, without global enable or a manual
+choice fixture. Final own sess5af9 is held=true/session Autopilot=false and
+owned browser closed. The new crash-only UI/recovery work remains root-owned;
+no new native retry or deployment by this owner. Herder's unrelated active
+source WIP prevents claiming that shared checkout clean.
+
+Merged AgentCall voice work is accepted from its active owner01a10b0c;
+no bridge/env takeover or extra physical call by this agent. Published source
+commits d6bbd27163a14bce9c4a3120c852e603fbbd0ca1 (local configured Silero
+primary for alert and replies, phone MiniMax only opt-in failure fallback;
+effective fallback0) and a4feef27a21b3131d67292ffc79485fd5fadbd57 (natural
+call-ending variants), canonical receipt c2883039b42450adfeccefa8d24b54b506149e88:
+/home/roomhacker/ServersAdministartion/docs/projects/NOTICE-LOUD-CALL-20261006.md.
+22 focused tests green. Initial competing-call/no-AudioSocket attempt is NOT
+accepted as a consumer proof. Controlled physical call
+f566a613-1717-454b-81cf-cbc51533250f under owner's lease: actual user confirmed
+Да, один голос; exact Давай пока -> Хорошо, завершаю звонок -> ended.
+Later natural variants are covered by focused tests and installed bytes;
+no subsequent physical call is claimed for them.
+
+Independent final readback: live PID1592438 active/NRestarts0; bridge
+source/runtime SHA256 db9447420f2be0b4752eacb1fe6b9dcc707a11a9ea34db04a57a774bd391db3e
+matches, backend env SHA256 cd9767afb1c15625a9a5cc821a771f9ad23d657a707c7168e92704dd501284bb
+matches, process PHONE_FALLBACK=0 and local endpoint127.0.0.1:30802.
+Owner's terminal receipt confirms SIP OK/channels0/lease free. Protected
+provider keys and phone target were not copied or changed. No further call,
+Notice upgrade or restart is needed for this acceptance.
+
+ServerAdmin HEAD=origin/main c288303 after fetch; the only current foreign
+working-tree change is docs/inventory/services/exmanager.md, owned by01a10ffe.
+Preserved and excluded from staging here; global-clean completion remains
+blocked by that independent owner's publication. Voice source itself is
+published and installed. Independent evidence is stored under this Codex
+session's private visualizations directory as agentcall-silero-independent-readback.json.
