@@ -357,7 +357,7 @@ class GptAdminAgentJobAdapter:
             return {}
         evidence_refs = parsed_stdout.get("evidence_refs")
         bounded_evidence_refs = [_safe_health_ref(item, 128) for item in evidence_refs[:10]] if isinstance(evidence_refs, list) else []
-        return {
+        receipt = {
             "session_id": _safe_health_ref(parsed_stdout.get("session_id") or parsed_stdout.get("sessionId") or "", 128),
             "profile": _safe_health_ref(parsed_stdout.get("profile") or "", 128),
             "harness": _safe_health_ref(parsed_stdout.get("harness") or "", 32),
@@ -380,6 +380,10 @@ class GptAdminAgentJobAdapter:
             "verifier_id": _safe_health_ref(parsed_stdout.get("verifier_id") or parsed_stdout.get("verification_source_id") or "", 128),
             "observed_state": _safe_health_ref(parsed_stdout.get("observed_state") or "", 32),
         }
+        if type(parsed_stdout.get('notify_user')) is bool:
+            receipt['notify_user'] = parsed_stdout['notify_user']
+            receipt['notification_reason'] = _safe_health_ref(parsed_stdout.get('notification_reason') or '', 500)
+        return receipt
 
     def _open(self, request: urllib.request.Request, timeout: float) -> dict[str, Any]:
         try:

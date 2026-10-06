@@ -9,6 +9,8 @@ from notification_center.core import NotificationCenter
 from notification_center import agent_job_helper
 from notification_center.agent_job_helper import _extract_health_diagnosis
 from notification_center.gptadmin_agent import _agent_job_event
+from notification_center.gptadmin_agent import GptAdminAgentJobAdapter
+from notification_center.http_api import DeliveryWorker
 
 
 class HealthNotificationDecisionTests(unittest.TestCase):
@@ -64,6 +66,36 @@ class HealthNotificationDecisionTests(unittest.TestCase):
         self.assertEqual([], self.queued_messages(created['incident_id']))
         critical = self.create('critical')
         self.assertIsNotNone(critical['initial_delivery_id'])
+
+    def test_real_hub_stdout_envelope_keeps_quiet_decision_through_worker(self):
+        created = self.create()
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def read(self, *_args):
+                return json.dumps({'job_id': 'durable-hub-job', 'status': 'completed', 'result': {
+                    'response': {'stdout': json.dumps({'status': 'completed', 'harness': 'codex', 'session_id': 'native',
+                        'notify_user': False, 'notification_reason': 'Сервис исправен, действий не требуется.'})}}}).encode()
+        adapter = GptAdminAgentJobAdapter('health-diagnosis', 'http://127.0.0.1:9999/webhooks/v1/health', 'test-key',
+            runner=lambda *_a, **_kw: Response())
+        worker = DeliveryWorker(self.center, object(), agent_jobs={'health-diagnosis': adapter})
+        delivery = self.center.claim_due_deliveries(channel_group='agent')[0]
+        worker.deliver(delivery)
+        self.assertFalse(self.center.health_notification_decision(created['incident_id'])['notify_user'])
+        self.assertEqual([], self.queued_messages(created['incident_id']))
+
+    def test_terminal_parser_preserves_only_real_booleans_and_redacts_reason(self):
+        for value in (False, True, 'false', 0, None):
+            raw = {'result': {'stdout': json.dumps({'session_id': 'native', 'harness': 'codex',
+                'notify_user': value, 'notification_reason': 'secret=hidden ' + 'я' * 600})}}
+            receipt = GptAdminAgentJobAdapter._bounded_agent_receipt(raw)
+            if type(value) is bool:
+                self.assertIs(value, receipt['notify_user'])
+                self.assertNotIn('hidden', receipt['notification_reason'])
+                self.assertLessEqual(len(receipt['notification_reason']), 500)
+            else:
+                self.assertNotIn('notify_user', receipt)
 
     def test_critical_and_emergency_bypass_quiet_ai_decision(self):
         for severity in ('critical', 'emergency'):

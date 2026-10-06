@@ -100,6 +100,38 @@ real stop/held/blocked automation/explicit same-ID resume прошли Codex/ZCo
 hold пережил restart. ONE Notice managed upgrade и serial manual/quiet canaries
 теперь разрешены. Phone/calls отложены.
 
+## Реальная приёмка и corrective terminal seam
+
+ONE managed upgrade d0a54673acb396abc9e510f89ac3a1e17dba8b1f установлен,
+release20261006T112818Z-d0a54673acb3-3206756, main/adminPID3208469/3208473,
+active/NRestarts0;7 sourcefiles byte-equal. Env и runtime settings сохранены.
+/health503 обусловлен историческими1389 uncertain delivery/1347 reconciliation,
+storage_ready и dispatcher_ready=true. Никаких blind replay/receiptreset не делали.
+
+Настоящий Helper click Careviolan/540308572 в5822: first selected checkmark
+и zero buttons подтверждены readback, затем same5822 canonical native URL.
+Диагностика01a110fb-a704-7302-a03f-0fa8100cb466 и planner01a110fc-07d7-7b82-bb96-51a8dda8602f
+завершены; plan migration тоже same5822, distinct Telegram IDs ровно1, calls0.
+После planmigration убран повторный старый AI выбор (не возвращать выбор после
+уже принятого решения). Marker/link/планы и кнопка открытия остаются доступны.
+
+Первая настоящая quiet canary inc_254de5d6834c44d89c8115584f639c5d нашла интеграционный
+дефект: raw durable Hubjob b4d6144a4ee73dea1f98cf18331bb549 содержит notify_user=false
+и русский reason, helper planner не создал; terminal adapter whitelist потерял
+оба поля. Core корректно failopen отправил5824, поэтому quiet acceptance НЕ прошла.
+Confirmed red actualstdout-wrapper→signed adapter→worker→core regression добавлен.
+Fix сохраняет только strictbool и bounded/redacted reason, missing/invalid остаётся
+failopen.58 related adapter/sourcechecks +28 card/HTTPchecks прошли. Owner01a10bc5
+разрешил ONE necessary corrective reload и новую quiet canary после reviewedpush;
+без намеренных Herder/Notice рестартов в финальном окне результата.
+
+UserIO root получил PIDs/Helperwindow, own dispatcher4567622 restart и новую
+важную benign Secretary→Nikita2301/receiver1981288 делает отдельно, no39204replay.
+Ждём terminal HumanRequest/receipt перед corrective Notice reload, не прерывать
+этот consumer path. Новый пользовательский ZCode queue/autopilot bug сохраняется
+следующим ownedslice после Notice приёмки; root release adapter send/flush/queue
+и Stop/UserPrompt hooks, без vendor-core/formatter/human-stop field изменений.
+
 Автограм owner1: новая форумная тема5796 группы-1004322359393 и consumer_f9cc6bad25d9458585132b4158531259,
 Telegram-only (phone off), maxcritical. Приватный новый token сохранён только
 в autoseller-noticeplace.env с0600roomhacker; старые ключи/consumer_e9c… сохранены.

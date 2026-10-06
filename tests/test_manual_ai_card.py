@@ -85,6 +85,7 @@ class ManualAiCardTests(unittest.TestCase):
         self.assertIn("codex%3Aplanner", request["text"][0])
         buttons = json.loads(request["reply_markup"][0])["inline_keyboard"]
         self.assertIn("codex%3Aplanner", buttons[-1][0]["url"])
+        self.assertNotIn('AI', [button['text'] for row in buttons for button in row])
 
     def test_receipt_fallback_registers_manual_session_after_ack(self):
         job = self.request_ai()

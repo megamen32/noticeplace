@@ -639,7 +639,10 @@ class TelegramSender:
             text += f"\n\n{marker}Ссылка на сессию: {str(ai_session.get('session_url') or '')}"
         keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
         controls = telegram_inline_keyboard(self._action_codec, incident)
-        keyboard["inline_keyboard"].extend(controls["inline_keyboard"][-1:])
+        control_rows = controls["inline_keyboard"][-1:]
+        if isinstance(payload.get('ai_card'), dict):
+            control_rows = [[button for button in row if button.get('text') != 'AI'] for row in control_rows]
+        keyboard["inline_keyboard"].extend(row for row in control_rows if row)
         if isinstance(ai_session, dict):
             keyboard["inline_keyboard"].append([{"text": "Открыть сессию", "url": str(ai_session["session_url"])}])
         visible_text, overflow_text = _telegram_text_with_attachment(text)
