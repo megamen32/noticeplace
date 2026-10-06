@@ -1,6 +1,6 @@
 # UserIO original message and Markdown delivery — 2026-10-06
 
-Status: reviewed source ready; managed Notice release and native recipient acceptance follow in the coordinated window.
+Status: completed; reviewed source published, managed runtime installed, native recipient short/card and full Markdown acceptance passed.
 
 User request: show the original incoming text, and immediately deliver a complete Markdown file when it is too long for the card.
 
@@ -14,3 +14,13 @@ User request: show the original incoming text, and immediately deliver a complet
 - Root acceptance plan: one benign short and one long controlled priority Secretary→Nikita message, receiver body verification, same-topic Notice card/file receipts, full downloaded MD SHA-256 equality. No root reply-button clicks, external mail/Matrix sends or calls.
 - One managed Notice upgrade coordinated with owner01a1106f and physical test owner01a10bc5. Attachment canaries begin after the separate physical test terminal receipt; no live actions from implementation workers.
 - Final evidence belongs to /home/roomhacker/.codex/visualizations/2026/10/06/01a110c6-203c-7db3-8b86-fce6c3869d35/userio-original-message-md-final.json.
+
+## Final native acceptance
+
+- Managed Notice runtime df4befeb/main173733/admin173743, producer code eb078d0/PID207027. One coordinated upgrade; other owner phone test finished before Helper acceptance. No root phone action or further Notice restart.
+- Secretary8810909089 sender2319/2320 → Nikita540308572 receiver1981531/1981532; both exact bodies independently read through Helper. Active account restored11/Nikita.
+- Short event39648 eligible1/reconciled0 completed notify → card5860 in topic5764, full295 UTF-16 original first; no document needed. https://t.me/c/4322359393/5764/5860
+- Long event39649 eligible1/reconciled0 completed notify → card5861 + replied document5862 in exact topic5764. https://t.me/c/4322359393/5764/5862
+- Recipient Helper downloaded metadata: human-request-userio-39649.md, text/markdown,7053 bytes, SHA256 0e777c1f85b20a7be0213ddf50c1cef3a29691150458921342b13f2aedb916ea. Bounded official getFile/download of this own benign file matched all7053 original UTF-8 bytes, including final marker. No token/body secret printed.
+- Both claims completed on first attempt with confirmed receipts; no partial/quarantine in these healthy canaries. No root reply-button click or external email/Matrix send.
+- Final evidence: current thread userio-original-message-md-final.json and userio-original-long-received.md; executable safe probe retained alongside proof.
