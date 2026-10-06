@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -25,6 +26,7 @@ DEFAULT_CALLS_OVERRIDE_PATH = Path("/etc/systemd/system/notification-center.serv
 DEFAULT_HEALTH_CONFIG_PATH = Path("/etc/health-incident-fleet.json")
 HEALTH_THRESHOLD_KEYS = ("cpu_warn_percent", "ram_warn_percent", "disk_warn_percent")
 RUNTIME_SETTING_ENV = {
+    "call_repeat_min_interval_seconds": "CALL_REPEAT_MIN_INTERVAL_SECONDS",
     "matrix_call_critical_escalation_seconds": "MATRIX_CALL_CRITICAL_ESCALATION_SECONDS",
     "matrix_call_emergency_escalation_seconds": "MATRIX_CALL_EMERGENCY_ESCALATION_SECONDS",
     "android_phone_call_escalation_seconds": "ANDROID_PHONE_CALL_ESCALATION_SECONDS",
@@ -338,7 +340,7 @@ class AdminConfigStore:
         center = self._consumer_notification_center()
         env = parse_environment(self.primary_env)
         return {
-            key: center.get_runtime_setting(key, env.get(env_key, "0")) or "0"
+            key: center.get_runtime_setting(key, "3600" if key == "call_repeat_min_interval_seconds" else env.get(env_key, "0")) or "0"
             for key, env_key in RUNTIME_SETTING_ENV.items()
         }
 
@@ -347,12 +349,12 @@ class AdminConfigStore:
         center = self._consumer_notification_center()
         normalized: dict[str, str] = {}
         for key in RUNTIME_SETTING_ENV:
-            raw = str(values.get(key, "")).strip()
+            raw = str(values.get(key, center.get_runtime_setting(key, "3600") if key == "call_repeat_min_interval_seconds" else "")).strip()
             try:
                 number = float(raw)
             except (TypeError, ValueError) as error:
                 raise ValidationError(f"{key} must be a non-negative number") from error
-            if number < 0:
+            if not math.isfinite(number) or number < 0:
                 raise ValidationError(f"{key} must be a non-negative number")
             if key.endswith("_hour") and number > 24:
                 raise ValidationError(f"{key} must be between 0 and 24")

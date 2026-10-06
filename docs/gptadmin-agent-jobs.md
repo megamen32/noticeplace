@@ -217,3 +217,17 @@ Native queued admission publishes identity before result polling. Every session
 card includes a copyable URL in its text and the same URL in its button:
 `/#/session/<encoded harness:session-id>`. Agent Herder accepts legacy links and
 preserves explicitly linked sessions absent from the quick active list.
+
+## Итог работы
+
+После терминального ответа задания Notice Place отправляет информационный
+итог. Диагностика с тремя планами явно сообщает, что исправление ещё не
+выполнено и ожидается выбор человека. Ошибка и потеря связи/таймаут различаются:
+во втором случае сессия могла продолжить работу, поэтому результат считается
+неподтверждённым. При наличии зарегистрированной сессии её настоящий URL
+дублируется в тексте итога. Ни один из этих итогов не запускает эскалацию.
+
+Итог ремонта закрывает инцидент только через существующие gates независимой
+verification, source fingerprint и useful progress. Ссылки на сессии и итоги
+сохраняются после ACK; они не считаются дубликатами карточки аварии при
+публикации/миграции трёх планов и проверке полноты карточки.

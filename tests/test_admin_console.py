@@ -16,7 +16,7 @@ from pathlib import Path
 
 from notification_center.admin import AdminConfigStore
 from notification_center.admin_http import build_admin_handler
-from notification_center.core import NotificationCenter
+from notification_center.core import NotificationCenter, ValidationError
 from notification_center.health_workflow import HealthWorkflow
 
 
@@ -198,8 +198,17 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertIn(b"Adapter test accepted", result)
         test_adapter.assert_called_once_with("phone", "test call", "sso:operator")
 
+    def test_call_problem_interval_defaults_to_hour_and_rejects_nonfinite(self) -> None:
+        values = self.store.runtime_settings()
+        self.assertEqual('3600', values['call_repeat_min_interval_seconds'])
+        for value in ('nan', 'inf', '-1'):
+            with self.assertRaises(ValidationError):
+                self.store.set_runtime_settings({**values, 'call_repeat_min_interval_seconds': value}, 'sso:operator')
+        self.assertEqual('3600', self.store.runtime_settings()['call_repeat_min_interval_seconds'])
+
     def test_operator_can_change_live_delivery_timers_without_restart(self) -> None:
         values = {
+            "call_repeat_min_interval_seconds": "3600",
             "matrix_call_critical_escalation_seconds": "91",
             "matrix_call_emergency_escalation_seconds": "31",
             "android_phone_call_escalation_seconds": "601",

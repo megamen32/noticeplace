@@ -407,6 +407,25 @@ class TelegramSender:
                 "Инцидент остаётся открытым. Выберите или создайте план, который устранит оставшийся сигнал."
                 f"\n\nИнцидент: {incident['id']}"
             )
+        elif isinstance(health_outcome, dict):
+            status = str(health_outcome.get("status") or "unknown")
+            conclusions = {
+                "recovered": ("Состояние восстановилось", "Мониторинг исходного источника больше не видит проблему. Инцидент закрыт; действий от вас не требуется. Это подтверждение мониторинга, а не заявление, что агент выполнил ремонт."),
+                "resolved": ("Исправление подтверждено", "Работа по выбранному плану выполнена, независимая проверка подтвердила восстановление исходного источника. Инцидент закрыт; действий от вас не требуется."),
+                "plans_ready": ("Разбор завершён — выберите план", "Подготовлены три плана. Исправление ещё не выполнено: для продолжения выберите план кнопкой ниже."),
+                "failed": ("Работа остановилась", "Сервис выполнения сообщил об ошибке. Результат не получен, восстановление не подтверждено. Требуется повторный разбор причины остановки."),
+                "unknown": ("Восстановление не подтверждено", "Полученных данных недостаточно, чтобы закрыть инцидент. Требуется проверка исходного источника; исправление пока не подтверждено."),
+                "interrupted": ("Нет подтверждённого результата разбора", "Не удалось дождаться ответа сервиса выполнения. Сессия могла продолжить работу. Исправление пока не подтверждено."),
+            }
+            heading, explanation = conclusions.get(status, conclusions["unknown"])
+            session_url = str(health_outcome.get("session_url") or "")
+            text = (
+                f"{heading} · {incident['project']}\n\n"
+                f"Задача: {str(incident.get('title') or 'Проверка состояния сервиса')[:500]}\n\n"
+                f"{explanation}{plan_block}"
+                + (f"\n\nСсылка на сессию: {session_url}" if session_url else "")
+                + f"\n\nИнцидент: {incident['id']}"
+            )
         else:
             text = f"{str(incident['severity']).upper()} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nИнцидент: {incident['id']}"
         destination = telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes)
@@ -428,8 +447,13 @@ class TelegramSender:
                 raise RuntimeError("Agent Herder session URL is invalid")
             action_keyboard = {"inline_keyboard": [[{"text": "Открыть сессию", "url": session_url}]]}
             request_data["reply_markup"] = json.dumps(action_keyboard, ensure_ascii=False, separators=(",", ":"))
-        elif isinstance(health_outcome, dict):
-            pass
+        elif isinstance(health_outcome, dict) and health_outcome.get("status") != "plans_ready":
+            session_url = str(health_outcome.get("session_url") or "")
+            if session_url:
+                parsed_session_url = urllib.parse.urlsplit(session_url)
+                if parsed_session_url.scheme != "https" or parsed_session_url.hostname != "agent.bezrabotnyi.com":
+                    raise RuntimeError("Agent Herder session URL is invalid")
+                request_data["reply_markup"] = json.dumps({"inline_keyboard": [[{"text": "Открыть сессию", "url": session_url}]]}, ensure_ascii=False)
         elif self._action_codec is not None:
             if isinstance(health_plans, list) and health_plans:
                 health_keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
@@ -984,6 +1008,9 @@ class DeliveryWorker:
 
     def _after_telegram_delivery(self, delivery: dict[str, Any], incident: dict[str, Any]) -> None:
         """Durably schedule policy follow-ups only after Telegram delivery succeeded."""
+        target = self._center.delivery_payload(delivery).get("target", {})
+        if isinstance(target, dict) and any(isinstance(target.get(key), dict) for key in ("health_session", "health_outcome")):
+            return
         incident_id = str(delivery["incident_id"])
         health_mode = telegram_mode(incident) == "health"
         if (
@@ -1177,6 +1204,8 @@ class DeliveryWorker:
             elif delivery["channel"] == "matrix.call":
                 if self._matrix_call is None:
                     raise RuntimeError("Matrix call sender is not configured")
+                if not self._center.reserve_delivery_send(str(delivery["id"]), float(delivery["claimed_at"]), int(delivery["attempt"])):
+                    return
                 result = self._matrix_call.send(payload)
                 if result["answered"]:
                     self._center.acknowledge_if_active(str(delivery["incident_id"]), str(result["actor"]))
@@ -1189,6 +1218,8 @@ class DeliveryWorker:
             elif delivery["channel"] == "android.telegram.call":
                 if self._android_phone is None:
                     raise RuntimeError("Android phone adapter is not configured")
+                if not self._center.reserve_delivery_send(str(delivery["id"]), float(delivery["claimed_at"]), int(delivery["attempt"])):
+                    return
                 self._android_phone.telegram_call(payload)
             elif (
                 delivery["channel"] in {"android.phone.call", "phone.call"}
@@ -1200,12 +1231,12 @@ class DeliveryWorker:
                         claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
                     )
                     return
-                if delivery["channel"] == "android.phone.call":
-                    self._send_critical_pre_call_context(payload)
                 if not self._center.reserve_delivery_send(
                     str(delivery["id"]), claimed_at=float(delivery["claimed_at"]), attempt=int(delivery["attempt"]),
                 ):
                     return
+                if delivery["channel"] == "android.phone.call":
+                    self._send_critical_pre_call_context(payload)
                 try:
                     result = self._android_phone.phone_call(payload)
                 except (TimeoutError, ConnectionResetError, BrokenPipeError):
@@ -1291,6 +1322,8 @@ class DeliveryWorker:
                 claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
             )
         except Exception as error:
+            if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
+                self._center.schedule_health_outcome(str(delivery["incident_id"]), "interrupted", f"agent-interrupted:{delivery['id']}")
             delay = min(300, 5 * (2 ** min(int(delivery["attempt"]), 6)))
             self._center.complete_delivery(
                 delivery["id"],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import re
 import sqlite3
 import threading
@@ -20,8 +21,8 @@ from zoneinfo import ZoneInfo
 SEVERITIES = ("debug", "info", "notice", "important", "critical", "emergency")
 OPEN_STATES = ("open", "acknowledged", "snoozed")
 DELIVERABLE_STATES = ("open", "snoozed")
-# Session links report existing work; receiving an alert must not hide them.
-_SESSION_NOTICE_SQL = "(channel = 'telegram.main' AND COALESCE(json_type(COALESCE(target_json, '{}'), '$.health_session'), '') = 'object')"
+# Session links and conclusions report existing work; ACK must not hide them.
+_SESSION_NOTICE_SQL = "(channel = 'telegram.main' AND (COALESCE(json_type(COALESCE(target_json, '{}'), '$.health_session'), '') = 'object' OR COALESCE(json_type(COALESCE(target_json, '{}'), '$.health_outcome'), '') = 'object'))"
 
 
 def _is_session_notice(delivery: Mapping[str, Any]) -> bool:
@@ -31,7 +32,7 @@ def _is_session_notice(delivery: Mapping[str, Any]) -> bool:
         target = json.loads(delivery["target_json"] or "{}")
     except (TypeError, json.JSONDecodeError):
         return False
-    return isinstance(target, dict) and isinstance(target.get("health_session"), dict)
+    return isinstance(target, dict) and any(isinstance(target.get(key), dict) for key in ("health_session", "health_outcome"))
 
 
 DEFAULT_CONSUMER_QUIET_HOURS = (
@@ -230,6 +231,11 @@ class NotificationCenter:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
                     updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS call_problem_budgets (
+                    scope_key TEXT PRIMARY KEY,
+                    last_attempt_at REAL NOT NULL,
+                    last_delivery_id TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS human_requests (
                     request_id TEXT PRIMARY KEY,
@@ -1110,6 +1116,8 @@ class NotificationCenter:
                 if not self._source_health_recovery_matches(incident_id, event):
                     self._require_health_resolution_gate(incident_id)
                 self._transition(incident_id, "resolved", "producer")
+                if event_type.startswith("health."):
+                    self.schedule_health_outcome(incident_id, "recovered", "producer-recovery")
             self._connection.execute(
                 "INSERT INTO resolution_events(idempotency_key, event_id, project, recipient, dedup_key, payload_json, incident_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (idempotency_key, event_id, project, recipient, dedup_key, payload_json, incident_id, now),
@@ -1295,7 +1303,55 @@ class NotificationCenter:
                 "UPDATE deliveries SET status = 'sending', last_error = NULL, updated_at = ? WHERE id = ? AND status = 'claimed' AND claimed_at = ? AND attempt = ?",
                 (now, delivery_id, claimed_at, attempt),
             )
-            return cursor.rowcount == 1
+            if cursor.rowcount != 1:
+                return False
+            row = self._connection.execute(
+                "SELECT d.*, i.project, i.recipient, i.dedup_key, i.collapse_key FROM deliveries d JOIN incidents i ON i.id=d.incident_id WHERE d.id=?", (delivery_id,),
+            ).fetchone()
+            if row is not None and str(row["channel"]).endswith(".call"):
+                return self._reserve_problem_call(dict(row), now)
+            return True
+
+    def _call_problem_key(self, row: Mapping[str, Any]) -> str:
+        original = self._health_original_event(str(row["incident_id"])) or {}
+        host = str(original.get("host_id") or "").strip()
+        signal = str(original.get("signal_type") or "").strip().lower()
+        if signal in {"cpu", "load", "cpu_load", "cpu_percent", "load_per_core"}:
+            signal = "cpu-pressure"
+        problem = ["host-signal", host, signal] if host and signal else ["dedup", str(row.get("collapse_key") or row["dedup_key"])]
+        identity = [row["project"], row["recipient"], problem]
+        return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+    def _reserve_problem_call(self, row: Mapping[str, Any], now: float) -> bool:
+        """Share one durable call interval across episodes, channels and workers."""
+        try:
+            interval = float(self.get_runtime_setting("call_repeat_min_interval_seconds", "3600") or "3600")
+        except (ValueError, TypeError):
+            interval = 3600.0
+        if not math.isfinite(interval) or interval < 0:
+            interval = 3600.0
+        key = self._call_problem_key(row)
+        previous = self._connection.execute("SELECT last_attempt_at FROM call_problem_budgets WHERE scope_key=?", (key,)).fetchone()
+        last = float(previous["last_attempt_at"]) if previous else None
+        if previous is None and interval > 0:
+            # Bootstrap from actual prior attempts; deployment is not a new
+            # permission to ring again. Quiet-hour cancellations do not count.
+            history = self._connection.execute(
+                "SELECT i.project,i.recipient,i.dedup_key,i.collapse_key,d.incident_id,d.claimed_at,d.created_at,d.updated_at FROM deliveries d JOIN incidents i ON i.id=d.incident_id "
+                "WHERE i.project=? AND i.recipient=? AND d.channel LIKE '%.call' AND d.id!=? "
+                "AND d.updated_at>=? AND d.status IN ('sending','sent','failed','uncertain') ORDER BY d.updated_at DESC",
+                (row["project"], row["recipient"], row["id"], now-interval),
+            )
+            for candidate in history:
+                if self._call_problem_key(dict(candidate)) == key:
+                    last = float(candidate["claimed_at"] or candidate["created_at"])
+                    break
+        if interval > 0 and last is not None and now < last + interval:
+            self._connection.execute("UPDATE deliveries SET status='cancelled',last_error=?,updated_at=? WHERE id=?", ("Повторный звонок об этой проблеме ограничен настройкой интервала", now, row["id"]))
+            self._audit(str(row["incident_id"]), "call_rate_limited", "policy", {"delivery_id": row["id"], "next_allowed_at": last+interval, "interval_seconds": interval})
+            return False
+        self._connection.execute("INSERT INTO call_problem_budgets(scope_key,last_attempt_at,last_delivery_id) VALUES(?,?,?) ON CONFLICT(scope_key) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,last_delivery_id=excluded.last_delivery_id", (key, now, row["id"]))
+        return True
 
     def _schedule_next_policy_successor(self, incident_id: str, consumer_id: str, previous_step_id: str, now: float, health: bool) -> bool:
         """Schedule the first non-Telegram successor when Health skips message repeats."""
@@ -1479,6 +1535,12 @@ class NotificationCenter:
             elif state == "resolved":
                 self._connection.execute("UPDATE incidents SET state = ?, resolved_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
                 self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
+                self._connection.execute(
+                    "UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? "
+                    "AND status IN ('queued', 'claimed') AND json_type(target_json, '$.health_outcome') = 'object' "
+                    "AND COALESCE(json_extract(target_json, '$.health_outcome.status'), '') NOT IN ('resolved', 'recovered')",
+                    (now, incident_id),
+                )
             else:
                 self._connection.execute("UPDATE incidents SET state = ?, snoozed_until = ?, updated_at = ? WHERE id = ?", (state, snoozed_until, now, incident_id))
             self._audit(incident_id, f"incident_{state}", actor, {"snoozed_until": snoozed_until})
@@ -2021,8 +2083,38 @@ class NotificationCenter:
                         "worker",
                         {"delivery_id": delivery_id, "reason": self._health_text(workflow_result.get("reason") or "unknown", 256)},
                     )
+            if not workflow_result.get("resolved") and not workflow_result.get("outcome_delivery_id"):
+                self.schedule_health_outcome(incident_id, "unknown", f"agent-result:{delivery_id}")
             return workflow_result
+        if job_name in {"health-diagnosis", HEALTH_REMEDIATION_AGENT_JOB}:
+            if summary["status"] == "failed":
+                self.schedule_health_outcome(incident_id, "failed", f"agent-result:{delivery_id}")
+            elif summary["status"] == "completed":
+                status = "plans_ready" if job_name == "health-diagnosis" and len(self.latest_health_plans(incident_id)) == 3 else "unknown"
+                self.schedule_health_outcome(incident_id, status, f"agent-result:{delivery_id}")
         return {"accepted": True, "resolved": False, "health_workflow": False}
+
+    def schedule_health_outcome(self, incident_id: str, status: str, key: str) -> str | None:
+        """Queue one informational conclusion; never imply recovery from a session handle."""
+        with self._lock, self._connection:
+            incident = self.get_incident(incident_id)
+            original = self._health_original_event(incident_id)
+            if incident is None or original is None:
+                return None
+            if str(original.get("correlation_id") or "").startswith("corr:live-health-canary:"):
+                return None
+            if incident["state"] == "resolved" and status not in {"resolved", "recovered"}:
+                return None
+            outcome: dict[str, Any] = {"status": status}
+            row = self._connection.execute(
+                "SELECT target_json FROM deliveries WHERE incident_id = ? AND channel = 'telegram.main' "
+                "AND json_type(target_json, '$.health_session') = 'object' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (incident_id,),
+            ).fetchone()
+            if row is not None:
+                outcome["session_url"] = json.loads(row["target_json"])["health_session"].get("session_url", "")
+            step = "health.resolved" if status == "resolved" else f"health.outcome:{key}"
+            return self._schedule_delivery(incident_id, "telegram.main", step, time.time(), {"health_outcome": outcome})
 
     @staticmethod
     def _health_text(value: Any, limit: int = 256) -> str:
@@ -2555,7 +2647,7 @@ class NotificationCenter:
         )
         resolved = self._transition(incident_id, "resolved", actor)
         with self._lock, self._connection:
-            resolved_delivery_id = self._schedule_delivery(incident_id, "telegram.main", "health.resolved", time.time())
+            resolved_delivery_id = self.schedule_health_outcome(incident_id, "resolved", "verified-recovery")
         return {**resolved, "resolved_delivery_id": resolved_delivery_id}
 
     def _healthy_verification_matches(self, incident_id: str) -> bool:
@@ -2934,7 +3026,9 @@ class NotificationCenter:
                         if self._health_text(ref, 128)
                     ],
                 }
-            latest_plans = None if isinstance(payload.get("health_outcome"), dict) or isinstance(payload.get("health_session"), dict) else self.latest_health_event(str(incident["id"]), "health.plans_attached")
+            outcome = payload.get("health_outcome")
+            show_plans = not isinstance(outcome, dict) or outcome.get("status") == "plans_ready"
+            latest_plans = self.latest_health_event(str(incident["id"]), "health.plans_attached") if show_plans and not isinstance(payload.get("health_session"), dict) else None
             if latest_plans is not None:
                 plan_payload = latest_plans["payload"]
                 plans = plan_payload.get("plans")
@@ -3014,39 +3108,45 @@ class NotificationCenter:
                 sending = self._connection.execute("SELECT COUNT(*) AS count FROM deliveries WHERE status = 'sending'").fetchone()["count"]
                 uncertain = self._connection.execute("SELECT COUNT(*) AS count FROM deliveries WHERE status = 'uncertain'").fetchone()["count"]
                 reconciliation_rows = self._connection.execute(
-                    """SELECT incident_id FROM (
+                    f"""WITH alarm_deliveries AS (SELECT * FROM deliveries WHERE NOT {_SESSION_NOTICE_SQL})
+                    SELECT incident_id FROM (
                         SELECT d.incident_id
-                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                        FROM alarm_deliveries d JOIN incidents i ON i.id = d.incident_id
                         WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status IN ('sending', 'uncertain')
                         GROUP BY d.incident_id
                         UNION
                         SELECT d.incident_id
-                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                        FROM alarm_deliveries d JOIN incidents i ON i.id = d.incident_id
                         WHERE i.event_type LIKE 'health.%' AND d.channel = 'telegram.edit' AND d.status IN ('queued', 'claimed', 'sending', 'uncertain')
                         GROUP BY d.incident_id
                         UNION
                         SELECT d.incident_id
-                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                        FROM alarm_deliveries d JOIN incidents i ON i.id = d.incident_id
                         WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status IN ('queued', 'claimed')
                           AND EXISTS (
                               SELECT 1
-                              FROM deliveries sent
+                              FROM alarm_deliveries sent
                               WHERE sent.incident_id = d.incident_id
                                 AND sent.channel LIKE 'telegram.%'
                                 AND sent.status = 'sent'
                           )
                         UNION
                         SELECT d.incident_id
-                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                        FROM alarm_deliveries d JOIN incidents i ON i.id = d.incident_id
                         WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status = 'sent'
                         GROUP BY d.incident_id
-                        HAVING COUNT(*) > 1
+                        HAVING SUM(CASE WHEN d.channel = 'telegram.edit' AND EXISTS (
+                            SELECT 1 FROM alarm_deliveries source
+                            WHERE source.id = json_extract(d.target_json, '$.source_delivery_id')
+                              AND source.incident_id = d.incident_id AND source.status = 'sent'
+                              AND source.channel != 'telegram.edit'
+                        ) THEN 0 ELSE 1 END) > 1
                         UNION
                         SELECT d.incident_id
-                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
+                        FROM alarm_deliveries d JOIN incidents i ON i.id = d.incident_id
                         WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status = 'sent'
                           AND (
-                              json_valid(COALESCE(d.result_json, '{}')) = 0
+                              json_valid(COALESCE(d.result_json, '{{}}')) = 0
                               OR NOT (
                               COALESCE(CAST(json_extract(d.result_json, '$.message_id') AS INTEGER), 0) > 0
                               AND COALESCE(CAST(json_extract(d.result_json, '$.health_button_count') AS INTEGER), 0) = 3
@@ -3068,7 +3168,7 @@ class NotificationCenter:
                 sent_rows = self._connection.execute(
                     """SELECT d.incident_id, d.id, d.result_json
                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
-                       WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status = 'sent'"""
+                       WHERE i.event_type LIKE 'health.%' AND d.channel LIKE 'telegram.%' AND d.status = 'sent' AND NOT """ + _SESSION_NOTICE_SQL
                 ).fetchall()
                 invalid_sent_incidents: set[str] = set()
                 for row in sent_rows:
@@ -3193,7 +3293,7 @@ class NotificationCenter:
             if safe_event_type == "health.plans_attached":
                 if not self.health_incident_is_synthetic(incident_id):
                     telegram_rows = self._connection.execute(
-                        "SELECT id, channel, delivery_key, status, result_json FROM deliveries WHERE incident_id = ? AND channel LIKE 'telegram.%' ORDER BY created_at, rowid",
+                        "SELECT id, channel, delivery_key, status, result_json FROM deliveries WHERE incident_id = ? AND channel LIKE 'telegram.%' AND NOT " + _SESSION_NOTICE_SQL + " ORDER BY created_at, rowid",
                         (incident_id,),
                     ).fetchall()
                     attached_plans = bounded_payload.get("plans") if isinstance(bounded_payload.get("plans"), list) else []

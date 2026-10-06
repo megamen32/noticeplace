@@ -290,6 +290,7 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
     calls_button = "Disable automatic calls" if calls_enabled else "Enable automatic calls"
     runtime_settings = snapshot.get("runtime_settings", {})
     setting_labels = {
+        "call_repeat_min_interval_seconds": "Пауза между звонками об одной проблеме (сек.)",
         "matrix_call_critical_escalation_seconds": "Matrix critical call delay (s)",
         "matrix_call_emergency_escalation_seconds": "Matrix emergency call delay (s)",
         "android_phone_call_escalation_seconds": "Android phone call delay (s)",

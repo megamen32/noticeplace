@@ -515,6 +515,8 @@ class GptAdminAgentJobTests(unittest.TestCase):
         ).fetchone()
         self.assertIsNotNone(resolved_delivery)
         self.assertEqual("queued", resolved_delivery["status"])
+        conclusion = next(d for d in center.claim_due_deliveries(now_epoch=10**12, channel_group="message") if d["delivery_key"].endswith(":health.resolved"))
+        self.assertEqual("resolved", center.delivery_payload(conclusion)["health_outcome"]["status"])
 
         mismatched = center.record_agent_job_result(
             created["incident_id"],
