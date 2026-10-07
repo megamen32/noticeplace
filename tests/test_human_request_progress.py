@@ -44,7 +44,9 @@ class HumanRequestProgressTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def resolve(self):
-        return self.center.resolve_human_request("owner", "r1", "telegram:42", "deep_analysis")
+        self.center.resolve_human_request("owner", "r1", "telegram:42", "deep_analysis")
+        # Fixtures below represent analysis after the initial accepted edit.
+        return self.center.confirm_human_request_progress_card("r1")
 
     def api(self, method, payload):
         self.calls.append((method, payload))
@@ -208,6 +210,77 @@ class HumanRequestProgressTests(unittest.TestCase):
         self.assertIn("Не удалось завершить", self.calls[-1][1]["text"])
         self.assertIn("Повторите запрос позже", self.calls[-1][1]["text"])
 
+    def test_initial_edit_timeout_keeps_answer_hidden_durably_until_retry(self):
+        codec = TelegramActionCodec("x" * 32)
+        callback = {"id": "click", "from": {"id": 42},
+                    "data": codec.encode("human_choice", "r1", choice_id="0"),
+                    "message": {"message_id": 501, "chat": {"id": -1001}}}
+        poller = TelegramInteractionPoller(self.center, "test", {"42"}, codec,
+            api=mock.Mock(side_effect=TimeoutError("Telegram timeout")))
+        with self.assertRaises(TimeoutError):
+            poller._handle_callback(callback)
+        hidden = self.center.get_human_request("owner", "r1")
+        self.assertEqual("pending", hidden["state"])
+        self.assertIsNone(hidden["response_value"])
+        self.assertIsNone(hidden["response_actor"])
+        self.assertIsNone(hidden["resolved_at"])
+        self.assertTrue(hidden["progress_delivery_pending"])
+        internal = self.center.get_human_request_from_telegram("r1")
+        self.assertEqual("deep_analysis", internal["response_value"])
+        reopened = NotificationCenter(self.path, self.tokens)
+        self.assertEqual("pending", reopened.get_human_request("owner", "r1")["state"])
+        reopened._connection.close()
+        with self.assertRaisesRegex(ValidationError, "confirmed Telegram acceptance"):
+            self.center.update_human_request_progress("owner", "r1", {"phase": "running", "session_url": URL})
+        from notification_center.http_api import _human_request_http_result
+        http_view = _human_request_http_result(hidden)
+        self.assertTrue(http_view["progress_delivery_pending"])
+        self.assertIsNone(_human_request_http_result(internal)["response_value"])
+        TelegramInteractionPoller(self.center, "test", {"42"}, codec, api=self.api)._handle_callback(callback)
+        ready = self.center.get_human_request("owner", "r1")
+        self.assertEqual("resolved", ready["state"])
+        self.assertEqual("deep_analysis", ready["response_value"])
+        self.assertFalse(ready["progress_delivery_pending"])
+        self.assertIsNotNone(ready["telegram_progress_confirmed_at"])
+        self.assertEqual(internal["resolved_at"], ready["resolved_at"])
+
+    def test_accepted_progress_retry_confirms_visibility_without_creating_message(self):
+        self.center.resolve_human_request("owner", "r1", "telegram:42", "deep_analysis")
+        with self.assertRaises(TimeoutError):
+            refresh_human_request_progress(self.center, "owner", "r1", {"phase": "accepted"},
+                                          api=mock.Mock(side_effect=TimeoutError))
+        self.assertEqual("pending", self.center.get_human_request("owner", "r1")["state"])
+        result = refresh_human_request_progress(self.center, "owner", "r1", {"phase": "accepted"},
+            api=mock.Mock(side_effect=RuntimeError("Bad Request: message is not modified")))
+        self.assertEqual("resolved", result["state"])
+        self.assertFalse(result["progress_delivery_pending"])
+
+    def test_delayed_running_url_attaches_once_after_completion_without_regression(self):
+        self.resolve()
+        finished = refresh_human_request_progress(self.center, "owner", "r1", {"phase": "completed", "message": "Разбор готов"}, api=self.api)
+        result = refresh_human_request_progress(self.center, "owner", "r1",
+            {"phase": "running", "session_url": URL, "message": "Запускаю"}, api=self.api)
+        self.assertEqual("completed", result["progress"]["phase"])
+        self.assertEqual("Разбор готов", result["progress"]["message"])
+        self.assertEqual(URL, result["progress"]["session_url"])
+        self.assertIn("Разбор готов", self.calls[-1][1]["text"])
+        self.assertEqual(URL, json.loads(self.calls[-1][1]["reply_markup"])["inline_keyboard"][0][0]["url"])
+        repeated = refresh_human_request_progress(self.center, "owner", "r1", {"phase": "running", "session_url": URL}, api=self.api)
+        self.assertEqual(result["progress"], repeated["progress"])
+        self.assertEqual(finished["resolved_at"], result["resolved_at"])
+        with self.assertRaisesRegex(ValidationError, "immutable"):
+            self.center.update_human_request_progress("owner", "r1", {"phase": "running", "session_url": URL + "other"})
+
+    def test_terminal_same_phase_can_receive_missing_url_but_not_new_result(self):
+        self.resolve()
+        self.center.update_human_request_progress("owner", "r1", {"phase": "failed", "message": "Исполнитель недоступен"})
+        result = refresh_human_request_progress(self.center, "owner", "r1", {"phase": "failed", "session_url": URL}, api=self.api)
+        self.assertEqual("failed", result["progress"]["phase"])
+        self.assertEqual("Исполнитель недоступен", result["progress"]["message"])
+        self.assertEqual(URL, result["progress"]["session_url"])
+        with self.assertRaisesRegex(ValidationError, "terminal"):
+            self.center.update_human_request_progress("owner", "r1", {"phase": "failed", "message": "Изменённый результат"})
+
     def test_http_real_loopback_producer_scope_and_same_card(self):
         self.resolve()
         server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(self.center, "health", "mcp"))
@@ -228,6 +301,30 @@ class HumanRequestProgressTests(unittest.TestCase):
                     self.assertEqual(expected, status, body)
                 self.assertEqual(2, len(self.calls))
                 self.assertTrue(all(payload["message_id"] == 501 for _, payload in self.calls))
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
+    def test_http_get_masks_selected_answer_until_durable_card_receipt(self):
+        self.center.resolve_human_request("owner", "r1", "telegram:42", "deep_analysis")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(self.center, "health", "mcp"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/v1/human-requests/r1",
+                headers={"Authorization": "Bearer owner"})
+            with urllib.request.urlopen(request, timeout=2) as response:
+                hidden = json.loads(response.read())
+            self.assertEqual("pending", hidden["state"])
+            self.assertIsNone(hidden["response_value"])
+            self.assertTrue(hidden["progress_delivery_pending"])
+            refresh_human_request_progress(self.center, "owner", "r1", {"phase": "accepted"}, api=self.api)
+            with urllib.request.urlopen(request, timeout=2) as response:
+                ready = json.loads(response.read())
+            self.assertEqual("resolved", ready["state"])
+            self.assertEqual("deep_analysis", ready["response_value"])
+            self.assertFalse(ready["progress_delivery_pending"])
         finally:
             server.shutdown()
             thread.join()

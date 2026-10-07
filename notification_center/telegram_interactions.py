@@ -378,6 +378,7 @@ class TelegramInteractionPoller:
                         if result.get("response_value") == "deep_analysis":
                             from .human_request_progress import edit_progress_card
                             edit_progress_card(result, self._api)
+                            self._center.confirm_human_request_progress_card(incident_id)
                             self._answer(callback_id, "Принял, запускаю глубокий разбор…" if (result.get("progress") or {}).get("phase") == "accepted" else "Карточка разбора обновлена.")
                             return
                         if result.get("original_text"):

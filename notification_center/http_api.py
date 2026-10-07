@@ -1660,6 +1660,8 @@ def refresh_human_request_original(
                 or not isinstance(edited, dict) or edited.get("message_id") != message_id
                 or str(edited.get("chat", {}).get("id")) != chat_id):
             raise RuntimeError("Telegram original edit returned a mismatched card receipt")
+        if request.get("response_value") == "deep_analysis":
+            center.confirm_human_request_progress_card(request_id)
         if document_text is not None and request.get("telegram_document_message_id") is None:
             target = {"chat_id": chat_id}
             thread_id = edited.get("message_thread_id")
@@ -1687,7 +1689,7 @@ def refresh_human_request_original(
 
 def _human_request_http_result(request: Mapping[str, Any]) -> dict[str, Any]:
     """Expose the document requirement computed from the persisted card inputs."""
-    result = dict(request)
+    result = NotificationCenter.human_request_producer_view(request)
     result["telegram_document_required"] = render_human_request_original(result)[1] is not None
     return result
 
@@ -1704,6 +1706,7 @@ def refresh_human_request_progress(
     with center.delivery_send_lock():
         request = center.update_human_request_progress(token, request_id, update)
         edit_progress_card(request, send)
+        request = center.confirm_human_request_progress_card(request_id)
         return _human_request_http_result(request)
 
 
@@ -1924,7 +1927,7 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     else:
                         self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown human request action"})
                         return
-                    self._reply(HTTPStatus.OK, result)
+                    self._reply(HTTPStatus.OK, NotificationCenter.human_request_producer_view(result))
                     return
                 if len(parts) == 5 and parts[:3] == ["", "v1", "incidents"]:
                     incident_id, action = parts[3], parts[4]
