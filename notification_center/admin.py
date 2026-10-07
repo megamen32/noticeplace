@@ -304,8 +304,10 @@ class AdminConfigStore:
             raise ValidationError("chat_id must be numeric")
         env = parse_environment(self.primary_env)
         token = env.get("TELEGRAM_BOT_TOKEN", "")
+        routes_env = parse_environment(self.routes_env)
+        auto_create = routes_env.get("TELEGRAM_AUTO_CREATE_TOPICS") or env.get("TELEGRAM_AUTO_CREATE_TOPICS", "")
         if not str(message_thread_id).strip():
-            if not token or env.get("TELEGRAM_AUTO_CREATE_TOPICS", "").lower() not in {"1", "true", "yes"}:
+            if not token or auto_create.lower() not in {"1", "true", "yes"}:
                 raise ValidationError("topic id is required when Telegram auto-create is disabled")
             thread_id = telegram_create_forum_topic(token, chat_id, name)
         else:
