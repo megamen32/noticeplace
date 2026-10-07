@@ -105,6 +105,41 @@ class AutomaticDiagnosisScopeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'recipient'):
             HealthWorkflow(center).intake_signal('fixture-token', 'fixture-invalid', event)
 
+    def recovery(self):
+        signal = self.signal()
+        return {key: signal[key] for key in ['schema', 'project', 'recipient', 'dedup_key',
+            'source_id', 'host_id', 'signal_type', 'correlation_id']} | {
+            'action': 'resolve', 'event_type': 'health.recovered', 'verification_id': 'fixture-healthy'}
+
+    def test_verified_matching_source_can_clear_unselected_monitored_signal(self):
+        center = self.center(False)
+        workflow = HealthWorkflow(center)
+        created = workflow.intake_signal('fixture-token', 'fixture-create', self.signal())
+        workflow.record_verification(created['incident_id'], 'fixture-verify',
+            source_id='codex-daemon-watchdog', verification_id='fixture-healthy',
+            observed_state='healthy', evidence_refs=['fixture:actual-probe'], actor='fixture-verifier')
+        result = center.resolve_event('fixture-token', 'fixture-recovered', self.recovery())
+        self.assertEqual(result['state'], 'resolved')
+
+    def test_normal_unselected_plan_completion_still_denied(self):
+        center = self.center()
+        workflow = HealthWorkflow(center)
+        created = workflow.intake_signal('fixture-token', 'fixture-create', self.signal())
+        workflow.record_verification(created['incident_id'], 'fixture-verify',
+            source_id='codex-daemon-watchdog', verification_id='fixture-healthy',
+            observed_state='healthy', evidence_refs=['fixture:actual-probe'], actor='fixture-verifier')
+        with self.assertRaisesRegex(ValidationError, 'explicit plan selection'):
+            workflow.resolve(created['incident_id'], 'codex-daemon-watchdog', 'fixture-healthy', 'fixture-producer')
+
+    def test_foreign_source_cannot_clear_unselected_monitored_signal(self):
+        center = self.center(False)
+        created = HealthWorkflow(center).intake_signal('fixture-token', 'fixture-create', self.signal())
+        recovery = self.recovery()
+        recovery['source_id'] = 'foreign-source'
+        with self.assertRaises(ValidationError):
+            center.resolve_event('fixture-token', 'fixture-foreign-source', recovery)
+        self.assertEqual(center.get_incident(created['incident_id'])['state'], 'open')
+
 
 if __name__ == '__main__':
     unittest.main()
