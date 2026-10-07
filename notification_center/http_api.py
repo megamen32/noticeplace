@@ -1629,6 +1629,9 @@ def refresh_human_request_original(
         chat_id, message_id = str(request["telegram_chat_id"]), int(request["telegram_message_id"])
         payload: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": card_text}
         rows = []
+        if request.get("progress"):
+            from .human_request_progress import progress_keyboard
+            rows = progress_keyboard(request)["inline_keyboard"]
         if request["state"] == "pending" and request["mode"] == "choice":
             secret = os.environ.get("TELEGRAM_CALLBACK_SECRET", "").strip()
             if not secret:
@@ -1687,6 +1690,21 @@ def _human_request_http_result(request: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(request)
     result["telegram_document_required"] = render_human_request_original(result)[1] is not None
     return result
+
+
+def refresh_human_request_progress(
+    center: NotificationCenter, token: str, request_id: str, update: Mapping[str, Any], api: Any | None = None,
+) -> dict[str, Any]:
+    """Persist then edit; an uncertain edit is safely retried on the same card."""
+    from .human_request_progress import edit_progress_card
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not bot_token:
+        raise ValidationError("Telegram HumanRequest delivery is not configured")
+    send = api or (lambda method, body: telegram_api(bot_token, method, body))
+    with center.delivery_send_lock():
+        request = center.update_human_request_progress(token, request_id, update)
+        edit_progress_card(request, send)
+        return _human_request_http_result(request)
 
 
 def build_handler(center: NotificationCenter, health_token: str, mcp_token: str | None = None) -> type[BaseHTTPRequestHandler]:
@@ -1899,6 +1917,8 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         )
                     elif action == "resolve":
                         result = center.resolve_human_request(token, request_id, str(body.get("actor") or ""), str(body.get("value") or ""))
+                    elif action == "progress":
+                        result = refresh_human_request_progress(center, token, request_id, body)
                     elif action == "cancel":
                         result = center.cancel_human_request(token, request_id, str(body.get("actor") or "api"))
                     else:

@@ -362,7 +362,7 @@ class TelegramInteractionPoller:
                 if action == "human_choice":
                     with self._center.delivery_send_lock():
                         request = self._center.get_human_request_from_telegram(incident_id)
-                        if request.get("original_text"):
+                        if request.get("original_text") or any(choice.get("value") == "deep_analysis" for choice in request.get("choices", [])):
                             message = callback.get("message") or {}
                             if (str(message.get("chat", {}).get("id")) != str(request.get("telegram_chat_id"))
                                     or message.get("message_id") != request.get("telegram_message_id")):
@@ -375,6 +375,11 @@ class TelegramInteractionPoller:
                         result = self._center.resolve_human_request_from_telegram(
                             incident_id, f"telegram:{actor_id}", str(selected.get("value") or "")
                         )
+                        if result.get("response_value") == "deep_analysis":
+                            from .human_request_progress import edit_progress_card
+                            edit_progress_card(result, self._api)
+                            self._answer(callback_id, "Принял, запускаю глубокий разбор…" if (result.get("progress") or {}).get("phase") == "accepted" else "Карточка разбора обновлена.")
+                            return
                         if result.get("original_text"):
                             from .human_request_original import render_human_request_original
                             text, _ = render_human_request_original({**result, "state": "pending"})
