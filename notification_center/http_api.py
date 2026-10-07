@@ -204,12 +204,21 @@ def _health_plans_ready(payload: Mapping[str, Any]) -> bool:
 
 
 def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[str, Any]], incident: dict[str, Any], active_modes: set[str] | None = None) -> dict[str, str]:
-    """Resolve an allowlisted severity route without trusting event routing data."""
+    """Resolve operator-owned project topics before severity routes."""
     mode = telegram_mode(incident)
     if active_modes is not None and mode not in active_modes:
         return {}
-    configured = severity_routes.get(mode, severity_routes.get(str(incident.get("severity") or ""), {}))
+    project = str(incident.get("project") or "")
+    project_route = severity_routes.get(project) if project not in {"health", "log", "important", "emergency", "debug", "info", "notice", "critical"} else None
+    configured = project_route if project_route is not None else severity_routes.get(mode, severity_routes.get(str(incident.get("severity") or ""), {}))
     if configured.get("enabled") is False:
+        return {}
+    # An explicit project topic must never leak into another topic when its
+    # operator configuration is incomplete. Event data cannot supply a route.
+    if project_route is not None and (
+        not str(configured.get("chat_id") or "").strip()
+        or not configured.get("message_thread_id")
+    ):
         return {}
     # Health cards contain actionable plan callbacks.  Never fall back to the
     # general chat when the dedicated operator topic is absent: that would
