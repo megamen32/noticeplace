@@ -626,6 +626,9 @@ class TelegramSender:
             "message_id": message_id,
             "chat_id": str(message.get("chat", {}).get("id") or destination["chat_id"]) if isinstance(message.get("chat"), dict) else destination["chat_id"],
         }
+        thread_id = message.get("message_thread_id")
+        if isinstance(thread_id, int) and not isinstance(thread_id, bool) and thread_id > 0:
+            receipt["message_thread_id"] = thread_id
         if method == "editMessageText":
             receipt["edited_in_place"] = True
         action_buttons = [

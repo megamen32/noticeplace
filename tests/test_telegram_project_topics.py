@@ -1,7 +1,11 @@
 """Project-owned forum topics must isolate notifications without changing modes."""
 import unittest
+import io
+import json
+from unittest.mock import patch
+from urllib.parse import parse_qs
 
-from notification_center.http_api import telegram_destination
+from notification_center.http_api import TelegramSender, telegram_destination
 
 
 class TelegramProjectTopicTests(unittest.TestCase):
@@ -31,6 +35,16 @@ class TelegramProjectTopicTests(unittest.TestCase):
     def test_mode_named_project_does_not_override_severity(self):
         incident = {**self.incident, "project": "log"}
         self.assertEqual("324", telegram_destination("-1001", self.routes, incident, {"health"})["message_thread_id"])
+
+    def test_delivery_sends_project_topic_and_retains_actual_telegram_topic(self):
+        response = io.BytesIO(json.dumps({"ok": True, "result": {"message_id": 901, "chat": {"id": -1001}, "message_thread_id": 900}}).encode())
+        response.status = 200
+        sender = TelegramSender("fixture", "-1001", severity_routes=self.routes, active_modes={"log"})
+        with patch("urllib.request.urlopen", return_value=response) as send:
+            receipt = sender.send({"incident": {"id": "test", "project": "agent-herder", "kind": "log", "severity": "info", "title": "Проверка", "body": "Топик"}})
+        fields = parse_qs(send.call_args.args[0].data.decode())
+        self.assertEqual(["900"], fields["message_thread_id"])
+        self.assertEqual(900, receipt["message_thread_id"])
 
 
 if __name__ == "__main__":
