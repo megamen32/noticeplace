@@ -26,6 +26,17 @@ center; it never knows Telegram or Matrix credentials.
 только после `/health/verification` со статусом `healthy`, затем
 `/health/resolve`.
 
+Если проект уже запускает отдельный сторож и собственного диагностического
+агента, оператор может установить `automatic_health_diagnosis: false` в
+защищённой области producer-токена. Это отключает только автоматический
+запуск центральной диагностики и ожидание её решения перед уведомлением для
+данного проекта. Разрешённый явный `agent_job: health-diagnosis` и ручная
+кнопка AI сохраняются. Другие проекты по умолчанию работают как раньше.
+Поле принимает только JSON boolean; producer не может менять эту политику
+данными события. Например, сторож подключения Codex сам запускает ограниченную
+сессию Fast Agent MiniMax и поэтому не должен одновременно запускать Codex
+для диагностики недоступного Codex.
+
 ## Source environment
 
 Each source receives its own mode-`0600` environment file with a token scoped

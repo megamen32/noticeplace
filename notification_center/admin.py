@@ -633,6 +633,10 @@ class AdminConfigStore:
             normalized[token] = {"project": project, "max_severity": severity}
             if agent_jobs:
                 normalized[token]["agent_jobs"] = list(dict.fromkeys(agent_jobs))
+            if "automatic_health_diagnosis" in scope:
+                if not isinstance(scope["automatic_health_diagnosis"], bool):
+                    raise ValidationError("automatic_health_diagnosis must be boolean")
+                normalized[token]["automatic_health_diagnosis"] = scope["automatic_health_diagnosis"]
         return normalized
 
     def _routes(self) -> dict[str, dict[str, Any]]:

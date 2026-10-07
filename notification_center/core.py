@@ -475,6 +475,8 @@ class NotificationCenter:
         explicit = str(event.get("agent_job") or "")
         if explicit:
             return explicit
+        if scope.get("automatic_health_diagnosis", True) is False:
+            return ""
         allowed_jobs = {str(value) for value in scope.get("agent_jobs", [])} if isinstance(scope.get("agent_jobs"), (list, tuple)) else set()
         required_health_identity = ("source_id", "host_id", "signal_type", "correlation_id")
         if (
@@ -1147,7 +1149,8 @@ class NotificationCenter:
             ingress.update({"project": project, "profile_id": consumer_id, "severity": str(event["severity"]), "event_type": event_type, "producer": producer, "plugin": plugin, "correlation_id": correlation_id, "parent_incident_id": parent_incident_id, "parent_event_id": parent_event_id})
             self._audit(incident_id, "event_ingress", "producer", ingress)
             notifications_muted = self._notification_scope_muted(project, recipient, dedup_key)
-            review_required = (agent_job == HEALTH_DIAGNOSIS_AGENT_JOB and event.get('kind') == 'incident'
+            review_required = (scope.get('automatic_health_diagnosis', True) is not False
+                and agent_job == HEALTH_DIAGNOSIS_AGENT_JOB and event.get('kind') == 'incident'
                 and event_type == 'health.degraded' and event.get('severity') in {'notice', 'important'}
                 and all(str(event.get(field) or '').strip() for field in ('source_id', 'host_id', 'signal_type', 'correlation_id')))
             if review_required and not self.health_notification_decision(incident_id):
@@ -1867,6 +1870,12 @@ class NotificationCenter:
     def health_notification_review_required(self, incident_id: str) -> bool:
         incident = self.get_incident(incident_id)
         if not incident or incident['severity'] in {'critical', 'emergency'} or self.manual_ai_requested(incident_id):
+            return False
+        # One project-scoped producer owns this setting. An external watcher
+        # already dispatches its own diagnosis; do not wait for a second AI job.
+        if any(scope.get('project') == incident['project']
+               and scope.get('automatic_health_diagnosis', True) is False
+               for scope in self._tokens.values()):
             return False
         with self._lock:
             return self._connection.execute("SELECT 1 FROM audit_events WHERE incident_id=? "
