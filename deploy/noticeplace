@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DEPLOY_REVISION=
 SOURCE_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 DESTDIR=${NOTICEPLACE_DESTDIR:-}
 DESTDIR=${DESTDIR%/}
@@ -62,7 +63,7 @@ atomic_link() {
 
 release_id() {
     local revision=source
-    if revision=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse --short=12 HEAD 2>/dev/null); then
+    if revision=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse --short=12 "${DEPLOY_REVISION:-HEAD}" 2>/dev/null); then
         :
     elif [[ -r "$SOURCE_ROOT/.noticeplace-release" ]]; then
         revision=$(sed -n 's/^revision=//p' "$SOURCE_ROOT/.noticeplace-release" | head -n 1)
@@ -75,7 +76,7 @@ stage_release() {
     local id=$1 release="$RELEASE_ROOT/$1"
     mkdir -p -- "$RELEASE_ROOT" "$release"
     if [[ ${NOTICEPLACE_SOURCE_MODE:-git} == git ]] && git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" archive --format=tar HEAD | tar -C "$release" -xf -
+        git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" archive --format=tar "${DEPLOY_REVISION:-HEAD}" | tar -C "$release" -xf -
     else
         tar -C "$SOURCE_ROOT" \
             --exclude='./.git' \
@@ -160,16 +161,21 @@ stop_services() {
 }
 
 verify_publication() {
-    local revision published remote=${NOTICEPLACE_PUBLICATION_REMOTE:-origin}
-    revision=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse HEAD) || die "cannot identify source revision"
+    local revision published remote=${NOTICEPLACE_PUBLICATION_REMOTE:-origin} collisions
+    revision=${NOTICEPLACE_PUBLISHED_SHA:-$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse HEAD)}
+    [[ $revision =~ ^[0-9a-f]{40}$ ]] || die "agreed source SHA is invalid; upgrade was not started"
     local -a publisher=(git)
     if [[ ${EUID:-$(id -u)} -eq 0 && -n ${SUDO_USER:-} && $SUDO_USER != root ]]; then
         publisher=(runuser -u "$SUDO_USER" -- git)
     fi
-    published=$(timeout 30 "${publisher[@]}" -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" ls-remote --exit-code "$remote" refs/heads/main) || die "publication check failed; upgrade was not started"
-    published=${published%%[[:space:]]*}
-    [[ $published =~ ^[0-9a-f]{40}$ && $revision == "$published" ]] || die "source HEAD differs from published main; upgrade was not started"
-    [[ -z ${NOTICEPLACE_PUBLISHED_SHA:-} || $revision == "$NOTICEPLACE_PUBLISHED_SHA" ]] || die "source differs from agreed published SHA; upgrade was not started"
+    # Fetch objects without moving branches: an already published ancestor is
+    # valid even when main advanced with unrelated documentation.
+    timeout 30 "${publisher[@]}" -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" fetch --no-tags "$remote" refs/heads/main || die "publication verification failed; upgrade was not started"
+    published=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse FETCH_HEAD) || die "published source unavailable; upgrade was not started"
+    git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" merge-base --is-ancestor "$revision" "$published" || die "agreed source SHA is not published; upgrade was not started"
+    collisions=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" diff --name-only "$revision" "$published" -- bin notification_center deploy scripts package.json) || die "source verification failed; upgrade was not started"
+    [[ -z $collisions ]] || die "published runtime inputs changed after agreed SHA; upgrade was not started"
+    DEPLOY_REVISION=$revision
     printf 'Verified published source: %s\n' "$revision"
 }
 
