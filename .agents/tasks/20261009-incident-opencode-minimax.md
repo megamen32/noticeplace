@@ -21,3 +21,9 @@ Herder origin/main: e81eb8e — отдельный persisted incidentExecution/U
 Noticeplace: 98 targeted tests прошли (health workflow/helper/GPTAdmin/R40). До исправления live policy preferredHarness=codex, protected diagnosis profile codex/gpt-5.6-sol; in-memory исходная нормализация подтверждает допустимый Codex. После изменения точный подписочный route, отсутствие скрытого fallback и сохранение global routing проверены. Evidence: .tmp/r40/*.txt, before-route.json. Исторические incidents не переобрабатывались; исходные продуктовые сессии не менялись.
 
 Следующий шаг: scoped publish Noticeplace, штатный upgrade; дождаться выпуска Herder, сохранить incidentExecution через действующий API и проверить UI + один synthetic incident до terminal diagnosis. До этого R40 не завершён.
+
+## Исправление push → upgrade
+
+Первый SSH push отказал; вызов upgrade ошибочно продолжился. Предыдущий release 7a3c2c12e6c7 восстановлен. После явного дополнительного восстановления проверен живой /health: storage_ready=true, dispatcher_ready=true; HTTP 503 вызван существующей исторической очередью reconciliation_required=1452, uncertain=1409. Эти доставки не переигрывались по прямому запрету пользователя. Не выдавать этот health за зелёный.
+
+Чужие два коммита объединены через обычный merge d9796fd, опубликованный HTTPS (SSH 443 временно отказал); reset/force/WIP скрытие не применялись. 117 integrated tests прошли. Новый дефект взят в работу: deploy/noticeplace upgrade сверяет HEAD с свежим remote main и заданным NOTICEPLACE_PUBLISHED_SHA до любых действий; отказ связи/расхождение прекращает upgrade. 3 subprocess regression red до исправления, 7 deploy checks green после.

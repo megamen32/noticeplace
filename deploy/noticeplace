@@ -159,8 +159,25 @@ stop_services() {
     [[ -n "$DESTDIR" ]] || systemctl stop notification-center-admin.service notification-center.service
 }
 
+verify_publication() {
+    local revision published remote=${NOTICEPLACE_PUBLICATION_REMOTE:-origin}
+    revision=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse HEAD) || die "cannot identify source revision"
+    local -a publisher=(git)
+    if [[ ${EUID:-$(id -u)} -eq 0 && -n ${SUDO_USER:-} && $SUDO_USER != root ]]; then
+        publisher=(runuser -u "$SUDO_USER" -- git)
+    fi
+    published=$(timeout 30 "${publisher[@]}" -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" ls-remote --exit-code "$remote" refs/heads/main) || die "publication check failed; upgrade was not started"
+    published=${published%%[[:space:]]*}
+    [[ $published =~ ^[0-9a-f]{40}$ && $revision == "$published" ]] || die "source HEAD differs from published main; upgrade was not started"
+    [[ -z ${NOTICEPLACE_PUBLISHED_SHA:-} || $revision == "$NOTICEPLACE_PUBLISHED_SHA" ]] || die "source differs from agreed published SHA; upgrade was not started"
+    printf 'Verified published source: %s\n' "$revision"
+}
+
 install_release() {
     need_root
+    if [[ $COMMAND == upgrade && ( -z "$DESTDIR" || ${NOTICEPLACE_REQUIRE_PUBLISHED:-0} == 1 ) ]]; then
+        verify_publication
+    fi
     ensure_runtime_owner
 
     local id release previous=
