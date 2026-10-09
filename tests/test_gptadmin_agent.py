@@ -278,7 +278,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
                 "health_selection": {
                     "plan_id": "repair",
                     "actor": "telegram:42",
-                    "execution": {"runtime": "zcode", "provider": "account:zai-individual-coding-plan", "model": "GLM-5.3-Flash", "reasoning": "high", "topic": "health"},
+                    "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health"},
                 },
             },
             "health-delivery-1",
@@ -289,8 +289,8 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("host:100", outbound["health"]["source_id"])
         self.assertEqual(1, len(outbound["health"]["plans"]))
         self.assertEqual("repair", outbound["health"]["selection"]["plan_id"])
-        self.assertEqual("GLM-5.3-Flash", outbound["health"]["selection"]["execution"]["model"])
-        self.assertEqual("high", outbound["health"]["selection"]["execution"]["reasoning"])
+        self.assertEqual("MiniMax-M3.1-Flash-Preview", outbound["health"]["selection"]["execution"]["model"])
+        self.assertEqual("default", outbound["health"]["selection"]["execution"]["reasoning"])
         self.assertNotIn("must-not-leak", json.dumps(outbound))
         self.assertNotIn("route-secret", json.dumps(outbound))
 
@@ -894,7 +894,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
             mock.patch.dict(os.environ, {}, clear=True),
         ):
             def fake_run(*_args: object, **kwargs: object) -> dict[str, object]:
-                kwargs["session_callback"]({"session_id": "ses-live-1", "harness": "zcode", "plan_id": "plan-003"})
+                kwargs["session_callback"]({"session_id": "ses-live-1", "harness": "opencode", "plan_id": "plan-003"})
                 return {"status": "completed", "useful_progress": True, "evidence_refs": ["probe:1"]}
             run.side_effect = fake_run
             result = adapter.send_with_progress(
@@ -903,18 +903,18 @@ class GptAdminAgentJobTests(unittest.TestCase):
                     "health_context": {},
                     "health_selection": {
                         "plan_id": "plan-003",
-                        "execution": {"runtime": "zcode", "provider": "account:zai-individual-coding-plan", "model": "GLM-5.3-Flash", "reasoning": "high", "topic": "health"},
+                        "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health"},
                     },
                 },
                 "delivery-direct-1",
                 progress,
             )
         self.assertEqual("completed", result["status"])
-        self.assertEqual("zcode", run.call_args.kwargs["profile_override"]["harness"])
+        self.assertEqual("opencode", run.call_args.kwargs["profile_override"]["harness"])
         self.assertEqual("queue", run.call_args.kwargs["profile_override"]["mode"])
-        self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash$high", run.call_args.kwargs["profile_override"]["model"])
+        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", run.call_args.kwargs["profile_override"]["model"])
         self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
-        progress.assert_any_call({"agent_session": {"session_id": "ses-live-1", "harness": "zcode", "plan_id": "plan-003"}})
+        progress.assert_any_call({"agent_session": {"session_id": "ses-live-1", "harness": "opencode", "plan_id": "plan-003"}})
 
     def test_supervisor_classifies_useful_progress_and_ignores_heartbeat_only_updates(self) -> None:
         supervisor = HealthProgressSupervisor(stale_after_seconds=10, now=lambda: 110)

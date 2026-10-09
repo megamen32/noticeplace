@@ -65,10 +65,6 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         selection = payload.get("health_selection")
         if isinstance(selection, Mapping):
             execution = selection.get("execution")
-            # Existing selections predate the operator's runtime switch. The
-            # chosen plan remains authoritative; execution is now canonical.
-            if isinstance(execution, Mapping) and str(execution.get("runtime") or "") in {"hermes", "opencode"}:
-                execution = dict(_HEALTH_EXECUTION_PROFILE)
             bounded_health["selection"] = {
                 "plan_id": _safe_health_ref(selection.get("plan_id"), 64),
                 "actor": _safe_health_ref(selection.get("actor"), 128),
@@ -106,15 +102,15 @@ class DirectHealthRemediationAdapter:
         started_at = time.monotonic()
         direct_profile = {
             "url": os.environ.get("NOTIFY_HEALTH_REMEDIATION_URL", "http://127.0.0.1:18787/api/sessions/new-or-resume"),
-            "harness": "zcode",
+            "harness": HEALTH_EXECUTION_PROFILE["runtime"],
             "name": "health_remediation_direct_v2",
             "cwd": os.environ.get("NOTIFY_HEALTH_REMEDIATION_CWD", "/home/roomhacker/ServersAdministartion"),
             # Return the durable session id immediately. NoticePlace owns the
             # longer remediation polling window below.
             "mode": "queue",
             "instruction": "Выполни только выбранный план устранения инцидента и сообщай полезный прогресс. Пользовательские объяснения пиши по-русски. Последним сообщением верни только JSON: {\"status\":\"completed\",\"plan_id\":\"<selected>\",\"step\":\"<done>\",\"observed_state\":\"healthy|degraded|unknown\",\"verification_id\":\"<id>\",\"source_id\":\"<id>\",\"source_fingerprint\":\"<fingerprint>\",\"verifier_id\":\"<distinct id>\",\"evidence_refs\":[\"<ref>\"],\"trace_refs\":[\"<ref>\"]}. Для плана observe допустим observed_state=unknown с непустым evidence_refs без выдуманных verification_id, source_fingerprint и verifier_id; такой результат не закрывает инцидент.",
-            "model": "account:zai-individual-coding-plan/GLM-5.3-Flash$high",
-            "reasoning": "high",
+            "model": f"{HEALTH_EXECUTION_PROFILE['provider']}/{HEALTH_EXECUTION_PROFILE['model']}",
+            "reasoning": HEALTH_EXECUTION_PROFILE["reasoning"],
             "topic": "health",
             "poll_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_POLL_SECONDS", "1"),
             "remediation_timeout_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_TIMEOUT_SECONDS", "1200"),

@@ -68,7 +68,7 @@ class AgentJobHelperTests(unittest.TestCase):
 
     def test_automatic_diagnosis_fails_closed_without_web_policy(self) -> None:
         runner = mock.Mock(return_value=_Response({}))
-        with self.assertRaisesRegex(RuntimeError, "launch policy"):
+        with self.assertRaisesRegex(RuntimeError, "Incident execution"):
             run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis", "incident": {"id": "inc-denied"}}, Path("unused"),
                         profile_override={"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode", "name": "denied", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "Read only."}, runner=runner)
         self.assertEqual(1, runner.call_count)
@@ -154,7 +154,7 @@ class AgentJobHelperTests(unittest.TestCase):
             }}}))
             config.chmod(0o600)
             callback = mock.Mock()
-            with mock.patch.object(agent_job_helper, "_launch_policy_profile", side_effect=lambda profile, *_a, **_k: profile), \
+            with mock.patch.object(agent_job_helper, "_incident_profile", side_effect=lambda profile, *_a, **_k: profile), \
                  mock.patch.object(agent_job_helper, "_load_health_callback"), \
                  mock.patch.object(agent_job_helper, "_run_health_diagnosis", side_effect=RuntimeError("later failure")):
                 with self.assertRaisesRegex(RuntimeError, "later failure"):
@@ -169,10 +169,10 @@ class AgentJobHelperTests(unittest.TestCase):
     def test_documented_health_diagnosis_profile_has_required_orchestrator_mapping(self) -> None:
         document = json.loads((Path(__file__).parents[1] / "docs" / "health-agent-jobs.example.json").read_text(encoding="utf-8"))
         profile = document["profiles"]["health-diagnosis"]
-        self.assertEqual("gpt-5.6-sol", profile["model"])
+        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", profile["model"])
         self.assertEqual("health_orchestrator_100", profile["orchestrator_name"])
-        self.assertEqual("gpt-5.6-sol", profile["orchestrator_requested_model"])
-        self.assertEqual("gpt-5.6-sol", profile["orchestrator_model"])
+        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", profile["orchestrator_requested_model"])
+        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", profile["orchestrator_model"])
 
     def test_health_diagnosis_hands_off_to_orchestrator_and_attaches_three_plans(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -181,13 +181,13 @@ class AgentJobHelperTests(unittest.TestCase):
             callback = root / "health-callback.json"
             config.write_text(json.dumps({"profiles": {"health-diagnosis": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
-                "harness": "codex", "name": "health_diagnosis_test", "cwd": str(root), "mode": "queue",
-                "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health",
+                "harness": "opencode", "name": "health_diagnosis_test", "cwd": str(root), "mode": "queue",
+                "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health",
                 "callback_file": str(callback), "diagnosis_timeout_seconds": "5", "poll_seconds": "0.2",
                 "instruction": "Return exactly one diagnosis JSON object.",
                 "orchestrator_name": "health_orchestrator_test",
-                "orchestrator_requested_model": "gpt-5.6-sol",
-                "orchestrator_model": "gpt-5.6-sol",
+                "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "orchestrator_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
             }}}), encoding="utf-8")
             config.chmod(0o600)
             callback.write_text(json.dumps({"url": "http://127.0.0.1:8091", "token": "health-callback-token"}), encoding="utf-8")
@@ -216,20 +216,22 @@ class AgentJobHelperTests(unittest.TestCase):
             def runner(request: object, **_kwargs: object) -> _Response:
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
+                if "/api/models?" in request.full_url:
+                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash-Preview"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal session_calls
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
                     session_calls += 1
                     if session_calls == 1:
-                        return _Response({"ok": True, "created": True, "sessionId": "codex-health-diagnosis-1", "delivery": "accepted", "model": "gpt-5.6-sol"})
+                        return _Response({"ok": True, "created": True, "sessionId": "codex-health-diagnosis-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
                     body = json.loads(getattr(request, "data").decode())
-                    self.assertEqual("gpt-5.6-sol", body["model"])
+                    self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", body["model"])
                     self.assertEqual("queue", body["mode"])
                     self.assertIn("bounded synthetic diagnosis", body["message"])
-                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-orchestrator-1", "delivery": "accepted", "model": "gpt-5.6-sol"})
+                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-orchestrator-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
                 if "/progress?" in url:
                     fingerprint = "progress:diagnosis-1" if "codex-health-diagnosis-1" in url else "progress:orchestrator-1"
                     return _Response({"session": {"status": "idle"}, "fingerprint": fingerprint})
@@ -239,8 +241,8 @@ class AgentJobHelperTests(unittest.TestCase):
                 self.assertTrue(url.endswith("/v1/incidents/inc-health-1/health/plans"))
                 self.assertEqual("Bearer health-callback-token", getattr(request, "headers", {}).get("Authorization"))
                 body = json.loads(getattr(request, "data").decode())
-                self.assertEqual("gpt-5.6-sol", body["orchestration"]["orchestrator_requested_model"])
-                self.assertEqual("gpt-5.6-sol", body["orchestration"]["orchestrator_effective_model"])
+                self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", body["orchestration"]["orchestrator_requested_model"])
+                self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", body["orchestration"]["orchestrator_effective_model"])
                 self.assertEqual(["observe", "repair", "verify"], [plan["plan_id"] for plan in body["plans"]])
                 self.assertRegex(getattr(request, "headers", {}).get("Idempotency-key", ""), r"^health-diagnosis:inc-health-1:codex-health-orchestrator-1:[0-9a-f]{12}$")
                 return _Response({"event_id": "evt-plans-1"})
@@ -262,21 +264,21 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertEqual("plans_attached", result["callback_status"])
             self.assertIn("trace:agent-herder:codex-health-diagnosis-1", result["trace_refs"])
             self.assertIn("trace:agent-herder:codex-health-orchestrator-1", result["trace_refs"])
-            self.assertIn("trace:codex:codex-health-diagnosis-1", result["trace_refs"])
-            self.assertIn("trace:codex:codex-health-orchestrator-1", result["trace_refs"])
+            self.assertIn("trace:opencode:codex-health-diagnosis-1", result["trace_refs"])
+            self.assertIn("trace:opencode:codex-health-orchestrator-1", result["trace_refs"])
             self.assertGreaterEqual(result["orchestration"]["diagnosis_elapsed_ms"], 0)
             self.assertGreaterEqual(result["orchestration"]["orchestrator_elapsed_ms"], 0)
             self.assertNotIn("health-callback-token", json.dumps(result))
             self.assertEqual(7, len(requests))
 
-    def test_health_remediation_profile_requires_selected_plan_and_routes_to_codex(self) -> None:
+    def test_health_remediation_profile_requires_selected_plan_and_routes_to_subscription(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()
             config = root / "agent-jobs.json"
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "opencode", "name": "health_remediation_100", "cwd": str(root), "mode": "queue",
-                "model": "openai-codex/gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health",
                 "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -286,12 +288,14 @@ class AgentJobHelperTests(unittest.TestCase):
             def runner(request: object, **_kwargs: object) -> _Response:
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
+                if "/api/models?" in request.full_url:
+                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash-Preview"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "openai-codex/gpt-5.6-luna"})
+                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
                 if "/progress?" in url:
                     return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
                 if "/details?" in url:
@@ -308,18 +312,18 @@ class AgentJobHelperTests(unittest.TestCase):
                     "schema": "notify.agent-job.v1",
                     "job_id": "health-remediation",
                     "incident": {"id": "inc-health-1", "project": "health-monitor", "severity": "critical", "title": "Disk degraded", "body": "bounded", "dedup_key": "health:disk", "occurrences": 1},
-                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health"}}},
+                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health"}}},
                 },
                 config,
                 runner=runner,
             )
             self.assertEqual("codex-health-1", result["session_id"])
-            self.assertEqual("gpt-5.6-sol", result["model"])
+            self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", result["model"])
             body = json.loads(requests[0].data)
-            self.assertEqual("codex", body["harness"])
-            self.assertEqual("gpt-5.6-sol", body["model"])
+            self.assertEqual("opencode", body["harness"])
+            self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", body["model"])
             self.assertIn("selected plan repair", body["message"])
-            self.assertIn("Execution runtime is codex through Agent Herder", body["message"])
+            self.assertIn("Execution runtime is opencode through Agent Herder", body["message"])
 
     def test_health_remediation_waits_for_terminal_receipt_and_returns_verification(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -328,7 +332,7 @@ class AgentJobHelperTests(unittest.TestCase):
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "opencode", "name": "health_remediation_test", "cwd": str(root), "mode": "queue",
-                "model": "openai-codex/gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health",
                 "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -350,12 +354,14 @@ class AgentJobHelperTests(unittest.TestCase):
             def runner(request: object, **_kwargs: object) -> _Response:
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
+                if "/api/models?" in request.full_url:
+                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash-Preview"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "openai-codex/gpt-5.6-luna"})
+                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
                 if "/progress?" in url:
                     return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
                 if "/details?" in url:
@@ -371,7 +377,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "health": {
                         "source_id": "host:vusa",
                         "source_fingerprint": "source-fingerprint-1",
-                        "selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health"}},
+                        "selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health"}},
                     },
                 },
                 config,
@@ -395,7 +401,7 @@ class AgentJobHelperTests(unittest.TestCase):
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "opencode", "name": "health_remediation_timeout", "cwd": str(root), "mode": "queue",
-                "model": "openai-codex/gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health",
                 "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5", "remediation_timeout_seconds": "1200",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -411,8 +417,10 @@ class AgentJobHelperTests(unittest.TestCase):
             def runner(request: object, **_kwargs: object) -> _Response:
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
+                if "/api/models?" in request.full_url:
+                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash-Preview"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
@@ -431,7 +439,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 result = run_profile(
                     "health-remediation",
                     {"schema": "notify.agent-job.v1", "job_id": "health-remediation", "incident": {"id": "inc-timeout"},
-                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health"}}}},
+                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health"}}}},
                     config,
                     runner=runner,
                 )
@@ -444,8 +452,8 @@ class AgentJobHelperTests(unittest.TestCase):
             config = root / "agent-jobs.json"
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
-                "harness": "codex", "name": "health_remediation_retry", "cwd": str(root), "mode": "queue",
-                "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health",
+                "harness": "opencode", "name": "health_remediation_retry", "cwd": str(root), "mode": "queue",
+                "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health",
                 "poll_seconds": "0.2", "remediation_timeout_seconds": "30",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -461,8 +469,10 @@ class AgentJobHelperTests(unittest.TestCase):
             def runner(request: object, **_kwargs: object) -> _Response:
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
+                if "/api/models?" in request.full_url:
+                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash-Preview"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
@@ -483,8 +493,8 @@ class AgentJobHelperTests(unittest.TestCase):
                         "schema": "notify.agent-job.v1", "job_id": "health-remediation",
                         "incident": {"id": "inc-retry"},
                         "health": {"selection": {"plan_id": "observe", "execution": {
-                            "runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol",
-                            "reasoning": "high", "topic": "health",
+                            "runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash-Preview",
+                            "reasoning": "default", "topic": "health",
                         }}},
                     },
                     config,
@@ -494,138 +504,13 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertEqual("completed", result["status"])
             self.assertEqual(2, progress_calls)
 
-    def test_empty_start_plan_falls_back_to_individual_glm_but_other_errors_do_not(self) -> None:
-        with tempfile.TemporaryDirectory() as tempdir:
-            root = Path(tempdir).resolve()
-            config = root / "agent-jobs.json"
-            config.write_text(json.dumps({"profiles": {"health-remediation": {
-                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "zcode",
-                "name": "health_glm_quota", "cwd": str(root), "mode": "queue", "instruction": "Observe only.",
-                "poll_seconds": "0.2", "remediation_timeout_seconds": "30",
-            }}}))
-            config.chmod(0o600)
-            event = {
-                "schema": "notify.agent-job.v1", "job_id": "health-remediation",
-                "incident": {"id": "inc-quota", "project": "health-monitor", "severity": "notice", "title": "Quota canary", "body": "safe", "dedup_key": "quota-canary", "occurrences": 1},
-                "health": {"selection": {"plan_id": "observe", "execution": {
-                    "runtime": "zcode", "provider": "account:zai-start-plan", "model": "GLM-5.3-Flash", "reasoning": "high", "topic": "health",
-                }}},
-            }
-            calls: list[object] = []
-            responses: list[object] = [
-                HealthAgentEndpointError(429, "quota exhausted"),
-                {"ok": True, "created": True, "sessionId": "individual-glm-1", "delivery": "accepted"},
-                {"session": {"status": "idle"}, "fingerprint": "fallback-progress"},
-                {"messages": [{"role": "assistant", "text": json.dumps({
-                    "status": "completed", "plan_id": "observe", "step": "inspection complete",
-                    "observed_state": "unknown", "evidence_refs": ["probe:fallback"],
-                })}]},
-            ]
-
-            policy_reads = 0
-            def fake_read(request: object, _runner: object, timeout: float = 90, **_options: object) -> dict[str, object]:
-                if "/api/coordination/context?" in request.full_url:
-                    return {"humanStopHeld": False}
-                nonlocal policy_reads
-                if "/api/coordination/context?" in request.full_url:
-                    return _Response({"humanStopHeld": False})
-                if request.full_url.endswith("/api/automation/launch-policy"):
-                    policy_reads += 1
-                    # A retry may use another native model only after the
-                    # latest web policy explicitly authorizes that route.
-                    route = "account:zai-start-plan/GLM-5.3-Flash$high" if policy_reads == 1 else "account:zai-individual-coding-plan/GLM-5.3-Flash$high"
-                    return {"version": 1, "preferredHarness": "zcode", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": route}}
-                calls.append(request)
-                response = responses.pop(0)
-                if isinstance(response, Exception):
-                    raise response
-                return response
-
-            with mock.patch("notification_center.agent_job_helper._read_json_request", side_effect=fake_read), mock.patch("notification_center.agent_job_helper.time.sleep"):
-                result = run_profile("health-remediation", event, config, runner=object())
-
-            self.assertEqual("account:zai-start-plan/GLM-5.3-Flash$high", json.loads(calls[0].data)["model"])
-            self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash$high", json.loads(calls[1].data)["model"])
-            self.assertIn("Последним сообщением верни только один JSON-объект", json.loads(calls[0].data)["message"])
-            self.assertIn("Поле step обязательно", json.loads(calls[0].data)["message"])
-            self.assertEqual("zcode", result["harness"])
-            self.assertEqual("account:zai-start-plan", result["fallback_from"])
-            self.assertEqual("quota_exhausted", result["fallback_reason"])
-
-            with mock.patch("notification_center.agent_job_helper._read_json_request", side_effect=HealthAgentEndpointError(502, "model not found")) as read:
-                with self.assertRaises(HealthAgentEndpointError):
-                    run_profile("health-remediation", event, config, runner=object())
-            self.assertEqual(1, read.call_count)
-
-    def test_stalled_empty_start_plan_is_stopped_then_falls_back_to_individual_glm(self) -> None:
-        with tempfile.TemporaryDirectory() as tempdir:
-            root = Path(tempdir).resolve()
-            event = {
-                "schema": "notify.agent-job.v1", "job_id": "health-remediation",
-                "incident": {"id": "inc-stalled-quota", "project": "health-monitor", "severity": "notice", "title": "Quota canary", "body": "safe", "dedup_key": "stalled-quota", "occurrences": 1},
-                "health": {"selection": {"plan_id": "observe", "execution": {
-                    "runtime": "zcode", "provider": "account:zai-start-plan", "model": "GLM-5.3-Flash", "reasoning": "high", "topic": "health",
-                }}},
-            }
-            profile = {
-                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "zcode",
-                "name": "health_glm_stalled_quota", "cwd": str(root), "mode": "queue", "instruction": "Observe only.",
-                "model": "account:zai-start-plan/GLM-5.3-Flash$high", "reasoning": "high", "topic": "health",
-                "poll_seconds": "0.2", "remediation_timeout_seconds": "30", "start_plan_failover_seconds": "5",
-            }
-            calls: list[object] = []
-            callbacks: list[dict[str, object]] = []
-            responses: list[object] = [
-                {"ok": True, "created": True, "sessionId": "stalled-start-1", "delivery": "accepted"},
-                {"session": {"status": "running"}, "fingerprint": ""},
-                {"session": {"status": "running"}, "messages": [{"role": "assistant", "text": "", "parts": []}]},
-                {"ok": False, "error": "ZCode RPC request timed out: zcode-task.stopGeneration"},
-                {"ok": True},
-                {"ok": True, "created": True, "sessionId": "individual-glm-2", "delivery": "accepted"},
-                {"session": {"status": "idle"}, "fingerprint": "individual-progress"},
-                {"messages": [{"role": "assistant", "text": json.dumps({
-                    "status": "completed", "plan_id": "observe", "step": "inspection complete",
-                    "observed_state": "unknown", "evidence_refs": ["probe:individual"],
-                })}]},
-            ]
-
-            policy_reads = 0
-            def fake_read(request: object, _runner: object, timeout: float = 90, **_options: object) -> dict[str, object]:
-                if "/api/coordination/context?" in request.full_url:
-                    return {"humanStopHeld": False}
-                nonlocal policy_reads
-                if "/api/coordination/context?" in request.full_url:
-                    return _Response({"humanStopHeld": False})
-                if request.full_url.endswith("/api/automation/launch-policy"):
-                    policy_reads += 1
-                    # A retry may use another native model only after the
-                    # latest web policy explicitly authorizes that route.
-                    route = "account:zai-start-plan/GLM-5.3-Flash$high" if policy_reads == 1 else "account:zai-individual-coding-plan/GLM-5.3-Flash$high"
-                    return {"version": 1, "preferredHarness": "zcode", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": route}}
-                calls.append(request)
-                response = responses.pop(0)
-                return response
-
-            ticks = iter(range(0, 200, 10))
-            with (
-                mock.patch("notification_center.agent_job_helper._read_json_request", side_effect=fake_read),
-                mock.patch("notification_center.agent_job_helper.time.monotonic", side_effect=lambda: next(ticks)),
-                mock.patch("notification_center.agent_job_helper.time.sleep"),
-            ):
-                result = run_profile(
-                    "health-remediation", event, root / "unused.json", profile_override=profile,
-                    runner=object(), session_callback=lambda value: callbacks.append(dict(value)),
-                )
-
-            starts = [json.loads(call.data) for call in calls if call.full_url.endswith("/api/sessions/new-or-resume")]
-            self.assertEqual("account:zai-start-plan/GLM-5.3-Flash$high", starts[0]["model"])
-            self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash$high", starts[1]["model"])
-            self.assertTrue(any(call.full_url.endswith("/stop") for call in calls))
-            self.assertTrue(any(call.full_url.endswith("/terminate") for call in calls))
-            self.assertEqual(["stalled-start-1", "individual-glm-2"], [item["session_id"] for item in callbacks])
-            self.assertEqual("individual-glm-2", result["session_id"])
-            self.assertEqual("account:zai-start-plan", result["fallback_from"])
-            self.assertEqual("start_plan_no_progress", result["fallback_reason"])
+    def test_legacy_start_plan_is_rejected_without_creating_any_session(self) -> None:
+        runner = mock.Mock()
+        with self.assertRaisesRegex(RuntimeError, "unsupported execution profile"):
+            run_profile("health-remediation", {"schema":"notify.agent-job.v1", "job_id":"health-remediation", "incident":{"id":"legacy"},
+                "health":{"selection":{"plan_id":"repair", "execution":{"runtime":"zcode","provider":"account:zai-start-plan","model":"GLM-5.3-Flash","reasoning":"high","topic":"health"}}}},
+                Path("unused"), runner=runner, profile_override={"url":"http://127.0.0.1:18787/api/sessions/new-or-resume", "harness":"zcode","name":"legacy","cwd":"/tmp","instruction":"Read only."})
+        runner.assert_not_called()
 
     def test_health_remediation_rejects_terminal_receipt_without_independent_proof(self) -> None:
         details = {"messages": [{"role": "assistant", "text": json.dumps({
@@ -669,14 +554,14 @@ class AgentJobHelperTests(unittest.TestCase):
         self.assertIsNotNone(receipt)
         self.assertEqual("degraded", receipt["observed_state"])
 
-    def test_health_remediation_canonicalizes_legacy_profile_to_codex(self) -> None:
+    def test_health_remediation_uses_saved_subscription_for_legacy_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()
             config = root / "agent-jobs.json"
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "hermes", "name": "health_remediation_legacy", "cwd": str(root), "mode": "queue",
-                "model": "gpt-5.6-luna", "reasoning": "high", "topic": "health",
+                "model": "gpt-5.6-luna", "reasoning": "default", "topic": "health",
                 "instruction": "Apply only the selected health remediation plan.",
             }}}), encoding="utf-8")
             config.chmod(0o600)
@@ -685,8 +570,10 @@ class AgentJobHelperTests(unittest.TestCase):
             def runner(request: object, **_kwargs: object) -> _Response:
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
+                if "/api/models?" in request.full_url:
+                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash-Preview"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "gpt-5.6-sol", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
@@ -707,15 +594,15 @@ class AgentJobHelperTests(unittest.TestCase):
                         "schema": "notify.agent-job.v1",
                         "job_id": "health-remediation",
                         "incident": {"id": "inc-health-legacy"},
-                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "codex", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning": "high", "topic": "health"}}},
+                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health"}}},
                     },
                     config,
                     runner=runner,
                 )
             body = json.loads(requests[0].data)
-            self.assertEqual("codex", body["harness"])
-            self.assertEqual("gpt-5.6-sol", body["model"])
-            self.assertEqual("codex", result["harness"])
+            self.assertEqual("opencode", body["harness"])
+            self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", body["model"])
+            self.assertEqual("opencode", result["harness"])
 
     def test_profile_owns_target_identity_and_event_is_only_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

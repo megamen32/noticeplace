@@ -19,29 +19,12 @@ _SECRET_ASSIGNMENT_RE = re.compile(r"(?i)\b(token|secret|password|credential|aut
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+\S+")
 
 HEALTH_EXECUTION_PROFILE = {
-    "runtime": "zcode",
-    "provider": "account:zai-individual-coding-plan",
-    "model": "GLM-5.3-Flash",
-    "reasoning": "high",
+    "runtime": "opencode",
+    "provider": "minimax-coding-plan",
+    "model": "MiniMax-M3.1-Flash-Preview",
+    "reasoning": "default",
     "topic": "health",
 }
-
-HEALTH_ALTERNATE_GLM_EXECUTION_PROFILE = {
-    "runtime": "zcode",
-    "provider": "account:zai-start-plan",
-    "model": "GLM-5.3-Flash",
-    "reasoning": "high",
-    "topic": "health",
-}
-
-HEALTH_FALLBACK_EXECUTION_PROFILE = {
-    "runtime": "codex",
-    "provider": "openai-codex",
-    "model": "gpt-5.6-sol",
-    "reasoning": "high",
-    "topic": "health",
-}
-
 
 def sanitize_bounded_text(value: Any, limit: int = _TEXT_LIMIT) -> str:
     """Bound operator receipts and redact assignment/prefix secret forms."""
@@ -103,7 +86,7 @@ def _safe_plan_id(plan_id: Any) -> str:
 
 
 def normalize_health_execution(value: Any) -> dict[str, str]:
-    """Normalize the default ZCode profile or its explicit Codex fallback."""
+    """Pin new incident work to the subscription route; never fall back."""
     if value is None:
         return dict(HEALTH_EXECUTION_PROFILE)
     if not isinstance(value, Mapping):
@@ -122,8 +105,8 @@ def normalize_health_execution(value: Any) -> dict[str, str]:
         "reasoning": reasoning,
         "topic": topic,
     }
-    if result not in (HEALTH_EXECUTION_PROFILE, HEALTH_ALTERNATE_GLM_EXECUTION_PROFILE, HEALTH_FALLBACK_EXECUTION_PROFILE):
-        raise ValidationError("health remediation execution must use an approved ZCode/GLM-5.3-Flash plan or explicit Codex/GPT-5.6-Sol high")
+    if result != HEALTH_EXECUTION_PROFILE:
+        raise ValidationError("health execution must use OpenCode / minimax-coding-plan / MiniMax-M3.1-Flash-Preview; no provider fallback")
     return result
 
 
