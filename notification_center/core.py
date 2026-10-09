@@ -357,6 +357,13 @@ class NotificationCenter:
                 "CREATE INDEX IF NOT EXISTS deliveries_incident_channel_status "
                 "ON deliveries(incident_id, channel, status)"
             )
+            # Archive candidate selection correlates each session with its
+            # audit history while holding the shared center lock. Without
+            # this index accumulated audit rows stall cards and dispatch.
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS audit_events_incident_type_created "
+                "ON audit_events(incident_id, type, created_at)"
+            )
             self._ensure_builtin_profiles()
 
     def _ensure_builtin_profiles(self) -> None:
