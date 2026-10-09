@@ -39,3 +39,9 @@ Herder окончательные owned bytes: fb9e78e5a170069ae92c4e921599874f5
 Реальная отрицательная проверка upgrade: заведомо неверный agreed SHA остановил entrypoint с exit=1 до смены release и PID. Evidence .tmp/r40/live-upgrade-refusal.json. API/UI Herder всё ещё старые; canary не создавался до сохранённого live выбора.
 
 Уточнение guard исполнено: selected SHA проверяется как ancestor свежего remote main; archive использует именно выбранный SHA, а не подвижный HEAD. Документный advance remote и чужой WIP допускаются; изменение runtime входов bin/notification_center/deploy/scripts/package.json после согласованного SHA блокирует выпуск. Positive regression red на прежнем guard и green после; unpublished SHA, failed verification и runtime collision сохраняют прежнюю ссылку. 8 deploy checks прошли.
+
+## Итог до Herder admission
+
+Noticeplace live release: /opt/noticeplace-releases/20261009T075324Z-10227d5ecbe8-642263. Четыре фактических runtime input совпадают с опубликованным SHA 10227d5ecbe8eb30458eee419b738138ebba6e81 (.tmp/r40/live-inputs.json). Guard проверяет published ancestry и архивирует pinned SHA; 8 regression/deploy checks прошли. Исторический health backlog остаётся исключён из обработки.
+
+Consumer blocker: Herder service по-прежнему старый (старт 7 октября), GET /api/automation/launch-policy не содержит incidentExecution. Реальный /opt/noticeplace/bin/notify-agent-job возвращает точный no runtime/provider fallback ДО создания сессии. Synthetic canary ещё не создавался: нельзя заявлять работоспособный исходный маршрут по source или старту задачи. Владельцу runner R38 01a11f58 передан один конкретный admission blocker и свежая capacity; единственный publisher 01a11b54 владеет combined build/deploy. Следующий шаг после его live поставки: UI save/readback и .tmp/r40/live-canary.py с одним диагностическим delivery + dedup, затем terminal native provider/model readback и нулевые human/business sends.
