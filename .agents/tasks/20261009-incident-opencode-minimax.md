@@ -27,3 +27,13 @@ Noticeplace: 98 targeted tests прошли (health workflow/helper/GPTAdmin/R40
 Первый SSH push отказал; вызов upgrade ошибочно продолжился. Предыдущий release 7a3c2c12e6c7 восстановлен. После явного дополнительного восстановления проверен живой /health: storage_ready=true, dispatcher_ready=true; HTTP 503 вызван существующей исторической очередью reconciliation_required=1452, uncertain=1409. Эти доставки не переигрывались по прямому запрету пользователя. Не выдавать этот health за зелёный.
 
 Чужие два коммита объединены через обычный merge d9796fd, опубликованный HTTPS (SSH 443 временно отказал); reset/force/WIP скрытие не применялись. 117 integrated tests прошли. Новый дефект взят в работу: deploy/noticeplace upgrade сверяет HEAD с свежим remote main и заданным NOTICEPLACE_PUBLISHED_SHA до любых действий; отказ связи/расхождение прекращает upgrade. 3 subprocess regression red до исправления, 7 deploy checks green после.
+
+## Текущий consumer результат
+
+Noticeplace release: /opt/noticeplace-releases/20261009T074113Z-b5a2bf06a067-518962. Штатный upgrade перед переключением проверил свежий remote SHA b5a2bf06a067db457a095d3bbba1993a4af46379. Оба сервиса active. Защищённые allowlist profiles обновлены на opencode/minimax-coding-plan/MiniMax-M3.1-Flash-Preview; uid/gid и 0600 сохранены, auth.json не изменялся.
+
+Herder окончательные owned bytes: fb9e78e5a170069ae92c4e921599874f5ea6376c. Свежая UI-проверка пока показывает старую панель без incidentExecution; API поле пока отсутствует. Единственный combined publisher получил SHA/пути/тесты. Следующий необходимый шаг у publisher: штатный build/deploy; после этого R40 сам сохраняет настройку и проверяет один terminal diagnosis. Задача не закрыта по source или session start.
+
+Дополнительный фактический отказ: _load_profile под uid=1000 не мог прочитать свой 0600 allowlist через /etc/gptadmin (root:root, 0700). Root-owned каталог не раскрывался: добавлен только ACL u:roomhacker:--x, без чтения/listing/write. Прежний ACL сохранён .tmp/r40/gptadmin-parent-acl-before.txt. После исправления реальный helper читает профиль и подтверждает opencode + точный minimax-coding-plan route; файл остался uid=1000 и 0600. auth.json не изменён.
+
+Реальная отрицательная проверка upgrade: заведомо неверный agreed SHA остановил entrypoint с exit=1 до смены release и PID. Evidence .tmp/r40/live-upgrade-refusal.json. API/UI Herder всё ещё старые; canary не создавался до сохранённого live выбора.
