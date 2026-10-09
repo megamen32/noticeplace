@@ -1,5 +1,7 @@
 # R40 — инциденты через OpenCode / MiniMax по подписке
 
+**Статус R40: завершено.** Живой Herder сохраняет отдельный подписочный incidentExecution; один synthetic diagnosis завершён на native OpenCode/MiniMax-M3.1-Flash-Preview, dedup и отсутствие пользовательских отправок подтверждены. Прежние блокеры ниже — история; итоговое доказательство в последнем разделе.
+
 Владелец: рабочая сессия 01a11f86-283e-7831-8ee1-d97ab3389eba на server-100.
 
 Цель: новые diagnosis/repair используют OpenCode, minimax-coding-plan/MiniMax-M3.1-Flash-Preview; явный выбор в UI и сохранение. Без fallback, копирования ключа и повторной обработки старых инцидентов.
@@ -61,3 +63,17 @@ UserIO передал два py-spy снимка: HealthSessionArchiver.run_once
 Authenticated readback: userio-43010 и userio-42696 вернули HTTP200/ID match, loopback 5.18/2.86ms, public HTTPS 30.62/22.81ms. Карточки не создавались повторно. Source/UserIO runtime/Herder/native chats не менялись; перезапущены только штатные Noticeplace services через управляемый upgrade. Пользовательский API результат доставлен владельцу UserIO прямым steer по актуальной сессии; он продолжает прежний same-card consumer flow. Evidence .tmp/r40-lock-repair/{query-after,api-after,live-source}.json. R40 routing/UI canary остаётся отдельной открытой задачей: Herder API пока без incidentExecution.
 
 Проверка через следующий минутный цикл: 8 authenticated GET за 70 секунд, все HTTP200/ID match; latency 2.41–5.55ms, timeout не повторился (.tmp/r40-lock-repair/card-across-archive-cycle.json). Archive-lock incident repair принят по фактическому API; finalUserIOsame-card и исходная R40 UI/native canary не объявляются завершёнными за владельцев.
+
+## Итоговая приёмка R40 — 09.10.2026
+
+Herder live source/main/origin: 00c7b9a23314b52202870dbc3f6ae4fb337b35ee, PID1116921, invocation8add6fd85c044b39b05acccaf525d9a6. Выпуск выполнил publisher; его85 tests/tsc/Vite проверены им, R40 runtime самостоятельно проверен через UI/API/native consumer.
+
+UI: в существующей панели выбран OpenCode → MiniMax-M3.1-Flash-Preview, явные «MiniMax по подписке» и provider minimax-coding-plan. Сохранение через UI подтверждено API и файлом 0600, повторным открытием UI и свежим отдельным процессом AutomationLaunchPolicyStore. Global allowedHarnesses/preferredHarness/models остались прежними Codex/ZCode. Скриншот .tmp/r40/ui-reloaded-subscription.png.
+
+Canary: inc_77eedac22f0b4ea8b03a5221170858cc, два producer events с одним dedup, единственный delivery dlv_80176af69b374ada84a75870d8438bb8 (attempt1, sent). Диагностическая сессия ses_ee0223058ffeMZPuR6QaZb7ZVN единственная; orchestrator sessions=0, исходные продуктовые сессии не возобновлялись и не клонировались. Noticeplace audit agent_job_completed: status=completed, harness=opencode, точный подписочный model, elapsed75456ms. Нативное независимое GET OpenCode /session/.../message: assistant providerID=minimax-coding-plan, modelID=MiniMax-M3.1-Flash-Preview, finish=stop, cost=0. Connected native catalog подтверждает provider/model и endpoint api.minimax.io. Это completed inference, не только session start или queue ACK.
+
+Модель вернула diagnosis_complete, распознала искусственную телеметрию, notify_user=false. Telegram delivery cancelled/attempt0; human/business sends=0. Synthetic incident оставлен muted как доказательство, реальный service recovery по нему не заявляется. Старые incidents/cards/jobs/notifications не replay. OpenCode auth.json не менялся, ключ не выводился и не копировался.
+
+Ремонт использует тот же сохранённый incidentExecution и точный model через helper/API; production code path и focused tests проверены ранее. Дополнительных ремонтных LLM-сессий для canary не создавали по ограничению одной диагностической сессии. Live remediation preflight отверг omniroute и auto с HTTP400 до создания задач; no provider fallback. No-LLM автопродолжение не менялось и не смешивалось с LLM diagnosis.
+
+Evidence: .tmp/r40/{policy-before-save,policy-saved,native-canary-readback,native-provider-proof,subscription-catalog-proof,canary-terminal-proof,live-preflight-rejections,live-canary}.json и ui-reloaded-subscription.png. Archive/card API fix и upgrade publication guard также опубликованы/развёрнуты с ранее записанными consumer proofs. В R40 не осталось обязательного следующего шага; отдельные UserIO/R37/общий health backlog не объявляются закрытыми.
