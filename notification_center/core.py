@@ -290,6 +290,10 @@ class NotificationCenter:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_document_state TEXT")
             if "telegram_document_file_id" not in human_request_columns:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_document_file_id TEXT")
+            if "progress_json" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN progress_json TEXT")
+            if "telegram_progress_confirmed_at" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_progress_confirmed_at REAL")
             for column, definition in (
                 ("policy_step_id", "TEXT"),
                 ("repeat_number", "INTEGER"),
@@ -535,6 +539,7 @@ class NotificationCenter:
         result["schema"] = "ask_human.response.v1"
         result["choices"] = json.loads(str(result.pop("choices_json")))
         result["allowed_actors"] = json.loads(str(result.pop("allowed_actors_json")))
+        result["progress"] = json.loads(result.pop("progress_json") or "null")
         return result
 
     def _human_request_row(self, token: str, request_id: str) -> sqlite3.Row:
@@ -648,7 +653,34 @@ class NotificationCenter:
     def get_human_request(self, token: str, request_id: str) -> dict[str, Any]:
         """Return the stable current state of one authorized human request."""
         with self._lock, self._connection:
-            return self._human_request_result(self._expire_human_request(self._human_request_row(token, request_id)))
+            return self.human_request_producer_view(self._human_request_result(self._expire_human_request(self._human_request_row(token, request_id))))
+
+    @staticmethod
+    def human_request_producer_view(request: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep a selected analysis non-actionable until Telegram confirms acceptance."""
+        result = dict(request)
+        pending = bool(result.get("progress_delivery_pending")) or (
+            result.get("state") == "resolved" and result.get("response_value") == "deep_analysis"
+            and result.get("telegram_progress_confirmed_at") is None)
+        if pending or result.get("response_value") == "deep_analysis" or "progress_delivery_pending" in result:
+            result["progress_delivery_pending"] = pending
+        if pending:
+            result.update(state="pending", response_value=None, response_actor=None, resolved_at=None)
+        return result
+
+    def confirm_human_request_progress_card(self, request_id: str) -> dict[str, Any]:
+        """Record the in-process adapter's successful original-card edit receipt."""
+        with self._lock, self._connection:
+            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            if row is None or row["state"] != "resolved" or row["response_value"] != "deep_analysis":
+                raise ValidationError("progress receipt requires a selected deep_analysis request")
+            if not row["telegram_chat_id"] or not row["telegram_message_id"]:
+                raise ValidationError("progress receipt requires the original Telegram card")
+            self._connection.execute(
+                "UPDATE human_requests SET telegram_progress_confirmed_at = ? WHERE request_id = ? AND telegram_progress_confirmed_at IS NULL",
+                (time.time(), request_id),
+            )
+            return self._human_request_result(self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone())
 
     def get_human_request_from_telegram(self, request_id: str) -> dict[str, Any]:
         """Read one request for the signed, allowlisted in-process Telegram poller."""
@@ -789,7 +821,65 @@ class NotificationCenter:
             if current["state"] == "resolved" and current["response_actor"] == actor and current["response_value"] == value:
                 return self._human_request_result(current)
             raise ValidationError(f"human request is {current['state']}")
+        if value == "deep_analysis":
+            self._connection.execute(
+                "UPDATE human_requests SET progress_json = ? WHERE request_id = ?",
+                (json.dumps({"phase": "accepted", "message": "Принял, запускаю глубокий разбор…", "updated_at": resolved_at}, ensure_ascii=False), row["request_id"]),
+            )
+            current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
         return self._human_request_result(current)
+
+    def update_human_request_progress(self, token: str, request_id: str, update: Mapping[str, Any]) -> dict[str, Any]:
+        """Persist monotonic analysis progress for the original project/card only."""
+        if set(update) - {"phase", "session_url", "message"}:
+            raise ValidationError("progress accepts only phase, session_url and message")
+        phases = {"accepted": 0, "running": 1, "completed": 2, "failed": 2}
+        phase = update.get("phase")
+        if not isinstance(phase, str) or phase not in phases:
+            raise ValidationError("invalid human request progress phase")
+        message = update.get("message")
+        if message is not None and (not isinstance(message, str) or not message.strip() or len(message.encode("utf-16-le")) // 2 > 1500):
+            raise ValidationError("progress message must contain between 1 and 1500 characters")
+        session_url = update.get("session_url")
+        if session_url is not None:
+            if not isinstance(session_url, str) or len(session_url) > 1024 or any(ord(char) <= 32 for char in session_url):
+                raise ValidationError("invalid Agent Herder session URL")
+            parsed = urllib.parse.urlsplit(session_url)
+            if (parsed.scheme != "https" or parsed.netloc != "agent.bezrabotnyi.com"
+                    or parsed.path != "/" or parsed.query
+                    or not re.fullmatch(r"/session/(?:[A-Za-z0-9._~:-]|%[0-9A-Fa-f]{2})+", parsed.fragment)):
+                raise ValidationError("invalid Agent Herder session URL")
+        with self._lock, self._connection:
+            row = self._human_request_row(token, request_id)
+            if row["state"] != "resolved" or row["response_value"] != "deep_analysis":
+                raise ValidationError("progress requires a resolved deep_analysis request")
+            if not row["telegram_chat_id"] or not row["telegram_message_id"]:
+                raise ValidationError("progress requires the original Telegram card")
+            if row["telegram_progress_confirmed_at"] is None and phase != "accepted":
+                raise ValidationError("progress requires confirmed Telegram acceptance")
+            previous = json.loads(row["progress_json"] or "null") or {"phase": "accepted"}
+            previous_url = previous.get("session_url")
+            if previous_url and session_url is not None and session_url != previous_url:
+                raise ValidationError("human request session URL is immutable")
+            if phases[phase] < phases[previous["phase"]]:
+                # Session creation can finish after the result. Attach its link
+                # exactly once without replaying an old phase or old message.
+                if previous_url or session_url is None:
+                    return self._human_request_result(row)
+                phase, message = previous["phase"], previous.get("message")
+            current = {"phase": phase, "message": message or previous.get("message"), "session_url": session_url or previous_url}
+            if phase != previous["phase"] and message is None:
+                current["message"] = None
+            if previous["phase"] in {"completed", "failed"}:
+                if any(current.get(key) != previous.get(key) for key in ("phase", "message")):
+                    raise ValidationError("human request progress is terminal")
+                if current.get("session_url") == previous_url:
+                    return self._human_request_result(row)
+            if any(current.get(key) != previous.get(key) for key in ("phase", "message", "session_url")):
+                current["updated_at"] = time.time()
+                self._connection.execute("UPDATE human_requests SET progress_json = ? WHERE request_id = ?", (json.dumps(current, ensure_ascii=False), request_id))
+                self._audit(None, "human_request.progress", "producer", {"request_id": request_id, "project": row["project"], "phase": phase})
+            return self._human_request_result(self._human_request_row(token, request_id))
 
     def resolve_human_request(self, token: str, request_id: str, actor: str, value: str) -> dict[str, Any]:
         """Resolve one request once, allowing idempotent replay of the same answer."""

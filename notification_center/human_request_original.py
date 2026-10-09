@@ -41,6 +41,21 @@ def requires_document(message: str, original_text: Any) -> bool:
 def _resolution_text(request: Mapping[str, Any]) -> str:
     state = str(request.get("state") or "pending")
     if state == "resolved":
+        progress = request.get("progress")
+        if isinstance(progress, Mapping) and request.get("response_value") == "deep_analysis":
+            phase = str(progress.get("phase") or "accepted")
+            statuses = {"accepted": "Принял, запускаю глубокий разбор…",
+                        "running": "Глубокий разбор идёт. Можно наблюдать за работой в Agent Herder.",
+                        "completed": "✅ Глубокий разбор завершён.",
+                        "failed": "Не удалось завершить глубокий разбор."}
+            text = statuses.get(phase, statuses["accepted"])
+            message = progress.get("message")
+            if message and message != text:
+                text += f"\n{message}"
+            url = progress.get("session_url")
+            if url:
+                text += f"\n\nСсылка на сессию: {url}"
+            return f"\n\n{text}"
         response_value = request.get("response_value")
         choices = request.get("choices")
         if isinstance(choices, list):
@@ -94,6 +109,10 @@ def render_human_request_original(request: Mapping[str, Any]) -> tuple[str, str 
     original_text = request.get("original_text")
     resolution = _resolution_text(request)
     resolution_reservation = resolution or _choice_resolution_reservation(request)
+    if request.get("progress") and request.get("response_value") == "deep_analysis":
+        # Progress must not suddenly claim a new document was attached. Keep
+        # the original card/document split, bounding the body around the status.
+        resolution_reservation = _choice_resolution_reservation({**request, "state": "pending"})
 
     if not isinstance(original_text, str) or not original_text:
         return _bounded_with_suffix(message, resolution), None

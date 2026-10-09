@@ -28,6 +28,7 @@ def noticeplace_instructions() -> dict[str, Any]:
             "create_or_update": "POST /v1/events с Bearer-токеном проекта и Idempotency-Key",
             "recovery": "Для health-инцидента сначала POST .../health/verification, затем POST .../health/resolve.",
             "disabled_notifications": "GET /v1/mutes?project=...; включить обратно: POST /v1/incidents/{id}/unmute.",
+            "human_request_progress": "POST /v1/human-requests/{request_id}/progress с Bearer-токеном исходного проекта; phase=accepted|running|completed|failed, session_url и message необязательны. Обновляет ту же карточку после выбора deep_analysis.",
         },
         "telegram_controls": (
             "Ответьте обычным reply на карточку — ответ автоматически привяжется к инциденту. "

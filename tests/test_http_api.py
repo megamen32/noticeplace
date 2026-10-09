@@ -553,7 +553,7 @@ class HttpApiTests(unittest.TestCase):
 
     def test_remote_mcp_initialize_then_tool_call_only_effectively_initializes_once(self) -> None:
         """Keep the shared runtime bootstrap process-once across initialize and tool calls."""
-        with mock.patch("mcp.notify_mcp._RUNTIME_READY", False), mock.patch("mcp.notify_mcp.ensure_dirs") as ensure_dirs:
+        with mock.patch("mcp.notify_mcp._RUNTIME_READY", False), mock.patch("mcp.notify_mcp.JOBS_DIR", Path(self.tempdir.name) / "empty-jobs"), mock.patch("mcp.notify_mcp.ensure_dirs") as ensure_dirs:
             status, initialize = self.request(
                 "POST",
                 "/mcp",
@@ -570,7 +570,7 @@ class HttpApiTests(unittest.TestCase):
                 Authorization="Bearer mcp-token",
             )
             self.assertEqual(200, status)
-            self.assertEqual(1, len(listed["result"]["structuredContent"]["jobs"]))
+            self.assertEqual([], listed["result"]["structuredContent"]["jobs"])
 
         self.assertEqual(1, ensure_dirs.call_count)
 
