@@ -388,6 +388,82 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(3210, resolution["payload"]["elapsed_ms"])
         self.assertEqual(["trace-http-1", "metric:disk", "independent:probe"], resolution["payload"]["trace_refs"])
 
+    def test_health_plans_confident_recommendation_auto_selects_without_human(self) -> None:
+        plans = [
+            {"plan_id": "observe", "title": "Observe", "summary": "Capture a fresh source snapshot", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Apply the selected reversible repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Independently confirm health", "step": "verify"},
+        ]
+        orchestration = {
+            "diagnosis_session_id": "ses-diag-1",
+            "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "orchestrator_session_id": "ses-orch-1",
+            "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "harness": "opencode",
+            "diagnosis_elapsed_ms": 100,
+            "orchestrator_elapsed_ms": 100,
+            "total_elapsed_ms": 200,
+        }
+        auth = {"Authorization": "Bearer secret-token"}
+
+        def create_incident(dedup_key: str, key: str) -> str:
+            signal = {
+                "schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident",
+                "severity": "critical", "title": "Queue backlog", "body": "backlog is growing", "dedup_key": dedup_key,
+                "event_type": "health.degraded", "producer": "health-monitor", "plugin": "health-incident-monitor",
+                "correlation_id": f"health:{dedup_key}", "source_id": "host:queue", "host_id": "queue-host",
+                "signal_type": "queue",
+            }
+            status, created = self.request("POST", "/v1/events", signal, **auth, **{"Idempotency-Key": key})
+            self.assertEqual(202, status)
+            return str(created["incident_id"])
+
+        auto_incident = create_incident("health:queue:auto", "health-auto-signal-1")
+        status, attached = self.request(
+            "POST", f"/v1/incidents/{auto_incident}/health/plans",
+            {"plans": plans, "actor": "gptadmin", "orchestration": orchestration,
+             "recommendation": {"plan_id": "repair", "needs_human": False, "reason": "Ясный обратимый фикс"}},
+            **auth, **{"Idempotency-Key": "health-auto-plans-1"},
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("repair", attached["auto_selected_plan"])
+        self.assertEqual("repair", self.center._health_selected_plan(auto_incident))
+        remediation = self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM deliveries WHERE incident_id = ? AND channel = 'gptadmin.agent:health-remediation'",
+            (auto_incident,),
+        ).fetchone()["count"]
+        self.assertEqual(1, remediation)
+
+        status, replay = self.request(
+            "POST", f"/v1/incidents/{auto_incident}/health/plans",
+            {"plans": plans, "actor": "gptadmin", "orchestration": orchestration,
+             "recommendation": {"plan_id": "repair", "needs_human": False, "reason": "Ясный обратимый фикс"}},
+            **auth, **{"Idempotency-Key": "health-auto-plans-1"},
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual("repair", replay["auto_selected_plan"])
+        self.assertEqual(1, self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM deliveries WHERE incident_id = ? AND channel = 'gptadmin.agent:health-remediation'",
+            (auto_incident,),
+        ).fetchone()["count"])
+
+        human_incident = create_incident("health:queue:human", "health-human-signal-1")
+        status, attached = self.request(
+            "POST", f"/v1/incidents/{human_incident}/health/plans",
+            {"plans": plans, "actor": "gptadmin", "orchestration": orchestration,
+             "recommendation": {"plan_id": "observe", "needs_human": True, "reason": "Выбор рискован"}},
+            **auth, **{"Idempotency-Key": "health-human-plans-1"},
+        )
+        self.assertEqual(200, status)
+        self.assertNotEqual("observe", str(attached.get("auto_selected_plan") or ""))
+        self.assertIsNone(self.center._health_selected_plan(human_incident))
+        self.assertEqual(0, self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM deliveries WHERE incident_id = ? AND channel = 'gptadmin.agent:health-remediation'",
+            (human_incident,),
+        ).fetchone()["count"])
+
     def test_event_audit_records_profile_and_trusted_ingress_without_auth_header(self) -> None:
         event = {
             "schema": "notify.event.v1", "project": "hermes", "recipient": "me",

@@ -894,5 +894,87 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertNotIn("auth-secret", row["payload_json"])
 
 
+class HealthRecommendationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.database = Path(self.tempdir.name) / "notify.sqlite3"
+        self.center = NotificationCenter(self.database, {"producer-token": {"project": "hermes", "max_severity": "critical"}}, default_quiet_hours=[])
+        self.workflow = HealthWorkflow(self.center, callback_secret="x" * 32)
+        self.created = self.workflow.intake_signal(
+            "producer-token",
+            "health-create-recommendation",
+            {
+                "project": "hermes",
+                "recipient": "me",
+                "severity": "critical",
+                "title": "Primary source is unhealthy",
+                "body": "The source returned a stale fingerprint.",
+                "dedup_key": "health:source-a-recommendation",
+                "source_id": "source-a",
+                "host_id": "host-a",
+                "signal_type": "intake",
+            },
+        )
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def _orchestration(self) -> dict[str, object]:
+        return {
+            "diagnosis_session_id": "ses-diag-1",
+            "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "orchestrator_session_id": "ses-orch-1",
+            "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "harness": "opencode",
+            "diagnosis_elapsed_ms": 1000,
+            "orchestrator_elapsed_ms": 1000,
+            "total_elapsed_ms": 2000,
+        }
+
+    def _plans(self) -> list[dict[str, str]]:
+        return [
+            {"plan_id": "observe", "title": "Observe", "summary": "Capture a fresh snapshot", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Apply the reversible repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Independently confirm health", "step": "verify"},
+        ]
+
+    def test_normalize_recommendation_fails_open_to_the_human(self) -> None:
+        self.assertIsNone(health_workflow.normalize_health_recommendation(None))
+        for value in ("repair", 42, [], {"needs_human": False}, {"plan_id": "repair", "needs_human": "false"}, {"plan_id": "replace-infra", "needs_human": False}):
+            with self.subTest(value=value):
+                normalized = health_workflow.normalize_health_recommendation(value)
+                self.assertIsNotNone(normalized)
+                self.assertTrue(normalized["needs_human"])
+
+    def test_normalize_recommendation_accepts_only_confident_pinned_choice(self) -> None:
+        normalized = health_workflow.normalize_health_recommendation({"plan_id": "repair", "needs_human": False, "reason": "Ясный обратимый фикс"})
+        self.assertEqual({"plan_id": "repair", "needs_human": False, "reason": "Ясный обратимый фикс"}, normalized)
+        explicit_human = health_workflow.normalize_health_recommendation({"plan_id": "observe", "needs_human": True})
+        self.assertFalse(explicit_human["needs_human"] is False)
+
+    def test_attach_plans_persists_the_bounded_recommendation(self) -> None:
+        attached = self.workflow.attach_plans(
+            self.created["incident_id"],
+            "health-plans-recommendation-1",
+            self._plans(),
+            orchestration=self._orchestration(),
+            recommendation={"plan_id": "repair", "needs_human": False, "reason": "Безопасный перезапуск"},
+        )
+        attached_event = self.center.latest_health_event(self.created["incident_id"], "health.plans_attached")
+        self.assertEqual("repair", attached_event["payload"]["recommendation"]["plan_id"])
+        self.assertFalse(attached_event["payload"]["recommendation"]["needs_human"])
+        second = self.workflow.attach_plans(
+            self.created["incident_id"],
+            "health-plans-recommendation-1",
+            self._plans(),
+            orchestration=self._orchestration(),
+            recommendation={"plan_id": "repair", "needs_human": False, "reason": "Безопасный перезапуск"},
+        )
+        self.assertTrue(second["idempotent"])
+        replayed_event = self.center.latest_health_event(self.created["incident_id"], "health.plans_attached")
+        self.assertEqual("repair", replayed_event["payload"]["recommendation"]["plan_id"])
+
+
 if __name__ == "__main__":
     unittest.main()

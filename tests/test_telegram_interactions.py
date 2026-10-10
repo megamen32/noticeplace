@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import unittest.mock
 import json
 from pathlib import Path
 
 from notification_center.core import NotificationCenter
+from notification_center.health_workflow import HealthWorkflow
 from notification_center.telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 from notification_center.http_api import telegram_inbox_sink_from_environment, telegram_inline_keyboard
 
@@ -158,6 +160,109 @@ class TelegramInteractionTests(unittest.TestCase):
         ).fetchone()
         self.assertIsNotNone(row)
         self.assertEqual("Проверь логи воркера и почини.", json.loads(row["payload_json"])["text"])
+        self.assertIn(("sendMessage", {"chat_id": "-1001", "text": "Ответ привязан к инциденту."}), calls)
+
+    def _health_incident_with_selected_plan(self, dedup_key: str, key_prefix: str) -> dict[str, object]:
+        health = self.center.create_event("producer", f"create-{key_prefix}", {
+            "schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident",
+            "severity": "critical", "title": "Health outage", "body": "degraded", "dedup_key": dedup_key,
+            "event_type": "health.degraded", "source_id": "source-a", "host_id": "host-a", "signal_type": "relay",
+        })
+        self.center.complete_delivery(
+            health["initial_delivery_id"],
+            "sent",
+            result={"message_id": 73, "chat_id": "-1001"},
+        )
+        workflow = HealthWorkflow(self.center)
+        workflow.attach_plans(
+            health["incident_id"],
+            f"{key_prefix}:plans",
+            [
+                {"plan_id": "observe", "title": "Observe", "summary": "s", "step": "observe"},
+                {"plan_id": "repair", "title": "Repair", "summary": "s", "step": "repair"},
+                {"plan_id": "verify", "title": "Verify", "summary": "s", "step": "verify"},
+            ],
+            orchestration={
+                "diagnosis_session_id": "ses-diag-1",
+                "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "orchestrator_session_id": "ses-orch-1",
+                "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "harness": "opencode",
+                "diagnosis_elapsed_ms": 1,
+                "orchestrator_elapsed_ms": 1,
+                "total_elapsed_ms": 2,
+            },
+        )
+        self.center.record_health_plan_selection(health["incident_id"], "repair", "telegram:42", f"{key_prefix}:select")
+        return health
+
+    def test_health_reply_is_forwarded_into_the_live_agent_session(self) -> None:
+        health = self._health_incident_with_selected_plan("health-relay-1", "health-relay")
+        self.center.record_health_agent_session(
+            health["incident_id"],
+            f"{health['incident_id']}:health-remediation_session:opencode:ses-live-1:v3",
+            "repair",
+            "opencode",
+            "ses-live-1",
+            "https://agent.bezrabotnyi.com",
+            stage="health-remediation",
+        )
+        calls: list[tuple[str, dict[str, object]]] = []
+        poller = TelegramInteractionPoller(
+            self.center,
+            "bot-token",
+            {"42"},
+            TelegramActionCodec("x" * 32),
+            api=lambda method, payload: calls.append((method, payload)) or {"ok": True, "result": True},
+        )
+        relay_requests = []
+
+        def fake_relay(harness: str, session_id: str, incident_id: str, text: str, source_ref: str, runner=None) -> bool:
+            relay_requests.append((harness, session_id, incident_id, text, source_ref))
+            return True
+
+        with unittest.mock.patch("notification_center.agent_job_helper.relay_operator_reply", side_effect=fake_relay):
+            poller._handle_message({
+                "message_id": 74,
+                "from": {"id": 42, "is_bot": False},
+                "chat": {"id": -1001},
+                "text": "Перезапусти воркер и проверь.",
+                "reply_to_message": {"message_id": 73},
+            })
+
+        self.assertEqual([("opencode", "ses-live-1", health["incident_id"], "Перезапусти воркер и проверь.", "-1001:74")], relay_requests)
+        self.assertIn(("sendMessage", {"chat_id": "-1001", "text": "Ответ передан в сессию агента."}), calls)
+
+    def test_health_reply_falls_back_when_the_session_is_unreachable(self) -> None:
+        health = self._health_incident_with_selected_plan("health-relay-2", "health-relay-fallback")
+        self.center.record_health_agent_session(
+            health["incident_id"],
+            f"{health['incident_id']}:health-remediation_session:opencode:ses-dead-1:v3",
+            "repair",
+            "opencode",
+            "ses-dead-1",
+            "https://agent.bezrabotnyi.com",
+            stage="health-remediation",
+        )
+        calls: list[tuple[str, dict[str, object]]] = []
+        poller = TelegramInteractionPoller(
+            self.center,
+            "bot-token",
+            {"42"},
+            TelegramActionCodec("x" * 32),
+            api=lambda method, payload: calls.append((method, payload)) or {"ok": True, "result": True},
+        )
+
+        with unittest.mock.patch("notification_center.agent_job_helper.relay_operator_reply", return_value=False):
+            poller._handle_message({
+                "message_id": 75,
+                "from": {"id": 42, "is_bot": False},
+                "chat": {"id": -1001},
+                "text": "Проверь ещё раз.",
+                "reply_to_message": {"message_id": 73},
+            })
+
         self.assertIn(("sendMessage", {"chat_id": "-1001", "text": "Ответ привязан к инциденту."}), calls)
 
     def test_mute_button_suppresses_same_scope_and_old_card_restores_it(self) -> None:

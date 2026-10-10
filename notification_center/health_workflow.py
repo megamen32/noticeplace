@@ -185,6 +185,31 @@ def validate_health_plans(plans: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+_AUTOSELECT_PLAN_IDS = ("observe", "repair", "verify")
+
+
+def normalize_health_recommendation(value: Any) -> dict[str, Any] | None:
+    """Bound an orchestrator plan recommendation; anything unclear fails open to the human.
+
+    Auto-execution is only allowed with an explicit ``needs_human=False`` and a
+    plan id from the pinned selection set. Missing, malformed, or off-set input
+    keeps the operator-facing three-button card.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        return {"plan_id": "", "needs_human": True, "reason": ""}
+    plan_id = _bounded_text(value.get("plan_id") or value.get("recommended_plan_id"), 64)
+    needs_human = value.get("needs_human")
+    if not isinstance(needs_human, bool):
+        needs_human = True
+    reason = _bounded_text(value.get("reason") or value.get("recommendation_reason"), 256)
+    if plan_id not in _AUTOSELECT_PLAN_IDS:
+        needs_human = True
+        plan_id = plan_id if plan_id else ""
+    return {"plan_id": plan_id, "needs_human": needs_human, "reason": reason}
+
+
 def _default_health_plans() -> list[dict[str, Any]]:
     return [
         {"plan_id": "observe", "title": "Наблюдать", "summary": "Собрать ограниченный актуальный снимок", "step": "observe"},
@@ -289,19 +314,24 @@ class HealthWorkflow:
         trace_refs: list[str] | None = None,
         evidence_refs: list[str] | None = None,
         orchestration: Mapping[str, Any] | None = None,
+        recommendation: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized = validate_health_plans(plans)
+        payload: dict[str, Any] = {
+            "plans": normalized,
+            "correlation_id": _bounded_text(correlation_id, 256) if correlation_id else None,
+            "trace_refs": _bounded_refs(trace_refs),
+            "evidence_refs": _bounded_refs(evidence_refs),
+            "orchestration": _normalize_orchestration(orchestration),
+        }
+        bounded_recommendation = normalize_health_recommendation(recommendation)
+        if bounded_recommendation is not None:
+            payload["recommendation"] = bounded_recommendation
         return self._center.record_health_update(
             incident_id,
             idempotency_key,
             "health.plans_attached",
-            {
-                "plans": normalized,
-                "correlation_id": _bounded_text(correlation_id, 256) if correlation_id else None,
-                "trace_refs": _bounded_refs(trace_refs),
-                "evidence_refs": _bounded_refs(evidence_refs),
-                "orchestration": _normalize_orchestration(orchestration),
-            },
+            payload,
             actor=actor,
         )
 

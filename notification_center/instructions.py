@@ -44,19 +44,24 @@ def noticeplace_instructions() -> dict[str, Any]:
             "human_request_progress": "POST /v1/human-requests/{request_id}/progress с Bearer-токеном исходного проекта; phase=accepted|running|completed|failed; session_url и message необязательны. Обновляет ту же карточку после выбора deep_analysis.",
         },
         "telegram_controls": (
-            "Ответьте обычным reply на карточку — ответ автоматически привяжется к инциденту. "
+            "Ответьте обычным reply на карточку — ответ привяжется к инциденту, а для health-инцидентов "
+            "ещё и уйдёт прямой доставкой в живую сессию агента в Agent Herder (агент увидит его следующим ходом). "
             "После нажатия AI в карточке появляется галочка выбора, а после создания сессии — "
             "ссылка на её ход работы в Agent Herder и кнопка «Открыть сессию». "
             "«Отключить такие» глушит только тот же проект и dedup_key; "
             "на этой же карточке появится «Включить обратно»."
         ),
         "automatic_repair": (
-            "Health-карточка с кнопками «Наблюдать / Исправить / Проверить»: POST /v1/events "
-            "с kind='incident', event_type='health.degraded', severity='critical'|'emergency' "
-            "и обязательными source_id, host_id, signal_type, correlation_id — они включают "
-            "автоматический health-diagnosis. Токен проекта должен разрешать agent job "
-            "health-diagnosis и быть зарегистрирован в callback-карте; выбранный план выполняет "
-            "health-remediation."
+            "Health-карточка: POST /v1/events с kind='incident', event_type='health.degraded', "
+            "severity='critical'|'emergency' и обязательными source_id, host_id, signal_type, "
+            "correlation_id — они включают автоматический health-diagnosis. Токен проекта должен "
+            "разрешать agent job health-diagnosis и быть зарегистрирован в callback-карте. "
+            "Дальше ИИ решает сама: уверенный рекомендованный план запускается автоматически "
+            "(карточка покажет «ИИ выбрала план — исправление запущено»), а три кнопки планов "
+            "«Наблюдать / Исправить / Проверить» показываются только когда ИИ не может решить без человека. "
+            "Сессия исправления работает под автопилотом Agent Herder: по концу хода судья "
+            "продолжает работу, либо сообщает итог (устранено / не устранено / нужно решение человека) "
+            "через Notice Place. Источник закрыть health-инцидент не может (см. recovery)."
         ),
         "identity": "dedup_key стабилен для одной поломки; Idempotency-Key повторяется только при точном повторе того же запроса.",
         "exceptions": "Прямой аварийный канал допустим только для независимого сторожа самого Notice Place.",
