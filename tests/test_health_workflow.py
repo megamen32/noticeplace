@@ -976,5 +976,103 @@ class HealthRecommendationTests(unittest.TestCase):
         self.assertEqual("repair", replayed_event["payload"]["recommendation"]["plan_id"])
 
 
+class AgentJobResultSessionLinkTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.database = Path(self.tempdir.name) / "notify.sqlite3"
+        self.center = NotificationCenter(self.database, {"producer-token": {"project": "hermes", "max_severity": "critical"}}, default_quiet_hours=[])
+        self.workflow = HealthWorkflow(self.center, callback_secret="x" * 32)
+        self.created = self.workflow.intake_signal(
+            "producer-token",
+            "health-create-jobresult",
+            {
+                "project": "hermes",
+                "recipient": "me",
+                "severity": "critical",
+                "title": "Primary source is unhealthy",
+                "body": "The source returned a stale fingerprint.",
+                "dedup_key": "health:source-a-jobresult",
+                "source_id": "source-a",
+                "host_id": "host-a",
+                "signal_type": "intake",
+            },
+        )
+        incident_id = self.created["incident_id"]
+        self.workflow.attach_plans(
+            incident_id,
+            "jobresult-plans-1",
+            [
+                {"plan_id": "observe", "title": "Observe", "summary": "s", "step": "observe"},
+                {"plan_id": "repair", "title": "Repair", "summary": "s", "step": "repair"},
+                {"plan_id": "verify", "title": "Verify", "summary": "s", "step": "verify"},
+            ],
+            orchestration={
+                "diagnosis_session_id": "ses-diag-1",
+                "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "orchestrator_session_id": "ses-orch-1",
+                "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "harness": "opencode",
+                "diagnosis_elapsed_ms": 1,
+                "orchestrator_elapsed_ms": 1,
+                "total_elapsed_ms": 2,
+            },
+        )
+        self.center.record_health_plan_selection(incident_id, "observe", "telegram:42", "jobresult-select-1")
+        # The runtime session callback posted the durable link first, exactly
+        # as post_health_session_started does from inside run_profile.
+        self.center.record_health_agent_session(
+            incident_id,
+            f"{incident_id}:health-remediation_session:opencode:ses-job-1:v3",
+            "observe",
+            "opencode",
+            "ses-job-1",
+            "https://agent.bezrabotnyi.com",
+            actor="agent-herder",
+            stage="health-remediation",
+            model="minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+        )
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def test_completed_remediation_result_replays_the_session_link_idempotently(self) -> None:
+        incident_id = self.created["incident_id"]
+        receipt = {
+            "status": "completed",
+            "plan_id": "observe",
+            "agent_receipt": {
+                "status": "completed",
+                "plan_id": "observe",
+                # run_profile receipts carry the full provider route, exactly
+                # what the runtime session callback posted first.
+                "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "session_id": "ses-job-1",
+                "harness": "opencode",
+                "step": "снимок собран",
+                "observed_state": "unknown",
+                "verification_id": "",
+                "source_id": "",
+                "source_fingerprint": "",
+                "verifier_id": "",
+                "evidence_refs": ["observe:snapshot"],
+                "trace_refs": [],
+            },
+        }
+        # The health context carries the bare execution profile model
+        # ("MiniMax-M3.1-Flash-Preview"); before the fix the replayed session
+        # link used that bare model, differed from the first post's full
+        # route, raised IdempotencyConflict, and the worker retried the
+        # finished remediation job forever.
+        context = {
+            "selection": {"plan_id": "observe", "actor": "gptadmin:health-orchestrator",
+                          "execution": dict(health_workflow.HEALTH_EXECUTION_PROFILE)},
+        }
+        result = self.center.record_agent_job_result(incident_id, "dlv-job-1", "health-remediation", receipt, context)
+        self.assertTrue(result["accepted"])
+        result_again = self.center.record_agent_job_result(incident_id, "dlv-job-1", "health-remediation", receipt, context)
+        self.assertTrue(result_again["accepted"])
+
+
 if __name__ == "__main__":
     unittest.main()

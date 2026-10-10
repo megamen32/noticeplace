@@ -2368,6 +2368,12 @@ class NotificationCenter:
             event_type = "agent_job_failed" if summary["status"] == "failed" else "agent_job_completed"
             self._audit(incident_id, event_type, "worker", summary)
         if job_name in {"health-diagnosis", HEALTH_REMEDIATION_AGENT_JOB} and summary.get("session_id") and summary.get("harness"):
+            # The run-time session callback already posted this durable link
+            # with the receipt's full model route (e.g. "provider/model") and
+            # actor="agent-herder". Replay the exact same payload so the
+            # idempotent branch returns the existing event instead of raising
+            # IdempotencyConflict (which marked every completed remediation
+            # job failed and retried the whole session forever).
             self.record_health_agent_session(
                 incident_id,
                 f"{incident_id}:{job_name}_session:{summary['harness']}:{summary['session_id']}:v3",
@@ -2375,9 +2381,9 @@ class NotificationCenter:
                 str(summary.get("harness") or "zcode"),
                 str(summary["session_id"]),
                 "https://agent.bezrabotnyi.com",
-                actor="worker",
+                actor="agent-herder",
                 stage=job_name,
-                model=str(summary.get("model") or ""),
+                model=self._health_text(result.get("model") or summary.get("model") or "", 256),
             )
         if job_name == HEALTH_REMEDIATION_AGENT_JOB and summary["status"] == "completed" and isinstance(health_context, Mapping):
             workflow_result = self._record_health_remediation_receipt(incident_id, delivery_id, receipt, health_context)
