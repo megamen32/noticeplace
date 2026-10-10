@@ -174,19 +174,163 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
     return AdminHandler
 
 
+_ADMIN_CSS = """:root{--bg:#0b0e14;--surface:#10151d;--surface-2:#171e29;--surface-3:#1e2734;--border:#212b3a;--border-strong:#2e3c52;--text:#e6edf3;--muted:#8fa0b3;--faint:#5f6f81;--accent:#4c8dff;--accent-soft:rgba(76,141,255,.16);--green:#3fb950;--orange:#f0883e;--red:#f85149;--mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+*{box-sizing:border-box}html{color-scheme:dark}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,Cantarell,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#8ab4ff;text-decoration:none}a:hover{text-decoration:underline}
+h1,h2,h3{margin:0;font-weight:650;letter-spacing:-.01em}
+p{margin:8px 0}.hint{color:var(--muted);font-size:12.5px}
+code{font-family:var(--mono);font-size:12px;color:#b3c7ff;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:1px 6px;word-break:break-all}
+pre{background:#0a0f16;border:1px solid var(--border);border-radius:10px;padding:14px 16px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--mono);font-size:12.5px;line-height:1.55;color:#b3c7ff}
+.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:14px;padding:11px 24px;background:rgba(11,14,20,.92);backdrop-filter:blur(6px);border-bottom:1px solid var(--border)}
+.topbar .brand{font-weight:700;font-size:15px}.topbar .brand small{color:var(--muted);font-weight:500;font-size:12px}
+.topbar .shield{margin-left:auto;display:inline-flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:4px 12px;background:var(--surface)}
+.topbar .shield::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+main{max-width:1240px;margin:0 auto;padding:26px 24px 90px}
+main.narrow{max-width:860px}
+.page-head h1{font-size:22px}.page-head>p{color:var(--muted);margin:6px 0 0;max-width:720px}
+section.card,.card{margin-top:18px;padding:20px 22px;background:var(--surface);border:1px solid var(--border);border-radius:12px}
+.card>h2,.card-head h2{font-size:15.5px}
+.card-head{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.card-head .hint{margin:0}
+.eyebrow{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--accent)}
+.card h3{font-size:13px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:20px 0 8px}
+input,select,textarea{padding:8px 10px;border-radius:8px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text);font:inherit;font-size:13px}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+input::placeholder,textarea::placeholder{color:var(--faint)}
+button{padding:8px 14px;border-radius:8px;border:1px solid transparent;background:var(--accent);color:#fff;font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:filter .12s,background .12s}
+button:hover{filter:brightness(1.15)}
+button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+button.danger{background:rgba(248,81,73,.12);border-color:rgba(248,81,73,.45);color:#ff8f88}
+button.danger:hover{background:rgba(248,81,73,.22);filter:none}
+button[type=button]{background:var(--surface-3);border:1px solid var(--border-strong);color:var(--text);font-weight:550}
+button[type=button]:hover{filter:brightness(1.25)}
+form.consumer-form>button[type=submit]{align-self:flex-start}
+form{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 8px 4px 0;vertical-align:middle}
+form.card-form{margin:0}
+form.card-form input[name=project]{min-width:220px}
+form.settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px 18px;margin:12px 0 0;align-items:end}
+form.settings label{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--muted)}
+form.settings button{justify-self:start}
+form.toolbar{display:flex;flex:1;gap:8px;margin:10px 0 16px;flex-wrap:wrap}
+form.toolbar input{flex:1;min-width:240px}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;font-size:11px;font-weight:650;letter-spacing:.03em;border:1px solid var(--border-strong);color:#a8b3bf;background:var(--surface-2);white-space:nowrap}
+.badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9}
+.badge.sev-emergency{color:#ff7b74;background:rgba(248,81,73,.13);border-color:rgba(248,81,73,.5)}
+.badge.sev-critical{color:#ffa198;background:rgba(248,81,73,.09);border-color:rgba(248,81,73,.35)}
+.badge.sev-important{color:#ffb26b;background:rgba(240,136,62,.12);border-color:rgba(240,136,62,.45)}
+.badge.sev-notice{color:#79b8ff;background:rgba(76,141,255,.12);border-color:rgba(76,141,255,.45)}
+.badge.sev-health,.badge.sev-ok{color:#56d364;background:rgba(63,185,80,.12);border-color:rgba(63,185,80,.45)}
+.badge.sev-failed{color:#ff7b74;background:rgba(248,81,73,.13);border-color:rgba(248,81,73,.5)}
+.table-wrap{overflow-x:auto;margin:4px 0;border:1px solid var(--border);border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:9px 12px;text-align:left;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);background:var(--surface-2);border-bottom:1px solid var(--border-strong);white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:rgba(255,255,255,.018)}
+td.row-actions form{margin:2px 4px 2px 0}
+td.row-actions select{width:112px}
+.health-hero{border-color:rgba(76,141,255,.4);background:linear-gradient(180deg,rgba(76,141,255,.07),rgba(16,21,29,0) 55%),var(--surface)}
+.health-heading{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.status-card{padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);min-width:260px;font-size:13px}
+.status-card small{color:var(--muted)}
+.pulse{display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green)}
+details{margin-top:18px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2)}
+summary{cursor:pointer;padding:12px 16px;font-weight:600;color:#9ec1ff;font-size:13.5px;list-style:none}
+summary::before{content:"▸ ";color:var(--muted)}
+details[open] summary::before{content:"▾ "}
+details[open] summary{border-bottom:1px solid var(--border)}
+details>form,details>p{margin:14px 16px}
+.health-config{display:grid;gap:12px}
+.health-config button{justify-self:start}
+.health-config textarea{width:100%;max-width:920px;font-family:var(--mono);font-size:12.5px;line-height:1.5}
+.topic-forms{display:grid;grid-template-columns:repeat(auto-fill,minmax(430px,1fr));gap:12px;margin-top:14px}
+.topic-card{padding:12px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;display:flex;flex-direction:column;gap:8px}
+.topic-card form{margin:0;display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:center}
+.topic-card form label{display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--muted);grid-column:span 2}
+.topic-card form button{justify-self:start}
+fieldset{border:1px solid var(--border-strong);border-radius:10px;padding:10px 12px 12px;margin:8px 0;background:var(--surface-2)}
+legend{font-size:12px;color:var(--muted);padding:0 6px}
+#adapter-steps fieldset{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+form.consumer-form{display:flex;flex-direction:column;align-items:stretch;gap:10px;margin:0;max-width:920px}
+#adapter-builder{width:100%}
+#adapter-steps fieldset input[data-target]{flex:1;min-width:200px}
+.token-box{display:block;padding:14px 16px;background:var(--surface-2);border:1px dashed var(--border-strong);border-radius:10px}
+.token-box code{display:block;background:transparent;border:0;padding:0;color:#ffd28a;font-family:var(--mono);font-size:13px}
+.warning{color:#ffb26b}
+.page-center{max-width:560px;margin:16vh auto 0;padding:30px;background:var(--surface);border:1px solid var(--border);border-radius:14px;text-align:center}
+.page-center h1{font-size:19px}
+.health-plans{margin-top:6px;font-size:12.5px;color:var(--muted)}
+.health-plans span{display:inline-block}
+@media(max-width:1280px){main{padding:20px 16px 70px}.topbar{padding:11px 16px}}
+@media(max-width:860px){.health-heading{display:block}.status-card{margin-top:12px;min-width:0}.topic-forms{grid-template-columns:1fr}form.settings{grid-template-columns:1fr}}"""
+
+_SEVERITY_BADGE_CLASSES = {
+    "emergency": "sev-emergency",
+    "critical": "sev-critical",
+    "important": "sev-important",
+    "notice": "sev-notice",
+    "info": "sev-info",
+    "debug": "sev-debug",
+    "log": "sev-log",
+    "health": "sev-health",
+}
+
+_STATE_BADGE_CLASSES = {
+    "open": "sev-important",
+    "in_progress": "sev-notice",
+    "selected": "sev-notice",
+    "resolved": "sev-health",
+    "healthy": "sev-health",
+    "closed": "sev-neutral",
+    "degraded": "sev-important",
+    "failed": "sev-failed",
+    "sent": "sev-health",
+    "delivered": "sev-health",
+}
+
+
+def _badge(value: Any, classes: dict[str, str] | None = None) -> str:
+    """Render a small severity/status pill; presentational only."""
+    table = classes if classes is not None else _SEVERITY_BADGE_CLASSES
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    cls = table.get(text.lower(), "sev-neutral")
+    return f'<span class="badge {cls}">{html.escape(text)}</span>'
+
+
 def _page(title: str, message: str) -> str:
-    return f"<!doctype html><meta charset=utf-8><title>{html.escape(title)}</title><main><h1>{html.escape(title)}</h1><p>{html.escape(message)}</p></main>"
+    return (
+        f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f"<title>{html.escape(title)}</title><style>{_ADMIN_CSS}</style></head><body>"
+        f'<main class="page-center"><h1>{html.escape(title)}</h1>'
+        f'<p class="hint">{html.escape(message)}</p></main></body></html>'
+    )
 
 
 def _test_result_page(adapter: str, result: dict[str, Any]) -> str:
     """Show a display-safe result without exposing tokens or raw transport data."""
     detail = "Phone call started." if adapter == "phone" else "Message accepted by Notify."
-    return f'<!doctype html><meta charset=utf-8><title>Adapter test</title><main><h1>Adapter test accepted</h1><p>{html.escape(detail)}</p><p><a href="/admin/">Back to admin</a></p></main>'
+    return (
+        f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f"<title>Adapter test</title><style>{_ADMIN_CSS}</style></head><body>"
+        f'<main class="page-center"><h1>Adapter test accepted</h1>'
+        f'<p class="hint">{html.escape(detail)}</p>'
+        f'<p><a href="/admin/">Back to admin</a></p></main></body></html>'
+    )
 
 
 def _history_notification_display(item: dict[str, Any]) -> str:
     """Format delivery states without exposing adapter payloads or secrets."""
-    return ", ".join(f'{entry.get("channel")}={entry.get("status")}' for entry in item.get("notifications", []))
+    badges = []
+    for entry in item.get("notifications", []):
+        text = f'{entry.get("channel")}={entry.get("status")}'
+        cls = _STATE_BADGE_CLASSES.get(str(entry.get("status") or "").lower(), "sev-neutral")
+        badges.append(f'<span class="badge {cls}">{html.escape(text)}</span>')
+    return "<br>".join(badges) or "—"
 
 
 def _history_time_display(value: Any) -> str:
@@ -254,16 +398,16 @@ def _health_dashboard(health: dict[str, Any], csrf: str) -> str:
         incident = item.get("incident") if isinstance(item.get("incident"), dict) else {}
         plans = item.get("plans") if isinstance(item.get("plans"), list) else []
         plan_titles = ", ".join(str(plan.get("title") or plan.get("plan_id") or "") for plan in plans[:3] if isinstance(plan, dict))
-        incidents.append(f'<tr><td>{_history_incident_link(incident.get("id"))}<br><strong>{html.escape(str(incident.get("title") or "Health incident"))}</strong><br><span class="pill">{html.escape(str(incident.get("state") or "open"))}</span></td><td>{html.escape(plan_titles or "—")}</td><td>{html.escape(_health_value(item.get("selection"), "plan_id"))}</td><td>{html.escape(_health_value(item.get("progress"), "step", "observed_state", "status"))}<br><span class="hint">{html.escape(_health_value(item.get("progress"), "evidence_refs", "evidence"))}</span></td><td>{html.escape(_health_value(item.get("verification"), "observed_state", "status", "healthy"))}<br><span class="hint">{html.escape(_health_value(item.get("verification"), "verification_id", "evidence"))}</span></td></tr>')
+        incidents.append(f'<tr><td>{_history_incident_link(incident.get("id"))}<br><strong>{html.escape(str(incident.get("title") or "Health incident"))}</strong><br>{_badge(incident.get("state"), _STATE_BADGE_CLASSES)}</td><td>{html.escape(plan_titles or "—")}</td><td>{html.escape(_health_value(item.get("selection"), "plan_id"))}</td><td>{html.escape(_health_value(item.get("progress"), "step", "observed_state", "status"))}<br><span class="hint">{html.escape(_health_value(item.get("progress"), "evidence_refs", "evidence"))}</span></td><td>{html.escape(_health_value(item.get("verification"), "observed_state", "status", "healthy"))}<br><span class="hint">{html.escape(_health_value(item.get("verification"), "verification_id", "evidence"))}</span></td></tr>')
     integration = health.get("integration", {}) if isinstance(health, dict) else {}
-    return f'''<section id="health-dashboard" class="health-hero"><div class="health-heading"><div><span class="eyebrow">Fleet operations</span><h2>Health dashboard</h2><p class="hint">Targets, active incidents, remediation receipts, and independent verification from the live NoticePlace store.</p></div><div class="status-card"><span class="pulse"></span>{html.escape(str(health.get("config_status") or "Monitor config unavailable"))}<br><small>NoticePlace {html.escape(str(integration.get("noticeplace") or "unknown"))} · monitor {html.escape(str(integration.get("fleet_monitor") or "unknown"))} · {html.escape(str(integration.get("targets") or 0))} targets</small></div></div><h3>Fleet targets</h3><table><tr><th>Target</th><th>CPU %</th><th>RAM %</th><th>Disk %</th><th>Log keywords</th></tr>{''.join(targets) or '<tr><td colspan="5">No fleet targets configured.</td></tr>'}</table><h3>Open health incidents</h3><table><tr><th>Incident</th><th>Latest plans</th><th>Selected</th><th>Progress</th><th>Verification</th></tr>{''.join(incidents) or '<tr><td colspan="5">No open health incidents.</td></tr>'}</table><details><summary>Edit monitor thresholds and log keywords</summary><p class="hint">Operator-owned file: <code>{html.escape(str(health.get("config_path") or ""))}</code>. Only bounded fleet targets, thresholds, and explicit log rules are accepted.</p><form class="health-config" method="post" action="/admin/health-settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><textarea name="config_json" rows="18" spellcheck="false">{html.escape(str(health.get("config_json") or '{"targets": []}'))}</textarea><label><input type="checkbox" name="run_monitor" value="true"> Run health monitor once after save</label><button>Save health settings</button></form></details></section>'''
+    return f'''<section id="health-dashboard" class="card health-hero"><div class="health-heading"><div class="card-head"><span class="eyebrow">Fleet operations</span><h2>Health dashboard</h2><p class="hint">Targets, active incidents, remediation receipts, and independent verification from the live NoticePlace store.</p></div><div class="status-card"><span class="pulse"></span>{html.escape(str(health.get("config_status") or "Monitor config unavailable"))}<br><small>NoticePlace {html.escape(str(integration.get("noticeplace") or "unknown"))} · monitor {html.escape(str(integration.get("fleet_monitor") or "unknown"))} · {html.escape(str(integration.get("targets") or 0))} targets</small></div></div><h3>Fleet targets</h3><div class="table-wrap"><table><tr><th>Target</th><th>CPU %</th><th>RAM %</th><th>Disk %</th><th>Log keywords</th></tr>{''.join(targets) or '<tr><td colspan="5">No fleet targets configured.</td></tr>'}</table></div><h3>Open health incidents</h3><div class="table-wrap"><table><tr><th>Incident</th><th>Latest plans</th><th>Selected</th><th>Progress</th><th>Verification</th></tr>{''.join(incidents) or '<tr><td colspan="5">No open health incidents.</td></tr>'}</table></div><details><summary>Edit monitor thresholds and log keywords</summary><p class="hint">Operator-owned file: <code>{html.escape(str(health.get("config_path") or ""))}</code>. Only bounded fleet targets, thresholds, and explicit log rules are accepted.</p><form class="health-config" method="post" action="/admin/health-settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><textarea name="config_json" rows="18" spellcheck="false">{html.escape(str(health.get("config_json") or '{"targets": []}'))}</textarea><label><input type="checkbox" name="run_monitor" value="true"> Run health monitor once after save</label><button>Save health settings</button></form></details></section>'''
 
 
 def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
     health_dashboard = _health_dashboard(snapshot.get("health", {}), csrf)
     options = "".join(f'<option value="{severity}">{severity}</option>' for severity in SEVERITIES)
     project_rows = "".join(
-        f'<tr><td>{html.escape(item["project"])}</td><td>{html.escape(item["max_severity"])}</td><td><code>{html.escape(item["fingerprint"])}</code></td><td><form method="post" action="/admin/projects/{urllib.parse.quote(item["project"], safe="")}/severity"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><select name="max_severity">{options}</select><button>Save level</button></form><form method="post" action="/admin/projects/{urllib.parse.quote(item["project"], safe="")}/revoke"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><button class="danger">Revoke</button></form></td></tr>'
+        f'<tr><td><strong>{html.escape(item["project"])}</strong></td><td>{_badge(item["max_severity"])}</td><td><code>{html.escape(item["fingerprint"])}</code></td><td class="row-actions"><form method="post" action="/admin/projects/{urllib.parse.quote(item["project"], safe="")}/severity"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><select name="max_severity">{options}</select><button>Save level</button></form><form method="post" action="/admin/projects/{urllib.parse.quote(item["project"], safe="")}/revoke"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><button class="danger">Revoke</button></form></td></tr>'
         for item in snapshot["projects"]
     ) or '<tr><td colspan="4">No producer projects yet.</td></tr>'
     topics = snapshot.get("topics", [])
@@ -272,16 +416,16 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         for topic in topics
     ) or '<tr><td colspan="5">No topics yet.</td></tr>'
     topic_forms = "".join(
-        f'<form id="topic-{html.escape(topic["id"])}" method="post" action="/admin/topics/save"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="topic_id" value="{html.escape(topic["id"])}"><input required name="name" value="{html.escape(topic["name"])}" placeholder="Topic name"><input required name="chat_id" value="{html.escape(topic["chat_id"])}" placeholder="-100…"><input name="message_thread_id" value="{html.escape(str(topic["message_thread_id"] or ""))}" placeholder="blank = create" inputmode="numeric"><label><input type="checkbox" name="enabled" value="true" {"checked" if topic["enabled"] else ""}> active</label><button>Save</button></form><form method="post" action="/admin/topics/delete"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="topic_id" value="{html.escape(topic["id"])}"><button class="danger">Delete</button></form>'
+        f'<div class="topic-card"><form id="topic-{html.escape(topic["id"])}" method="post" action="/admin/topics/save"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="topic_id" value="{html.escape(topic["id"])}"><input required name="name" value="{html.escape(topic["name"])}" placeholder="Topic name"><input required name="chat_id" value="{html.escape(topic["chat_id"])}" placeholder="-100…"><input name="message_thread_id" value="{html.escape(str(topic["message_thread_id"] or ""))}" placeholder="blank = create" inputmode="numeric"><label><input type="checkbox" name="enabled" value="true" {"checked" if topic["enabled"] else ""}> active</label><button>Save</button></form><form method="post" action="/admin/topics/delete"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="topic_id" value="{html.escape(topic["id"])}"><button class="danger">Delete</button></form></div>'
         for topic in topics
     )
-    topic_forms += f'<form method="post" action="/admin/topics/save"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="topic_id" value="new-topic"><input required name="name" placeholder="New topic name"><input required name="chat_id" placeholder="-100…"><input name="message_thread_id" placeholder="blank = create" inputmode="numeric"><label><input type="checkbox" name="enabled" value="true" checked> active</label><button>Create topic</button></form>'
+    topic_forms += f'<div class="topic-card"><form method="post" action="/admin/topics/save"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="topic_id" value="new-topic"><input required name="name" placeholder="New topic name"><input required name="chat_id" placeholder="-100…"><input name="message_thread_id" placeholder="blank = create" inputmode="numeric"><label><input type="checkbox" name="enabled" value="true" checked> active</label><button>Create topic</button></form></div>'
     consumer_rows = "".join(
         f'<tr><td>{html.escape(item["name"])}</td><td>{html.escape(item.get("profile_key") or "custom")}</td><td>{html.escape(item["project"])}</td><td><code>{html.escape(item["token_fingerprint"])}</code></td><td>{html.escape(_policy_display(item["policy"]))}</td><td>{html.escape(_quiet_hours_display(item.get("quiet_hours", [])))}</td><td>{html.escape(item.get("operator_note") or "")}</td></tr>'
         for item in snapshot["consumers"]
     ) or '<tr><td colspan="7">No delivery profiles yet.</td></tr>'
     history_rows = "".join(
-        f'<tr><td><code>{html.escape(str(item["event_id"]))}</code><br>{_history_incident_link(item["incident_id"])}<br><span class="hint">{html.escape(_history_time_display(item.get("event_created_at")))}</span></td><td>{html.escape(str(item.get("event_type") or ""))}<br>{html.escape(str(item.get("title") or ""))}<br><span class="hint">{html.escape(str(item.get("project") or ""))}/{html.escape(str(item.get("recipient") or ""))}</span>{_history_health_plans_display(item)}</td><td>{html.escape(str(item.get("producer") or ""))}<br>{html.escape(str(item.get("plugin") or ""))}</td><td>{html.escape(str(item.get("source_ip") or ""))}<br><span class="hint">proxy: {html.escape(str(item.get("proxy_ip") or "direct"))}</span></td><td>{_history_incident_link(item["parent_incident_id"]) if item.get("parent_incident_id") else "root"}<br>children:<br>{_history_children_display(item)}</td><td>{html.escape(_history_notification_display(item))}</td><td>{html.escape(str(item.get("outcome", {}).get("incident_state") or item.get("state") or ""))}<br>{html.escape(str(item.get("correlation_id") or ""))}</td></tr>'
+        f'<tr><td><code>{html.escape(str(item["event_id"]))}</code><br>{_history_incident_link(item["incident_id"])}<br><span class="hint">{html.escape(_history_time_display(item.get("event_created_at")))}</span></td><td><strong>{html.escape(str(item.get("event_type") or ""))}</strong><br>{html.escape(str(item.get("title") or ""))}<br><span class="hint">{html.escape(str(item.get("project") or ""))}/{html.escape(str(item.get("recipient") or ""))}</span>{_history_health_plans_display(item)}</td><td>{html.escape(str(item.get("producer") or ""))}<br><span class="hint">{html.escape(str(item.get("plugin") or ""))}</span></td><td>{html.escape(str(item.get("source_ip") or ""))}<br><span class="hint">proxy: {html.escape(str(item.get("proxy_ip") or "direct"))}</span></td><td>{_history_incident_link(item["parent_incident_id"]) if item.get("parent_incident_id") else "root"}<br><span class="hint">children:</span><br>{_history_children_display(item)}</td><td>{_history_notification_display(item)}</td><td>{_badge(item.get("outcome", {}).get("incident_state") or item.get("state"), _STATE_BADGE_CLASSES)}<br><span class="hint">{html.escape(str(item.get("correlation_id") or ""))}</span></td></tr>'
         for item in snapshot.get("event_history", [])
     ) or '<tr><td colspan="7">No events recorded yet.</td></tr>'
     calls_enabled = bool(snapshot.get("automatic_calls_enabled", True))
@@ -326,19 +470,18 @@ function addStep() {
 }
 document.getElementById('add-adapter-step').onclick = addStep;
 </script>"""
-    return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NoticePlace Admin</title><style>
-body{{margin:0;background:radial-gradient(circle at 15% 0,#1c3152 0,#091222 38%);color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:1180px;margin:auto;padding:42px 20px 80px}}h1{{font-size:2.4rem;margin:0 0 8px}}p,.hint{{color:#aeb9cf}}section{{margin-top:24px;padding:24px;border:1px solid #31466f;border-radius:18px;background:#101d33}}h2{{margin-top:0}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px 8px;border-top:1px solid #31466f;text-align:left;vertical-align:top}}input,select,button,textarea{{padding:9px;border-radius:8px;border:1px solid #405a88;background:#0b172b;color:#e9edf7}}button{{background:#796ef0;border:0;cursor:pointer}}.danger{{background:#8a3647}}form{{display:inline-flex;gap:7px;margin:3px 5px 3px 0;flex-wrap:wrap}}code{{color:#c4bcff}}.health-hero{{border-color:#5577ad;background:linear-gradient(145deg,#172b47,#101d33)}}.health-heading{{display:flex;justify-content:space-between;gap:24px;align-items:start}}.eyebrow{{color:#8ddbd1;text-transform:uppercase;letter-spacing:.14em;font-size:.75rem}}.status-card{{padding:14px 18px;border:1px solid #42688a;border-radius:14px;background:#0b172b;min-width:260px}}.pulse{{display:inline-block;width:9px;height:9px;margin-right:8px;border-radius:50%;background:#56d6a3;box-shadow:0 0 14px #56d6a3}}.pill{{display:inline-block;padding:3px 8px;border-radius:999px;font-size:.75rem;background:#703645;color:#ffd7de}}details{{margin-top:20px;border-top:1px solid #31466f;padding-top:18px}}summary{{cursor:pointer;color:#c4bcff}}.health-config{{display:grid}}.health-config textarea{{width:min(100%,900px);font:13px ui-monospace,monospace}}@media(max-width:760px){{table{{display:block;overflow:auto}}.health-heading{{display:block}}.status-card{{margin-top:12px;min-width:0}}}}
-</style><body><main><div class="hint">Protected operator console</div><h1>NoticePlace</h1><p>Producer scopes, delivery chains, and Telegram topics. Delivery credentials remain server-only.</p>
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NoticePlace Admin</title><style>{_ADMIN_CSS}</style></head><body><header class="topbar"><span class="brand">NoticePlace <small>admin console</small></span><span class="shield">Protected operator route</span></header><main>
+<div class="page-head"><h1>NoticePlace</h1><p>Producer scopes, delivery chains, and Telegram topics. Delivery credentials remain server-only.</p></div>
 {health_dashboard}
-<section><h2>Add producer</h2><form method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
-<section><h2>Producer projects</h2><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></section>
-<section><h2>Automatic call escalation</h2><p class="hint">{calls_label}. This controls future Android phone, Telegram-call, and Matrix-call escalations. Text notifications are unchanged; an already active phone call cannot be interrupted.</p><form method="post" action="/admin/calls"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="enabled" value="{calls_action}"><button>{calls_button}</button></form></section>
-<section><h2>Test adapters</h2><p class="hint">These buttons use the central Notify HTTP/MCP boundary. Phone starts one short test call; message sends one notice to the configured test recipient.</p><form method="post" action="/admin/test-adapter" onsubmit="return confirm('Start one test phone call now?')"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="adapter" value="phone"><input name="message" value="NoticePlace phone adapter test" maxlength="300"><button>Call me</button></form><form method="post" action="/admin/test-adapter"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="adapter" value="message"><input name="message" value="NoticePlace message adapter test" maxlength="300"><button>Send message</button></form></section>
-<section><h2>Live delivery timers</h2><p class="hint">Changes apply to newly scheduled/retried deliveries and do not restart Notify. Zero disables that timer. An already executing adapter call is unchanged.</p><form method="post" action="/admin/settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}">{setting_inputs}<button>Save live settings</button></form></section>
-<section><h2>Add scoped consumer</h2><p class="hint">Create the delivery chain visually. Choose platform, action, target, retry interval, repeats, optional predecessor, and an operator note.</p><form method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><input name="operator_note" maxlength="500" placeholder="Optional operator note"><select name="max_severity">{options}</select><input type="hidden" name="policy_json" id="policy-json"><div id="adapter-builder">{adapter_builder}</div><button type="submit" onclick="return buildPolicy()">Create consumer intake</button></form><p class="hint">Target example: <code>{{"chat_id":-100123,"topic_id":122}}</code> or <code>{{"phone_number":"+79990000000"}}</code>.</p></section>
-<section><h2>Delivery profiles</h2><table><tr><th>Name</th><th>Profile</th><th>Project</th><th>Token fingerprint</th><th>Ordered delivery policy</th><th>Quiet hours</th><th>Operator note</th></tr>{consumer_rows}</table></section>
-<section id="event-history"><h2>Event history</h2><p class="hint">Ingress, parent/child links, source/proxy metadata, notifications, and final state. Bearer tokens and secrets are never shown.</p><form method="get" action="/admin/"><input name="history" value="{html.escape(str(snapshot.get("event_history_query") or ""))}" placeholder="event type, producer, plugin, correlation, incident"><button>Filter</button><a href="/admin/#event-history">Reset</a></form><table><tr><th>Event / incident / time</th><th>Type / title / project</th><th>Producer / plugin</th><th>Source IP / proxy</th><th>Parent / children</th><th>Notifications</th><th>Outcome / correlation</th></tr>{history_rows}</table></section>
-<section><h2>Telegram topics</h2><p class="hint">All topics are equal. Some were created by the initial configuration, but they can be edited or deleted exactly like any other topic. Changes apply live without restarting Notify.</p><table><tr><th>Name</th><th>Key</th><th>Chat</th><th>Topic</th><th>Action</th></tr>{topic_rows}</table><div class="topic-forms">{topic_forms}</div></section></main><script>
+<section class="card" id="add-producer"><div class="card-head"><h2>Add producer</h2></div><form class="card-form" method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
+<section class="card"><div class="card-head"><h2>Producer projects</h2></div><div class="table-wrap"><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></div></section>
+<section class="card"><div class="card-head"><h2>Automatic call escalation</h2><p class="hint">{calls_label}. This controls future Android phone, Telegram-call, and Matrix-call escalations. Text notifications are unchanged; an already active phone call cannot be interrupted.</p></div><form class="card-form" method="post" action="/admin/calls"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="enabled" value="{calls_action}"><button>{calls_button}</button></form></section>
+<section class="card"><div class="card-head"><h2>Test adapters</h2><p class="hint">These buttons use the central Notify HTTP/MCP boundary. Phone starts one short test call; message sends one notice to the configured test recipient.</p></div><form class="card-form" method="post" action="/admin/test-adapter" onsubmit="return confirm('Start one test phone call now?')"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="adapter" value="phone"><input name="message" value="NoticePlace phone adapter test" maxlength="300"><button>Call me</button></form><form class="card-form" method="post" action="/admin/test-adapter"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="adapter" value="message"><input name="message" value="NoticePlace message adapter test" maxlength="300"><button>Send message</button></form></section>
+<section class="card"><div class="card-head"><h2>Live delivery timers</h2><p class="hint">Changes apply to newly scheduled/retried deliveries and do not restart Notify. Zero disables that timer. An already executing adapter call is unchanged.</p></div><form class="settings" method="post" action="/admin/settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}">{setting_inputs}<button>Save live settings</button></form></section>
+<section class="card"><div class="card-head"><h2>Add scoped consumer</h2><p class="hint">Create the delivery chain visually. Choose platform, action, target, retry interval, repeats, optional predecessor, and an operator note.</p></div><form class="consumer-form" method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><input name="operator_note" maxlength="500" placeholder="Optional operator note"><select name="max_severity">{options}</select><input type="hidden" name="policy_json" id="policy-json"><div id="adapter-builder">{adapter_builder}</div><button type="submit" onclick="return buildPolicy()">Create consumer intake</button></form><p class="hint">Target example: <code>{{"chat_id":-100123,"topic_id":122}}</code> or <code>{{"phone_number":"+79990000000"}}</code>.</p></section>
+<section class="card"><div class="card-head"><h2>Delivery profiles</h2></div><div class="table-wrap"><table><tr><th>Name</th><th>Profile</th><th>Project</th><th>Token fingerprint</th><th>Ordered delivery policy</th><th>Quiet hours</th><th>Operator note</th></tr>{consumer_rows}</table></div></section>
+<section class="card" id="event-history"><div class="card-head"><h2>Event history</h2><p class="hint">Ingress, parent/child links, source/proxy metadata, notifications, and final state. Bearer tokens and secrets are never shown.</p></div><form class="toolbar" method="get" action="/admin/"><input name="history" value="{html.escape(str(snapshot.get("event_history_query") or ""))}" placeholder="event type, producer, plugin, correlation, incident"><button>Filter</button><a href="/admin/#event-history">Reset</a></form><div class="table-wrap"><table><tr><th>Event / incident / time</th><th>Type / title / project</th><th>Producer / plugin</th><th>Source IP / proxy</th><th>Parent / children</th><th>Notifications</th><th>Outcome / correlation</th></tr>{history_rows}</table></div></section>
+<section class="card"><div class="card-head"><h2>Telegram topics</h2><p class="hint">All topics are equal. Some were created by the initial configuration, but they can be edited or deleted exactly like any other topic. Changes apply live without restarting Notify.</p></div><div class="table-wrap"><table><tr><th>Name</th><th>Key</th><th>Chat</th><th>Topic</th><th>Action</th></tr>{topic_rows}</table></div><div class="topic-forms">{topic_forms}</div></section></main><script>
 function buildPolicy() {{ const rows = [...document.querySelectorAll('#adapter-steps [data-step]')]; const policy = rows.map((row, index) => {{ let target; try {{ target = JSON.parse(row.querySelector('[data-target]').value); }} catch (_) {{ target = {{}}; }} return {{id:`step-${{index + 1}}`, platform:row.querySelector('[data-platform]').value, action:row.querySelector('[data-action]').value, target, retry_interval_seconds:Number(row.querySelector('[data-retry]').value), max_repeats:Number(row.querySelector('[data-repeats]').value), previous_step_id:row.querySelector('[data-previous]').value || null}}; }}); document.getElementById('policy-json').value = JSON.stringify(policy); return policy.length > 0; }}
 addStep();
 </script></body></html>"""
@@ -392,19 +535,19 @@ client.emit(project=\"{safe_project}\", severity=\"important\", title=\"Deploy f
 
 const client = NotificationCenterClient.fromEnvironment();
 await client.emit({{ project: \"{safe_project}\", severity: \"important\", title: \"Deploy failed\", dedupKey: \"deploy:production\" }});"""
-    return f"""<!doctype html><meta charset=utf-8><title>Connect {safe_project}</title><style>body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:900px;margin:8vh auto;padding:28px}}section{{margin:18px 0;padding:22px;border:1px solid #405a88;border-radius:18px;background:#101d33}}code,pre{{display:block;padding:16px;background:#08101e;overflow:auto;overflow-wrap:anywhere;color:#c4bcff;white-space:pre-wrap}}.warning{{color:#ffd28a}}a{{color:#bdb6ff}}</style><main><h1>Connect {safe_project}</h1><p class=warning>Copy the token now. It is not available after leaving this page; the console retains only a fingerprint.</p><code>{html.escape(token)}</code><section><h2>1. Store it as a service secret</h2><pre># {env_path} (owner root, mode 0600)
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect {safe_project}</title><style>{_ADMIN_CSS}</style></head><body><header class="topbar"><span class="brand">NoticePlace <small>producer onboarding</small></span></header><main class="narrow"><div class="page-head"><h1>Connect {safe_project}</h1><p class="warning">Copy the token now. It is not available after leaving this page; the console retains only a fingerprint.</p></div><div class="token-box"><code>{html.escape(token)}</code></div><section class="card"><div class="card-head"><h2>1. Store it as a service secret</h2></div><pre># {env_path} (owner root, mode 0600)
 NOTIFY_CENTER_EVENT_URL=https://notify.bezrabotnyi.com/v1/events
-NOTIFY_CENTER_TOKEN=&lt;paste the token above here&gt;</pre><p>For systemd use <code>EnvironmentFile={env_path}</code>. Do not put the token in a unit command, Git, or shell history.</p></section><section><h2>2. Send with curl</h2><pre>{html.escape(curl)}</pre></section><section><h2>Or use a small SDK</h2><pre># Python: pip install 'git+https://github.com/megamen32/noticeplace.git#subdirectory=python'
+NOTIFY_CENTER_TOKEN=&lt;paste the token above here&gt;</pre><p class="hint">For systemd use <code>EnvironmentFile={env_path}</code>. Do not put the token in a unit command, Git, or shell history.</p></section><section class="card"><div class="card-head"><h2>2. Send with curl</h2></div><pre>{html.escape(curl)}</pre></section><section class="card"><div class="card-head"><h2>Or use a small SDK</h2></div><pre># Python: pip install 'git+https://github.com/megamen32/noticeplace.git#subdirectory=python'
 {html.escape(python)}
 
 # Node.js: npm install github:megamen32/noticeplace
-{html.escape(node)}</pre></section><p><a href=\"https://github.com/megamen32/noticeplace\">GitHub repository</a> · <a href=\"https://github.com/megamen32/noticeplace/blob/main/docs/producer-sdk.md\">Full producer guide</a> · <a href=\"/admin/\">Back to admin</a></p></main>"""
+{html.escape(node)}</pre></section><p class="hint"><a href="https://github.com/megamen32/noticeplace">GitHub repository</a> · <a href="https://github.com/megamen32/noticeplace/blob/main/docs/producer-sdk.md">Full producer guide</a> · <a href="/admin/">Back to admin</a></p></main></body></html>"""
 
 
 def _consumer_token_page(name: str, token: str) -> str:
     safe_name = html.escape(name)
     intake_url = "https://notify.bezrabotnyi.com/v1/events"
-    return f"""<!doctype html><meta charset=utf-8><title>Connect {safe_name}</title><style>body{{margin:0;background:#091222;color:#e9edf7;font:16px system-ui,sans-serif}}main{{max-width:900px;margin:8vh auto;padding:28px}}section{{margin:18px 0;padding:22px;border:1px solid #405a88;border-radius:18px;background:#101d33}}code{{display:block;padding:16px;background:#08101e;overflow:auto;overflow-wrap:anywhere;color:#c4bcff}}.warning{{color:#ffd28a}}a{{color:#bdb6ff}}</style><main><h1>Connect {safe_name}</h1><p class=warning>Copy this intake URL and token now. The token is shown only on this page; the console retains only its fingerprint.</p><section><h2>Intake URL</h2><code>{intake_url}</code></section><section><h2>Scoped bearer token</h2><code>{html.escape(token)}</code></section><p>Delivery targets are fixed by the operator policy and cannot be selected by producer events.</p><p><a href=\"/admin/\">Back to admin</a></p></main>"""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect {safe_name}</title><style>{_ADMIN_CSS}</style></head><body><header class="topbar"><span class="brand">NoticePlace <small>consumer onboarding</small></span></header><main class="narrow"><div class="page-head"><h1>Connect {safe_name}</h1><p class="warning">Copy this intake URL and token now. The token is shown only on this page; the console retains only its fingerprint.</p></div><section class="card"><div class="card-head"><h2>Intake URL</h2></div><div class="token-box"><code>{intake_url}</code></div></section><section class="card"><div class="card-head"><h2>Scoped bearer token</h2></div><div class="token-box"><code>{html.escape(token)}</code></div></section><p class="hint">Delivery targets are fixed by the operator policy and cannot be selected by producer events.</p><p class="hint"><a href="/admin/">Back to admin</a></p></main></body></html>"""
 
 
 def run_admin_http(store: AdminConfigStore, csrf_secret: str, host: str, port: int) -> None:
