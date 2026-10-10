@@ -2550,6 +2550,41 @@ class NotificationCenter:
         original = self._health_original_event(incident_id)
         return isinstance(original, Mapping) and str(original.get("correlation_id") or "").startswith(_SYNTHETIC_HEALTH_CORRELATION_PREFIX)
 
+    def latest_health_agent_session(self, incident_id: str) -> dict[str, str] | None:
+        """Latest persisted agent session for an incident, preferring the repair stage."""
+        stage_rank = {
+            "health.remediation_session_started": 0,
+            "health.orchestrator_session_started": 1,
+            "health.diagnosis_session_started": 2,
+        }
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT event_type, payload_json FROM events WHERE incident_id = ? AND event_type IN "
+                "('health.diagnosis_session_started','health.orchestrator_session_started','health.remediation_session_started') "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 9",
+                (incident_id,),
+            ).fetchall()
+        best: tuple[tuple[int, int], dict[str, str]] | None = None
+        newest_rank: dict[str, int] = {}
+        for row in rows:
+            try:
+                data = json.loads(str(row["payload_json"]))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            harness = self._health_text(data.get("harness") or "", 32)
+            session_id = self._health_text(data.get("session_id") or "", 128)
+            if not harness or not session_id:
+                continue
+            stage = str(row["event_type"])
+            newest_rank.setdefault(stage, len(newest_rank))
+            candidate = {"harness": harness, "session_id": session_id, "stage": stage.replace("_session_started", "")}
+            rank = (stage_rank.get(stage, 9), newest_rank[stage])
+            if best is None or rank < best[0]:
+                best = (rank, candidate)
+        return best[1] if best else None
+
     def _health_plan_candidates(self, incident_id: str) -> list[str]:
         attached = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["plans"])
         if attached is not None:
@@ -3394,6 +3429,13 @@ class NotificationCenter:
             show_plans = not isinstance(outcome, dict) or outcome.get("status") == "plans_ready"
             latest_plans = self.latest_health_event(str(incident["id"]), "health.plans_attached") if show_plans and not isinstance(payload.get("health_session"), dict) else None
             if latest_plans is not None:
+                selected_plan_id = self._health_selected_plan(str(incident["id"]))
+                if selected_plan_id:
+                    selection_payload = self._health_event_payload(str(incident["id"]), HEALTH_UPDATE_EVENT_TYPES["plan_selection"]) or {}
+                    payload["health_plan_selection"] = {
+                        "plan_id": selected_plan_id,
+                        "actor": self._health_text(selection_payload.get("actor") or "", 128),
+                    }
                 plan_payload = latest_plans["payload"]
                 plans = plan_payload.get("plans")
                 if isinstance(plans, list):
@@ -3570,7 +3612,7 @@ class NotificationCenter:
     @staticmethod
     def _health_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         """Bound health workflow payloads before they are persisted."""
-        from .health_workflow import _bounded_refs, _bounded_summary, _bounded_text, normalize_health_execution
+        from .health_workflow import _bounded_refs, _bounded_summary, _bounded_text, normalize_health_execution, normalize_health_recommendation
 
         result: dict[str, Any] = {}
         for key, value in payload.items():
@@ -3599,6 +3641,8 @@ class NotificationCenter:
                     for item in value
                     if isinstance(item, Mapping)
                 ]
+            elif key == "recommendation" and isinstance(value, Mapping):
+                result[key] = normalize_health_recommendation(value) or {}
             elif key == "orchestration" and isinstance(value, Mapping):
                 result[key] = {
                     field: _bounded_text(value.get(field), 128)

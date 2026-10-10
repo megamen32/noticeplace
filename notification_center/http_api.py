@@ -22,7 +22,7 @@ from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
 from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import DirectHealthRemediationAdapter, DurableHealthRemediationAdapter, GptAdminAgentJobAdapter
-from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, validate_health_plans
+from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, normalize_health_recommendation, validate_health_plans
 from .instructions import noticeplace_instructions
 from .human_request_original import render_human_request_original
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
@@ -499,6 +499,21 @@ class TelegramSender:
                 "source_blocked": ("Автозапуск заблокирован", "Не удалось безопасно проверить исходные сессии, либо цепочка содержит больше 32 сессий. Требуется ручная проверка цепочки в Agent Herder; автоматического продолжения не будет."),
             }
             heading, explanation = conclusions.get(status, conclusions["unknown"])
+            plan_selection = payload.get("health_plan_selection")
+            if status == "plans_ready" and isinstance(plan_selection, dict) and str(plan_selection.get("plan_id") or ""):
+                selected_title = next(
+                    (
+                        str(plan.get("title") or plan.get("plan_id") or "")
+                        for plan in (health_plans if isinstance(health_plans, list) else [])
+                        if isinstance(plan, dict) and str(plan.get("plan_id") or "") == str(plan_selection.get("plan_id"))
+                    ),
+                    str(plan_selection.get("plan_id")),
+                )
+                heading = "ИИ выбрала план — исправление запущено"
+                explanation = (
+                    f"ИИ уверенно выбрала план «{selected_title}» и уже запустила исправление; сессия работает под автопилотом Agent Herder. "
+                    "Если потребуется ваше решение — придёт отдельное сообщение. Кнопки планов оставлены для контроля."
+                )
             session_url = str(health_outcome.get("session_url") or "")
             text = (
                 f"{heading} · {incident['project']}\n\n"
@@ -553,7 +568,14 @@ class TelegramSender:
                 request_data["reply_markup"] = json.dumps({"inline_keyboard": [[{"text": "Открыть сессию", "url": session_url}]]}, ensure_ascii=False)
         elif self._action_codec is not None:
             if isinstance(health_plans, list) and health_plans:
-                health_keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
+                plan_selection = payload.get("health_plan_selection")
+                selected_plan_id = str(plan_selection.get("plan_id") or "") if isinstance(plan_selection, dict) else ""
+                health_keyboard = health_plan_keyboard_cards(
+                    TelegramHealthPlanCodec(self._action_codec.secret),
+                    incident["id"],
+                    health_plans,
+                    selected_plan_id=selected_plan_id or None,
+                )
                 action_keyboard = telegram_inline_keyboard(self._action_codec, incident)
                 health_keyboard["inline_keyboard"].extend(action_keyboard["inline_keyboard"][-1:])
                 request_data["reply_markup"] = json.dumps(health_keyboard, separators=(",", ":"))
@@ -1962,7 +1984,25 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                             trace_refs=body.get("trace_refs") if isinstance(body.get("trace_refs"), list) else [],
                             evidence_refs=body.get("evidence_refs") if isinstance(body.get("evidence_refs"), list) else [],
                             orchestration=body.get("orchestration") if isinstance(body.get("orchestration"), Mapping) else None,
+                            recommendation=body.get("recommendation") if isinstance(body.get("recommendation"), Mapping) else None,
                         )
+                        # A confident orchestrator recommendation executes the
+                        # recommended plan immediately, exactly like a human
+                        # tap. Fail-open: only an explicit needs_human=false
+                        # with a pinned plan id auto-selects; any conflict
+                        # leaves the operator-facing selection card untouched.
+                        recommendation = normalize_health_recommendation(body.get("recommendation"))
+                        if recommendation is not None and recommendation["needs_human"] is False and recommendation["plan_id"]:
+                            try:
+                                health_workflow.select_plan(
+                                    incident_id,
+                                    f"{incident_id}:health.plan:{recommendation['plan_id']}",
+                                    recommendation["plan_id"],
+                                    "gptadmin:health-orchestrator",
+                                )
+                                result["auto_selected_plan"] = recommendation["plan_id"]
+                            except (ValidationError, IdempotencyConflict):
+                                result["auto_selected_plan"] = ""
                     elif action == "select":
                         result = health_workflow.select_plan(incident_id, key, str(body.get("plan_id") or ""), actor)
                     elif action == "progress":

@@ -362,6 +362,8 @@ class AgentJobHelperTests(unittest.TestCase):
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/sessions/new-or-resume"):
                     return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
+                if "/api/autopilot/sessions/" in url:
+                    return _Response({"harness": "opencode", "sessionId": "codex-health-1", "enabled": True, "source": "session"})
                 if "/progress?" in url:
                     return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
                 if "/details?" in url:
@@ -392,7 +394,8 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertEqual("health-monitor-independent", result["verifier_id"])
             self.assertTrue(result["useful_progress"])
             self.assertEqual("progress:repair-1", result["progress_fingerprint"])
-            self.assertEqual(3, len(requests))
+            self.assertTrue(result["autopilot_armed"])
+            self.assertEqual(4, len(requests))
 
     def test_health_remediation_uses_its_own_deadline_not_diagnosis_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -725,6 +728,87 @@ class AgentJobHelperTests(unittest.TestCase):
                     config,
                     runner=lambda *_args, **_kwargs: OversizedResponse({}),
                 )
+
+
+class HealthAutoselectAndAutopilotTests(unittest.TestCase):
+    def test_orchestrator_message_requires_recommendation_fields(self) -> None:
+        profile = {"orchestrator_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"}
+        message = agent_job_helper._health_orchestrator_message(
+            profile,
+            {"incident": {"id": "inc-1", "project": "hermes", "title": "Disk pressure"}},
+            {"id": "inc-1", "title": "Disk pressure", "body": "b"},
+            {"status": "diagnosis_complete", "diagnosis": "Диск переполнен", "evidence_refs": [], "trace_refs": []},
+        )
+        self.assertIn("recommended_plan_id", message)
+        self.assertIn("needs_human", message)
+        self.assertIn("When unsure, set needs_human=true", message)
+
+    def test_extract_health_result_parses_confident_recommendation(self) -> None:
+        payload_json = json.dumps({
+            "status": "plans_ready",
+            "diagnosis": "Перегрузка очереди",
+            "plans": [
+                {"plan_id": "observe", "title": "Наблюдать", "summary": "s", "step": "observe"},
+                {"plan_id": "repair", "title": "Исправить", "summary": "s", "step": "repair"},
+                {"plan_id": "verify", "title": "Проверить", "summary": "s", "step": "verify"},
+            ],
+            "recommended_plan_id": "repair",
+            "needs_human": False,
+            "recommendation_reason": "Ясный обратимый фикс",
+        })
+        result = agent_job_helper._extract_health_result({"messages": [{"role": "assistant", "text": payload_json}]})
+        self.assertIsNotNone(result)
+        self.assertEqual("repair", result["recommended_plan_id"])
+        self.assertFalse(result["needs_human"])
+        self.assertEqual("Ясный обратимый фикс", result["recommendation_reason"])
+
+    def test_extract_health_result_fails_open_without_confident_recommendation(self) -> None:
+        base = {
+            "status": "plans_ready",
+            "diagnosis": "Неясная причина",
+            "plans": [
+                {"plan_id": "observe", "title": "a", "summary": "s", "step": "observe"},
+                {"plan_id": "repair", "title": "b", "summary": "s", "step": "repair"},
+                {"plan_id": "verify", "title": "c", "summary": "s", "step": "verify"},
+            ],
+        }
+        for override in ({}, {"recommended_plan_id": "repair"}, {"needs_human": False}, {"recommended_plan_id": "replace-infra", "needs_human": False}, {"recommended_plan_id": "repair", "needs_human": "false"}):
+            with self.subTest(override=override):
+                result = agent_job_helper._extract_health_result({"messages": [{"role": "assistant", "text": json.dumps({**base, **override})}]})
+                self.assertIsNotNone(result)
+                self.assertTrue(result["needs_human"])
+
+    def test_arm_session_autopilot_puts_the_durable_switch(self) -> None:
+        runner = mock.Mock(return_value=_Response({"harness": "opencode", "sessionId": "ses-arm-1", "enabled": True, "source": "session"}))
+        self.assertTrue(agent_job_helper.arm_session_autopilot("opencode", "ses-arm-1", "/home/roomhacker/ServersAdministration", runner))
+        request = runner.call_args[0][0]
+        self.assertEqual("PUT", request.get_method())
+        self.assertEqual("http://127.0.0.1:18787/api/autopilot/sessions/opencode/ses-arm-1", request.full_url)
+        self.assertEqual(json.loads(request.data.decode()), {"enabled": True, "cwd": "/home/roomhacker/ServersAdministration"})
+
+    def test_arm_session_autopilot_rejects_unconfirmed_or_invalid_targets(self) -> None:
+        runner = mock.Mock(return_value=_Response({"harness": "opencode", "sessionId": "ses-arm-1", "enabled": False}))
+        self.assertFalse(agent_job_helper.arm_session_autopilot("opencode", "ses-arm-1", "/cwd", runner))
+        self.assertFalse(agent_job_helper.arm_session_autopilot("unknown-harness", "ses-arm-1", "/cwd", runner))
+        self.assertFalse(agent_job_helper.arm_session_autopilot("opencode", "", "/cwd", runner))
+        self.assertEqual(1, runner.call_count)
+
+    def test_relay_operator_reply_resumes_the_session_with_human_flag(self) -> None:
+        runner = mock.Mock(return_value=_Response({"ok": True, "sessionId": "ses-relay-1"}))
+        self.assertTrue(agent_job_helper.relay_operator_reply("opencode", "ses-relay-1", "inc-relay", "перезапусти сервис", "-100123:55", runner))
+        request = runner.call_args[0][0]
+        self.assertEqual("http://127.0.0.1:18787/api/sessions/opencode/ses-relay-1/resume", request.full_url)
+        body = json.loads(request.data.decode())
+        self.assertTrue(body["humanRequested"])
+        self.assertIn("перезапусти сервис", body["message"])
+        self.assertIn("inc-relay", body["message"])
+        self.assertTrue(body["inputId"].startswith("noticeplace:"))
+
+    def test_relay_operator_reply_rejects_bad_targets_and_unconfirmed_delivery(self) -> None:
+        runner = mock.Mock(return_value=_Response({"ok": False, "error": "session not found"}))
+        self.assertFalse(agent_job_helper.relay_operator_reply("opencode", "ses-relay-1", "inc-relay", "text", "ref", runner))
+        self.assertFalse(agent_job_helper.relay_operator_reply("codex", "", "inc", "text", "ref", lambda *_a, **_k: _Response({"ok": True})))
+        self.assertFalse(agent_job_helper.relay_operator_reply("opencode", "ses", "inc", "   ", "ref", lambda *_a, **_k: _Response({"ok": True})))
 
 
 if __name__ == "__main__":

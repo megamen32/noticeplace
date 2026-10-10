@@ -394,6 +394,25 @@ class TelegramInteractionPoller:
         except (ValidationError, ValueError) as error:
             self._answer(callback_id, str(error)[:180])
 
+    def _relay_reply_to_session(self, incident: Mapping[str, Any], text: str, chat_id: str, message_id: Any) -> bool:
+        """Best-effort operator reply forwarding into the incident's live agent session."""
+        try:
+            from .agent_job_helper import relay_operator_reply
+            session = self._center.latest_health_agent_session(str(incident.get("id") or ""))
+            if not session:
+                return False
+            return relay_operator_reply(
+                session["harness"],
+                session["session_id"],
+                str(incident.get("id") or ""),
+                text,
+                f"{chat_id}:{message_id}",
+            )
+        except Exception:
+            # The reply is already durably attached to the incident; a failed
+            # relay must never break the Telegram poll loop.
+            return False
+
     def _handle_message(self, message: dict[str, Any]) -> None:
         actor_id = message.get("from", {}).get("id")
         text = str(message.get("text") or "").strip()
@@ -413,7 +432,7 @@ class TelegramInteractionPoller:
                 chat_id, reply_message_id, f"telegram:{actor_id}", text
             )
             if incident is not None:
-                self._message(chat_id, "Ответ привязан к инциденту.")
+                self._message(chat_id, "Ответ передан в сессию агента." if self._relay_reply_to_session(incident, text, chat_id, message_id) else "Ответ привязан к инциденту.")
                 return
         if (
             self._inbox_sink is not None
