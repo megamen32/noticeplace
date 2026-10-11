@@ -457,8 +457,7 @@ def tool_noticeplace_question_result(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def tool_noticeplace_incident_progress(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Publish bounded progress, and optionally an independent verification, for one incident."""
-    cfg = _human_request_config()
+    """Publish executor progress using project auth, independent of human identities."""
     incident_id = str(args.get("incident_id") or "").strip()
     step = str(args.get("step") or "").strip()[:128]
     if not incident_id or not step:

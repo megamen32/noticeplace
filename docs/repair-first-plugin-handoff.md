@@ -437,3 +437,12 @@ body, together with the authoritative launch receipt's harness/native ID/CWD.
 Herder owns persistence and original-card completion/progress delivery. Exact
 protected callback schema and endpoint contract were sent to that native owner;
 Root owns runtime integration/GSD installation and real original-session repair.
+
+
+Automated `noticeplace_incident_progress` uses only the existing project-scoped
+Notice authorization; it no longer calls the unused human-actor configuration.
+Question/result handlers still require human actors. A global Hermes plugin token
+cannot post progress to another project; use the protected original-project
+callback map/HTTP seam described above. The real MCP/HTTP/DB regression proves
+missing actors do not gate Autosell progress, wrong-project tokens fail, and
+question actor validation remains enforced. No new MCP or token scope was added.

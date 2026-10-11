@@ -259,6 +259,26 @@
       ],
       "summary": "All Telegram stages reuse the first confirmed card; SQLite creation fence blocks sending/uncertain replay. Separate incident records retain state, repair, audits and member-specific ACK. Existing pool reads exact native session, latest durable projection.",
       "verified_at": "2026-10-12T00:25:52.888435+03:00"
+    },
+    "noticeplace.mcp.progress-project-scope": {
+      "key": "noticeplace.mcp.progress-project-scope",
+      "kind": "failure-shield",
+      "confidence": "verified",
+      "git_head": "127f0abf6d599337bfde205e4d25bf13da4d6016",
+      "verified_at": "2026-10-12T00:34:01.259673+03:00",
+      "summary": "Automated progress uses original project Notice API auth without unused human actors gate. Human tools retain actors; global Hermes token cannot post Autosell progress. Existing protected project-map callback is the fallback.",
+      "evidence": [
+        "tests/test_ready_mcp_binding.py::test_automated_progress_needs_only_original_project_auth_not_human_actors: meaningful RED then real MCP/HTTP/DB GREEN; wrong project denied, question actors retained"
+      ],
+      "locations": [
+        {
+          "path": "mcp/notify_mcp.py",
+          "symbol": "tool_noticeplace_incident_progress",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "aa10ef369af517be179ea51a01e51ba69884265e6791eef6acbc8e2f9d4382e7"
+        }
+      ]
     }
   },
   "schema_version": 1

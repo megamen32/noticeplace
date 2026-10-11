@@ -85,3 +85,24 @@ ZCode foreign WIP was untouched.
 - notification_center/agent_job_helper.py: 5729102e6fb1e129b7ec9f8edbd651470b7941913085b2109a24f4b47c976066
 - notification_center/gptadmin_agent.py: 5e82957e9b9442ed68c9980ae6f3bc00ba1a1711fa4ea1add763d59b04a68e96
 - bin/notify-center: 083ab1218182c38d77a9e2387f0e685159f2f7355e70833dd59d8835c7fcafbb
+
+
+## Final MCP progress delta after card/prompt commit 127f0ab
+
+The actual installed progress handler called `_human_request_config()` and never
+used its result. That unrelated actor gate prevented automated repair progress.
+Removed only that call; progress still uses the existing authenticated project
+Notice API. Human question/result tools retain actor gates. There is no automatic
+cross-project credential selection or authorization expansion: a global Hermes
+MCP token cannot post to Autosell; the already documented protected project-map
+HTTP callback is the fallback for the original project.
+
+Meaningful RED: real MCP->HTTP->DB consumer failed ASK_HUMAN_ALLOWED_ACTORS before
+posting. GREEN: 2 tests passed in3.01s, proving no-actors Autosell progress,
+idempotency, wrong-project denial, retained human actor gate and no native/card
+send. Delta compile and diff checks passed. Finite delta executable8.514s,
+2GiB/two CPU slots/max12s. Earlier source checks remain unchanged; combined
+executable release durations148.748s (<180s). Proof .tmp/phase2-progress-actors-red.log,
+green.log and summary.json. This final branch HEAD supersedes127f0ab for install.
+
+- mcp/notify_mcp.py final SHA256: aa10ef369af517be179ea51a01e51ba69884265e6791eef6acbc8e2f9d4382e7

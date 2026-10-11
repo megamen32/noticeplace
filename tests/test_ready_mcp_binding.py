@@ -75,7 +75,8 @@ class ReadyBindingTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.center = NotificationCenter(
             Path(self.directory.name) / "notice.sqlite3",
-            {"p": {"project": "hermes", "max_severity": "critical"}}, default_quiet_hours=[])
+            {"p": {"project": "hermes", "max_severity": "critical"},
+             "autosell-p": {"project": "autosell", "max_severity": "critical"}}, default_quiet_hours=[])
         self.addCleanup(self.center._connection.close)
 
         _HerderHandler.completions = []
@@ -688,6 +689,28 @@ class ReadyBindingTests(unittest.TestCase):
                 self._call("noticeplace_ask_human", arguments)
         self.assertEqual([], [p for m, p in self.telegram if m == "sendMessage"])
         self.assertEqual([], _HerderHandler.completions)
+
+    def test_automated_progress_needs_only_original_project_auth_not_human_actors(self) -> None:
+        """Focused real MCP->HTTP->DB: progress actor gate (<2s/max5s), original scope retained."""
+        created=self.center.create_event('autosell-p','autosell-progress-gate',{
+            'schema':'notify.event.v1','project':'autosell','recipient':'me','kind':'incident','severity':'critical',
+            'title':'AutoSellBot не отвечает','body':'Заявка не обрабатывается.','dedup_key':'autosell:runtime',
+            'event_type':'health.degraded','source_id':'autosell-hourly-watch','host_id':'100',
+            'signal_type':'service_runtime','correlation_id':'autosell-watch-2026101120'})
+        args={'incident_id':created['incident_id'],'step':'Проверил consumer endpoint',
+              'evidence_refs':['http://127.0.0.1:22333/healthz'],'source_fingerprint':'autosell-fp'}
+        env={'ASK_HUMAN_ALLOWED_ACTORS':'','NOTIFY_TELEGRAM_ALLOWED_USER_IDS':'',
+             'NOTIFY_CENTER_TOKEN':'autosell-p','NOTIFY_CENTER_PROJECT':'autosell'}
+        with patch.dict(os.environ,env):
+            first=self._call('noticeplace_incident_progress',args)
+            repeat=self._call('noticeplace_incident_progress',args)
+            self.assertEqual(first['progress']['event_id'],repeat['progress']['event_id'])
+            with self.assertRaisesRegex(ValueError,'ASK_HUMAN_ALLOWED_ACTORS'):
+                self._create_bound()
+            with patch.dict(os.environ,{'NOTIFY_CENTER_TOKEN':'p','NOTIFY_CENTER_PROJECT':'hermes'}):
+                with self.assertRaises(RuntimeError):self._call('noticeplace_incident_progress',args)
+        self.assertEqual('open',self.center.get_incident(created['incident_id'])['state'])
+        self.assertEqual([],self.telegram);self.assertEqual([],_HerderHandler.completions)
 
     def test_incident_progress_is_posted_with_a_stable_idempotency_key(self) -> None:
         created = self.center.create_event("p", "health-1", {
