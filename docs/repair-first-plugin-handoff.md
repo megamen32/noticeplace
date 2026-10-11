@@ -112,10 +112,19 @@ required by `noticeplace_ask_human`, and `choices` without a message is not a
 question.
 
 A question bound to a native session is owned by the Agent Herder pending gate:
-Notice Place refuses to expire or cancel it while `native_harness` is set.
-Unbound legacy and metadata-only requests keep their original TTL and cancel
-behaviour. `kind` is explicit: `secret` requests may not carry `native_target`
-and their result returns only an opaque reference.
+Notice Place never expires it, and cancels it only through the Herder emergency
+exit, which requires an explicit `reason`, is terminal, and never resumes the
+native session. Unbound legacy and metadata-only requests keep their original
+TTL and cancel behaviour. `kind` is explicit: `secret` requests may not carry
+`native_target` and their result returns only an opaque reference.
+
+Retries are deduplicated: Agent Herder sends `Idempotency-Key:
+human-request:<request_id>` and Notice Place rejects any key that does not match
+the request id, so one binding can never produce two questions. A choice
+question needs between two and four options; one option is refused, exactly as
+in the Agent Herder choice registry. Resumed turns reference
+`noticeplace_question_result` only for `answer_source=notice_question`; a
+metadata-only or secret question carries no Notice Place answer.
 
 ## 4. MCP surface
 

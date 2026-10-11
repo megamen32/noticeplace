@@ -795,6 +795,23 @@ class CanonicalCompletionTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.center.cancel_human_request("p", request_id, "operator")
 
+    def test_choice_question_needs_two_to_four_options(self) -> None:
+        from mcp import notify_mcp
+        for options in ([{"label": "Один", "value": "only"}], [{"label": str(i), "value": str(i)} for i in range(5)]):
+            with self.subTest(options=len(options)), self.assertRaises(ValueError):
+                notify_mcp.tool_noticeplace_ask_human({
+                    "request_id": "6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44", "harness": "opencode",
+                    "session_id": "ses_1", "cwd": "/srv", "message": "Вопрос?", "choices": options,
+                })
+
+    def test_herder_emergency_cancel_terminates_a_bound_question_without_resuming(self) -> None:
+        request_id = "6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44"
+        self._bound_request(request_id)
+        self.assertTrue(self.center.human_request_is_bound(request_id))
+        cancelled = self.center.cancel_human_request("p", request_id, "herder", reason="withdrawn")
+        self.assertEqual("cancelled", cancelled["state"])
+        self.assertIsNone(cancelled["response_value"], "a withdrawn question never carries an answer")
+
     def test_legacy_unbound_question_still_expires_and_cancels(self) -> None:
         import time
         self.center.create_human_request("p", {
