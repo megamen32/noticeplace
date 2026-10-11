@@ -367,13 +367,20 @@ class HumanRequestHttpTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertFalse(read["telegram_document_required"])
         # resolve additionally returns the real card outcome and, for a bound
-        # question, the native continuation receipt.
-        self.assertEqual(resolved["telegram"]["status"], "card_is_not_bound")
-        self.assertNotIn("native", resolved)
-        self.assertEqual(resolved, {
-            key: value for key, value in read.items()
-            if key not in {"telegram_document_required", "telegram"}
-        } | {"telegram": resolved["telegram"]})
+        # question, the native continuation receipt, separately.
+        self.assertEqual("card_is_not_bound", resolved["card"])
+        self.assertEqual("now", resolved["value"])
+        self.assertEqual({"status": "not_bound"}, resolved["native"])
+        completion = {key: resolved[key] for key in ("request_id", "state", "value", "label", "card", "native")}
+        self.assertEqual(completion, {
+            "request_id": resolved["request_id"], "state": resolved["state"],
+            "value": resolved["response_value"], "label": resolved["label"],
+            "card": resolved["card"], "native": resolved["native"],
+        })
+        self.assertEqual({key: value for key, value in read.items()
+                          if key not in completion and key != "telegram_document_required"},
+                         {key: value for key, value in resolved.items()
+                          if key not in completion and key != "telegram_document_required"})
 
     def test_create_route_allows_four_choices_and_is_exactly_idempotent(self) -> None:
         """Keep HTTP retries safe without widening the public AskHuman MCP schema."""

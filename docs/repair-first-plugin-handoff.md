@@ -63,10 +63,17 @@ Behaviour in Notice Place:
 | --- | --- |
 | `accepted` | one executor session; autopilot armed; receipt published |
 | `handoff_required` | the returned working session is recorded as the native binding |
-| `admission_unknown`, `human_hold` | terminal for this `operation_id`; no second executor, no local retry |
+| `admission_unknown`, `human_hold`, `in_flight` | terminal for this `operation_id`; `in_flight` is a reservation whose result is unknown, so repeating it never starts a second executor |
 | `pre_admission_rejected` | terminal here; retrying is Agent Herder's job, inside its own attempt list |
 | `no_harness` | hard failure naming the project |
 | anything else | hard failure; an unknown outcome is never guessed |
+
+For a **configured** project the route owns harness, model, and workspace root;
+the profile is only a hint and its values are ignored (visible in
+`routing_reason`). Notice Place therefore arms the autopilot and polls the
+session with `selected_harness`, `model`, and `cwd` from the response receipt,
+never from the profile. The profile default still applies to an unconfigured
+project.
 
 The stable `operation_id` is derived from `incident id + stage + plan`, so a
 worker replay after a crash re-reads the same durable log instead of starting a
@@ -88,8 +95,12 @@ nobody declared stay on that default.
    performs exactly one `POST /v1/human-requests` and renders exactly one card.
    It never polls; a replay returns the same row with `idempotent: true` and no
    second card.
-3. The answer (Telegram, voice, phone, API) is recorded canonically, the same
-   card is marked, and Notice Place calls Agent Herder's existing
+3. The answer (Telegram button, Telegram free-text reply, HTTP, voice, phone)
+   goes through **one** canonical completion: the first accepted value wins, the
+   same card is marked from the durable selection receipt, and the bound native
+   session resumes exactly once. A conflicting repeat changes nothing: no second
+   card edit, no second resume. Card outcome and native delivery are reported
+   separately. Notice Place calls Agent Herder's existing
    `POST /internal/human-requests/ask-user-completion` once with an opaque
    derived `result_ref`. Herder's `claimResume` is single-winner.
 4. The resumed session calls `noticeplace_question_result(request_id)`, which
@@ -99,6 +110,12 @@ nobody declared stay on that default.
 A metadata-only Herder request (no message) creates no card: `message` is
 required by `noticeplace_ask_human`, and `choices` without a message is not a
 question.
+
+A question bound to a native session is owned by the Agent Herder pending gate:
+Notice Place refuses to expire or cancel it while `native_harness` is set.
+Unbound legacy and metadata-only requests keep their original TTL and cancel
+behaviour. `kind` is explicit: `secret` requests may not carry `native_target`
+and their result returns only an opaque reference.
 
 ## 4. MCP surface
 
@@ -117,7 +134,8 @@ HTTP additions:
 | --- | --- |
 | `POST /v1/human-requests` | Create the bound question (`native_target` = harness/session_id/cwd). |
 | `GET /v1/human-requests/{request_id}/result` | Canonical answer receipt for a resumed session. |
-| `POST /v1/human-requests/{request_id}/resolve` | Record an answer; mark the card; resume the bound native session once. |
+| `POST /v1/human-requests/{request_id}/resolve` | Canonical completion: `{state, value, label, card, native}`. `card` is the real Telegram outcome, `native` is the resume status, reported separately. |
+| `POST /v1/human-requests/{request_id}/cancel` | Refused while the question is bound to a native session. |
 | `POST /v1/incidents/{incident_id}/choice-result` | Canonical choice for an incident choice card. |
 | `POST /v1/incidents/{incident_id}/health/progress` | Bounded progress receipt. |
 | `POST /v1/incidents/{incident_id}/health/verification` | Independent verification receipt. |
@@ -137,25 +155,27 @@ python3 noticeplace-plugin/packages/noticeplace/0.1.0/scripts/validate_plugin.py
 # PASS noticeplace 0.1.0
 ```
 
-Agent Harness Fleet: **Plugins + Marketplace → Import → Publish → target
-harness → Preview → Apply**. The package declares no credentials. The MCP
-server is the existing `https://notify.bezrabotnyi.com/mcp` (streamable-http);
-the client holds the bearer token, for Fast Agent:
+The package wraps the **existing authenticated stdio** server, so no credential
+is duplicated and no new proxy exists:
 
-```yaml
-mcp:
-  servers:
-    NoticePlace:
-      transport: http
-      url: https://notify.bezrabotnyi.com/mcp
-      auth:
-        oauth: false
-      access_token: <project token, kept in fast-agent.secrets.yaml>
+```json
+"NoticePlace": {"type": "stdio", "command": "/opt/noticeplace/bin/ask-human-mcp",
+ "args": [], "env": {"ASK_HUMAN_ENV_FILE": "/home/roomhacker/.config/ask-human/env"}}
 ```
 
-Keep the existing authenticated AskHuman MCP entry on the phone; this package
-is a separate, currently authless component that only becomes runtime tools
-after that native installation projection.
+Only protected file paths are named; no secret value appears in the package, and
+the validator rejects inline credentials. The same bundle ships native
+projections for every harness:
+
+| File | Target |
+| --- | --- |
+| `mcp.json` | Agent Plugins 1.0 / Fleet / Hermes portable package |
+| `mcp.codex.json` | Codex and ZCode native MCP declaration |
+| `fast-agent.yaml` | Fast Agent `mcp.servers` entry |
+| `opencode.json` | OpenCode `mcp` local server entry |
+
+Agent Harness Fleet: **Plugins + Marketplace → Import → Publish → target
+harness → Preview → Apply**. Install and the live phone canary remain root's.
 
 ## 6. Tests
 

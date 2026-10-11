@@ -9,9 +9,9 @@ Repair first, report briefly, and ask only what you cannot decide yourself.
 
 ## The one supported question path
 
-Ask with **Agent Herder `human_request_create`** and nothing else. It binds your
-own harness, `sessionId`, and `cwd` in Herder and delivers one Notice Place
-card for that question.
+Ask with **Agent Herder `human_request_create`** first. It only binds your own
+harness, `sessionId`, and `cwd` in Herder and delivers **no** card by itself.
+The single Notice Place card comes from `noticeplace_ask_human` below.
 
 From that binding, create the Notice Place side exactly once with
 `noticeplace_ask_human` using `binding.request_id`,

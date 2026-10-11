@@ -43,12 +43,25 @@ def validate() -> str:
     if mcp.get("$schema") != MCP_SCHEMA or not isinstance(mcp.get("mcpServers"), dict):
         raise ValueError("mcp.json: Agent Plugins 1.0 MCP schema is required")
     for server_name, server in mcp["mcpServers"].items():
-        if not isinstance(server, dict) or server.get("type") != "streamable-http":
-            raise ValueError(f"mcp.json: {server_name} must be streamable-http")
-        if not isinstance(server.get("url"), str) or not server["url"].startswith("https://"):
-            raise ValueError(f"mcp.json: {server_name} must use HTTPS")
-        if "headers" in server or "env" in server:
-            raise ValueError(f"mcp.json: {server_name} must not embed credentials")
+        if not isinstance(server, dict):
+            raise ValueError(f"mcp.json: {server_name} must be an object")
+        if server.get("type") == "streamable-http":
+            if not isinstance(server.get("url"), str) or not server["url"].startswith("https://"):
+                raise ValueError(f"mcp.json: {server_name} must use HTTPS")
+            if "headers" in server or "env" in server:
+                raise ValueError(f"mcp.json: {server_name} must not embed credentials")
+        elif server.get("type") == "stdio":
+            command = server.get("command")
+            if not isinstance(command, str) or not command.startswith("/"):
+                raise ValueError(f"mcp.json: {server_name} must use an absolute command path")
+            # Only protected file paths are named; no secret values, ever.
+            for key, value in (server.get("env") or {}).items():
+                if not isinstance(value, str) or not value.startswith("/") or len(value) > 4096:
+                    raise ValueError(f"mcp.json: {server_name}.env.{key} must be a protected path")
+                if re.search(r"(?i)(bearer|token|secret|password)\s*=", value):
+                    raise ValueError(f"mcp.json: {server_name}.env.{key} must not embed a credential")
+        else:
+            raise ValueError(f"mcp.json: {server_name} has an unsupported transport")
 
     skill_dirs = list((PACKAGE / "skills").iterdir())
     if len(skill_dirs) != 1 or not (skill_dirs[0] / "SKILL.md").is_file():

@@ -285,6 +285,23 @@ class ProjectRouteTests(unittest.TestCase):
                                                    runner=self._runner(policy, models, requests), profile_override=profile)
         return receipt, requests
 
+    def test_in_flight_reservation_is_terminal_and_never_a_second_executor(self) -> None:
+        from notification_center import agent_job_helper as helper
+        profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
+                   "cwd": "/tmp", "mode": "queue", "instruction": "Чини."}
+        calls: list[object] = []
+
+        def runner(request, **_kwargs):
+            calls.append(request)
+            return _Response({"outcome": "in_flight", "operation_id": "op-1", "project": "tg-commentator",
+                              "routing_reason": "уже зарезервирован, результат неизвестен",
+                              "attempts": [{"harness": "opencode", "outcome": "in_flight", "reason": "reserved"}]})
+
+        result = helper.project_launch(profile, "tg-commentator", "/tmp", "Чини.", runner, operation_id="op-1")
+        with self.assertRaisesRegex(RuntimeError, "in_flight"):
+            helper._launch_receipt(result, profile, "op-1", "tg-commentator")
+        self.assertEqual(1, len(calls), "one reservation attempt, never a second launch")
+
     def test_unconfigured_project_keeps_the_pinned_subscription_route(self) -> None:
         receipt, requests = self._run("fleet-health", self._policy(), {"opencode": ["minimax-coding-plan/MiniMax-M3.1-Flash-Preview"]})
         self.assertEqual("opencode", receipt["harness"])
@@ -661,6 +678,150 @@ class BoundQuestionTests(unittest.TestCase):
             keyboard_only = mark_human_request_resolved_card(self.center, resolved, "api", failing_api)
         self.assertEqual("keyboard_only_retry", keyboard_only["status"])
         self.assertFalse(keyboard_only["card"]["edited"])
+
+
+class CanonicalCompletionTests(unittest.TestCase):
+    """HTTP, button, and free text share one completion and one admission."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.center = NotificationCenter(Path(self.directory.name) / "notice.sqlite3",
+                                         {"p": {"project": "hermes", "max_severity": "critical"}}, default_quiet_hours=[])
+        self.addCleanup(self.directory.cleanup)
+        self.addCleanup(self.center._connection.close)
+        self.codec = TelegramActionCodec("x" * 32)
+        self.herder: list[dict] = []
+
+    def _resume_runner(self, request, **_kwargs):
+        body = json.loads(request.data.decode())
+        self.herder.append(body)
+        return _Response({"request_id": body["request_id"], "status": "resuming", "continuation": "resume"})
+
+    def _bound_request(self, request_id: str = "6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44") -> None:
+        self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": request_id, "project": "hermes",
+            "recipient": "me", "mode": "choice", "message": "Починить сейчас?",
+            "choices": [{"label": "Да, починить", "value": "repair"},
+                        {"label": "Наблюдать", "value": "observe"}],
+            "allowed_actors": ["telegram:42"], "kind": "user",
+            "native_target": {"harness": "opencode", "session_id": "ses_exec_1", "cwd": "/srv/app"},
+        })
+        self.center.bind_human_request_message("p", request_id, "-100", 7)
+
+    def test_telegram_button_completes_card_and_native_once(self) -> None:
+        from notification_center.http_api import complete_human_request
+        self._bound_request()
+        edits: list[dict] = []
+
+        def api(method: str, payload: dict) -> dict:
+            if method == "getUpdates":
+                return {"ok": True, "result": []}
+            edits.append(payload)
+            return {"ok": True, "result": {"message_id": 7, "chat": {"id": -100}}}
+
+        poller = TelegramInteractionPoller(self.center, "token", {"42"}, self.codec, api=api)
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}), \
+             patch("notification_center.http_api.resume_human_request_native_session") as resume:
+            resume.side_effect = lambda center, request, actor, runner=None: {"status": "resuming"}
+            poller._handle_callback({
+                "id": "cb", "from": {"id": 42},
+                "data": self.codec.encode_human_choice("6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44", "0"),
+                "message": {"chat": {"id": -100}, "message_id": 7, "text": "Починить сейчас?"},
+            })
+        self.assertTrue(any("✅ Выбрано: Да, починить" in str(edit.get("text", "")) for edit in edits))
+        resume.assert_called_once()
+        self.assertEqual("repair", self.center.selection_receipt("6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44")["choice_id"])
+
+    def test_free_text_reply_completes_card_and_native_once(self) -> None:
+        from notification_center.http_api import complete_human_request
+        request_id = "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f"
+        self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": request_id, "project": "hermes",
+            "recipient": "me", "mode": "question", "message": "Что делать с диском?",
+            "allowed_actors": ["telegram:42"], "kind": "user",
+            "native_target": {"harness": "opencode", "session_id": "ses_exec_1", "cwd": "/srv/app"},
+        })
+        self.center.bind_human_request_message("p", request_id, "-100", 7)
+        self.assertIsNotNone(self.center.human_request_for_reply("-100", 7, "telegram:42"))
+        edits: list[dict] = []
+
+        def api(method: str, payload: dict) -> dict:
+            if method == "getUpdates":
+                return {"ok": True, "result": []}
+            edits.append(payload)
+            return {"ok": True, "result": {"message_id": 7, "chat": {"id": -100}}}
+
+        poller = TelegramInteractionPoller(self.center, "token", {"42"}, self.codec, api=api)
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}), \
+             patch("notification_center.http_api.resume_human_request_native_session") as resume:
+            resume.side_effect = lambda center, request, actor, runner=None: {"status": "resuming"}
+            poller._handle_message({
+                "message_id": 99, "chat": {"id": -100}, "from": {"id": 42},
+                "text": "Чинить сейчас",
+                "reply_to_message": {"message_id": 7, "chat": {"id": -100}},
+            })
+        self.assertTrue(any("✅ Выбрано" in str(edit.get("text", "")) for edit in edits),
+                        "a free-text answer marks the same card")
+        resume.assert_called_once()
+        resolved = self.center.get_human_request_from_telegram(request_id)
+        self.assertEqual("resolved", resolved["state"])
+        self.assertEqual("Чинить сейчас", resolved["response_value"])
+
+    def test_conflicting_repeat_keeps_the_first_value_and_never_resumes_again(self) -> None:
+        request_id = "6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44"
+        self._bound_request(request_id)
+        first = self.center.resolve_human_request_for_surface(request_id, "telegram:42", "repair")
+        self.assertEqual("repair", first["response_value"])
+        repeat = self.center.resolve_human_request_for_surface(request_id, "telegram:42", "observe")
+        self.assertEqual("repair", repeat["response_value"], "the first accepted value stays canonical")
+
+    def test_bound_question_is_never_expired_or_cancelled_here(self) -> None:
+        import time
+        request_id = "6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44"
+        with self.assertRaises(ValidationError):
+            self.center.create_human_request("p", {
+                "schema": "ask_human.request.v1", "request_id": "req-secret-bound", "project": "hermes",
+                "recipient": "me", "mode": "question", "message": "Пароль?",
+                "allowed_actors": ["telegram:42"], "kind": "secret",
+                "native_target": {"harness": "opencode", "session_id": "ses_1", "cwd": "/srv/app"},
+            })
+        self._bound_request(request_id)
+        with self.center._lock, self.center._connection:
+            self.center._connection.execute("UPDATE human_requests SET expires_at = ? WHERE request_id = ?",
+                                            (time.time() - 60, request_id))
+        view = self.center.list_human_requests("p")
+        self.assertEqual([request_id], [question["request_id"] for question in view],
+                         "a bound question ignores its own expiry")
+        with self.assertRaises(ValidationError):
+            self.center.cancel_human_request("p", request_id, "operator")
+
+    def test_legacy_unbound_question_still_expires_and_cancels(self) -> None:
+        import time
+        self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": "req-plain", "project": "hermes",
+            "recipient": "me", "mode": "question", "message": "Уведомление?",
+            "allowed_actors": ["telegram:42"],
+            "expires_at": time.time() - 60,
+        })
+        self.assertEqual([], self.center.list_human_requests("p"))
+        self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": "req-cancel", "project": "hermes",
+            "recipient": "me", "mode": "question", "message": "Уведомление?",
+            "allowed_actors": ["telegram:42"],
+        })
+        self.assertEqual("cancelled", self.center.cancel_human_request("p", "req-cancel", "operator")["state"])
+
+    def test_secret_result_returns_only_an_opaque_reference(self) -> None:
+        self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": "req-secret", "project": "hermes",
+            "recipient": "me", "mode": "question", "message": "Нужен ключ",
+            "allowed_actors": ["telegram:42"], "kind": "secret",
+        })
+        self.center.resolve_human_request_for_surface("req-secret", "telegram:42", "the-answer")
+        receipt = self.center.human_request_result_receipt("p", "req-secret")
+        self.assertEqual("secret", receipt["kind"])
+        self.assertIsNone(receipt["answer"])
+        self.assertEqual(36, len(receipt["result_ref"]))
 
 
 class McpNegotiationTests(unittest.TestCase):

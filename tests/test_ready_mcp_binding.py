@@ -194,8 +194,10 @@ class ReadyBindingTests(unittest.TestCase):
         self.assertEqual("repair", canonical["answer"])
         self.assertEqual(36, len(canonical["result_ref"]))
         self.assertEqual("ses_executor_1", canonical["native"]["session_id"])
-        with self.assertRaises(RuntimeError):
-            self._call("noticeplace_answer", {"request_id": request_id, "value": "observe"})
+        # A conflicting repeat keeps the first accepted value: no second card
+        # edit, no second native resume.
+        repeated = self._call("noticeplace_answer", {"request_id": request_id, "value": "observe"})
+        self.assertEqual("repair", repeated["value"])
         self.assertEqual(1, len(_HerderHandler.completions))
         self.assertEqual(1, len([p for m, p in self.telegram if m == "editMessageText"]))
 
