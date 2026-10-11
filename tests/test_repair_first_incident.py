@@ -167,7 +167,10 @@ class RepairFirstExecutorTests(unittest.TestCase):
         self.assertIn("repair-first", message)
         self.assertIn("noticeplace_incident_progress", message)
         self.assertIn("human_request_create", message)
-        self.assertIn("notify_user", message)
+        self.assertNotIn("В итоговый JSON", message)
+        self.assertNotIn("оставь в конце один короткий JSON", message)
+        self.assertNotIn('"verifier_id"', message)
+        self.assertIn("JSON необязателен", message)
         self.assertNotIn("Других финальных форматов нет", message)
         self.assertNotIn("noticeplace_ask_human", message)
 
@@ -354,13 +357,22 @@ class ProjectRouteTests(unittest.TestCase):
             return _Response({"outcome": "accepted", "operation_id": "op-admission",
                               "project": "tg-commentator", "selected_harness": "zcode",
                               "model": "account:zai-individual-coding-plan/GLM-5.3-Flash$high", "mode": "queue",
+                              "cwd": "/srv/herder-project-route",
                               "session_id": "zcode-native", "routing_reason": "declared route",
                               "attempts": [{"harness": "zcode", "outcome": "accepted", "reason": "declared route"}]})
 
         with patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "token")), \
-             patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
+             patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}) as diagnosis:
             receipt = agent_job_helper.run_profile("health-diagnosis", event, Path("unused"), runner=runner, profile_override=profile)
         self.assertEqual("zcode", receipt["harness"], "the launch receipt outranks the requested harness")
+        self.assertEqual("/srv/herder-project-route", receipt["cwd"])
+        launched_profile = diagnosis.call_args.args[0]
+        for key in ("harness", "model", "cwd"):
+            self.assertEqual(receipt[key], launched_profile[key], f"polling uses receipt.{key}")
+        armed = [r for r in requests if "/api/autopilot/sessions/" in r.full_url]
+        self.assertEqual(1, len(armed))
+        self.assertEqual(receipt["cwd"], json.loads(armed[0].data)["cwd"])
+        self.assertIn("/sessions/zcode/", armed[0].full_url)
         self.assertEqual("accepted", receipt["admission"]["status"])
         self.assertEqual(1, len(receipt["admission"]["attempts"]))
         launches = [r for r in requests if "project-launch" in str(r.full_url)]
@@ -633,8 +645,8 @@ class BoundQuestionTests(unittest.TestCase):
             first = self._native_resume(resolved)
             repeated = self._native_resume(resolved)
         self.assertEqual("resuming", first["status"])
-        self.assertEqual("resuming", repeated["status"])
-        self.assertEqual(2, len(self.herder_calls))
+        self.assertEqual("sent", repeated["status"])
+        self.assertEqual(1, len(self.herder_calls))
         self.assertEqual("ask.user.completed", self.herder_calls[0]["event"])
         self.assertEqual(request_id, self.herder_calls[0]["request_id"])
         self.assertNotEqual(self.herder_calls[0]["result_ref"], "")
@@ -721,8 +733,8 @@ class CanonicalCompletionTests(unittest.TestCase):
 
         poller = TelegramInteractionPoller(self.center, "token", {"42"}, self.codec, api=api)
         with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}), \
-             patch("notification_center.http_api.resume_human_request_native_session") as resume:
-            resume.side_effect = lambda center, request, actor, runner=None: {"status": "resuming"}
+             patch("notification_center.agent_job_helper.resume_bound_native_session") as resume:
+            resume.side_effect = lambda request_id, harness, session, cwd, result_ref, runner: {"request_id": request_id, "status": "resuming"}
             poller._handle_callback({
                 "id": "cb", "from": {"id": 42},
                 "data": self.codec.encode_human_choice("6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44", "0"),
@@ -753,8 +765,8 @@ class CanonicalCompletionTests(unittest.TestCase):
 
         poller = TelegramInteractionPoller(self.center, "token", {"42"}, self.codec, api=api)
         with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}), \
-             patch("notification_center.http_api.resume_human_request_native_session") as resume:
-            resume.side_effect = lambda center, request, actor, runner=None: {"status": "resuming"}
+             patch("notification_center.agent_job_helper.resume_bound_native_session") as resume:
+            resume.side_effect = lambda request_id, harness, session, cwd, result_ref, runner: {"request_id": request_id, "status": "resuming"}
             poller._handle_message({
                 "message_id": 99, "chat": {"id": -100}, "from": {"id": 42},
                 "text": "Чинить сейчас",
@@ -834,7 +846,8 @@ class CanonicalCompletionTests(unittest.TestCase):
             "recipient": "me", "mode": "question", "message": "Нужен ключ",
             "allowed_actors": ["telegram:42"], "kind": "secret",
         })
-        self.center.resolve_human_request_for_surface("req-secret", "telegram:42", "the-answer")
+        with self.assertRaises(ValidationError):
+            self.center.resolve_human_request_for_surface("req-secret", "telegram:42", "the-answer")
         receipt = self.center.human_request_result_receipt("p", "req-secret")
         self.assertEqual("secret", receipt["kind"])
         self.assertIsNone(receipt["answer"])

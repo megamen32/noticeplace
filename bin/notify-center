@@ -37,12 +37,22 @@ def worker_loop(worker: DeliveryWorker, channel_group: str, max_workers: int) ->
         inflight = set()
         archive = HealthSessionArchiver(worker._center) if channel_group == "agent" else None
         archive_due = time.monotonic() + 60
+        completion_future = None
         while True:
             inflight = {future for future in inflight if not future.done()}
             capacity = max_workers - len(inflight)
             if capacity > 0:
-                for delivery in worker.claim_due(limit=capacity, channel_group=channel_group):
-                    inflight.add(executor.submit(worker.deliver, delivery))
+                if (channel_group == "agent" and (completion_future is None or completion_future.done())
+                        and (worker._center.due_human_completions(limit=1)
+                             or worker._center.due_human_completion_cards(limit=1))):
+                    # Owed question continuations use this existing finite pool,
+                    # not a new scheduler or a blocking dispatcher heartbeat.
+                    completion_future = executor.submit(worker.replay_human_completions, min(2, capacity))
+                    inflight.add(completion_future)
+                    capacity -= 1
+                if capacity > 0:
+                    for delivery in worker.claim_due(limit=capacity, channel_group=channel_group):
+                        inflight.add(executor.submit(worker.deliver, delivery))
                 if archive is not None and len(inflight) < max_workers and time.monotonic() >= archive_due:
                     inflight.add(executor.submit(archive.run_once))
                     archive_due = time.monotonic() + 60

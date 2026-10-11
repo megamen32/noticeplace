@@ -76,6 +76,30 @@ def validate() -> str:
         raise ValueError("skills: the supported native question binding is missing")
     if "one creation means one card" not in skill_text:
         raise ValueError("skills: must keep exactly one question creation path")
+    if "value=choice_id" not in skill_text or "cwd=binding.native_target.cwd" not in skill_text:
+        raise ValueError("skills: choice mapping and bound cwd are required")
+
+    # Native loaders resolve components from the package root. Keep one source
+    # skill and one MCP projection inside this same versioned bundle.
+    for filename in (".codex-plugin/plugin.json", ".zcode-plugin/plugin.json"):
+        native = load(filename)
+        if any(native.get(key) != manifest[key] for key in ("name", "version")):
+            raise ValueError(f"{filename}: identity differs from the portable manifest")
+        if native.get("skills") != "./skills/" or native.get("mcpServers") != "./mcp.codex.json":
+            raise ValueError(f"{filename}: native skill/MCP source must stay in this package")
+    native_mcp = load("mcp.codex.json")
+    server = native_mcp["mcpServers"]["noticeplace"]
+    portable = mcp["mcpServers"]["NoticePlace"]
+    if any(server.get(key) != portable.get(key) for key in ("command", "args", "env")):
+        raise ValueError("native and portable MCP must use the same authenticated stdio server")
+    root = PACKAGE.parents[2]
+    codex_market = json.loads((root / ".agents/plugins/marketplace.json").read_text())
+    zcode_market = json.loads((root / ".claude-plugin/marketplace.json").read_text())
+    expected_path = f"./packages/{manifest['name']}/{manifest['version']}"
+    if codex_market["plugins"][0]["source"] != {"source": "local", "path": expected_path}:
+        raise ValueError("Codex marketplace must use the local versioned bundle")
+    if zcode_market["plugins"][0]["source"] != expected_path:
+        raise ValueError("ZCode marketplace must use the local versioned bundle")
 
     secret_patterns = (
         re.compile(r"sk-[A-Za-z0-9]{16,}"),

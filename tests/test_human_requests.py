@@ -371,6 +371,9 @@ class HumanRequestHttpTests(unittest.TestCase):
         self.assertEqual("card_is_not_bound", resolved["card"])
         self.assertEqual("now", resolved["value"])
         self.assertEqual({"status": "not_bound"}, resolved["native"])
+        self.assertEqual("accepted", resolved["answer_status"])
+        self.assertTrue(resolved["accepted"])
+        self.assertFalse(resolved["conflict"])
         completion = {key: resolved[key] for key in ("request_id", "state", "value", "label", "card", "native")}
         self.assertEqual(completion, {
             "request_id": resolved["request_id"], "state": resolved["state"],
@@ -380,7 +383,7 @@ class HumanRequestHttpTests(unittest.TestCase):
         self.assertEqual({key: value for key, value in read.items()
                           if key not in completion and key != "telegram_document_required"},
                          {key: value for key, value in resolved.items()
-                          if key not in completion and key != "telegram_document_required"})
+                          if key not in completion and key not in {"telegram_document_required", "answer_status", "accepted", "conflict"}})
 
     def test_create_route_allows_four_choices_and_is_exactly_idempotent(self) -> None:
         """Keep HTTP retries safe without widening the public AskHuman MCP schema."""

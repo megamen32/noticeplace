@@ -339,13 +339,15 @@ def tool_noticeplace_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
     session_id = str(args.get("session_id") or "").strip()
     request_id = str(args.get("request_id") or "").strip()
     cwd = str(args.get("cwd") or "").strip()
-    if not (request_id and harness and session_id):
-        raise ValueError("request_id, harness, and session_id come from Agent Herder human_request_create")
+    if not (request_id and harness and session_id and cwd and os.path.isabs(cwd)):
+        raise ValueError("request_id, harness, session_id and absolute cwd come from Agent Herder human_request_create")
     cfg = _human_request_config()
     if str(args.get("kind") or "user").strip().lower() != "user":
         raise ValueError("noticeplace_ask_human binds ordinary questions only; secrets stay in AskSecret")
     choices = args.get("choices")
-    if choices is not None and not 2 <= len(choices) <= 4:
+    if choices is not None and not isinstance(choices, list):
+        raise ValueError("choices must be a list")
+    if choices and not 2 <= len(choices) <= 4:
         raise ValueError("a choice question needs between two and four options")
     mode = "choice" if choices else "question"
     expires_at = args.get("expires_at")
@@ -430,6 +432,9 @@ def tool_noticeplace_answer(args: Dict[str, Any]) -> Dict[str, Any]:
         "state": result.get("state"),
         "value": result.get("value"),
         "label": result.get("label"),
+        "answer_status": result.get("answer_status"),
+        "accepted": result.get("accepted", False),
+        "conflict": result.get("conflict", False),
         # Card rendering and native delivery are separate outcomes.
         "card": result.get("card"),
         "native": result.get("native"),
@@ -910,7 +915,7 @@ TOOLS = {
                 "incident_id": {"type": ["string", "null"], "description": "Инцидент Notice Place, к которому относится вопрос."},
                 "expires_at": {"type": ["number", "null"], "description": "Момент истечения из binding, если он задан."},
             },
-            "required": ["request_id", "harness", "session_id", "message"],
+            "required": ["request_id", "harness", "session_id", "cwd", "message"],
             "additionalProperties": False,
         },
         "handler": tool_noticeplace_ask_human,

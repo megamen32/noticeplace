@@ -528,6 +528,10 @@ def arm_session_autopilot(harness: str, session_id: str, cwd: str, runner: Any =
     return result.get("enabled") is True and str(result.get("sessionId") or "") == safe_session
 
 
+class NativeCompletionUnavailable(RuntimeError):
+    """The loopback refused the connection before receiving the completion."""
+
+
 def resume_bound_native_session(request_id: str, harness: str, session_id: str, cwd: str, result_ref: str, runner: Any = urllib.request.urlopen) -> dict[str, Any]:
     """Continue the one native session a question was bound to.
 
@@ -564,7 +568,24 @@ def resume_bound_native_session(request_id: str, harness: str, session_id: str, 
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
-    return _read_json_request(request, runner, timeout=30)
+    # Preserve the completion envelope on non-2xx replies: only Herder's
+    # explicit non-admission permits a retry. A generic HTTP/network error is
+    # not proof that the bound native session did not receive the answer.
+    try:
+        with runner(request, timeout=10) as response:
+            raw = response.read(_RESPONSE_LIMIT + 1)
+    except urllib.error.HTTPError as error:
+        raw = error.read(_RESPONSE_LIMIT + 1)
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, ConnectionRefusedError):
+            raise NativeCompletionUnavailable("native completion connection refused") from error
+        raise RuntimeError("native completion outcome is unknown") from error
+    if len(raw) > _RESPONSE_LIMIT:
+        raise RuntimeError("native completion response exceeds the limit")
+    result = json.loads(raw)
+    if not isinstance(result, dict) or result.get("request_id") != safe_request or not result.get("status"):
+        raise RuntimeError("native completion response is not a matching receipt")
+    return result
 
 
 def relay_operator_reply(harness: str, session_id: str, incident_id: str, text: str, source_ref: str, runner: Any = urllib.request.urlopen) -> bool:
@@ -1316,27 +1337,15 @@ def run_profile(
             'Не задавай вопрос, если можешь проверить источник и довести исправление сам.'
         )
         request_body['message'] += (
-            '\n\nОцени, требуется ли внимание человека. В итоговый JSON диагностики добавь '
-            'notify_user (настоящий boolean true/false) и notification_reason (короткое объяснение по-русски). '
-            'Выбирай false для краткого скачка или известного стабильного состояния без влияния на сервис '
-            'и без действия человека; true при заметном влиянии, необходимости решения или нехватке '
-            'данных для безопасного вывода. Не объявляй инцидент исправленным без проверки источника. '
-            'Это решение об обычном уведомлении; критические события уже доставлены напрямую.'
-        )
-        request_body['message'] += (
-            '\n\nГлавный результат — фактическое восстановление потребителя, а не текст. '
-            'Чтобы Notice Place мог принять машинную отметку, оставь в конце один короткий JSON-объект '
-            'без markdown; формат текста при этом свободный. Полезны два вида: '
-            '{"repair_first": {"status": "completed", "plan_id": "repair", "step": "короткое действие '
-            'по-русски", "observed_state": "healthy|degraded|unknown", "source_id": "идентификатор '
-            'реально проверенного источника", "source_fingerprint": "отпечаток этого источника", '
-            '"verifier_id": "другой идентификатор независимой проверки", "verification_id": '
-            '"идентификатор проверки", "evidence_refs": ["..."], "trace_refs": ["..."]}} — '
-            'source_id и verifier_id обязаны различаться, без независимой проверки источника исправление '
-            'не считается восстановлением; либо {"health_question": {"needs_human": true, '
-            '"question_ref": "непрозрачная ссылка на вопрос", "reason": "почему нужен выбор"}} — '
-            'если ты уже задал вопрос оператору и ждёшь ответа. Если отметки нет, инцидент просто '
-            'останется без вердикта, ничего не будет закрыто.'
+            '\n\nОцени, требуется ли внимание человека: краткий скачок без влияния на сервис '
+            'не требует вопроса; заметное влияние, необходимый выбор или нехватка данных '
+            'для безопасного действия объясни коротко по-русски. '
+            'Главный результат — фактическое восстановление потребителя, а не формат отчёта. '
+            'Пиши обычный текст; JSON необязателен. Прогресс передавай через '
+            'noticeplace_incident_progress с реально проверенными source_id, source_fingerprint '
+            'и evidence_refs. Здоровое наблюдение исполнителя оставляет инцидент открытым: '
+            'закрывает его только отдельная независимая проверка источника. '
+            'Не выдавай своё наблюдение за независимую verification и не запрашивай три плана.'
         )
     if profile_id == "health-remediation":
         plan_id, request_body["message"] = _health_remediation_message(profile, event, incident)

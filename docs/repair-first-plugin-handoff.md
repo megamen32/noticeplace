@@ -101,8 +101,13 @@ nobody declared stay on that default.
    session resumes exactly once. A conflicting repeat changes nothing: no second
    card edit, no second resume. Card outcome and native delivery are reported
    separately. Notice Place calls Agent Herder's existing
-   `POST /internal/human-requests/ask-user-completion` once with an opaque
-   derived `result_ref`. Herder's `claimResume` is single-winner.
+   `POST /internal/human-requests/ask-user-completion` with the same opaque
+   canonical `result_ref`. The answer and `human_request_completions` outbox row
+   commit in one transaction. Concurrent and conflicting answers reuse that
+   row; a card edit failure never stops the native attempt. The existing
+   `bin/notify-center` agent pool processes overdue continuations and failed card
+   edits with at most two rows per task. No new scheduler or autopilot is added.
+   Herder's durable native admission is single-winner.
 4. The resumed session calls `noticeplace_question_result(request_id)`, which
    returns the canonical answer from storage plus its opaque `result_ref`; a
    secret request returns only the reference.
@@ -116,7 +121,31 @@ Notice Place never expires it, and cancels it only through the Herder emergency
 exit, which requires an explicit `reason`, is terminal, and never resumes the
 native session. Unbound legacy and metadata-only requests keep their original
 TTL and cancel behaviour. `kind` is explicit: `secret` requests may not carry
-`native_target` and their result returns only an opaque reference.
+`native_target`, every ordinary resolution route rejects them, and historical
+stored results return only an opaque reference. Secret entry uses AskSecret/SSS.
+An expired or cancelled unanswered question returns `answer_status: no_accept`
+with no value, no card edit and no native attempt.
+
+Native completion retry contract (coupled to the Herder owner's change):
+
+| Receipt | Notice Place action |
+| --- | --- |
+| `resuming` / `resumed`, without `in_flight` | mark completion sent |
+| `resume_failed`, `reason=agent-resume:native-unavailable`, `retry=true` | retry the same request/result reference after 30 seconds |
+| `pending`, `retry=true` | retry the same request/result reference after 30 seconds |
+| loopback connection refused before sending | retry the same request/result reference |
+| `retry=false`, `in_flight`, admission unknown, generic HTTP error, lost/malformed response or timeout | preserve unknown outcome; no automatic replay |
+
+A crash after the answer transaction but before sending leaves a due `pending`
+row. A crash during sending leaves `sending`, which is not replayable. The
+Herder owner confirmed the coupled contract in its owned worktree: HTTP 502
+`{request_id, status: resume_failed, continuation: resume,
+reason: agent-resume:native-unavailable, retry: true}` allows safe re-admission
+of the same canonical reference, retaining attemptId, idempotencyKey and the
+original admittedAt. Conflicting references and unknown admission return
+`retry: false`; `in_flight` is query-only even after an expired lease. Herder
+production HTTP recovery regression passed; root integrates the two delivered
+branches and performs the live acceptance. Its worktree was not modified here.
 
 Retries are deduplicated: Agent Herder sends `Idempotency-Key:
 human-request:<request_id>` and Notice Place rejects any key that does not match
@@ -134,7 +163,7 @@ metadata-only or secret question carries no Notice Place answer.
 | `noticeplace_pending_questions` | Bounded question text, options, incident, exact native routing. Never returns a stored answer, document, or secret. |
 | `noticeplace_answer` | Records an answer for a question or an incident choice card; returns the canonical value and the real card outcome. |
 | `noticeplace_question_result` | The canonical answer plus its opaque reference, for the resumed session. |
-| `noticeplace_incident_progress` | Bounded progress and independent verification with a stable Idempotency-Key. |
+| `noticeplace_incident_progress` | Bounded executor observation with a stable Idempotency-Key; independent verification uses its own HTTP producer. |
 | `ask_human` | Unchanged legacy notification/blocking question; binds nothing. |
 
 HTTP additions:
@@ -156,12 +185,18 @@ server does not implement.
 ## 5. Exact install
 
 ```text
-noticeplace-plugin/packages/noticeplace/0.1.0/{plugin.json,mcp.json,skills/noticeplace/SKILL.md}
+noticeplace-plugin/packages/noticeplace/0.1.0/{plugin.json,mcp.json,mcp.codex.json,skills/noticeplace/SKILL.md}
+noticeplace-plugin/packages/noticeplace/0.1.0/.codex-plugin/plugin.json
+noticeplace-plugin/packages/noticeplace/0.1.0/.zcode-plugin/plugin.json
+noticeplace-plugin/.agents/plugins/marketplace.json
+noticeplace-plugin/.claude-plugin/marketplace.json
 ```
 
 ```bash
 python3 noticeplace-plugin/packages/noticeplace/0.1.0/scripts/validate_plugin.py
 # PASS noticeplace 0.1.0
+zcode plugins validate noticeplace-plugin/packages/noticeplace/0.1.0 --json
+# {"ok": true, "diagnostics": []}
 ```
 
 The package wraps the **existing authenticated stdio** server, so no credential
@@ -183,6 +218,13 @@ projections for every harness:
 | `fast-agent.yaml` | Fast Agent `mcp.servers` entry |
 | `opencode.json` | OpenCode `mcp` local server entry |
 
+Both native manifests reference `skills: ./skills/` and
+`mcpServers: ./mcp.codex.json`. Codex marketplace entry source is
+`{source: local, path: ./packages/noticeplace/0.1.0}`; the ZCode marketplace entry
+source is `./packages/noticeplace/0.1.0`. The installed skill explicitly maps
+Herder `{choice_id, label}` to tool `{value: choice_id, label}` and requires
+`cwd=binding.native_target.cwd`. Empty choices create a free-text question.
+
 Agent Harness Fleet: **Plugins + Marketplace → Import → Publish → target
 harness → Preview → Apply**. Install and the live phone canary remain root's.
 
@@ -190,11 +232,39 @@ harness → Preview → Apply**. Install and the live phone canary remain root's
 
 `tests/test_ready_mcp_binding.py` runs the real Notice Place HTTP stack and the
 real MCP tool handlers against the two network peers (Telegram and Agent Herder)
-replaced by local servers. It proves the agreed chain: one Herder binding, one
+replaced by a fake Bot API and a local HTTP server. It proves the agreed chain: one Herder binding, one
 `noticeplace_ask_human` call, exactly one card, a replay that creates no second
 card, `noticeplace_pending_questions` with the exact native routing, a voice
 answer that marks that card, exactly one Herder completion callback, and
 `noticeplace_question_result` returning the canonical answer and reference.
+
+The new regressions run real handlers and the production `worker_loop` with two
+workers; the peers supply failures without contacting a real person or phone.
+
+| Scenario | Purpose / detected defect | Category | Expected / maximum seconds |
+| --- | --- | --- | --- |
+| HTTP card failure | card failure cannot suppress native delivery; same card recovers | focused integration | 2 / 8 |
+| Native unavailable + restart | durable retry retains the same canonical result reference | focused integration | 2 / 8 |
+| Button and free text + both failures | all surfaces use the same canonical completion and worker | focused integration | 2 / 10 |
+| Answer/outbox storage failure | answer cannot commit without the owed continuation | focused integration | 2 / 8 |
+| Lost/unknown native receipt | uncertain admission must not replay the native transport | focused integration | 2 / 10 |
+| Concurrent HTTP answers | one canonical winner, one card edit, one native attempt | focused integration | 2 / 8 |
+| Expired/cancelled HTTP answer | explicit no acceptance, no invented value, no effects | focused integration | 2 / 8 |
+| Secret HTTP/legacy answer | reject ordinary secret completion and keep historical values opaque | focused integration | 2 / 8 |
+| Authoritative project launch | arming and polling use receipt harness/model/CWD | fast unit | 1 / 3 |
+| Legacy analysis callbacks | retain immediate progress confirmation and retry visibility | fast unit | 2 / 8 |
+| Bundle validation | native manifests, component sources and marketplace paths agree | fast unit | 2 / 5 |
+
+Ordinary focused verification is capped at 180 seconds including package
+validation, with 2 GiB address-space and two CPU slots. No nightly or broad
+baseline suite is used for this handoff. Native installs and the real phone
+acceptance remain root-owned.
+
+Final owned-change verification: **100 passed in 43.11 seconds** across
+`test_ready_mcp_binding`, `test_repair_first_incident`, `test_human_requests`,
+`test_human_request_progress`, and `test_health_session_lifecycle`.
+Portable validation passed; actual `zcode plugins validate` returned `ok: true`
+with no diagnostics; `git diff --check` passed. Combined run took **47.03 seconds**.
 
 `tests/test_repair_first_incident.py` covers the executor contract: verified
 repair without a planner or plan card, a rejected claim that resolves nothing, a
@@ -202,6 +272,6 @@ pending question that keeps one session, per-project route selection and aliases
 the admission receipt being authoritative, canonical answer over a conflicting
 repeat, the shared card marker, and the MCP handshake plus tools list.
 
-The four remaining suite failures (`test_http_api` remote-MCP trio and
-`test_notification_center_clients`) fail identically on base `e42bf57` and are
-not caused by this branch.
+The earlier handoff recorded four broad-suite baseline failures (`test_http_api`
+remote-MCP trio and `test_notification_center_clients`) on base `e42bf57`.
+That historical claim was not rerun in this finite focused verification.

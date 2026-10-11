@@ -1,0 +1,12 @@
+{
+  "name": "noticeplace-local",
+  "interface": {"displayName": "Notice Place"},
+  "plugins": [
+    {
+      "name": "noticeplace",
+      "source": {"source": "local", "path": "./packages/noticeplace/0.1.0"},
+      "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+      "category": "Productivity"
+    }
+  ]
+}

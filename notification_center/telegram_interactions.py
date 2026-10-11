@@ -486,12 +486,22 @@ class TelegramInteractionPoller:
             if answered is not None:
                 # One canonical completion for a free-text answer too: the same
                 # card is marked and the bound native session continues once.
-                complete_human_request(
+                completed = complete_human_request(
                     self._center, answered, text, f"telegram:{actor_id}", "telegram_text", self._api,
                     chat_id=chat_id, message_id=reply_message_id,
                 )
-                self._message(chat_id, "Ответ принят и передан в сессию агента." if answered.get("native_harness")
-                              else "Ответ принят.")
+                native_status = (completed.get("native") or {}).get("status")
+                if completed.get("answer_status") == "no_accept":
+                    notice = "Ответ не принят: вопрос уже закрыт."
+                elif native_status in {"resuming", "resumed", "sent"}:
+                    notice = "Ответ принят и передан в сессию агента."
+                elif native_status == "retryable":
+                    notice = "Ответ сохранён. Сессия агента временно недоступна; передача будет повторена."
+                elif native_status in {"unknown", "sending"}:
+                    notice = "Ответ сохранён. Подтверждение передачи в сессию агента пока не получено."
+                else:
+                    notice = "Ответ принят."
+                self._message(chat_id, notice)
                 return
             incident = self._center.record_telegram_reply(
                 chat_id, reply_message_id, f"telegram:{actor_id}", text

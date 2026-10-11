@@ -1521,10 +1521,36 @@ class DeliveryWorker:
 
     def run_once(self) -> int:
         """Deliver a bounded batch and retry failures; returns claims processed."""
+        self.replay_human_completions()
         deliveries = self.claim_due()
         for delivery in deliveries:
             self.deliver(delivery)
         return len(deliveries)
+
+    def replay_human_completions(self, limit: int = 8) -> int:
+        """Re-send durable native resumes that Herder definitively did not accept.
+
+        This is the same worker tick, not a second scheduler: it uses the same
+        durable rows the answer wrote, and an unknown admission is never replayed.
+        """
+        replayed = 0
+        for pending in self._center.due_human_completions(limit=limit):
+            try:
+                request = self._center.get_human_request_from_telegram(str(pending["request_id"]))
+            except ValidationError:
+                self._center.mark_human_completion(str(pending["request_id"]), "unknown", "question is gone")
+                self._center.mark_human_completion_card(str(pending["request_id"]), "skipped")
+                continue
+            if deliver_human_completion(self._center, request, str(pending.get("actor") or "worker"))["status"] in {"sent", "resuming", "resumed"}:
+                replayed += 1
+        for pending in self._center.due_human_completion_cards(limit=limit):
+            try:
+                request = self._center.get_human_request_from_telegram(str(pending["request_id"]))
+            except ValidationError:
+                self._center.mark_human_completion_card(str(pending["request_id"]), "skipped")
+                continue
+            _deliver_human_completion_card(self._center, request, str(pending.get("actor") or "worker"), source="worker")
+        return replayed
 
 
 def _json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1635,44 +1661,122 @@ def complete_human_request(
 ) -> dict[str, Any]:
     """One canonical completion for every answer surface.
 
-    HTTP, a Telegram button, and a free-text reply all end here: the first
-    accepted value wins, the same card is marked from the canonical receipt, and
-    the bound native session is resumed exactly once. Card rendering and native
-    delivery are reported separately, because one can succeed while the other
-    does not.
+    HTTP, a Telegram button, and a free-text reply all end here. The order is
+    deliberate: the answer is stored first, the owed native resume is recorded
+    durably before any Telegram work, and only then is the card rendered. A card
+    failure therefore never blocks the native session, and a Herder outage is
+    replayed by the existing delivery worker with the same canonical reference.
     """
     request_id = str(request.get("request_id") or "")
     answer = str(value or "").strip()
     if not request_id or not answer:
         raise ValidationError("completion requires a request id and an answer")
-    was_pending = str(request.get("state") or "") == "pending"
-    if was_pending:
-        resolved = center.resolve_human_request_for_surface(request_id, actor, answer)
-    else:
-        # An already answered question keeps its first value and never resumes
-        # the native session a second time.
-        resolved = dict(request)
-    canonical_value = str(resolved.get("response_value") or answer)
+    # Re-read under the answer transaction. The handler's snapshot can already
+    # be stale when another surface wins, expires or cancels this question.
+    resolved = center.resolve_human_request_for_surface(request_id, actor, answer)
+    was_pending = bool(resolved.get("answer_accepted"))
+    state = str(resolved.get("state") or "")
+    response_value = resolved.get("response_value")
+    if state != "resolved" or not response_value:
+        # Expired or cancelled without an answer: accept nothing, invent nothing.
+        return {
+            "request_id": request_id, "state": state, "answer_status": "no_accept",
+            "value": None, "label": None, "card": "skipped", "native": {"status": "not_attempted"},
+        }
+    canonical_value = str(response_value)
+    canonical_actor = str(resolved.get("response_actor") or actor)
+    card: dict[str, Any] = {"status": "skipped"}
+    legacy_analysis = canonical_value == "deep_analysis" and not resolved.get("native_harness")
+    if (was_pending or center.human_request_completion(request_id)
+            or (legacy_analysis and not resolved.get("telegram_progress_confirmed_at"))):
+        card = _deliver_human_completion_card(
+            center, resolved, canonical_actor, api, base_text=base_text, entities=entities,
+            chat_id=chat_id, message_id=message_id, source=source)
     label = next(
         (str(choice.get("label") or "") for choice in (resolved.get("choices") or [])
          if isinstance(choice, Mapping) and str(choice.get("value") or "") == canonical_value),
         "",
     )
-    receipt: dict[str, Any] = {}
-    if canonical_value != "deep_analysis" and was_pending:
-        card = mark_human_request_resolved_card(center, resolved, actor, api, base_text=base_text,
-                                                entities=entities, chat_id=chat_id, message_id=message_id,
-                                                source=source)
-        receipt["card"] = card
-    native = resume_human_request_native_session(center, resolved, actor, runner) if was_pending else {"status": "already_answered"}
+    native = deliver_human_completion(center, resolved, canonical_actor, runner)
     return {
         "request_id": request_id,
-        "state": str(resolved.get("state") or ""),
-        "value": canonical_value if canonical_value != "deep_analysis" else None,
+        "state": state,
+        "answer_status": "accepted",
+        "accepted": was_pending,
+        "conflict": canonical_value != answer,
+        "value": None if legacy_analysis else canonical_value,
         "label": label or None,
-        "card": receipt.get("card", {}).get("status", "skipped"),
-        "native": native or {"status": "not_bound"},
+        "card": card.get("status", "skipped"),
+        "native": native,
     }
+
+
+def _deliver_human_completion_card(center: NotificationCenter, request: Mapping[str, Any], actor: str,
+                                  api: Any | None = None, **kwargs: Any) -> dict[str, Any]:
+    # Use the existing send lock to exclude another worker/answer while editing
+    # this same card. Native delivery has its own durable admission fence.
+    with center.delivery_send_lock():
+        pending = center.human_request_completion(str(request["request_id"]))
+        if pending.get("card_state") == "sent":
+            return {"status": "already_marked"}
+        if pending and float(pending["card_next_attempt_at"]) > time.time():
+            return {"status": "retryable"}
+        try:
+            card = mark_human_request_resolved_card(center, request, actor, api, **kwargs)
+        except Exception:  # noqa: BLE001 - editing must never suppress native continuation
+            card = {"status": "failed"}
+        center.mark_human_completion_card(str(request["request_id"]), str(card.get("status") or "failed"))
+        return card
+
+
+def deliver_human_completion(
+    center: NotificationCenter,
+    request: Mapping[str, Any],
+    actor: str,
+    runner: Any = urllib.request.urlopen,
+) -> dict[str, Any]:
+    """Attempt one owed native resume and classify the outcome durably.
+
+    A definite rejection retries from the durable row; an unknown admission is
+    final, because replaying it could resume the session twice.
+    """
+    request_id = str(request.get("request_id") or "")
+    pending = center.human_request_completion(request_id)
+    if not pending:
+        return {"status": "not_bound"}
+    if str(pending.get("state")) in {"sent", "unknown", "sending"}:
+        return {"status": str(pending["state"]), "result_ref": str(pending.get("result_ref") or "")}
+    if not center.claim_human_completion(request_id):
+        return {"status": str(center.human_request_completion(request_id).get("state") or "unknown")}
+    from .agent_job_helper import NativeCompletionUnavailable, resume_bound_native_session
+
+    try:
+        outcome = resume_bound_native_session(
+            request_id, str(pending["harness"]), str(pending["session_id"]), str(pending["cwd"]),
+            str(pending["result_ref"]), runner,
+        )
+    except NativeCompletionUnavailable as error:
+        center.mark_human_completion(request_id, "retryable", str(error))
+        return {"status": "retryable", "reason": str(error)[:200]}
+    except Exception:  # noqa: BLE001 - timeout/malformed/lost response may follow admission
+        center.mark_human_completion(request_id, "unknown", "native completion outcome is unknown")
+        return {"status": "unknown"}
+    status = str(outcome.get("status") or "")
+    if outcome.get("in_flight") or status in {"in_flight", "admission_unknown", "admissionUnknown"}:
+        center.mark_human_completion(request_id, "unknown", "native admission is unknown")
+        return {"status": "unknown"}
+    if status in {"resuming", "resumed"}:
+        center.mark_human_completion(request_id, "sent", "")
+        return {"status": status, "result_ref": str(pending.get("result_ref") or "")}
+    reason = str(outcome.get("reason") or "")
+    if (status == "pending" and outcome.get("retry") is True) or (
+        status == "resume_failed" and outcome.get("retry") is True
+        and reason in {"native-unavailable", "agent-resume:native-unavailable"}
+    ):
+        center.mark_human_completion(request_id, "retryable", reason)
+        return {"status": "retryable", "result_ref": str(pending["result_ref"])}
+    center.mark_human_completion(request_id, "unknown", status)
+    return {"status": "unknown", "reason": status}
 
 
 def mark_human_request_resolved_card(
@@ -1692,6 +1796,8 @@ def mark_human_request_resolved_card(
     Telegram poller, so the operator always sees one accepted answer on the one
     message that asked the question.
     """
+    if request.get("kind", "user") != "user":
+        return {"status": "skipped"}
     request_id = str(request.get("request_id") or "")
     bound_chat = chat_id or str(request.get("telegram_chat_id") or "")
     bound_message = message_id if isinstance(message_id, int) else request.get("telegram_message_id")
@@ -1699,7 +1805,7 @@ def mark_human_request_resolved_card(
         return {"status": "card_is_not_bound"}
     chat_id, message_id = bound_chat, bound_message
     value = str(request.get("response_value") or "")
-    if not value or value == "deep_analysis":
+    if not value:
         return {"status": "skipped"}
     choices = request.get("choices") if isinstance(request.get("choices"), list) else []
     label = next(
@@ -1714,6 +1820,15 @@ def mark_human_request_resolved_card(
     if api is None and not bot_token:
         # The in-process poller already owns a bound Bot API client.
         return {"status": "not_configured"}
+    if value == "deep_analysis" and not request.get("native_harness"):
+        # Preserve the existing legacy analysis visibility gate. It uses the
+        # same canonical resolution, then confirms acceptance on this card.
+        from .human_request_progress import edit_progress_card
+        if request.get("telegram_progress_confirmed_at"):
+            return {"status": "already_marked"}
+        edit_progress_card(request, api or (lambda method, body: telegram_api(bot_token, method, body)))
+        center.confirm_human_request_progress_card(request_id)
+        return {"status": "marked"}
     rendered = base_text or render_human_request_original({**request, "state": "pending"})[0]
     applied = apply_selection_receipt(
         center,
@@ -1745,29 +1860,9 @@ def resume_human_request_native_session(
     actor: str,
     runner: Any = urllib.request.urlopen,
 ) -> dict[str, Any]:
-    """Continue the bound native session once, through Agent Herder's own seam.
-
-    Nothing is resumed here when the question was not bound to a session: an
-    unbound question is a notice, not a blocked executor. The result reference
-    is opaque and derived, so no answer text leaves Notice Place.
-    """
-    harness = str(request.get("native_harness") or "")
-    session_id = str(request.get("native_session_id") or "")
-    cwd = str(request.get("native_cwd") or "")
-    if not (harness and session_id and cwd):
-        return {}
-    from .agent_job_helper import resume_bound_native_session
-
-    request_id = str(request.get("request_id") or "")
-    result_ref = hashlib.sha256(f"{request_id}:{request.get('response_value')}:{actor}".encode()).hexdigest()
-    result_ref = f"{result_ref[:8]}-{result_ref[8:12]}-{result_ref[12:16]}-{result_ref[16:20]}-{result_ref[20:32]}"
-    try:
-        outcome = resume_bound_native_session(request_id, harness, session_id, cwd, result_ref, runner)
-    except Exception as error:
-        with center._lock, center._connection:
-            center._audit(request_id, "native_resume_unavailable", actor, {"reason": str(error)[:200]})
-        return {"status": "unavailable", "reason": str(error)[:200]}
-    return {"status": str(outcome.get("status") or "resuming"), "continuation": str(outcome.get("continuation") or "resume")}
+    """Backwards-compatible wrapper around the durable completion delivery."""
+    outcome = deliver_human_completion(center, request, actor, runner)
+    return {} if outcome.get("status") == "not_bound" else outcome
 
 
 def send_human_request_telegram(

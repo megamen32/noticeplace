@@ -278,6 +278,22 @@ class NotificationCenter:
                     native_cwd TEXT,
                     kind TEXT NOT NULL DEFAULT 'user'
                 );
+                CREATE TABLE IF NOT EXISTS human_request_completions (
+                    request_id TEXT PRIMARY KEY,
+                    result_ref TEXT NOT NULL,
+                    harness TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    actor TEXT,
+                    state TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT,
+                    next_attempt_at REAL NOT NULL,
+                    card_state TEXT NOT NULL DEFAULT 'pending',
+                    card_next_attempt_at REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
                 """
             )
             incident_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(incidents)")}
@@ -296,6 +312,11 @@ class NotificationCenter:
             if "target_json" not in delivery_columns:
                 self._connection.execute("ALTER TABLE deliveries ADD COLUMN target_json TEXT NOT NULL DEFAULT '{}'")
             human_request_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(human_requests)")}
+            completion_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(human_request_completions)")}
+            for column, definition in (("card_state", "TEXT NOT NULL DEFAULT 'pending'"),
+                                       ("card_next_attempt_at", "REAL NOT NULL DEFAULT 0")):
+                if column not in completion_columns:
+                    self._connection.execute(f"ALTER TABLE human_request_completions ADD COLUMN {column} {definition}")
             if "telegram_chat_id" not in human_request_columns:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_chat_id TEXT")
             if "telegram_message_id" not in human_request_columns:
@@ -577,6 +598,10 @@ class NotificationCenter:
         result["choices"] = json.loads(str(result.pop("choices_json")))
         result["allowed_actors"] = json.loads(str(result.pop("allowed_actors_json")))
         result["progress"] = json.loads(result.pop("progress_json") or "null")
+        if result.get("kind") == "secret":
+            result["result_ref"] = NotificationCenter._selection_result_ref(
+                str(result["request_id"]), result.get("response_value"), str(result.get("response_actor") or ""))
+            result["response_value"] = None
         return result
 
     def _human_request_row(self, token: str, request_id: str) -> sqlite3.Row:
@@ -730,7 +755,8 @@ class NotificationCenter:
         A secret request exposes its opaque reference alone, so a resumed turn
         can never read a secret payload.
         """
-        request = self.human_request_producer_view(self._human_request_result(self._human_request_row(token, request_id)))
+        with self._lock:
+            request = self.human_request_producer_view(self._human_request_result(self._human_request_row(token, request_id)))
         value = request.get("response_value")
         kind = str(request.get("kind") or "user")
         receipt = {
@@ -738,7 +764,7 @@ class NotificationCenter:
             "request_id": str(request["request_id"]),
             "state": str(request["state"]),
             "kind": kind,
-            "result_ref": self._selection_result_ref(str(request["request_id"]), value, str(request.get("response_actor") or "")),
+            "result_ref": request.get("result_ref") or self._selection_result_ref(str(request["request_id"]), value, str(request.get("response_actor") or "")),
             "native": {
                 "harness": str(request.get("native_harness") or ""),
                 "session_id": str(request.get("native_session_id") or ""),
@@ -767,9 +793,9 @@ class NotificationCenter:
     def human_request_producer_view(request: Mapping[str, Any]) -> dict[str, Any]:
         """Keep a selected analysis non-actionable until Telegram confirms acceptance."""
         result = dict(request)
-        pending = bool(result.get("progress_delivery_pending")) or (
+        pending = not result.get("native_harness") and (bool(result.get("progress_delivery_pending")) or (
             result.get("state") == "resolved" and result.get("response_value") == "deep_analysis"
-            and result.get("telegram_progress_confirmed_at") is None)
+            and result.get("telegram_progress_confirmed_at") is None))
         if pending or result.get("response_value") == "deep_analysis" or "progress_delivery_pending" in result:
             result["progress_delivery_pending"] = pending
         if pending:
@@ -985,6 +1011,8 @@ class NotificationCenter:
 
     def _resolve_human_request_row(self, row: sqlite3.Row, actor: str, value: str) -> dict[str, Any]:
         """Resolve an already selected row; caller owns the lock and transport trust."""
+        if row["kind"] != "user":
+            raise ValidationError("secret requests require AskSecret/SSS, not an ordinary answer")
         actors = json.loads(str(row["allowed_actors_json"]))
         if actor not in actors:
             raise ValidationError("human response actor is not allowed")
@@ -1009,13 +1037,15 @@ class NotificationCenter:
             if current["state"] == "resolved" and current["response_actor"] == actor and current["response_value"] == value:
                 return self._human_request_result(current)
             raise ValidationError(f"human request is {current['state']}")
-        if value == "deep_analysis":
+        if value == "deep_analysis" and not row["native_harness"]:
             self._connection.execute(
                 "UPDATE human_requests SET progress_json = ? WHERE request_id = ?",
                 (json.dumps({"phase": "accepted", "message": "Принял, запускаю глубокий разбор…", "updated_at": resolved_at}, ensure_ascii=False), row["request_id"]),
             )
             current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
-        return self._human_request_result(current)
+        result = self._human_request_result(current)
+        self._enqueue_human_completion(result)
+        return result
 
     def update_human_request_progress(self, token: str, request_id: str, update: Mapping[str, Any]) -> dict[str, Any]:
         """Persist monotonic analysis progress for the original project/card only."""
@@ -1119,13 +1149,17 @@ class NotificationCenter:
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             if row is None:
                 raise ValidationError("human request not found")
-            if row["native_harness"]:
-                # A bound question is governed by the Agent Herder pending gate.
-                self._expire_human_request(row)
-                return self._human_request_result(
-                    self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
-                ) if row["state"] != "pending" else self._resolve_human_request_row(row, actor, value)
-            return self._resolve_human_request_row(self._expire_human_request(row), actor, value)
+            if row["kind"] != "user":
+                raise ValidationError("secret requests require AskSecret/SSS, not an ordinary answer")
+            if actor not in json.loads(str(row["allowed_actors_json"])):
+                raise ValidationError("human response actor is not allowed")
+            row = self._expire_human_request(row)
+            if row["state"] != "pending":
+                result = self._human_request_result(row)
+                if row["state"] == "resolved":
+                    self._enqueue_human_completion(result)
+                return {**result, "answer_accepted": False}
+            return {**self._resolve_human_request_row(row, actor, value), "answer_accepted": True}
 
     def resolve_human_reply_from_telegram(self, chat_id: str, message_id: int, actor: str, value: str) -> dict[str, Any] | None:
         """Resolve only a reply correlated to the exact sent Telegram question."""
@@ -1137,6 +1171,111 @@ class NotificationCenter:
             if row is None:
                 return None
             return self._resolve_human_request_row(self._expire_human_request(row), str(actor).strip(), str(value).strip())
+
+    def _enqueue_human_completion(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Durably record the native resume owed for one answered question.
+
+        The row is written before any card rendering, so a card failure or a
+        Herder outage can never lose the native continuation. Repeats reuse the
+        same canonical result reference and never create a second row.
+        """
+        # Caller holds the answer transaction: no inner connection context may
+        # commit the answer separately from its owed continuation.
+        if request.get("kind", "user") != "user" or request.get("state") != "resolved":
+            return {}
+        request_id = str(request.get("request_id") or "")
+        harness = str(request.get("native_harness") or "")
+        session_id = str(request.get("native_session_id") or "")
+        cwd = str(request.get("native_cwd") or "")
+        if not (request_id and harness and session_id and cwd):
+            return {}
+        actor = str(request.get("response_actor") or "")
+        result_ref = self._selection_result_ref(request_id, request.get("response_value"), actor)
+        now = time.time()
+        with self._lock:
+            existing = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if existing is not None:
+                return {**dict(existing), "replayed": True}
+            self._connection.execute(
+                "INSERT INTO human_request_completions(request_id, result_ref, harness, session_id, cwd, actor,"
+                " state, attempts, reason, next_attempt_at, card_next_attempt_at, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, ?, ?)",
+                (request_id, result_ref, harness, session_id, cwd, actor[:128], now, now, now, now),
+            )
+            row = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            return {**dict(row), "replayed": False}
+
+    def human_request_completion(self, request_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE request_id = ?", (request_id,)).fetchone()
+            return dict(row) if row is not None else {}
+
+    def claim_human_completion(self, request_id: str) -> bool:
+        """Fence concurrent HTTP/worker attempts before crossing the network.
+
+        A process dying while sending leaves an unknown outcome, never a due
+        retry. Only a definitive non-admission makes the row retryable again.
+        """
+        with self._lock, self._connection:
+            return self._connection.execute(
+                "UPDATE human_request_completions SET state = 'sending', updated_at = ?"
+                " WHERE request_id = ? AND state IN ('pending', 'retryable') AND next_attempt_at <= ?",
+                (time.time(), request_id, time.time()),
+            ).rowcount == 1
+
+    def due_human_completion_cards(self, limit: int = 8) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE card_state IN ('pending', 'retryable')"
+                " AND card_next_attempt_at <= ? ORDER BY card_next_attempt_at LIMIT ?",
+                (time.time(), max(1, min(50, int(limit)))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def mark_human_completion_card(self, request_id: str, status: str) -> None:
+        state = "sent" if status in {"marked", "already_marked", "skipped"} else "retryable"
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE human_request_completions SET card_state = ?, card_next_attempt_at = ? WHERE request_id = ?",
+                (state, time.time() + 30, request_id))
+
+    def due_human_completions(self, now: float | None = None, limit: int = 8) -> list[dict[str, Any]]:
+        """Retryable native resumes waiting for the existing delivery worker."""
+        moment = float(now if now is not None else time.time())
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE state IN ('pending', 'retryable')"
+                " AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?",
+                (moment, max(1, min(50, int(limit)))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_human_completion(self, request_id: str, state: str, reason: str = "", retry_in_seconds: float = 30) -> dict[str, Any]:
+        """Record one delivery outcome for a durable native resume.
+
+        ``sent`` is final, ``unknown`` is final because an unknown admission must
+        never be replayed, and ``retryable`` is reserved for a definite
+        unavailability that Herder itself reports as not accepted.
+        """
+        safe_state = str(state or "").strip()
+        if safe_state not in {"sent", "retryable", "unknown"}:
+            raise ValidationError("human completion state must be sent, retryable, or unknown")
+        now = time.time()
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE human_request_completions SET state = ?, reason = ?, attempts = attempts + 1,"
+                " next_attempt_at = ?, updated_at = ? WHERE request_id = ?",
+                (safe_state, str(reason or "")[:200], now + max(5.0, float(retry_in_seconds)), now, str(request_id)),
+            )
+            row = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE request_id = ?", (str(request_id),)
+            ).fetchone()
+        return dict(row) if row is not None else {}
 
     def human_request_is_bound(self, request_id: str) -> bool:
         """Whether one question is governed by the Agent Herder pending gate."""

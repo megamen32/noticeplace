@@ -15,8 +15,23 @@ The single Notice Place card comes from `noticeplace_ask_human` below.
 
 From that binding, create the Notice Place side exactly once with
 `noticeplace_ask_human` using `binding.request_id`,
-`binding.native_target.harness`, `binding.native_target.session_id`, the
-message, and the choices. Do **not** create a second question or a second card:
+`binding.native_target.harness`, `binding.native_target.session_id`, and the
+required `cwd=binding.native_target.cwd`, plus the message. Herder choices
+have `{choice_id, label}`; the Notice Place tool accepts `{value, label}`.
+Map every choice explicitly: **`value=choice_id`**, preserving `label`:
+
+```text
+noticeplace_ask_human(
+  request_id=binding.request_id,
+  harness=binding.native_target.harness,
+  session_id=binding.native_target.session_id,
+  cwd=binding.native_target.cwd,
+  message=binding.question.message,
+  choices=[{value: choice.choice_id, label: choice.label} for choice in binding.question.choices]
+)
+```
+
+Do **not** create a second question or a second card:
 one creation means one card, one pending question, and one answer.
 
 The answer arrives from Telegram, voice, or phone. Notice Place records it, marks
@@ -28,7 +43,8 @@ When Agent Herder resumes you it says the question is answered and gives the
 `request_id` plus an answer reference. Read the canonical answer with
 `noticeplace_question_result(request_id=...)` and apply it. That value comes from
 durable storage, never from the message text, so a replayed or conflicting
-answer cannot change it. A secret question returns only an opaque reference.
+answer cannot change it. Ordinary question tools reject secret answers;
+use the separate AskSecret/SSS flow. Historical secret results stay opaque.
 
 `ask_human` stays available for a plain notification or an unbound blocking
 question. It binds nothing and resumes nothing, so never pair it with a manual
@@ -42,7 +58,12 @@ resume.
 - `noticeplace_answer` records one accepted answer for any resolver: a question
   (`request_id` plus `value`) or an incident choice card (`incident_id`,
   `request_id`, `choice_id`). The first accepted answer is canonical; a later
-  conflicting repeat is reported as `conflict` and never re-marks the card.
+  conflicting repeat is reported as `conflict` and never changes the answer.
+  `answer_status=no_accept` means the question is closed and no answer was
+  accepted. Card and native delivery are separate outcomes. A failed card edit
+  does not stop native continuation; the existing delivery worker retries the
+  same card and a definitively unavailable native completion. Unknown admission
+  is never retried automatically.
 
 ## Reporting progress
 

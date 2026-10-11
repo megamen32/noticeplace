@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import tempfile
 import threading
 import unittest
@@ -25,6 +26,7 @@ from notification_center.core import NotificationCenter
 class _HerderHandler(BaseHTTPRequestHandler):
     completions: list[dict] = []
     created: list[dict] = []
+    responses: list[tuple[int, dict]] = []
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler contract
         length = int(self.headers.get("Content-Length") or 0)
@@ -48,10 +50,16 @@ class _HerderHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
         type(self).completions.append({"path": self.path, "body": body})
+        code, extra = type(self).responses.pop(0) if type(self).responses else (202, {})
+        if code == 0:
+            # Herder received the completion but its receipt was lost.
+            self.close_connection = True
+            return
         payload = json.dumps({
             "request_id": body.get("request_id"), "status": "resuming", "continuation": "resume",
+            **extra,
         }).encode()
-        self.send_response(202)
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -71,6 +79,8 @@ class ReadyBindingTests(unittest.TestCase):
         self.addCleanup(self.center._connection.close)
 
         _HerderHandler.completions = []
+        _HerderHandler.created = []
+        _HerderHandler.responses = []
         self.herder = ThreadingHTTPServer(("127.0.0.1", 0), _HerderHandler)
         threading.Thread(target=self.herder.serve_forever, daemon=True).start()
         self.addCleanup(self.herder.shutdown)
@@ -83,9 +93,12 @@ class ReadyBindingTests(unittest.TestCase):
         herder_base = f"http://127.0.0.1:{self.herder.server_address[1]}"
 
         self.telegram: list[tuple[str, dict]] = []
+        self.card_failure = False
 
         def fake_telegram(token: str, method: str, payload: dict) -> dict:
             self.telegram.append((method, dict(payload)))
+            if self.card_failure and method.startswith("editMessage"):
+                raise RuntimeError("card edit unavailable")
             if method == "sendMessage":
                 return {"ok": True, "result": {"message_id": 42, "chat": {"id": int(payload["chat_id"])}}}
             return {"ok": True, "result": {"message_id": 42, "chat": {"id": -100}}}
@@ -115,6 +128,189 @@ class ReadyBindingTests(unittest.TestCase):
         from mcp import notify_mcp
         self.tools = notify_mcp.TOOLS
         self.request_id = "3f5b0c2a-1d44-4c6e-9a71-58b1c0f7d902"
+
+    def _create_bound(self, mode: str = "choice") -> None:
+        self._call("noticeplace_ask_human", {
+            "request_id": self.request_id, "harness": "opencode", "session_id": "ses_executor_1",
+            "cwd": self.directory.name, "message": "Починить сейчас?",
+            "choices": ([{"value": "repair", "label": "Починить"},
+                         {"value": "observe", "label": "Наблюдать"}] if mode == "choice" else []),
+        })
+
+    def _delivery_tick(self) -> None:
+        """Run the production bounded pool, not a manual completion helper."""
+        entry = runpy.run_path(str(Path(__file__).resolve().parents[1] / "bin" / "notify-center"))
+        worker = http_api.DeliveryWorker(self.center, object())
+        with patch("time.sleep", side_effect=InterruptedError("one bounded tick")):
+            with self.assertRaises(InterruptedError):
+                entry["worker_loop"](worker, "agent", 2)
+
+    def _make_due(self) -> None:
+        with self.center._lock, self.center._connection:
+            self.center._connection.execute(
+                "UPDATE human_request_completions SET next_attempt_at=0, card_next_attempt_at=0")
+
+    def test_http_card_failure_does_not_lose_native_completion_and_card_retries(self) -> None:
+        self._create_bound()
+        self.card_failure = True
+        answered = self._call("noticeplace_answer", {"request_id": self.request_id, "value": "repair"})
+        self.assertEqual("failed", answered["card"])
+        self.assertEqual("resuming", answered["native"]["status"])
+        self.assertEqual(1, len(_HerderHandler.completions))
+        canonical = self._call("noticeplace_question_result", {"request_id": self.request_id})
+        self.assertEqual(canonical["result_ref"], _HerderHandler.completions[0]["body"]["result_ref"])
+        self.card_failure = False
+        self._make_due()
+        self._delivery_tick()
+        self.assertEqual("sent", self.center.human_request_completion(self.request_id)["card_state"])
+        self.assertEqual(1, len(_HerderHandler.completions), "card retry never re-resumes the native session")
+        self.assertTrue(any("✅ Выбрано: Починить" in p.get("text", "") for m, p in self.telegram if m == "editMessageText"))
+
+    def test_definite_native_unavailable_retries_canonical_reference_after_restart(self) -> None:
+        self._create_bound()
+        _HerderHandler.responses = [(502, {"status": "resume_failed", "reason": "agent-resume:native-unavailable", "retry": True})]
+        answered = self._call("noticeplace_answer", {"request_id": self.request_id, "value": "repair"})
+        self.assertEqual("retryable", answered["native"]["status"])
+        # Reopen the durable database as the service would after a restart.
+        reopened = NotificationCenter(Path(self.directory.name) / "notice.sqlite3", self.center._tokens,
+                                      default_quiet_hours=[])
+        self.addCleanup(reopened._connection.close)
+        self.center = reopened
+        self._make_due()
+        self._delivery_tick()
+        self.assertEqual("sent", self.center.human_request_completion(self.request_id)["state"])
+        self.assertEqual(2, len(_HerderHandler.completions))
+        self.assertEqual(_HerderHandler.completions[0]["body"], _HerderHandler.completions[1]["body"])
+        repeated = self._call("noticeplace_answer", {"request_id": self.request_id, "value": "observe"})
+        self.assertEqual("repair", repeated["value"])
+        self.assertTrue(repeated["conflict"])
+        self._delivery_tick()
+        self.assertEqual(2, len(_HerderHandler.completions))
+
+    def test_button_and_free_text_card_failure_with_native_outage_use_same_completion(self) -> None:
+        from notification_center.telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
+        for surface in ("button", "text"):
+            with self.subTest(surface=surface):
+                self.request_id = self.request_id[:-1] + ("a" if surface == "button" else "b")
+                self._create_bound("choice" if surface == "button" else "question")
+                self.card_failure = True
+                _HerderHandler.responses = [(502, {"status": "resume_failed", "reason": "agent-resume:native-unavailable", "retry": True})]
+                codec = TelegramActionCodec("s" * 32)
+
+                def api(method, payload):
+                    if method == "getUpdates":
+                        return {"ok": True, "result": []}
+                    return http_api.telegram_api("bot-token", method, payload)
+
+                poller = TelegramInteractionPoller(self.center, "bot-token", {"42"}, codec, api=api)
+                if surface == "button":
+                    poller._handle_callback({"id": "cb", "from": {"id": 42},
+                        "data": codec.encode_human_choice(self.request_id, "0"),
+                        "message": {"chat": {"id": -100}, "message_id": 42, "text": "Починить сейчас?"}})
+                else:
+                    poller._handle_message({"from": {"id": 42}, "chat": {"id": -100}, "message_id": 99,
+                        "text": "repair", "reply_to_message": {"message_id": 42}})
+                stored = self.center.human_request_completion(self.request_id)
+                self.assertEqual("retryable", stored["state"])
+                self.assertEqual("retryable", stored["card_state"])
+                self.assertEqual("repair", self.center.get_human_request("p", self.request_id)["response_value"])
+                first_ref = _HerderHandler.completions[-1]["body"]["result_ref"]
+                self.card_failure = False
+                self._make_due()
+                self._delivery_tick()
+                recovered = self.center.human_request_completion(self.request_id)
+                self.assertEqual("sent", recovered["state"])
+                self.assertEqual("sent", recovered["card_state"])
+                self.assertEqual(first_ref, _HerderHandler.completions[-1]["body"]["result_ref"])
+
+    def test_answer_and_outbox_roll_back_together_on_storage_failure(self) -> None:
+        self._create_bound()
+        with self.center._lock, self.center._connection:
+            self.center._connection.execute(
+                "CREATE TRIGGER fail_completion BEFORE INSERT ON human_request_completions "
+                "BEGIN SELECT RAISE(ABORT, 'test outbox unavailable'); END")
+        # The real HTTP request fails; an answer must not be committed without
+        # the durable continuation owed to its bound native session.
+        with self.assertRaises(RuntimeError):
+            self._call("noticeplace_answer", {"request_id": self.request_id, "value": "repair"})
+        self.assertEqual("pending", self.center.get_human_request("p", self.request_id)["state"])
+        self.assertEqual({}, self.center.human_request_completion(self.request_id))
+        self.assertEqual([], _HerderHandler.completions)
+        with self.center._lock, self.center._connection:
+            self.center._connection.execute("DROP TRIGGER fail_completion")
+        self._call("noticeplace_answer", {"request_id": self.request_id, "value": "repair"})
+        self.assertEqual(1, len(_HerderHandler.completions))
+
+    def test_unknown_native_admission_and_generic_http_failure_are_never_retried(self) -> None:
+        for code, reply in ((0, {}), (202, {"status": "resuming", "in_flight": True}),
+                            (502, {"status": "resume_failed", "reason": "agent-resume:native-unavailable", "retry": False}),
+                            (502, {"status": "resume_failed", "reason": "agent-resume:admission-unknown"}),
+                            (502, {"error": "provider error", "status": "invalid"})):
+            with self.subTest(reply=reply):
+                # Each case uses a distinct durable binding.
+                self.request_id = self.request_id[:-1] + str(len(_HerderHandler.completions) + 1)
+                self._create_bound()
+                _HerderHandler.responses = [(code, reply)]
+                result = self._call("noticeplace_answer", {"request_id": self.request_id, "value": "repair"})
+                self.assertEqual("unknown", result["native"]["status"])
+                calls = len(_HerderHandler.completions)
+                self._make_due()
+                self._delivery_tick()
+                self._call("noticeplace_answer", {"request_id": self.request_id, "value": "observe"})
+                self.assertEqual(calls, len(_HerderHandler.completions))
+
+    def test_concurrent_http_answers_keep_one_answer_card_and_native_delivery(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        self._create_bound()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(self._call, "noticeplace_answer", {"request_id": self.request_id, "value": value})
+                       for value in ("repair", "observe")]
+            answers = [future.result(timeout=15) for future in futures]
+        self.assertEqual(answers[0]["value"], answers[1]["value"])
+        self.assertEqual(1, sum(answer["accepted"] for answer in answers))
+        self.assertEqual(1, len(_HerderHandler.completions))
+        self.assertEqual(1, sum(method == "editMessageText" for method, _ in self.telegram))
+
+    def test_expired_and_cancelled_http_answers_explicitly_accept_nothing(self) -> None:
+        for state in ("expired", "cancelled"):
+            request_id = f"req-{state}"
+            self.center.create_human_request("p", {
+                "schema": "ask_human.request.v1", "request_id": request_id, "project": "hermes",
+                "recipient": "me", "mode": "question", "message": "Вопрос?", "allowed_actors": ["telegram:42"],
+            })
+            with self.center._lock, self.center._connection:
+                self.center._connection.execute("UPDATE human_requests SET state=? WHERE request_id=?", (state, request_id))
+            result = self._call("noticeplace_answer", {"request_id": request_id, "value": "новый ответ"})
+            self.assertEqual("no_accept", result["answer_status"])
+            self.assertIsNone(result["value"])
+            self.assertEqual("skipped", result["card"])
+            self.assertEqual("not_attempted", result["native"]["status"])
+            self.assertIsNone(self.center.selection_receipt(request_id))
+        self.assertEqual([], _HerderHandler.completions)
+
+    def test_secret_http_answer_and_legacy_ordinary_completion_are_rejected_without_leak(self) -> None:
+        self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": "req-secret", "project": "hermes", "kind": "secret",
+            "recipient": "me", "mode": "question", "message": "Используйте AskSecret", "allowed_actors": ["telegram:42"],
+        })
+        raw_value = "sensitive-test-answer"
+        with self.assertRaises(RuntimeError) as raised:
+            self._call("noticeplace_answer", {"request_id": "req-secret", "value": raw_value})
+        self.assertNotIn(raw_value, str(raised.exception))
+        from notification_center.core import ValidationError
+        with self.assertRaises(ValidationError):
+            self.center.resolve_human_request("p", "req-secret", "telegram:42", raw_value)
+        with self.center._lock, self.center._connection:
+            # Historical data must stay opaque even if written by an old producer.
+            self.center._connection.execute("UPDATE human_requests SET state='resolved', response_value=? WHERE request_id='req-secret'", (raw_value,))
+        view = self.center.get_human_request("p", "req-secret")
+        result = self._call("noticeplace_question_result", {"request_id": "req-secret"})
+        self.assertNotIn(raw_value, json.dumps([view, result]))
+        api_calls = []
+        self.assertEqual("skipped", http_api.mark_human_request_resolved_card(
+            self.center, {**view, "response_value": raw_value}, "telegram:42", lambda *args: api_calls.append(args))["status"])
+        self.assertEqual([], api_calls)
+        self.assertEqual([], _HerderHandler.completions)
 
     def _call(self, name: str, arguments: dict) -> dict:
         return self.tools[name]["handler"](arguments)
