@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from notification_center.core import NotificationCenter
 from notification_center.agentcall_phone import AgentCallPhoneAdapter
 from notification_center.health_session_lifecycle import HealthSessionArchiver
+from notification_center.incident_progress import IncidentProgressReader
 from notification_center.http_api import DeliveryWorker, android_phone_from_environment, call_adapters_from_environment, gptadmin_agent_jobs_from_environment, matrix_call_from_environment, message_adapters_from_environment, run_http, telegram_action_codec_from_environment, telegram_from_environment, telegram_interactions_from_environment
 
 
@@ -38,6 +39,8 @@ def worker_loop(worker: DeliveryWorker, channel_group: str, max_workers: int) ->
         archive = HealthSessionArchiver(worker._center) if channel_group == "agent" else None
         archive_due = time.monotonic() + 60
         completion_future = None
+        progress = IncidentProgressReader(worker._center) if channel_group == 'agent' else None
+        progress_due = time.monotonic() + 15
         while True:
             inflight = {future for future in inflight if not future.done()}
             capacity = max_workers - len(inflight)
@@ -53,6 +56,9 @@ def worker_loop(worker: DeliveryWorker, channel_group: str, max_workers: int) ->
                 if capacity > 0:
                     for delivery in worker.claim_due(limit=capacity, channel_group=channel_group):
                         inflight.add(executor.submit(worker.deliver, delivery))
+                if progress is not None and len(inflight) < max_workers and time.monotonic() >= progress_due:
+                    inflight.add(executor.submit(progress.run_once, 2))
+                    progress_due = time.monotonic() + 15
                 if archive is not None and len(inflight) < max_workers and time.monotonic() >= archive_due:
                     inflight.add(executor.submit(archive.run_once))
                     archive_due = time.monotonic() + 60

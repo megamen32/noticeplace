@@ -174,6 +174,84 @@ class RepairFirstExecutorTests(unittest.TestCase):
         self.assertNotIn("Других финальных форматов нет", message)
         self.assertNotIn("noticeplace_ask_human", message)
 
+    def test_persisted_legacy_template_is_replaced_by_scoped_gsd_execution(self) -> None:
+        """Focused integration: real run_profile+persisted config (<1s/max5s).
+
+        Detects the actual autosell session's contradictory instruction assembly.
+        """
+        legacy=('Diagnose only the bounded health telemetry below with OmniRoute/subagent. '
+            'Do not inspect repositories, create files, invoke tools, change infrastructure, or propose remediation plans. '
+            'Return immediately exactly one JSON object and no markdown with status=diagnosis_complete, diagnosis, evidence_refs, and trace_refs. '
+            'A separate logical OmniRoute/orchestrator stage will turn this diagnosis into exactly three reversible plans.')
+        with tempfile.TemporaryDirectory() as root:
+            profile={key:value for key,value in self._profile(root).items() if not key.startswith('orchestrator_')}
+            profile['instruction']=legacy
+            config=Path(root)/'agent-jobs.json';config.write_text(json.dumps({'profiles':{'health-diagnosis':profile}}));config.chmod(0o600)
+            event=self._event();event['incident']={**event['incident'],'project':'autosell','title':'AutoSellBot не отвечает',
+                'body':'Контрольная заявка не обрабатывается.','id':'inc_4c7454836a9d40009f03e6a03b0f2987'}
+            event['health']={**event['health'],'source_id':'autosell-hourly-watch','host_id':'100','signal_type':'service_runtime',
+                             'source_fingerprint':'94c0e99e2166018e1ef84c84','correlation_id':'autosell-watch-2026101120',
+                             'evidence_refs':['docker:autofind-client','http://127.0.0.1:22333/healthz']}
+            requests=[]
+            with patch.object(agent_job_helper,'_load_health_callback',return_value=('http://127.0.0.1:8091','callback-token')):
+                receipt=agent_job_helper.run_profile('health-diagnosis',event,config,
+                    runner=self._runner({'executor':json.dumps({'health_question':{'needs_human':True}})},requests))
+            message=json.loads(next(r for r in requests if 'project-launch' in r.full_url).data)['message']
+            for forbidden in ('Diagnose only','Do not inspect repositories','invoke tools','exactly one JSON','exactly three','OmniRoute'):
+                self.assertNotIn(forbidden,message)
+            for required in ('Get Shit Done','gsd-debug','gsd-quick','AGENTS.md','реального потребителя','autosell-hourly-watch','service_runtime','94c0e99e2166018e1ef84c84',
+                             'autosell-watch-2026101120','docker:autofind-client','http://127.0.0.1:22333/healthz',
+                             'AutoSellBot','inc_4c7454836a9d40009f03e6a03b0f2987','ASK_HUMAN_ENV_FILE','GPTADMIN_HEALTH_CALLBACK_FILE'):
+                self.assertIn(required,message)
+            self.assertEqual('executor-native',receipt['session_id'])
+            arm=json.loads(next(r for r in requests if '/api/autopilot/sessions/' in r.full_url).data)
+            self.assertEqual({'incidentId':event['incident']['id'],'project':'autosell'},arm['noticeIncident'])
+
+
+    def test_plain_gsd_terminal_turn_does_not_wait_for_json_or_launch_planner(self) -> None:
+        """Focused integration: idle GSD prose (<1s/max5s), no forced collector."""
+        for text in ('Проверил источник, исправил первопричину, потребитель снова работает.',
+                     json.dumps({'status':'diagnosis_complete','diagnosis':'Причина установлена.'})):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as root:
+                with patch.object(agent_job_helper.time,'sleep',side_effect=AssertionError('idle turn must not poll')):
+                    receipt,requests=self._run({'executor':text},root)
+            self.assertEqual('completed',receipt['status'])
+            self.assertEqual('repair-first',receipt['path'])
+            self.assertFalse(receipt['resolved'])
+            self.assertNotIn('orchestrator_session_id',receipt)
+            self.assertEqual([],self._health_actions(requests))
+            self.assertEqual(1,sum('project-launch' in r.full_url for r in requests))
+            self.assertFalse(any(r.full_url.endswith('/api/sessions/new-or-resume') for r in requests))
+
+    def test_running_executor_survives_the_bounded_observer_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            requests=[]; base=self._runner({'executor':'unused'},requests)
+            def runner(request, **kwargs):
+                if '/progress?' in request.full_url:
+                    requests.append(request)
+                    return _Response({'session':{'status':'running'},'fingerprint':'native-working'})
+                return base(request,**kwargs)
+            with patch.object(agent_job_helper,'_load_health_callback',return_value=('http://127.0.0.1:8091','callback-token')), \
+                 patch.object(agent_job_helper,'_profile_seconds',return_value=0):
+                receipt=agent_job_helper.run_profile('health-diagnosis',self._event(),Path('unused'),runner=runner,profile_override=self._profile(root))
+        self.assertEqual('completed',receipt['status']);self.assertTrue(receipt['awaiting_executor'])
+        self.assertTrue(receipt['observer_only']);self.assertFalse(receipt['resolved'])
+        self.assertEqual(1,sum('project-launch' in r.full_url for r in requests))
+        self.assertFalse(any('/details?' in r.full_url for r in requests))
+        self.assertEqual([],self._health_actions(requests))
+
+    def test_legacy_orchestrator_profile_uses_the_same_project_launch_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            requests=[]; event=self._event();event['job_id']='health-orchestrator'
+            profile={**self._profile(root),'instruction':'Do not inspect repositories; exactly three plans.'}
+            with patch.object(agent_job_helper,'_load_health_callback',return_value=('http://127.0.0.1:8091','callback-token')):
+                receipt=agent_job_helper.run_profile('health-orchestrator',event,Path('unused'),
+                    runner=self._runner({'executor':'Ремонт завершён; ожидаем независимую проверку.'},requests),profile_override=profile)
+            message=json.loads(next(r for r in requests if 'project-launch' in r.full_url).data)['message']
+            self.assertIn('gsd-debug',message); self.assertNotIn('exactly three',message)
+            self.assertNotIn('Do not inspect',message)
+            self.assertTrue(receipt['autopilot_armed']);self.assertFalse(receipt['resolved'])
+
 
 class IndependentVerificationTests(unittest.TestCase):
     """Only a separate producer receipt may close a repair-first incident."""
@@ -200,6 +278,37 @@ class IndependentVerificationTests(unittest.TestCase):
         return self.center.record_agent_job_result(
             self.created["incident_id"], "d1", "health-diagnosis", receipt,
             {"source_id": "disk-source", "source_fingerprint": "fp-1"})
+
+    def test_original_event_facts_reach_prompt_and_plain_observer_reaches_core(self) -> None:
+        """Focused integration: actual payload -> Hub event -> prompt -> Hub receipt -> core (<1s/max5s)."""
+        from notification_center.gptadmin_agent import _agent_job_event, GptAdminAgentJobAdapter
+        evidence=['docker:autofind-client','http://127.0.0.1:22333/healthz']
+        created=self.center.create_event('p','autosell-shape',{
+            'schema':'notify.event.v1','project':'fleet-health','recipient':'me','kind':'incident','severity':'critical',
+            'title':'Сервис не отвечает','body':'Заявка не обрабатывается.','dedup_key':'autosell:runtime',
+            'event_type':'health.degraded','source_id':'autosell-hourly-watch','host_id':'100',
+            'signal_type':'service_runtime','source_fingerprint':'94c0e99e2166018e1ef84c84',
+            'correlation_id':'autosell-watch-2026101120','evidence_refs':evidence})
+        incident_id=created['incident_id']
+        payload=self.center.delivery_payload({'id':'fixture','incident_id':incident_id,'channel':'gptadmin.agent:health-diagnosis',
+                                             'target':'health-diagnosis','trigger_kind':'initial'})
+        event=_agent_job_event('health-diagnosis',payload)
+        self.assertEqual(evidence,event['health']['evidence_refs'])
+        message=agent_job_helper._repair_first_message({},event,event['incident'])
+        for ref in evidence:self.assertIn(ref,message)
+        for waiting in (True,False):
+            native={'status':'completed','path':'repair-first','observer_only':True,'awaiting_executor':waiting,
+                    'session_id':'executor-native','harness':'opencode'}
+            job={'result':{'response':{'structuredContent':{'result':{'stdout':json.dumps(native)}}}}}
+            receipt=GptAdminAgentJobAdapter._bounded_agent_receipt(job)
+            self.assertTrue(receipt['observer_only'])
+            result=self.center.record_agent_job_result(incident_id,'delivery-'+str(waiting),'health-diagnosis',
+                {'status':'completed','agent_receipt':receipt},payload['health_context'])
+            self.assertTrue(result['accepted']);self.assertFalse(result['resolved'])
+            self.assertEqual(waiting,result['awaiting_executor'])
+        self.assertEqual('open',self.center.get_incident(incident_id)['state'])
+        rejects=self.center._connection.execute("SELECT COUNT(*) FROM audit_events WHERE incident_id=? AND type='health.repair_first_receipt_rejected'",(incident_id,)).fetchone()[0]
+        self.assertEqual(0,rejects)
 
     def test_executor_receipt_leaves_the_incident_open(self) -> None:
         outcome = self._executor_progress()

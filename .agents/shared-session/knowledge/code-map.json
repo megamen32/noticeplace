@@ -155,6 +155,110 @@
       ],
       "summary": "Manual AI must persist the clicked card and mark selection before session delivery; ordinary incidents with a manual request need immediate session registration and terminal harness/model fallback. TelegramSender edits the original ID; plan migration retains URL.",
       "verified_at": "2026-10-06T12:19:51.767410+03:00"
+    },
+    "noticeplace.repair-first.execution": {
+      "confidence": "verified",
+      "evidence": [
+        "tests/test_repair_first_incident.py: actual persisted legacy template RED; scoped source/evidence, no planner, plain GSD, running observer and adapter/core regression"
+      ],
+      "git_head": "6a43747001fbb3c5ed982d7844081c565b85d936",
+      "key": "noticeplace.repair-first.execution",
+      "kind": "failure-shield",
+      "locations": [
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5729102e6fb1e129b7ec9f8edbd651470b7941913085b2109a24f4b47c976066",
+          "path": "notification_center/agent_job_helper.py",
+          "symbol": "_repair_first_message"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5729102e6fb1e129b7ec9f8edbd651470b7941913085b2109a24f4b47c976066",
+          "path": "notification_center/agent_job_helper.py",
+          "symbol": "_run_health_diagnosis"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5729102e6fb1e129b7ec9f8edbd651470b7941913085b2109a24f4b47c976066",
+          "path": "notification_center/agent_job_helper.py",
+          "symbol": "arm_session_autopilot"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5e82957e9b9442ed68c9980ae6f3bc00ba1a1711fa4ea1add763d59b04a68e96",
+          "path": "notification_center/gptadmin_agent.py",
+          "symbol": "_agent_job_event"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5e82957e9b9442ed68c9980ae6f3bc00ba1a1711fa4ea1add763d59b04a68e96",
+          "path": "notification_center/gptadmin_agent.py",
+          "symbol": "_bounded_agent_receipt"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "9c98149568c1fa7789ee303366a1039abec11f2257f1f18db25fe144e34ab399",
+          "path": "notification_center/core.py",
+          "symbol": "_record_health_repair_first_receipt"
+        }
+      ],
+      "summary": "Replace persisted diagnosis/planner prose with one source-owned original-GSD repair prompt and bounded original source/evidence. Plain native terminal completes observer; running observer deadline leaves existing native autopilot working. Receipt identity and noticeIncident binding preserve original incident completion.",
+      "verified_at": "2026-10-12T00:25:52.987607+03:00"
+    },
+    "noticeplace.telegram.canonical-card": {
+      "confidence": "verified",
+      "evidence": [
+        "tests/test_incident_card_delivery.py: diagnosis-before-initial, concurrent connections, unknown creation, terminal races, partial group recovery and concrete-child ACK",
+        "tests/test_ready_mcp_binding.py: actual HTTP/button/reply closure gate and canonical linked legacy progress"
+      ],
+      "git_head": "6a43747001fbb3c5ed982d7844081c565b85d936",
+      "key": "noticeplace.telegram.canonical-card",
+      "kind": "production-path",
+      "locations": [
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "9c98149568c1fa7789ee303366a1039abec11f2257f1f18db25fe144e34ab399",
+          "path": "notification_center/core.py",
+          "symbol": "reserve_delivery_send"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "9c98149568c1fa7789ee303366a1039abec11f2257f1f18db25fe144e34ab399",
+          "path": "notification_center/core.py",
+          "symbol": "original_telegram_card"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "77e7491e5da5320cd658fe688cad6775b90a7eb3db36bee2b4ff409865633307",
+          "path": "notification_center/incident_card.py",
+          "symbol": "render"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "a65135879b22d8e821285dc2feaa79ba90a9e6fc8531d05048a3ec9b42c89608",
+          "path": "notification_center/incident_progress.py",
+          "symbol": "IncidentProgressReader.run_once"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "083ab1218182c38d77a9e2387f0e685159f2f7355e70833dd59d8835c7fcafbb",
+          "path": "bin/notify-center",
+          "symbol": "worker_loop"
+        }
+      ],
+      "summary": "All Telegram stages reuse the first confirmed card; SQLite creation fence blocks sending/uncertain replay. Separate incident records retain state, repair, audits and member-specific ACK. Existing pool reads exact native session, latest durable projection.",
+      "verified_at": "2026-10-12T00:25:52.888435+03:00"
     }
   },
   "schema_version": 1

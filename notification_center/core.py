@@ -308,6 +308,11 @@ class NotificationCenter:
             for column in ("event_type", "producer", "plugin", "correlation_id", "parent_event_id", "parent_incident_id", "peer_ip", "source_ip", "proxy_ip", "forwarded_for"):
                 if column not in incident_columns:
                     self._connection.execute(f"ALTER TABLE incidents ADD COLUMN {column} TEXT")
+            for column, definition in (("telegram_card_owner_id", "TEXT"), ("telegram_card_updated_at", "REAL"),
+                                       ("telegram_card_projection", "TEXT"), ("native_projection_json", "TEXT"),
+                                       ("native_polled_at", "REAL")):
+                if column not in incident_columns:
+                    self._connection.execute(f"ALTER TABLE incidents ADD COLUMN {column} {definition}")
             delivery_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(deliveries)")}
             if "target_json" not in delivery_columns:
                 self._connection.execute("ALTER TABLE deliveries ADD COLUMN target_json TEXT NOT NULL DEFAULT '{}'")
@@ -417,6 +422,9 @@ class NotificationCenter:
                 "CREATE INDEX IF NOT EXISTS deliveries_incident_channel_status "
                 "ON deliveries(incident_id, channel, status)"
             )
+            self._connection.execute('CREATE INDEX IF NOT EXISTS incidents_telegram_owner ON incidents(telegram_card_owner_id)')
+            self._connection.execute('CREATE INDEX IF NOT EXISTS incidents_telegram_family ON incidents(project,recipient,collapse_key,created_at)')
+            self._connection.execute('CREATE INDEX IF NOT EXISTS incidents_native_poll ON incidents(state,native_polled_at)')
             # Archive candidate selection correlates each session with its
             # audit history while holding the shared center lock. Without
             # this index accumulated audit rows stall cards and dispatch.
@@ -632,8 +640,15 @@ class NotificationCenter:
         """Persist expiry for an overdue pending request and return its current row.
 
         A question bound to a native session is owned by the Agent Herder
-        pending gate, so Notice Place never expires or cancels it on its own.
+        pending gate, so time alone never expires it here. An independently
+        closed incident explicitly withdraws its unanswered question.
         """
+        if row['state'] == 'pending' and row['kind'] == 'user' and self._human_request_incident_closed(row):
+            self._connection.execute("UPDATE human_requests SET state='cancelled',cancelled_at=?,cancelled_by='incident-closure' "
+                                     "WHERE request_id=? AND state='pending'", (time.time(), row['request_id']))
+            self._audit(str(row['incident_id']), 'native_question_withdrawn', 'incident-closure',
+                        {'request_id': row['request_id'], 'reason': 'Связанный инцидент закрыт независимой проверкой'})
+            return self._connection.execute('SELECT * FROM human_requests WHERE request_id=?', (row['request_id'],)).fetchone()
         expires_at = row["expires_at"]
         if "native_harness" in row.keys() and row["native_harness"]:
             return row
@@ -641,6 +656,13 @@ class NotificationCenter:
             self._connection.execute("UPDATE human_requests SET state = 'expired' WHERE request_id = ? AND state = 'pending'", (row["request_id"],))
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
         return row
+
+    def _human_request_incident_closed(self, row: Mapping[str, Any]) -> bool:
+        incident_id = row['incident_id']
+        if not incident_id:
+            return False
+        incident = self._connection.execute('SELECT state FROM incidents WHERE id=?', (incident_id,)).fetchone()
+        return bool(incident and incident['state'] == 'resolved')
 
     def create_human_request(self, token: str, request: Mapping[str, Any]) -> dict[str, Any]:
         """Validate and durably create one bounded AskHuman request."""
@@ -705,6 +727,21 @@ class NotificationCenter:
         if raw_incident_id is not None and not isinstance(raw_incident_id, str):
             raise ValidationError("human request incident_id must be a string")
         incident_id = str(raw_incident_id or "").strip()[:128] or None
+        if incident_id is None and native['session_id'] and kind == 'user':
+            with self._lock:
+                existing_binding = self._connection.execute('SELECT incident_id FROM human_requests WHERE request_id=?', (request_id,)).fetchone()
+                matches = self._connection.execute(
+                    "SELECT DISTINCT incident_id FROM events WHERE event_type IN "
+                    "('health.diagnosis_session_started','health.orchestrator_session_started','health.remediation_session_started') "
+                    "AND json_extract(payload_json,'$.harness')=? AND json_extract(payload_json,'$.session_id')=?",
+                    (native['harness'], native['session_id']),
+                ).fetchall()
+            if existing_binding:
+                incident_id = existing_binding['incident_id']
+            elif len(matches) == 1:
+                incident_id = str(matches[0]['incident_id'])
+            elif len(matches) > 1:
+                raise ValidationError('native question matches multiple incidents; incident_id is required')
         if incident_id is not None:
             if self.get_incident(incident_id) is None:
                 raise ValidationError("human request incident not found")
@@ -1139,6 +1176,9 @@ class NotificationCenter:
         if not actor or not value or len(value) > 4000:
             raise ValidationError("human response actor and value are required")
         with self._lock, self._connection:
+            # Take the shared SQLite writer fence before reading incident state;
+            # another center cannot resolve it between that read and admission.
+            self._connection.execute('UPDATE human_requests SET request_id=request_id WHERE request_id=?', (request_id,))
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             if row is None:
                 raise ValidationError("human request not found")
@@ -1147,11 +1187,16 @@ class NotificationCenter:
     def human_request_for_reply(self, chat_id: str, message_id: int, actor: str) -> dict[str, Any] | None:
         """Find the question a Telegram reply answers, without resolving it yet."""
         with self._lock:
-            row = self._connection.execute(
+            rows = self._connection.execute(
                 "SELECT * FROM human_requests WHERE telegram_chat_id = ? AND telegram_message_id = ? "
-                "AND mode = 'question' ORDER BY created_at DESC LIMIT 1",
+                "AND mode = 'question' ORDER BY created_at DESC LIMIT 50",
                 (str(chat_id), int(message_id)),
-            ).fetchone()
+            ).fetchall()
+            pending = [self._expire_human_request(row) for row in rows]
+            pending = [row for row in pending if row['state'] == 'pending']
+            if len(pending) > 1:
+                raise ValidationError('Ответ неоднозначен: в этой карточке несколько открытых вопросов')
+            row = pending[0] if pending else (rows[0] if rows else None)
             if row is None:
                 return None
             if str(actor) not in json.loads(str(row["allowed_actors_json"])):
@@ -1169,6 +1214,7 @@ class NotificationCenter:
         if not actor or not value or len(value) > 4000:
             raise ValidationError("human response actor and value are required")
         with self._lock, self._connection:
+            self._connection.execute('UPDATE human_requests SET request_id=request_id WHERE request_id=?', (request_id,))
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             if row is None:
                 raise ValidationError("human request not found")
@@ -1177,11 +1223,12 @@ class NotificationCenter:
             if actor not in json.loads(str(row["allowed_actors_json"])):
                 raise ValidationError("human response actor is not allowed")
             row = self._expire_human_request(row)
+            closed = self._human_request_incident_closed(row)
             if row["state"] != "pending":
                 result = self._human_request_result(row)
-                if row["state"] == "resolved":
+                if row["state"] == "resolved" and not closed:
                     self._enqueue_human_completion(result)
-                return {**result, "answer_accepted": False}
+                return {**result, "answer_accepted": False, 'incident_closed': closed}
             return {**self._resolve_human_request_row(row, actor, value), "answer_accepted": True}
 
     def resolve_human_reply_from_telegram(self, chat_id: str, message_id: int, actor: str, value: str) -> dict[str, Any] | None:
@@ -1207,6 +1254,8 @@ class NotificationCenter:
         if request.get("kind", "user") != "user" or request.get("state") != "resolved":
             return {}
         request_id = str(request.get("request_id") or "")
+        if request.get('incident_id') and self._human_request_incident_closed(request):
+            return self.human_request_completion(request_id)
         harness = str(request.get("native_harness") or "")
         session_id = str(request.get("native_session_id") or "")
         cwd = str(request.get("native_cwd") or "")
@@ -1248,7 +1297,9 @@ class NotificationCenter:
         with self._lock, self._connection:
             return self._connection.execute(
                 "UPDATE human_request_completions SET state = 'sending', updated_at = ?"
-                " WHERE request_id = ? AND state IN ('pending', 'retryable') AND next_attempt_at <= ?",
+                " WHERE request_id = ? AND state IN ('pending', 'retryable') AND next_attempt_at <= ? "
+                "AND NOT EXISTS (SELECT 1 FROM human_requests h JOIN incidents i ON i.id=h.incident_id "
+                "WHERE h.request_id=human_request_completions.request_id AND i.state='resolved')",
                 (time.time(), request_id, time.time()),
             ).rowcount == 1
 
@@ -1315,7 +1366,8 @@ class NotificationCenter:
         with self._lock:
             rows = self._connection.execute(
                 "SELECT * FROM human_request_completions WHERE state IN ('pending', 'retryable')"
-                " AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?",
+                " AND next_attempt_at <= ? AND NOT EXISTS (SELECT 1 FROM human_requests h JOIN incidents i ON i.id=h.incident_id "
+                "WHERE h.request_id=human_request_completions.request_id AND i.state='resolved') ORDER BY next_attempt_at LIMIT ?",
                 (moment, max(1, min(50, int(limit)))),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -1690,13 +1742,84 @@ class NotificationCenter:
                 and all(str(event.get(field) or '').strip() for field in ('source_id', 'host_id', 'signal_type', 'correlation_id')))
             if review_required and not self.health_notification_decision(incident_id):
                 self._audit(incident_id, "health_notification_waiting_ai", "policy", {})
-            review_quiet = self.health_notification_review_required(incident_id) and not (self.health_notification_decision(incident_id) or {}).get("notify_user")
+            from .incident_card import setting
+            review_quiet = (not setting(self, 'telegram_all_notifications_enabled') and self.health_notification_review_required(incident_id)
+                            and not (self.health_notification_decision(incident_id) or {}).get("notify_user"))
+            self._bind_telegram_family(incident_id, event, now)
+            notifications_muted = self.get_incident(incident_id)['notifications_muted']
             delivery_id = None if notifications_muted or review_quiet else self._schedule_consumer_policy(incident_id, consumer_id, now)
+            if existing is not None and not notifications_muted and not review_quiet and self.original_telegram_card(incident_id) is not None:
+                self.queue_incident_card_refresh(incident_id, now)
             if notifications_muted:
                 self._audit(incident_id, "notification_suppressed", "policy", {"reason": "operator_mute", "dedup_key": dedup_key})
             agent_step = "incident" if agent_job == HEALTH_DIAGNOSIS_AGENT_JOB else f"event:{event_id}"
             agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", agent_step, now) if agent_job else None
             return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id, "agent_job_delivery_id": agent_delivery_id, "notifications_muted": notifications_muted}
+
+    def _bind_telegram_family(self, incident_id: str, event: Mapping[str, Any], now: float) -> None:
+        """Latch a card owner on the incident itself; records and jobs stay separate."""
+        from .incident_card import setting
+        incident = self.get_incident(incident_id)
+        if incident.get('telegram_card_owner_id'):
+            return
+        owner, family = incident_id, None
+        has_original = self.original_telegram_card(incident_id) is not None
+        if (setting(self, 'telegram_group_similar_enabled') and event.get('kind') == 'incident'
+                and all(str(event.get(key) or '').strip() for key in ('event_type', 'signal_type', 'source_id', 'host_id'))):
+            # Producer issue family is explicit. Absent one, signal_type is
+            # already a typed family, and source_id is retained to prevent two
+            # unrelated checks on the same host collapsing by guessed text.
+            issue = event.get('issue_family') or event.get('collapse_key') or event.get('source_id')
+            host, source, signal = str(event['host_id']), str(event['source_id']), str(event['signal_type'])
+            if not event.get('issue_family') and not event.get('collapse_key') and source in {'host:'+host, 'fleet:'+host} and signal in {'load','cpu','ram','disk'}:
+                issue = 'host-signal:' + signal
+            identity = [incident['project'], incident['recipient'], incident.get('consumer_id'), event['event_type'], event['signal_type'], issue]
+            family = 'telegram-family:' + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+            previous = self._connection.execute(
+                "SELECT COALESCE(telegram_card_owner_id,id) AS owner FROM incidents "
+                "WHERE project=? AND recipient=? AND collapse_key=? AND id!=? AND (state!='resolved' OR created_at>=?) "
+                "ORDER BY created_at,rowid LIMIT 1",
+                (incident['project'], incident['recipient'], family, incident_id, now-setting(self, 'telegram_group_window_seconds')),
+            ).fetchone()
+            if previous and not has_original:
+                owner = str(previous['owner'])
+        self._connection.execute("UPDATE incidents SET telegram_card_owner_id=?,collapse_key=COALESCE(?,collapse_key) WHERE id=?",
+                                 (owner, family, incident_id))
+
+    def telegram_card_owner(self, incident_id: str) -> str:
+        incident = self.get_incident(incident_id) or {}
+        return str(incident.get('telegram_card_owner_id') or incident_id)
+
+    def incident_card_payload(self, incident_id: str) -> dict[str, Any]:
+        return self.delivery_payload({'incident_id': incident_id, 'channel': 'telegram.main', 'target_json': '{}',
+                                      'id': '', 'delivery_key': ''})
+
+    def incident_human_question(self, incident_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute("SELECT * FROM human_requests WHERE incident_id=? AND kind='user' "
+                                           "ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident_id,)).fetchone()
+            return self._human_request_result(self._expire_human_request(row)) if row else None
+
+    def incident_human_choices(self, incident_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute("SELECT * FROM human_requests WHERE incident_id=? AND kind='user' AND mode='choice' "
+                                           "ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident_id,)).fetchone()
+            return self._human_request_result(self._expire_human_request(row)) if row else None
+
+    def queue_incident_card_refresh(self, incident_id: str, now: float | None = None) -> str:
+        """Latest state is read at delivery; the existing queue survives restarts."""
+        with self._lock, self._connection:
+            from .incident_card import setting
+            now = time.time() if now is None else now
+            owner = self.get_incident(self.telegram_card_owner(incident_id)) or {}
+            due = max(now, float(owner.get('telegram_card_updated_at') or 0) + setting(self, 'telegram_card_edit_interval_seconds'))
+            # Only an unadmitted refresh may be reused. Never reset sending/unknown.
+            row = self._connection.execute("SELECT id FROM deliveries WHERE incident_id=? AND channel='telegram.main' "
+                                           "AND json_extract(target_json,'$.card_refresh')=1 AND status='queued' ORDER BY created_at DESC LIMIT 1", (incident_id,)).fetchone()
+            if row:
+                return str(row['id'])
+            return self._schedule_delivery(incident_id, 'telegram.main', 'card-refresh:' + uuid.uuid4().hex, due,
+                                           {'health_outcome': {'status': 'progress'}, 'card_refresh': True})
 
     def _builtin_profile_for_event(self, event: Mapping[str, Any]) -> str:
         """Resolve a legacy event to the ordinary built-in mode profile."""
@@ -1913,7 +2036,7 @@ class NotificationCenter:
             raise ValidationError("unsupported delivery channel group")
         with self._lock, self._connection:
             rows = self._connection.execute(
-                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key = i.dedup_key AND m.unmuted_at IS NULL)) ORDER BY CASE WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
+                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key)) AND m.unmuted_at IS NULL)) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
                 (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, limit),
             ).fetchall()
             result: list[dict[str, Any]] = []
@@ -1960,6 +2083,41 @@ class NotificationCenter:
             row = self._connection.execute(
                 "SELECT d.*, i.project, i.recipient, i.dedup_key, i.collapse_key FROM deliveries d JOIN incidents i ON i.id=d.incident_id WHERE d.id=?", (delivery_id,),
             ).fetchone()
+            if row is not None and str(row["channel"]).startswith("telegram."):
+                owner_id = self.telegram_card_owner(str(row['incident_id']))
+                owner = self.get_incident(owner_id) or {}
+                from .incident_card import setting
+                next_edit = float(owner.get('telegram_card_updated_at') or 0) + setting(self, 'telegram_card_edit_interval_seconds')
+                target = json.loads(row['target_json'] or '{}')
+                recovery = (target.get('health_outcome') or {}).get('status') in {'recovered','resolved','phase_changed'}
+                competing_send = self._connection.execute(
+                    "SELECT id FROM deliveries WHERE incident_id IN (SELECT id FROM incidents WHERE id=? OR telegram_card_owner_id=?) "
+                    "AND channel LIKE 'telegram.%' AND id!=? AND status='sending' LIMIT 1",
+                    (owner_id, owner_id, delivery_id),
+                ).fetchone()
+                if competing_send:
+                    self._connection.execute("UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,updated_at=? WHERE id=?",
+                                             (now+1 if recovery else max(next_edit, now+15), now, delivery_id))
+                    return False
+                if self.original_telegram_card(str(row['incident_id'])) is not None and now < next_edit and not recovery:
+                    self._connection.execute("UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,updated_at=? WHERE id=?",
+                                             (next_edit, now, delivery_id))
+                    return False
+                # All stages share the same external creation boundary. A lost
+                # first receipt cannot authorize another message, even when the
+                # competing lease was claimed before deployment.
+                if self.original_telegram_card(str(row["incident_id"])) is None:
+                    obstruction = self._connection.execute(
+                        "SELECT id FROM deliveries WHERE incident_id IN (SELECT id FROM incidents WHERE id=? OR telegram_card_owner_id=?) AND channel LIKE 'telegram.%' "
+                        "AND id!=? AND status IN ('sending','uncertain') LIMIT 1",
+                        (owner_id, owner_id, delivery_id),
+                    ).fetchone()
+                    if obstruction:
+                        self._connection.execute(
+                            "UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,last_error=?,updated_at=? WHERE id=?",
+                            (now + 15, "Ожидается подтверждение создания исходной карточки", now, delivery_id),
+                        )
+                        return False
             if row is not None and str(row["channel"]).endswith(".call"):
                 return self._reserve_problem_call(dict(row), now)
             return True
@@ -2111,13 +2269,22 @@ class NotificationCenter:
                 return
             if attempt is not None and int(row["attempt"] or 0) != int(attempt):
                 return
-            if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES and not _is_session_notice(row):
+            if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES and not _is_session_notice(row) and not (str(row["channel"]).startswith("gptadmin.agent:") and row["state"] == "acknowledged") and not (outcome == "sent" and str(row["channel"]).startswith("telegram.") and row["status"] == "sending"):
                 outcome = "cancelled"
                 safe_error = safe_error or "incident is no longer active"
             if outcome == "retry":
                 self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), safe_error, now, delivery_id))
             else:
                 self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, result_json = COALESCE(?, result_json), updated_at = ? WHERE id = ?", (outcome, safe_error, result_json, now, delivery_id))
+            if outcome == 'sent' and str(row['channel']).startswith('telegram.') and isinstance(result, Mapping) and result.get('message_id'):
+                if not result.get('coalesced'):
+                    self._connection.execute("UPDATE incidents SET telegram_card_updated_at=?,telegram_card_projection=COALESCE(?,telegram_card_projection) WHERE id=?",
+                                             (now, result.get('card_projection'), self.telegram_card_owner(str(row['incident_id']))))
+                self._connection.execute("UPDATE human_requests SET telegram_chat_id=?,telegram_message_id=? "
+                                         "WHERE incident_id=? AND kind='user' AND telegram_message_id IS NULL",
+                                         (str(result['chat_id']), int(result['message_id']), row['incident_id']))
+                if row['state'] in {'resolved', 'acknowledged'} and not result.get('coalesced') and not _is_session_notice(row):
+                    self.queue_incident_card_refresh(str(row['incident_id']), now)
             if outcome in {"failed", "retry", "uncertain"} and str(row["state"]) in DELIVERABLE_STATES and not _is_session_notice(row):
                 self._schedule_failure_neighbours(row, now)
             if outcome == "sent" and row["policy_step_id"] is not None and str(row["state"]) in DELIVERABLE_STATES:
@@ -2163,10 +2330,10 @@ class NotificationCenter:
                 raise ValidationError("source delivery not found")
             if str(row["status"]) != "sent" or not str(row["channel"]).startswith("telegram."):
                 raise ValidationError("source delivery is not a sent Telegram delivery")
-            self._connection.execute(
-                "UPDATE deliveries SET result_json = ?, last_error = NULL, updated_at = ? WHERE id = ? AND status = 'sent'",
-                (result_json, now, source_delivery_id),
-            )
+            # The sent receipt is history and owns first-message selection.
+            # A late edit must not change its message identity or send time.
+            self._connection.execute('UPDATE incidents SET telegram_card_updated_at=?,telegram_card_projection=COALESCE(?,telegram_card_projection) WHERE id=?',
+                                     (now, receipt.get('card_projection'), self.telegram_card_owner(str(row['incident_id']))))
             self._audit(
                 str(row["incident_id"]),
                 "health.legacy_card_migrated",
@@ -2183,10 +2350,18 @@ class NotificationCenter:
             now = time.time()
             if state == "acknowledged":
                 self._connection.execute("UPDATE incidents SET state = ?, acknowledged_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
-                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
+                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND channel NOT LIKE 'gptadmin.agent:%' AND status IN ('queued', 'claimed', 'sending') AND NOT (channel LIKE 'telegram.%' AND status='sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
             elif state == "resolved":
                 self._connection.execute("UPDATE incidents SET state = ?, resolved_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
-                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
+                pending_questions = self._connection.execute("SELECT request_id FROM human_requests WHERE incident_id=? AND state='pending' AND kind='user'", (incident_id,)).fetchall()
+                self._connection.execute("UPDATE human_requests SET state='cancelled',cancelled_at=?,cancelled_by=? WHERE incident_id=? AND state='pending' AND kind='user'",
+                                         (now, 'incident-closure:'+actor[:100], incident_id))
+                for question in pending_questions:
+                    self._audit(incident_id, 'native_question_withdrawn', actor, {'request_id': question['request_id'], 'reason': 'Связанный инцидент закрыт'})
+                self._connection.execute("UPDATE human_request_completions SET state='cancelled',reason='Связанный инцидент закрыт',updated_at=? "
+                                         "WHERE request_id IN (SELECT request_id FROM human_requests WHERE incident_id=?) AND state IN ('pending','retryable')",
+                                         (now, incident_id))
+                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending') AND NOT (channel LIKE 'telegram.%' AND status='sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
                 self._connection.execute(
                     "UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? "
                     "AND status IN ('queued', 'claimed') AND json_type(target_json, '$.health_outcome') = 'object' "
@@ -2314,7 +2489,7 @@ class NotificationCenter:
             incident = self.get_incident(incident_id)
             if incident is None:
                 raise ValidationError("incident not found")
-            if incident["state"] not in DELIVERABLE_STATES:
+            if incident["state"] not in (*DELIVERABLE_STATES, 'acknowledged'):
                 return {"action": action, "state": "inactive", "idempotent": True, "agent_job_delivery_id": None}
             with self._lock, self._connection:
                 now = time.time()
@@ -2365,12 +2540,12 @@ class NotificationCenter:
         return json.loads(row["target_json"])["ai_card"] if row else None
 
     def original_telegram_card(self, incident_id: str) -> dict[str, Any] | None:
-        """Use only a confirmed original alarm receipt, never producer routing."""
+        """Use the first confirmed send from any stage, never uncertain routing."""
         with self._lock:
+            owner_id = self.telegram_card_owner(incident_id)
             rows = self._connection.execute(
-                "SELECT result_json FROM deliveries WHERE incident_id=? AND status='sent' "
-                "AND channel LIKE 'telegram.%' AND NOT " + _SESSION_NOTICE_SQL +
-                " ORDER BY created_at, rowid", (incident_id,),
+                "SELECT result_json FROM deliveries WHERE incident_id IN (SELECT id FROM incidents WHERE id=? OR telegram_card_owner_id=?) AND status='sent' "
+                "AND channel LIKE 'telegram.%' ORDER BY updated_at, rowid", (owner_id, owner_id),
             ).fetchall()
         for row in rows:
             try:
@@ -2403,6 +2578,9 @@ class NotificationCenter:
         return json.loads(row['payload_json']) if row else None
 
     def health_notification_review_required(self, incident_id: str) -> bool:
+        from .incident_card import setting
+        if setting(self, 'telegram_all_notifications_enabled'):
+            return False
         incident = self.get_incident(incident_id)
         if not incident or incident['severity'] in {'critical', 'emergency'} or self.manual_ai_requested(incident_id):
             return False
@@ -2568,6 +2746,8 @@ class NotificationCenter:
         )
         with self._lock, self._connection:
             target = {"health_session": session}
+            if not result.get('idempotent'):
+                self._connection.execute('UPDATE incidents SET native_projection_json=NULL,native_polled_at=NULL WHERE id=?', (incident_id,))
             card = self.manual_ai_card(incident_id)
             if card is not None:
                 target["ai_card"] = card
@@ -2778,6 +2958,10 @@ class NotificationCenter:
                 "question_ref": self._health_text(agent_receipt.get("question_ref") or "", 128),
                 "reason": "one operator answer is pending in the bound session",
             }
+        if agent_receipt.get("observer_only") is True and not agent_receipt.get("step"):
+            return {"accepted": True, "resolved": False,
+                    "awaiting_executor": agent_receipt.get("awaiting_executor") is True,
+                    "observer_only": True}
 
         def refs(value: Any) -> list[str]:
             if not isinstance(value, list):
@@ -2956,7 +3140,7 @@ class NotificationCenter:
                         "worker",
                         {"delivery_id": delivery_id, "reason": self._health_text(repair_first_result.get("reason") or "unknown", 256)},
                     )
-            if not repair_first_result.get("resolved") and not repair_first_result.get("outcome_delivery_id") and not repair_first_result.get("awaiting_human"):
+            if not repair_first_result.get("resolved") and not repair_first_result.get("outcome_delivery_id") and not repair_first_result.get("awaiting_human") and not repair_first_result.get("awaiting_executor"):
                 self.schedule_health_outcome(incident_id, "unknown", f"repair-first:{delivery_id}")
             return {**repair_first_result, "health_workflow": True, "repair_first": True}
         if job_name == HEALTH_REMEDIATION_AGENT_JOB and summary["status"] == "completed" and isinstance(health_context, Mapping):
@@ -3694,8 +3878,8 @@ class NotificationCenter:
             incident = self._row(self._connection.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone())
             if incident is not None:
                 incident["notifications_muted"] = self._notification_scope_muted(
-                    str(incident["project"]), str(incident["recipient"]), str(incident["dedup_key"])
-                )
+                    str(incident["project"]), str(incident["recipient"]), str(incident.get("collapse_key") or incident["dedup_key"])
+                ) or self._notification_scope_muted(str(incident['project']), str(incident['recipient']), str(incident['dedup_key']))
             return incident
 
     def _notification_scope_muted(self, project: str, recipient: str, dedup_key: str) -> bool:
@@ -3709,11 +3893,11 @@ class NotificationCenter:
         """Mute or restore one exact project/recipient/dedup notification scope."""
         with self._lock, self._connection:
             incident = self._connection.execute(
-                "SELECT project, recipient, dedup_key, state, consumer_id FROM incidents WHERE id = ?", (incident_id,)
+                "SELECT project, recipient, dedup_key, collapse_key, state, consumer_id FROM incidents WHERE id = ?", (incident_id,)
             ).fetchone()
             if incident is None:
                 raise ValidationError("incident not found")
-            scope = (str(incident["project"]), str(incident["recipient"]), str(incident["dedup_key"]))
+            scope = (str(incident["project"]), str(incident["recipient"]), str(incident["collapse_key"] or incident["dedup_key"]))
             was_muted = self._notification_scope_muted(*scope)
             now = time.time()
             if muted:
@@ -3727,7 +3911,7 @@ class NotificationCenter:
                 # yet; changing its state makes the worker's lease check fail.
                 self._connection.execute(
                     "UPDATE deliveries SET status = 'cancelled', last_error = 'notifications disabled by operator', updated_at = ? "
-                    "WHERE incident_id IN (SELECT id FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ?) "
+                    "WHERE incident_id IN (SELECT id FROM incidents WHERE project = ? AND recipient = ? AND COALESCE(collapse_key,dedup_key) = ?) "
                     "AND status IN ('queued', 'claimed') AND channel NOT LIKE 'gptadmin.agent:%'",
                     (now, *scope),
                 )
@@ -3962,6 +4146,8 @@ class NotificationCenter:
             presentation = self._latest_choice_event(incident_id)
             if presentation is None:
                 raise ValidationError("choice request not found")
+            if self.get_incident(incident_id)['state'] == 'resolved' and self.selection_receipt(presentation['choice_request_id']) is None:
+                raise ValidationError('Вопрос закрыт вместе с инцидентом; новый ответ не принимается')
             choice_ids = [str(item["choice_id"]) for item in presentation["choices"]]
             if choice_id.isdigit() and int(choice_id) < len(choice_ids):
                 choice_id = choice_ids[int(choice_id)]
@@ -4078,9 +4264,29 @@ class NotificationCenter:
         if incident is None:
             raise ValidationError("delivery references missing incident")
         payload = {"delivery": dict(delivery), "incident": incident}
+        confirmed_card = self.original_telegram_card(str(incident["id"]))
         choice_presentation = self._latest_choice_event(str(incident["id"]))
         if choice_presentation is not None:
             payload.update(choice_presentation)
+            payload['choice_selection'] = self.selection_receipt(choice_presentation['choice_request_id'])
+        question = self.incident_human_question(str(incident['id']))
+        if question:
+            payload['human_question'] = question
+        from .incident_card import setting
+        if incident.get('native_projection_json') and setting(self, 'telegram_native_progress_enabled'):
+            payload['native_progress'] = json.loads(incident['native_projection_json'])
+        owner_id = self.telegram_card_owner(str(incident['id']))
+        with self._lock:
+            members = self._connection.execute('SELECT id,title,state,severity FROM incidents WHERE id=? OR telegram_card_owner_id=? ORDER BY created_at',
+                                               (owner_id, owner_id)).fetchall()
+        payload['group_members'] = [{'id': m['id'], 'title': m['title'], 'state': m['state'],
+                                    'severity': m['severity'],
+                                    'host_id': (self._health_original_event(m['id']) or {}).get('host_id'),
+                                    'session': self.latest_agent_session(m['id'])} for m in members]
+        payload['human_questions'] = [question for member in members
+                                      if (question := self.incident_human_question(member['id'])) is not None]
+        payload['human_questions'].extend(question for member in members
+                                          if (question := self.incident_human_choices(member['id'])) is not None)
         target_json = delivery.get("target_json")
         if isinstance(target_json, str):
             try:
@@ -4097,6 +4303,8 @@ class NotificationCenter:
                     payload["health_outcome"] = self._health_value(target["health_outcome"])
                 if isinstance(target.get("health_session"), dict):
                     payload["health_session"] = self._health_value(target["health_session"])
+        if confirmed_card is not None:
+            payload.setdefault("target", {})["incident_card"] = confirmed_card
         card = self.manual_ai_card(str(incident["id"]))
         if card is not None:
             payload["ai_card"] = card
@@ -4107,7 +4315,7 @@ class NotificationCenter:
             payload["ai_session"] = self.latest_agent_session(str(incident["id"]))
             if isinstance(payload.get("health_session"), dict) and isinstance(payload["ai_session"], dict):
                 payload["health_session"] = payload["ai_session"]
-            if incident["state"] == "resolved" and ("health_session" in payload or "health_outcome" in payload):
+            if incident["state"] == "resolved":
                 payload.pop("health_session", None)
                 conclusion = 'resolved' if self.latest_health_event(str(incident['id']), 'health.resolved') else 'recovered'
                 phase = self._connection.execute("SELECT payload_json FROM resolution_events WHERE incident_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident['id'],)).fetchone()
@@ -4122,6 +4330,9 @@ class NotificationCenter:
                     "signal_type": self._health_text(original.get("signal_type") or original.get("event_type") or "", 64),
                     "correlation_id": self._health_text(original.get("correlation_id") or "", 256),
                     "source_fingerprint": self._health_text(original.get("source_fingerprint") or "", 128),
+                    "evidence_refs": [self._health_text(ref, 512) for ref in
+                                      (original.get("evidence_refs") if isinstance(original.get("evidence_refs"), list) else [])[:16]
+                                      if self._health_text(ref, 512)],
                     "trace_refs": [
                         self._health_text(ref, 128)
                         for ref in (original.get("evidence_refs") if isinstance(original.get("evidence_refs"), list) else [])[:10]

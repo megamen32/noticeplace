@@ -177,15 +177,14 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertEqual("session-live", callback.call_args[0][0]["session_id"])
             self.assertEqual("health-diagnosis", callback.call_args[0][0]["profile"])
 
-    def test_documented_health_diagnosis_profile_has_required_orchestrator_mapping(self) -> None:
+    def test_documented_health_diagnosis_profile_needs_no_planner_mapping(self) -> None:
         document = json.loads((Path(__file__).parents[1] / "docs" / "health-agent-jobs.example.json").read_text(encoding="utf-8"))
         profile = document["profiles"]["health-diagnosis"]
         self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", profile["model"])
-        self.assertEqual("health_orchestrator_100", profile["orchestrator_name"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", profile["orchestrator_requested_model"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", profile["orchestrator_model"])
+        self.assertIn("Repair-first", profile["instruction"])
+        self.assertFalse(any(key.startswith("orchestrator_") for key in profile))
 
-    def test_health_diagnosis_hands_off_to_orchestrator_and_attaches_three_plans(self) -> None:
+    def test_legacy_diagnosis_finishes_observer_without_a_second_planner(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()
             config = root / "agent-jobs.json"
@@ -271,18 +270,15 @@ class AgentJobHelperTests(unittest.TestCase):
                 runner=runner,
             )
             self.assertEqual("codex-health-diagnosis-1", result["session_id"])
-            self.assertEqual("codex-health-orchestrator-1", result["orchestrator_session_id"])
+            self.assertNotIn("orchestrator_session_id", result)
             self.assertTrue(result["autopilot_armed"])
-            self.assertEqual(3, result["plans_count"])
-            self.assertEqual("plans_attached", result["callback_status"])
-            self.assertIn("trace:agent-herder:codex-health-diagnosis-1", result["trace_refs"])
-            self.assertIn("trace:agent-herder:codex-health-orchestrator-1", result["trace_refs"])
-            self.assertIn("trace:opencode:codex-health-diagnosis-1", result["trace_refs"])
-            self.assertIn("trace:opencode:codex-health-orchestrator-1", result["trace_refs"])
-            self.assertGreaterEqual(result["orchestration"]["diagnosis_elapsed_ms"], 0)
-            self.assertGreaterEqual(result["orchestration"]["orchestrator_elapsed_ms"], 0)
+            self.assertEqual("repair-first", result["path"])
+            self.assertFalse(result["resolved"])
+            self.assertEqual("bounded synthetic diagnosis", result["diagnosis"])
+            self.assertNotIn("plans_count", result)
             self.assertNotIn("health-callback-token", json.dumps(result))
-            self.assertEqual(8, len(requests))
+            self.assertEqual(4, len(requests))
+            self.assertFalse(any(r.full_url.endswith('/api/sessions/new-or-resume') or '/health/plans' in r.full_url for r in requests))
 
     def test_health_remediation_profile_requires_selected_plan_and_routes_to_subscription(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -758,7 +754,7 @@ class AgentJobHelperTests(unittest.TestCase):
 
 
 class HealthAutoselectAndAutopilotTests(unittest.TestCase):
-    def test_orchestrator_message_requires_recommendation_fields(self) -> None:
+    def test_legacy_orchestrator_message_contains_only_repair_execution_contract(self) -> None:
         profile = {"orchestrator_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"}
         message = agent_job_helper._health_orchestrator_message(
             profile,
@@ -766,9 +762,12 @@ class HealthAutoselectAndAutopilotTests(unittest.TestCase):
             {"id": "inc-1", "title": "Disk pressure", "body": "b"},
             {"status": "diagnosis_complete", "diagnosis": "Диск переполнен", "evidence_refs": [], "trace_refs": []},
         )
-        self.assertIn("recommended_plan_id", message)
-        self.assertIn("needs_human", message)
-        self.assertIn("When unsure, set needs_human=true", message)
+        self.assertIn("gsd-debug", message)
+        self.assertIn("Диск переполнен", message)
+        self.assertIn("repair-first", message)
+        self.assertNotIn("exactly three", message)
+        self.assertNotIn("Do not change infrastructure", message)
+        self.assertNotIn("recommended_plan_id", message)
 
     def test_extract_health_result_parses_confident_recommendation(self) -> None:
         payload_json = json.dumps({

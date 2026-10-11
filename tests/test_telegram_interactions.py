@@ -57,7 +57,7 @@ class TelegramInteractionTests(unittest.TestCase):
         codec = TelegramActionCodec("x" * 32)
         keyboard = telegram_inline_keyboard(codec, self.center.get_incident(self.created["incident_id"]))
         buttons = [button for row in keyboard["inline_keyboard"] for button in row]
-        ai_button = next(button for button in buttons if button["text"] == "AI")
+        ai_button = next(button for button in buttons if button["text"] == "Исправить через ИИ")
         updates = [{
             "update_id": 21,
             "callback_query": {"id": "cb_ai", "from": {"id": 42}, "data": ai_button["callback_data"]},
@@ -160,7 +160,7 @@ class TelegramInteractionTests(unittest.TestCase):
         ).fetchone()
         self.assertIsNotNone(row)
         self.assertEqual("Проверь логи воркера и почини.", json.loads(row["payload_json"])["text"])
-        self.assertIn(("sendMessage", {"chat_id": "-1001", "text": "Ответ привязан к инциденту."}), calls)
+        self.assertFalse(any(method == "sendMessage" for method, _ in calls), "incident replies stay on the original card")
 
     def _health_incident_with_selected_plan(self, dedup_key: str, key_prefix: str) -> dict[str, object]:
         health = self.center.create_event("producer", f"create-{key_prefix}", {
@@ -232,7 +232,7 @@ class TelegramInteractionTests(unittest.TestCase):
             })
 
         self.assertEqual([("opencode", "ses-live-1", health["incident_id"], "Перезапусти воркер и проверь.", "-1001:74")], relay_requests)
-        self.assertIn(("sendMessage", {"chat_id": "-1001", "text": "Ответ передан в сессию агента."}), calls)
+        self.assertFalse(any(method == "sendMessage" for method, _ in calls), "native relay must not send another stage card")
 
     def test_health_reply_falls_back_when_the_session_is_unreachable(self) -> None:
         health = self._health_incident_with_selected_plan("health-relay-2", "health-relay-fallback")
@@ -263,7 +263,7 @@ class TelegramInteractionTests(unittest.TestCase):
                 "reply_to_message": {"message_id": 73},
             })
 
-        self.assertIn(("sendMessage", {"chat_id": "-1001", "text": "Ответ привязан к инциденту."}), calls)
+        self.assertFalse(any(method == "sendMessage" for method, _ in calls), "incident replies stay on the original card")
 
     def test_mute_button_suppresses_same_scope_and_old_card_restores_it(self) -> None:
         codec = TelegramActionCodec("x" * 32)
@@ -289,7 +289,7 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertTrue(muted["notifications_muted"])
         self.assertIsNone(muted["initial_delivery_id"])
         edit = next(payload for method, payload in calls if method == "editMessageReplyMarkup")
-        self.assertIn("Включить обратно", str(edit["reply_markup"]))
+        self.assertIn("Включить такие уведомления", str(edit["reply_markup"]))
 
         poller._handle_callback({
             "id": "unmute-1", "from": {"id": 42},

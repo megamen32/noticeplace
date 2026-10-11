@@ -20,6 +20,9 @@ class HealthNotificationDecisionTests(unittest.TestCase):
         self.center = NotificationCenter(Path(self.tmp.name) / 'db', {'token': {'project': 'fleet',
             'max_severity': 'emergency', 'agent_jobs': ['health-diagnosis']}}, default_quiet_hours=[])
         self.addCleanup(self.center._connection.close)
+        # The optional old quiet policy remains available; the current default
+        # explicitly keeps all notifications visible.
+        self.center.set_runtime_setting('telegram_all_notifications_enabled','0')
 
     def create(self, severity='important', **changes):
         self.event = {'schema': 'notify.event.v1', 'project': 'fleet', 'recipient': 'me', 'kind': 'incident',

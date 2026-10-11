@@ -348,7 +348,8 @@ class ReadyBindingTests(unittest.TestCase):
         tap(1)
         edits = [p for m,p in self.telegram if m == 'editMessageText']
         marked = json.loads(edits[-1]['reply_markup'])['inline_keyboard']
-        self.assertEqual(['Починить', '✅ Наблюдать'], [r[0]['text'] for r in marked])
+        self.assertEqual(['Починить', '✅ Наблюдать'], [r[0]['text'] for r in marked[:2]])
+        self.assertIn('Отключить такие уведомления',[r[0]['text'] for r in marked])
         self.assertEqual([r[0]['callback_data'] for r in initial['inline_keyboard']],
                          [r[0]['callback_data'] for r in marked])
         repeat = self._call('noticeplace_answer', {'incident_id': incident_id, 'request_id': choice_request,
@@ -403,6 +404,196 @@ class ReadyBindingTests(unittest.TestCase):
 
     def _call(self, name: str, arguments: dict) -> dict:
         return self.tools[name]["handler"](arguments)
+
+    def test_incident_admission_progress_question_answer_and_recovery_share_one_message(self) -> None:
+        """Focused integration: actual SDK/HTTP answer paths, <3s / max10s.
+
+        Detects an extra question/stage card and progress erasing chosen buttons.
+        """
+        import io
+        import time
+        import urllib.parse
+        import urllib.request
+        from notification_center.telegram_interactions import TelegramActionCodec
+        event={'schema':'notify.event.v1','project':'hermes','recipient':'me','kind':'incident','severity':'critical',
+            'title':'Сервис не отвечает','body':'Проверяем причину','dedup_key':'site','event_type':'health.degraded',
+            'source_id':'host:site','host_id':'100','signal_type':'https','correlation_id':'site-episode'}
+        incident=self.center.create_event('p','incident-create',event)
+        worker=http_api.DeliveryWorker(self.center,http_api.TelegramSender('bot-token','-100',
+            action_codec=TelegramActionCodec('s'*32),center=self.center,severity_routes={'health':{'chat_id':'-100','message_thread_id':324}}))
+        original=urllib.request.urlopen
+        def network(request,**kwargs):
+            if urllib.parse.urlsplit(request.full_url).hostname != 'api.telegram.org':
+                return original(request,**kwargs)
+            body={k:v[0] for k,v in urllib.parse.parse_qs(request.data.decode()).items()}
+            result=http_api.telegram_api('test',request.full_url.rsplit('/',1)[-1],body)
+            response=io.BytesIO(json.dumps(result).encode());response.status=200;return response
+        def deliver(delivery_id):
+            with self.center._lock,self.center._connection:
+                self.center._connection.execute("UPDATE incidents SET telegram_card_updated_at=0")
+                self.center._connection.execute("UPDATE deliveries SET status='claimed',claimed_at=?,attempt=attempt+1 WHERE id=?",(time.time(),delivery_id))
+                delivery=dict(self.center._connection.execute('SELECT * FROM deliveries WHERE id=?',(delivery_id,)).fetchone())
+            worker.deliver(delivery)
+        with patch('urllib.request.urlopen',side_effect=network):
+            deliver(incident['initial_delivery_id'])
+            session=self.center.record_health_agent_session(incident['incident_id'],'native','','opencode','ses_executor_1',
+                'https://agent.bezrabotnyi.com',stage='health-diagnosis')
+            deliver(session['session_delivery_id'])
+            # Omitted incident_id is resolved only by the exact native binding.
+            self._create_bound()
+            request=self.center.get_human_request('p',self.request_id)
+            self.assertEqual(incident['incident_id'],request['incident_id'])
+            self.assertEqual(42,request['telegram_message_id'])
+            question_delivery=self.center._connection.execute("SELECT id FROM deliveries WHERE json_extract(target_json,'$.card_refresh')=1 ORDER BY created_at DESC LIMIT 1").fetchone()[0]
+            deliver(question_delivery)
+            _HerderHandler.responses=[(202,{'status':'resumed'})]
+            self._call('noticeplace_answer',{'request_id':self.request_id,'value':'repair','actor':'telegram:42'})
+            self._call('noticeplace_answer',{'request_id':self.request_id,'value':'observe','actor':'telegram:42'})
+            self.assertEqual(1,len(_HerderHandler.completions))
+            with self.center._lock,self.center._connection:
+                self.center._connection.execute('UPDATE incidents SET native_projection_json=? WHERE id=?',
+                    (json.dumps({'status':'running','assistant_text':'Проверяю восстановление'}),incident['incident_id']))
+                progress=self.center.queue_incident_card_refresh(incident['incident_id'])
+            deliver(progress)
+            # Original enrichment must also preserve both chosen buttons.
+            base=f'http://127.0.0.1:{self.notice.server_address[1]}'
+            req=urllib.request.Request(base+'/v1/human-requests/'+self.request_id+'/original',
+                data=json.dumps({'original_text':'Сервис был недоступен','actor':'telegram:42'}).encode(),
+                headers={'Authorization':'Bearer p','Content-Type':'application/json'},method='POST')
+            with original(req,timeout=3) as response: self.assertEqual(200,response.status)
+            keyboard=json.loads(self.telegram[-1][1]['reply_markup'])['inline_keyboard']
+            labels=[b['text'] for row in keyboard for b in row]
+            self.assertIn('✅ Починить',labels);self.assertIn('Наблюдать',labels)
+            self.assertIn('✅ ИИ запущен',labels);self.assertIn('Отключить такие уведомления',labels)
+            free_id='6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44'
+            self._call('noticeplace_ask_human',{'request_id':free_id,'harness':'opencode','session_id':'ses_executor_1',
+                'cwd':self.directory.name,'message':'О каком сервисе рассказать?'})
+            free_delivery=self.center._connection.execute("SELECT id FROM deliveries WHERE json_extract(target_json,'$.card_refresh')=1 AND status='queued' ORDER BY created_at DESC LIMIT 1").fetchone()[0]
+            deliver(free_delivery)
+            update={'update_id':9001,'message':{'message_id':9002,'chat':{'id':-100},'from':{'id':42},
+                'text':'О сайте','reply_to_message':{'message_id':42}}}
+            def bot(method,body):
+                if method=='getUpdates': return {'ok':True,'result':[update]}
+                return http_api.telegram_api('test',method,body)
+            _HerderHandler.responses=[(202,{'status':'resumed'})]
+            poller=http_api.TelegramInteractionPoller(self.center,'bot-token',{'42'},TelegramActionCodec('s'*32),api=bot)
+            poller.poll_once();poller.poll_once()
+            self.assertEqual('О сайте',self._call('noticeplace_question_result',{'request_id':free_id})['answer'])
+            self.assertEqual(2,len(_HerderHandler.completions),'one continuation per distinct canonical request')
+            self.center.resolve_event('p','recovery',{**event,'action':'resolve','event_type':'health.recovered'})
+            recovery=self.center._connection.execute("SELECT id FROM deliveries WHERE json_extract(target_json,'$.health_outcome.status')='recovered'").fetchone()[0]
+            deliver(recovery)
+        self.assertEqual(1,sum(method=='sendMessage' for method,_ in self.telegram))
+        self.assertTrue(all(str(body['message_id'])=='42' for method,body in self.telegram if method=='editMessageText'))
+        labels=[b['text'] for row in json.loads(self.telegram[-1][1]['reply_markup'])['inline_keyboard'] for b in row]
+        self.assertIn('Отключить такие уведомления',labels)
+        self.assertIn('✅ Починить',labels);self.assertIn('Наблюдать',labels)
+        self.assertIn('✅ Ответ: О сайте',self.telegram[-1][1]['text'])
+        self.assertIn('Состояние восстановилось',self.telegram[-1][1]['text'])
+
+    def test_unknown_incident_create_queues_bound_question_without_extra_card(self) -> None:
+        """Focused integration: no replay of an unknown original create (<2s/5s)."""
+        created=self.center.create_event('p','unknown-create',{'schema':'notify.event.v1','project':'hermes','recipient':'me',
+            'kind':'incident','severity':'critical','title':'Проверка сервиса','dedup_key':'unknown','event_type':'health.degraded',
+            'source_id':'site','host_id':'100','signal_type':'https','correlation_id':'unknown-episode'})
+        with self.center._lock,self.center._connection:
+            self.center._connection.execute("UPDATE deliveries SET status='uncertain' WHERE id=?",(created['initial_delivery_id'],))
+        self.center.record_health_agent_session(created['incident_id'],'native','','opencode','ses_executor_1',
+            'https://agent.bezrabotnyi.com',stage='health-diagnosis')
+        self._create_bound(mode='question')
+        self.assertEqual([],self.telegram)
+        request=self.center.get_human_request('p',self.request_id)
+        self.assertEqual(created['incident_id'],request['incident_id'])
+        self.assertIsNone(request['telegram_message_id'])
+
+    def test_closed_incident_late_http_button_and_reply_accept_nothing(self) -> None:
+        """Focused integration: closure -> real SDK/HTTP/button/reply; <3s/10s.
+
+        Detects resurrection of a native session by an unanswered stale card.
+        """
+        event={'schema':'notify.event.v1','project':'hermes','recipient':'me','kind':'incident','severity':'critical',
+            'title':'Сервис проверяется','dedup_key':'late','event_type':'health.degraded','source_id':'site','host_id':'100',
+            'signal_type':'https','correlation_id':'late-episode','choice_request_id':self.request_id,
+            'choices':[{'choice_id':'repair','label':'Починить'},{'choice_id':'observe','label':'Наблюдать'}]}
+        created=self.center.create_event('p','late-create',event)
+        self.center.complete_delivery(created['initial_delivery_id'],'sent',result={'chat_id':'-100','message_id':42})
+        self.center.record_health_agent_session(created['incident_id'],'late-native','','opencode','ses_executor_1',
+            'https://agent.bezrabotnyi.com',stage='health-diagnosis')
+        self._create_bound()
+        free_id='6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44'
+        self._call('noticeplace_ask_human',{'request_id':free_id,'harness':'opencode','session_id':'ses_executor_1',
+            'cwd':self.directory.name,'message':'Какой сервис проверить?'})
+        self.center.resolve_event('p','independent-recovery',{**event,'action':'resolve','event_type':'health.recovered'})
+        self.telegram.clear()
+        late=self._call('noticeplace_answer',{'request_id':self.request_id,'value':'repair','actor':'telegram:42'})
+        self.assertEqual('no_accept',late['answer_status']);self.assertIsNone(late['value'])
+        self.assertEqual('not_attempted',late['native']['status'])
+        legacy_late=self._call('noticeplace_answer',{'request_id':self.request_id,'incident_id':created['incident_id'],
+            'choice_id':'repair','actor':'telegram:42'})
+        self.assertEqual('no_accept',legacy_late['answer_status'])
+        from notification_center.telegram_interactions import TelegramActionCodec
+        codec=TelegramActionCodec('s'*32)
+        poller=http_api.TelegramInteractionPoller(self.center,'bot-token',{'42'},codec,
+            api=lambda method,body:http_api.telegram_api('test',method,body))
+        poller._handle_callback({'id':'late-button','from':{'id':42},'data':codec.encode_human_choice(self.request_id,'0'),
+            'message':{'message_id':42,'chat':{'id':-100},'text':'Старая карточка'}})
+        poller._handle_callback({'id':'late-incident-button','from':{'id':42},'data':codec.encode('choice',created['incident_id'],choice_id='0'),
+            'message':{'message_id':42,'chat':{'id':-100},'text':'Старая карточка'}})
+        poller._handle_message({'message_id':9002,'chat':{'id':-100},'from':{'id':42},'text':'Сайт',
+            'reply_to_message':{'message_id':42}})
+        self._make_due();self._delivery_tick()
+        self.assertEqual([], _HerderHandler.completions)
+        self.assertEqual(0,self.center._connection.execute('SELECT COUNT(*) FROM human_request_completions').fetchone()[0])
+        self.assertFalse(any(method in {'sendMessage','editMessageText'} for method,_ in self.telegram))
+        self.assertEqual('resolved',self.center.get_incident(created['incident_id'])['state'])
+        from notification_center.incident_card import render
+        text,keyboard=render(self.center.incident_card_payload(created['incident_id']),codec)
+        self.assertIn('Состояние восстановилось',text)
+        self.assertFalse(any(b.get('callback_data','').startswith('n:human_choice:') for row in keyboard['inline_keyboard'] for b in row))
+
+    def test_incident_linked_legacy_progress_keeps_recovery_title_and_controls(self) -> None:
+        """Focused integration: real progress HTTP -> durable worker edit; <3s/10s."""
+        import io
+        import time
+        import urllib.parse
+        import urllib.request
+        from notification_center.telegram_interactions import TelegramActionCodec
+        event={'schema':'notify.event.v1','project':'hermes','recipient':'me','kind':'incident','severity':'critical',
+            'title':'Проверка важного сервиса','dedup_key':'legacy','event_type':'health.degraded','source_id':'site','host_id':'100',
+            'signal_type':'https','correlation_id':'legacy-episode'}
+        created=self.center.create_event('p','legacy-create',event)
+        self.center.complete_delivery(created['initial_delivery_id'],'sent',result={'chat_id':'-100','message_id':42})
+        base=f'http://127.0.0.1:{self.notice.server_address[1]}'
+        def post(path,body):
+            request=urllib.request.Request(base+path,data=json.dumps(body).encode(),
+                headers={'Authorization':'Bearer p','Content-Type':'application/json'},method='POST')
+            with urllib.request.urlopen(request,timeout=3) as response: return json.load(response)
+        post('/v1/human-requests',{'schema':'ask_human.request.v1','request_id':self.request_id,'project':'hermes','recipient':'me',
+            'mode':'choice','message':'Разобрать подробнее?','choices':[{'value':'deep_analysis','label':'Подробно'},{'value':'ignore','label':'Неважно'}],
+            'allowed_actors':['telegram:42'],'incident_id':created['incident_id']})
+        self._call('noticeplace_answer',{'request_id':self.request_id,'value':'deep_analysis','actor':'telegram:42'})
+        self.center.resolve_event('p','legacy-recovery',{**event,'action':'resolve','event_type':'health.recovered'})
+        self.telegram.clear()
+        post('/v1/human-requests/'+self.request_id+'/progress',{'phase':'running','session_url':'https://agent.bezrabotnyi.com/#/session/codex%3Alegacy'})
+        self.assertEqual([],self.telegram,'background progress must queue the central projection')
+        refresh=self.center._connection.execute("SELECT * FROM deliveries WHERE json_extract(target_json,'$.card_refresh')=1 AND status='queued' ORDER BY created_at DESC LIMIT 1").fetchone()
+        worker=http_api.DeliveryWorker(self.center,http_api.TelegramSender('bot-token','-100',
+            action_codec=TelegramActionCodec('s'*32),center=self.center))
+        def network(request,**kwargs):
+            body={k:v[0] for k,v in urllib.parse.parse_qs(request.data.decode()).items()}
+            response=io.BytesIO(json.dumps(http_api.telegram_api('test',request.full_url.rsplit('/',1)[-1],body)).encode());response.status=200
+            return response
+        with self.center._lock,self.center._connection:
+            self.center._connection.execute('UPDATE incidents SET telegram_card_updated_at=0')
+            self.center._connection.execute("UPDATE deliveries SET status='claimed',claimed_at=?,attempt=1 WHERE id=?",(time.time(),refresh['id']))
+            claimed=dict(self.center._connection.execute('SELECT * FROM deliveries WHERE id=?',(refresh['id'],)).fetchone())
+        with patch('notification_center.http_api.urllib.request.urlopen',side_effect=network): worker.deliver(claimed)
+        method,body=self.telegram[-1]
+        self.assertEqual('editMessageText',method);self.assertEqual('42',body['message_id'])
+        self.assertIn('Проверка важного сервиса',body['text']);self.assertIn('Состояние восстановилось',body['text'])
+        labels=[b['text'] for row in json.loads(body['reply_markup'])['inline_keyboard'] for b in row]
+        self.assertIn('✅ Подробно',labels);self.assertIn('Неважно',labels);self.assertIn('Отключить такие уведомления',labels)
+        self.assertNotIn('Принял, запускаю',body['text']);self.assertNotIn('Глубокий разбор идёт',body['text'])
 
     def _herder_create(self, request_id: str, message: str, choices: list[dict] | None = None) -> dict:
         """Agent Herder binds the question and returns the binding to the agent."""

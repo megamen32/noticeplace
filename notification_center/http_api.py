@@ -28,9 +28,10 @@ from .human_request_original import render_human_request_original
 from .selected_card import apply_selection_receipt, canonical_choice_ref
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
 from .telegram_format import telegram_html
+from .incident_card import controls as incident_controls
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 
-ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log"))
+ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log", "health"))
 SUPPORTED_TELEGRAM_MODES = frozenset((*ACTIVE_TELEGRAM_MODES, "health"))
 SEVERITY_TITLES = {'debug': 'Отладка', 'info': 'Информация', 'notice': 'Обратите внимание',
                    'important': 'Важно', 'critical': 'Критично', 'emergency': 'Срочно'}
@@ -163,6 +164,7 @@ def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[s
     Telegram replies are associated automatically, so no Reply/Ask button is
     needed.
     """
+    from .incident_card import controls
     incident_id = str(incident["id"])
     if isinstance(choices, list) and choices:
         buttons = []
@@ -177,22 +179,14 @@ def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[s
                 # back to the opaque Agent Herder choice_id server-side.
                 buttons.append([{"text": label[:128], "callback_data": action_codec.encode("choice", incident_id, choice_id=str(index))}])
         if buttons:
-            return {"inline_keyboard": buttons}
+            return {"inline_keyboard": buttons + controls(action_codec, incident, incident.get('ai_session'))}
     ai = {"text": "AI", "callback_data": action_codec.encode("ai", incident_id)}
     muted = bool(incident.get("notifications_muted"))
     mute = {
         "text": "🔔 Включить обратно" if muted else "🔕 Отключить такие",
         "callback_data": action_codec.encode("unmute" if muted else "mute", incident_id),
     }
-    if str(incident["severity"]) != "critical":
-        return {"inline_keyboard": [[ai, mute]]}
-    return {"inline_keyboard": [
-        [
-            {"text": "ACK", "callback_data": action_codec.encode("ack", incident_id)},
-            {"text": "Snooze 15m", "callback_data": action_codec.encode("snz", incident_id)},
-        ],
-        [ai, mute],
-    ]}
+    return {"inline_keyboard": controls(action_codec, incident, incident.get('ai_session'))}
 
 
 def _health_plans_ready(payload: Mapping[str, Any]) -> bool:
@@ -444,180 +438,42 @@ class TelegramSender:
         if not self._token or not self._chat_id:
             raise RuntimeError("Telegram sender is not configured")
         incident = payload["incident"]
-        note = str(incident.get("operator_note") or "").strip()
-        note_block = f"\n\nПримечание: {note}" if note else ""
-        health_plans = payload.get("health_plans")
-        choice_options = payload.get("choices")
-        health_outcome = payload.get("health_outcome")
-        health_session = payload.get("health_session")
-        plan_block = ""
-        if isinstance(health_plans, list) and health_plans:
-            plan_lines = [
-                f"{index}. {str(plan.get('title') or plan.get('plan_id') or '')[:128]} — {str(plan.get('summary') or '')[:256]}"
-                for index, plan in enumerate(health_plans[:3], 1)
-                if isinstance(plan, dict)
-            ]
-            if plan_lines:
-                plan_block = "\n\nПланы:\n" + "\n".join(plan_lines)
-        if isinstance(health_session, dict):
-            plan_labels = {"observe": "Наблюдать", "repair": "Исправить", "verify": "Проверить"}
-            plan_id = str(health_session.get("plan_id") or "")[:64]
-            stage = str(health_session.get("stage") or "health-remediation")
-            stage_label = {"health-diagnosis": "Диагностика", "health-orchestrator": "Подготовка плана", "health-remediation": "Исправление"}.get(stage, "Работа агента")
-            agent_label = str(health_session.get("harness") or "")[:64]
-            model = str(health_session.get("model") or "")[:256]
-            details = f"Агент: {agent_label}" + (f" · {model}" if model else "")
-            text = (
-                f"🤖 {stage_label} · {incident['project']}\n\n"
-                + f"Задача: {str(incident.get('title') or 'Проверка состояния сервиса')[:500]}\n"
-                + (f"Путь: {plan_labels.get(plan_id, plan_id)}\n" if plan_id else "")
-                + f"{details}\n"
-                + "Сессия создана в Agent Herder. По ссылке видно фактическое состояние, сообщения, команды и текущий прогресс."
-                + f"\n\nСсылка на сессию: {str(health_session.get('session_url') or '')}"
-                f"\n\nИнцидент: {incident['id']}"
-            )
-        elif isinstance(health_outcome, dict) and str(health_outcome.get("observed_state") or "") == "degraded":
-            plan_id = str(health_outcome.get("plan_id") or "выбранный план")[:64]
-            step = str(health_outcome.get("step") or "выполнено")[:128]
-            text = (
-                f"ЗДОРОВЬЕ · {incident['project']}\n\n"
-                f"План {plan_id} выполнен, но источник всё ещё в состоянии деградации.\n\n"
-                f"Выполненный шаг: {step}\n"
-                "Инцидент остаётся открытым. Выберите или создайте план, который устранит оставшийся сигнал."
-                f"\n\nИнцидент: {incident['id']}"
-            )
-        elif isinstance(health_outcome, dict):
-            status = str(health_outcome.get("status") or "unknown")
-            conclusions = {
-                'phase_changed': ('Изменилась срочность проблемы', 'Сигнал ещё активен. Прежний этап закрыт, дальнейшее уведомление зависит от новой срочности. Восстановление не подтверждено.'),
-                "recovered": ("Состояние восстановилось", "Мониторинг исходного источника больше не видит проблему. Инцидент закрыт; действий от вас не требуется. Это подтверждение мониторинга, а не заявление, что агент выполнил ремонт."),
-                "resolved": ("Исправление подтверждено", "Работа по выбранному плану выполнена, независимая проверка подтвердила восстановление исходного источника. Инцидент закрыт; действий от вас не требуется."),
-                "plans_ready": ("Разбор завершён — выберите план", "Подготовлены три плана. Исправление ещё не выполнено: для продолжения выберите план кнопкой ниже."),
-                "failed": ("Работа остановилась", "Сервис выполнения сообщил об ошибке. Результат не получен, восстановление не подтверждено. Требуется повторный разбор причины остановки."),
-                "unknown": ("Восстановление не подтверждено", "Полученных данных недостаточно, чтобы закрыть инцидент. Требуется проверка исходного источника; исправление пока не подтверждено."),
-                "interrupted": ("Нет подтверждённого результата разбора", "Не удалось дождаться ответа сервиса выполнения. Сессия могла продолжить работу. Исправление пока не подтверждено."),
-                "human_stopped": ("Автопродолжение остановлено", "Исходная сессия помечена остановленной. Продолжение, новый планировщик и замена сессии не запущены. Возобновить работу можно явным действием в исходном чате Agent Herder."),
-                "source_blocked": ("Автозапуск заблокирован", "Не удалось безопасно проверить исходные сессии, либо цепочка содержит больше 32 сессий. Требуется ручная проверка цепочки в Agent Herder; автоматического продолжения не будет."),
-            }
-            heading, explanation = conclusions.get(status, conclusions["unknown"])
-            plan_selection = payload.get("health_plan_selection")
-            if status == "plans_ready" and isinstance(plan_selection, dict) and str(plan_selection.get("plan_id") or ""):
-                selected_title = next(
-                    (
-                        str(plan.get("title") or plan.get("plan_id") or "")
-                        for plan in (health_plans if isinstance(health_plans, list) else [])
-                        if isinstance(plan, dict) and str(plan.get("plan_id") or "") == str(plan_selection.get("plan_id"))
-                    ),
-                    str(plan_selection.get("plan_id")),
-                )
-                heading = "ИИ выбрала план — исправление запущено"
-                explanation = (
-                    f"ИИ уверенно выбрала план «{selected_title}» и уже запустила исправление; сессия работает под автопилотом Agent Herder. "
-                    "Если потребуется ваше решение — придёт отдельное сообщение. Кнопки планов оставлены для контроля."
-                )
-            session_url = str(health_outcome.get("session_url") or "")
-            text = (
-                f"{heading} · {incident['project']}\n\n"
-                f"Задача: {str(incident.get('title') or 'Проверка состояния сервиса')[:500]}\n\n"
-                f"{explanation}{plan_block}"
-                + (f"\n\nСсылка на сессию: {session_url}" if session_url else "")
-                + f"\n\nИнцидент: {incident['id']}"
-            )
-        else:
-            text = f"{SEVERITY_TITLES.get(str(incident['severity']), 'Уведомление')} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}{plan_block}{note_block}\n\nИнцидент: {incident['id']}"
-        latest_session_url = ''
-        if not isinstance(health_session, dict) and not isinstance(health_outcome, dict):
-            decision = payload.get('notification_decision')
-            if isinstance(decision, dict) and decision.get('notify_user') is True:
-                text += f"\n\nПочему требуется внимание: {str(decision.get('reason') or '')}"
-            latest_session = payload.get('ai_session')
-            if isinstance(latest_session, dict):
-                latest_session_url = str(latest_session.get('session_url') or '')
-                parsed = urllib.parse.urlsplit(latest_session_url)
-                if parsed.scheme != 'https' or parsed.hostname != 'agent.bezrabotnyi.com':
-                    raise RuntimeError('Agent Herder session URL is invalid')
-                text += f'\n\nСсылка на сессию: {latest_session_url}'
-        incident_card = (payload.get("target") or {}).get("incident_card") if isinstance(health_session, dict) or isinstance(health_outcome, dict) else None
-        destination = ({"chat_id": str(incident_card["chat_id"])} if isinstance(incident_card, dict)
+        from .incident_card import render, projection_key, setting
+        health_plans = payload.get('health_plans')
+        choice_options = payload.get('choices')
+        incident_card = (payload.get('target') or {}).get('incident_card')
+        ai_card = payload.get('ai_card') if payload.get('health_session') else None
+        card = incident_card if isinstance(incident_card, dict) else ai_card
+        destination = ({'chat_id': str(card['chat_id'])} if isinstance(card, dict)
                        else telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes))
         mode = telegram_mode(incident)
         if self._active_modes is not None and mode not in self._active_modes:
-            raise RuntimeError(f"Telegram mode is inactive: {mode}")
+            raise RuntimeError(f'Telegram mode is inactive: {mode}')
         if not destination:
-            if mode == "health":
-                raise RuntimeError("Telegram health topic route is not configured")
-            raise RuntimeError(f"Telegram destination is not configured: {mode}")
-        visible_text, overflow_text = _telegram_text_with_attachment(text)
-        request_data: dict[str, str] = {**destination, "text": telegram_html(visible_text), "parse_mode": "HTML", "disable_web_page_preview": "true"}
-        if isinstance(incident_card, dict):
-            request_data["message_id"] = str(incident_card["message_id"])
-        health_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
-        action_keyboard: dict[str, list[list[dict[str, str]]]] | None = None
-        if isinstance(health_session, dict):
-            session_url = str(health_session.get("session_url") or "").strip()
-            parsed_session_url = urllib.parse.urlsplit(session_url)
-            if parsed_session_url.scheme != "https" or parsed_session_url.hostname != "agent.bezrabotnyi.com":
-                raise RuntimeError("Agent Herder session URL is invalid")
-            action_keyboard = {"inline_keyboard": [[{"text": "Открыть сессию", "url": session_url}]]}
-            request_data["reply_markup"] = json.dumps(action_keyboard, ensure_ascii=False, separators=(",", ":"))
-        elif isinstance(health_outcome, dict) and health_outcome.get("status") != "plans_ready":
-            session_url = str(health_outcome.get("session_url") or "")
-            if session_url:
-                parsed_session_url = urllib.parse.urlsplit(session_url)
-                if parsed_session_url.scheme != "https" or parsed_session_url.hostname != "agent.bezrabotnyi.com":
-                    raise RuntimeError("Agent Herder session URL is invalid")
-                request_data["reply_markup"] = json.dumps({"inline_keyboard": [[{"text": "Открыть сессию", "url": session_url}]]}, ensure_ascii=False)
-        elif self._action_codec is not None:
-            if isinstance(health_plans, list) and health_plans:
-                plan_selection = payload.get("health_plan_selection")
-                selected_plan_id = str(plan_selection.get("plan_id") or "") if isinstance(plan_selection, dict) else ""
-                health_keyboard = health_plan_keyboard_cards(
-                    TelegramHealthPlanCodec(self._action_codec.secret),
-                    incident["id"],
-                    health_plans,
-                    selected_plan_id=selected_plan_id or None,
-                )
-                action_keyboard = telegram_inline_keyboard(self._action_codec, incident)
-                health_keyboard["inline_keyboard"].extend(action_keyboard["inline_keyboard"][-1:])
-                request_data["reply_markup"] = json.dumps(health_keyboard, separators=(",", ":"))
-            else:
-                action_keyboard = telegram_inline_keyboard(self._action_codec, incident, choice_options if isinstance(choice_options, list) else None)
-                request_data["reply_markup"] = json.dumps(action_keyboard, separators=(",", ":"))
-        elif mode == "health":
-            raise RuntimeError("Telegram health delivery requires signed plan callback configuration")
-        if latest_session_url:
-            keyboard = health_keyboard or action_keyboard or {'inline_keyboard': []}
-            keyboard['inline_keyboard'].append([{'text': 'Открыть сессию', 'url': latest_session_url}])
-            request_data['reply_markup'] = json.dumps(keyboard, ensure_ascii=False)
-        ai_card = payload.get("ai_card") if isinstance(health_session, dict) else None
-        if isinstance(ai_card, dict):
-            session = payload.get("ai_session") or health_session
-            session_url = str(session.get("session_url") or "")
-            parsed = urllib.parse.urlsplit(session_url)
-            if parsed.scheme != "https" or parsed.hostname != "agent.bezrabotnyi.com":
-                raise RuntimeError("Agent Herder session URL is invalid")
-            stage = str(session.get("stage") or "")
-            status = {"health-diagnosis": "AI проводит диагностику.",
-                      "health-orchestrator": "AI готовит варианты решения.",
-                      "health-remediation": "AI выполняет выбранный план."}.get(stage, "AI начал работу.")
-            suffix = f"\n\n✅ Выбрано: решение через AI.\n{status}\nСсылка на сессию: {session_url}"
-            budget = 4096 - len(suffix.encode("utf-16-le")) // 2
-            base = str(ai_card.get("text") or "").encode("utf-16-le")[:max(0, budget) * 2].decode("utf-16-le", errors="ignore")
-            text = base + suffix
-            base_units = len(base.encode("utf-16-le")) // 2
-            entities = [e for e in ai_card.get("entities", []) if isinstance(e, dict)
-                        and isinstance(e.get("offset"), int) and isinstance(e.get("length"), int)
-                        and 0 <= e["offset"] < e["offset"] + e["length"] <= base_units]
-            entities.append({"type": "url", "offset": len(text[:text.rfind(session_url)].encode("utf-16-le")) // 2,
-                             "length": len(session_url.encode("utf-16-le")) // 2})
-            action_keyboard = {"inline_keyboard": [[{"text": "Открыть сессию", "url": session_url}]]}
-            destination = {"chat_id": str(ai_card["chat_id"])}
-            request_data = {**destination, "message_id": str(ai_card["message_id"]), "text": text,
-                            "entities": json.dumps(entities, ensure_ascii=False), "disable_web_page_preview": "true",
-                            "reply_markup": json.dumps(action_keyboard, ensure_ascii=False)}
-            overflow_text = None
+            raise RuntimeError('Telegram topic route is not configured')
+        if mode == 'health' and self._action_codec is None:
+            raise RuntimeError('Telegram health delivery requires signed callback configuration')
+        text, action_keyboard = render(payload, self._action_codec)
+        health_keyboard = None
+        if isinstance(health_plans, list) and health_plans and incident.get('state') != 'resolved' and not payload.get('human_question'):
+            if self._action_codec is None:
+                raise RuntimeError('Telegram health choices require signed callback configuration')
+            selected = payload.get('health_plan_selection') or {}
+            health_keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident['id'],
+                health_plans, selected_plan_id=str(selected.get('plan_id') or '') or None)
+            action_keyboard['inline_keyboard'] = health_keyboard['inline_keyboard'] + action_keyboard['inline_keyboard']
+        projection = projection_key(text, action_keyboard)
+        request_data = {**destination, 'text': telegram_html(text), 'parse_mode': 'HTML', 'disable_web_page_preview': 'true',
+                        'reply_markup': json.dumps(action_keyboard, ensure_ascii=False)}
+        if isinstance(card, dict):
+            request_data['message_id'] = str(card['message_id'])
+            method = 'editMessageText'
+        else:
+            sound_key = 'telegram_critical_sound_enabled' if incident['severity'] in {'critical', 'emergency'} else 'telegram_routine_sound_enabled'
+            request_data['disable_notification'] = 'false' if setting(self._center, sound_key) else 'true'
+            method = 'sendMessage'
+        overflow_text = None
         data = urllib.parse.urlencode(request_data).encode()
-        method = "editMessageText" if isinstance(ai_card, dict) or isinstance(incident_card, dict) else "sendMessage"
         request = urllib.request.Request(f"https://api.telegram.org/bot{self._token}/{method}", data=data, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
@@ -645,7 +501,12 @@ class TelegramSender:
         message_id = message.get("message_id")
         if not isinstance(message_id, int) or message_id <= 0:
             raise RuntimeError("Telegram sendMessage response has no valid message_id")
+        if method == 'editMessageText' and message_id != int(request_data['message_id']):
+            raise RuntimeError('Telegram edit returned a different message identity')
+        if isinstance(message.get('chat'), dict) and str(message['chat'].get('id')) != str(destination['chat_id']):
+            raise RuntimeError('Telegram returned a different chat identity')
         receipt: dict[str, Any] = {
+            "card_projection": projection,
             "message_id": message_id,
             "chat_id": str(message.get("chat", {}).get("id") or destination["chat_id"]) if isinstance(message.get("chat"), dict) else destination["chat_id"],
         }
@@ -660,7 +521,7 @@ class TelegramSender:
             for button in row
             if isinstance(button, dict)
         ]
-        ai_buttons = [button for button in action_buttons if str(button.get("text") or "") == "AI"]
+        ai_buttons = [button for button in action_buttons if str(button.get("callback_data") or "").startswith("n:ai:")]
         receipt["ai_button_count"] = len(ai_buttons)
         receipt["ai_signed_callback_count"] = sum(
             1
@@ -693,7 +554,8 @@ class TelegramSender:
                 button
                 for row in telegram_inline_keyboard(self._action_codec, incident, choice_options).get("inline_keyboard", [])
                 for button in row
-                if isinstance(button, dict)
+                if isinstance(button, dict) and self._action_codec is not None
+                and (self._action_codec.decode(str(button.get('callback_data') or '')) or ('',))[0] == 'choice'
             ] if self._action_codec is not None else []
             receipt["choice_ids"] = [
                 str(choice.get("choice_id") or "").strip()
@@ -717,86 +579,13 @@ class TelegramSender:
         chat_id: str,
         overflow_document_message_id: int | None = None,
     ) -> dict[str, Any]:
-        """Edit an existing Health card in place with the signed three-plan keyboard."""
-        if not self._token or not self._chat_id:
-            raise RuntimeError("Telegram sender is not configured")
-        if not self._action_codec:
-            raise RuntimeError("Telegram health migration requires signed plan callback configuration")
-        incident = payload["incident"]
-        health_plans = payload.get("health_plans")
-        if not _health_plans_ready(payload):
-            raise RuntimeError("Health plans are not attached")
-        plan_lines = [
-            f"{index}. {str(plan.get('title') or plan.get('plan_id') or '')[:128]} — {str(plan.get('summary') or '')[:256]}"
-            for index, plan in enumerate(health_plans[:3], 1)
-            if isinstance(plan, dict)
-        ]
-        note = str(incident.get("operator_note") or "").strip()
-        note_block = f"\n\nПримечание: {note}" if note else ""
-        text = f"{SEVERITY_TITLES.get(str(incident['severity']), 'Уведомление')} · {incident['project']}\n\n{incident['title']}\n\n{incident['body']}\n\nПланы:\n" + "\n".join(plan_lines) + f"{note_block}\n\nИнцидент: {incident['id']}"
-        ai_session = payload.get("ai_session")
-        if isinstance(ai_session, dict):
-            marker = "✅ Выбрано: решение через AI.\n" if isinstance(payload.get("ai_card"), dict) else ""
-            text += f"\n\n{marker}Ссылка на сессию: {str(ai_session.get('session_url') or '')}"
-        keyboard = health_plan_keyboard_cards(TelegramHealthPlanCodec(self._action_codec.secret), incident["id"], health_plans)
-        controls = telegram_inline_keyboard(self._action_codec, incident)
-        control_rows = controls["inline_keyboard"][-1:]
-        if isinstance(payload.get('ai_card'), dict):
-            control_rows = [[button for button in row if button.get('text') != 'AI'] for row in control_rows]
-        keyboard["inline_keyboard"].extend(row for row in control_rows if row)
-        if isinstance(ai_session, dict):
-            keyboard["inline_keyboard"].append([{"text": "Открыть сессию", "url": str(ai_session["session_url"])}])
-        visible_text, overflow_text = _telegram_text_with_attachment(text)
-        request_data = {
-            "chat_id": str(chat_id),
-            "message_id": str(message_id),
-            "text": telegram_html(visible_text),
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-            "reply_markup": json.dumps(keyboard, separators=(",", ":")),
-        }
-        request = urllib.request.Request(
-            f"https://api.telegram.org/bot{self._token}/editMessageText",
-            data=urllib.parse.urlencode(request_data).encode(),
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
-            if not 200 <= response.status < 300:
-                raise RuntimeError(f"Telegram returned HTTP {response.status}")
-            try:
-                result = json.loads(response.read())
-            except (TypeError, json.JSONDecodeError) as error:
-                raise RuntimeError("Telegram returned invalid JSON") from error
-        message = result.get("result") if isinstance(result, dict) else None
-        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(message, dict):
-            raise RuntimeError("Telegram returned an invalid editMessageText response")
-        edited_message_id = message.get("message_id")
-        if not isinstance(edited_message_id, int) or edited_message_id <= 0:
-            edited_message_id = message_id
-        receipt = {
-            "message_id": edited_message_id,
-            "chat_id": str(message.get("chat", {}).get("id") or chat_id) if isinstance(message.get("chat"), dict) else str(chat_id),
-            "health_plan_ids": [str(plan.get("plan_id") or "").strip() for plan in health_plans[:3] if isinstance(plan, dict)],
-            "health_button_count": 3,
-            "health_signed_callback_count": 3,
-            "edited_in_place": True,
-        }
-        if overflow_text is not None:
-            receipt.update(self._send_overflow_document(
-                {"chat_id": str(chat_id)},
-                edited_message_id,
-                str(incident["id"]),
-                overflow_text,
-            ))
-            if overflow_document_message_id is not None:
-                receipt["previous_overflow_document_deleted"] = self._delete_message_best_effort(
-                    str(chat_id), overflow_document_message_id
-                )
-        elif overflow_document_message_id is not None:
-            receipt["previous_overflow_document_deleted"] = self._delete_message_best_effort(
-                str(chat_id), overflow_document_message_id
-            )
-        return receipt
+        """Legacy queued callbacks use the same canonical renderer and message."""
+        canonical = (payload.get('target') or {}).get('incident_card')
+        if self._center:
+            canonical = self._center.original_telegram_card(str(payload['incident']['id'])) or canonical
+        card = canonical or {'chat_id': str(chat_id), 'message_id': message_id}
+        update = {**payload, 'target': {**(payload.get('target') or {}), 'incident_card': card}}
+        return self.send(update)
 
     @property
     def active_modes(self) -> set[str] | None:
@@ -1230,7 +1019,8 @@ class DeliveryWorker:
         active_modes = getattr(self._telegram, "active_modes", None)
         if active_modes is not None and telegram_mode(incident) not in active_modes:
             raise RuntimeError("Telegram mode is inactive for critical pre-call context")
-        self._telegram.send(payload)
+        with self._center.delivery_send_lock(), self._center._connection:
+            self._center.queue_incident_card_refresh(str(incident['id']))
 
     def deliver(self, delivery: dict[str, Any]) -> None:
         """Deliver one claimed job; callers may run this in a bounded worker pool."""
@@ -1340,6 +1130,16 @@ class DeliveryWorker:
                         claimed_at=float(delivery["claimed_at"]),
                         attempt=int(delivery["attempt"]),
                     ):
+                        return
+                    from .incident_card import render, projection_key
+                    owner = self._center.get_incident(self._center.telegram_card_owner(str(payload['incident']['id']))) or {}
+                    text, keyboard = render(payload, getattr(self._telegram, '_action_codec', None))
+                    card = (payload.get('target') or {}).get('incident_card')
+                    if card and not payload.get('health_plans') and owner.get('telegram_card_projection') == projection_key(text, keyboard):
+                        self._center.complete_delivery(delivery['id'], 'sent', claimed_at=delivery.get('claimed_at'), attempt=delivery.get('attempt'),
+                                                       result={**card, 'coalesced': True})
+                        if delivery['channel'] == 'telegram.main':
+                            self._after_telegram_delivery(delivery, payload['incident'])
                         return
                 try:
                     send_result = self._telegram.send(payload)
@@ -1600,6 +1400,10 @@ def record_incident_choice_result(
     presentation = center.latest_choice_request(incident_id)
     if presentation is None or str(presentation["choice_request_id"]) != request_id:
         raise ValidationError("choice request does not belong to this incident")
+    if center.get_incident(incident_id)['state'] == 'resolved' and center.selection_receipt(request_id) is None:
+        return {'schema': 'noticeplace.choice_result.v1', 'incident_id': incident_id, 'request_id': request_id,
+                'answer_status': 'no_accept', 'accepted': False, 'choice_id': None, 'label': None,
+                'native': {'status': 'not_attempted'}, 'card': {'edited': False, 'status': 'skipped'}}
     selection = center.get_telegram_choice(incident_id, requested)
     canonical_id = canonical_choice_ref(str(selection["choice_id"]))
     label = str(selection["label"])
@@ -1617,6 +1421,8 @@ def record_incident_choice_result(
         codec = telegram_action_codec_from_environment()
         if codec is None:
             raise ValidationError("Telegram choice callbacks are not configured")
+        from .incident_card import render
+        current_text = render(center.incident_card_payload(incident_id), codec)[0]
         applied = apply_selection_receipt(
             center,
             api or (lambda method, body_: telegram_api(bot_token, method, body_)),
@@ -1628,10 +1434,11 @@ def record_incident_choice_result(
             source=source,
             chat_id=str(card["chat_id"]),
             message_id=int(card["message_id"]),
-            base_text=str(selection.get("title") or ""),
+            base_text=current_text,
             choice_buttons=[{"choice_id": str(choice["choice_id"]), "label": str(choice["label"]),
                              "callback_data": codec.encode("choice", incident_id, choice_id=str(index))}
                             for index, choice in enumerate(presentation["choices"])],
+            reply_markup={'inline_keyboard': incident_controls(codec, center.get_incident(incident_id), center.latest_agent_session(incident_id))},
         )
     stored = applied.get("selection") if isinstance(applied.get("selection"), Mapping) else {}
     # The first accepted answer stays canonical, so a later conflicting
@@ -1704,7 +1511,8 @@ def complete_human_request(
          if isinstance(choice, Mapping) and str(choice.get("value") or "") == canonical_value),
         "",
     )
-    native = deliver_human_completion(center, resolved, canonical_actor, runner)
+    native = ({'status': 'not_attempted', 'reason': 'incident_closed'} if resolved.get('incident_closed')
+              else deliver_human_completion(center, resolved, canonical_actor, runner))
     return {
         "request_id": request_id,
         "state": state,
@@ -1751,7 +1559,7 @@ def deliver_human_completion(
     pending = center.human_request_completion(request_id)
     if not pending:
         return {"status": "not_bound"}
-    if str(pending.get("state")) in {"sent", "unknown", "sending"}:
+    if str(pending.get("state")) in {"sent", "unknown", "sending", 'cancelled'}:
         return {"status": str(pending["state"]), "result_ref": str(pending.get("result_ref") or "")}
     if not center.claim_human_completion(request_id):
         return {"status": str(center.human_request_completion(request_id).get("state") or "unknown")}
@@ -1834,12 +1642,21 @@ def mark_human_request_resolved_card(
         from .human_request_progress import edit_progress_card
         if request.get("telegram_progress_confirmed_at"):
             return {"status": "already_marked"}
-        edit_progress_card(request, api or (lambda method, body: telegram_api(bot_token, method, body)))
+        edit_progress_card(request, api or (lambda method, body: telegram_api(bot_token, method, body)), center=center)
         center.confirm_human_request_progress_card(request_id)
         return {"status": "marked"}
     rendered = base_text or render_human_request_original({**request, "state": "pending"})[0]
+    extra_keyboard = None
+    if request.get('incident_id'):
+        from .incident_card import render
+        codec = choice_codec or telegram_action_codec_from_environment()
+        payload = center.incident_card_payload(str(request['incident_id']))
+        payload['human_question'] = {**request, 'state': 'pending'}
+        rendered = render(payload, codec)[0]
+        entities = None
+        extra_keyboard = render({**payload, 'human_question': request}, codec)[1]
     buttons = None
-    if choices:
+    if choices and not request.get('incident_id'):
         codec = choice_codec or telegram_action_codec_from_environment()
         if codec is None:
             return {"status": "not_configured"}
@@ -1856,6 +1673,7 @@ def mark_human_request_resolved_card(
         actor=actor,
         source=source,
         base_text=rendered,
+        reply_markup=extra_keyboard,
         choice_buttons=buttons,
         entities=entities,
         chat_id=chat_id,
@@ -1893,6 +1711,18 @@ def send_human_request_telegram(
     default_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not bot_token or not default_chat_id:
         return {"status": "not_configured"}
+    if request.get('incident_id') and request.get('kind', 'user') == 'user':
+        # Questions share the incident's card, even if its first creation is
+        # delayed or uncertain. No private-card fallback may bypass that fence.
+        with center.delivery_send_lock():
+            card = center.original_telegram_card(str(request['incident_id']))
+            if card is None:
+                with center._connection:
+                    center.queue_incident_card_refresh(str(request['incident_id']))
+                return {'status': 'queued', 'incident_id': request['incident_id']}
+            center.bind_human_request_message(producer_token, str(request['request_id']), card['chat_id'], card['message_id'])
+            center.queue_incident_card_refresh(str(request['incident_id']))
+            return {'status': 'queued', **card, 'edited_in_place': True}
     destination: dict[str, str] = {"chat_id": default_chat_id}
     raw_routes = center.get_runtime_setting("telegram_topics_json")
     if raw_routes:
@@ -1979,6 +1809,8 @@ def refresh_human_request_original(
     with center.delivery_send_lock():
         request = center.enrich_human_request_original(token, request_id, original_text, actor)
         card_text, document_text = render_human_request_original(request)
+        if request.get('incident_id'):
+            document_text = None
         if document_text is not None and request.get("telegram_document_message_id") is None and request.get("telegram_document_state") is not None:
             raise ValidationError("human request document outcome requires reconciliation")
         chat_id, message_id = str(request["telegram_chat_id"]), int(request["telegram_message_id"])
@@ -1987,15 +1819,20 @@ def refresh_human_request_original(
         if request.get("progress"):
             from .human_request_progress import progress_keyboard
             rows = progress_keyboard(request)["inline_keyboard"]
-        if request["state"] == "pending" and request["mode"] == "choice":
-            secret = os.environ.get("TELEGRAM_CALLBACK_SECRET", "").strip()
-            if not secret:
-                raise ValidationError("Telegram callback secret is not configured")
-            codec = TelegramActionCodec(secret)
-            rows = [[{"text": choice["label"], "callback_data": codec.encode_human_choice(request_id, str(index))}]
-                    for index, choice in enumerate(request["choices"])]
+        if request['mode'] == 'choice':
+            from .human_request_progress import progress_keyboard
+            if not os.environ.get('TELEGRAM_CALLBACK_SECRET', '').strip():
+                raise ValidationError('Telegram callback secret is not configured')
+            rows = progress_keyboard(request)['inline_keyboard']
         if request["mode"] == "choice" or request["state"] != "pending":
             payload["reply_markup"] = json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
+        if request.get('incident_id'):
+            from .incident_card import render
+            projection = center.incident_card_payload(str(request['incident_id']))
+            projection['human_question'] = request
+            text, keyboard = render(projection, telegram_action_codec_from_environment())
+            payload['text'] = text
+            payload['reply_markup'] = json.dumps(keyboard, ensure_ascii=False)
         try:
             response = send("editMessageText", payload)
         except Exception as error:
@@ -2060,7 +1897,10 @@ def refresh_human_request_progress(
     send = api or (lambda method, body: telegram_api(bot_token, method, body))
     with center.delivery_send_lock():
         request = center.update_human_request_progress(token, request_id, update)
-        edit_progress_card(request, send)
+        if request.get('incident_id'):
+            center.queue_incident_card_refresh(str(request['incident_id']))
+            return _human_request_http_result(request)
+        edit_progress_card(request, send, center=center)
         request = center.confirm_human_request_progress_card(request_id)
         return _human_request_http_result(request)
 

@@ -375,7 +375,7 @@ def tool_noticeplace_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
         "state": created.get("state"),
         "continuation": "resume",
         "native": {"harness": harness, "session_id": session_id, "cwd": cwd},
-        "incident_id": incident_id or None,
+        "incident_id": created.get("incident_id") or incident_id or None,
         "card": (created.get("telegram") or {}).get("status"),
         "idempotent": bool(created.get("idempotent")),
     }
@@ -416,6 +416,8 @@ def tool_noticeplace_answer(args: Dict[str, Any]) -> Dict[str, Any]:
             "incident_id": incident_id,
             "request_id": request_id,
             "choice_id": result.get("choice_id"),
+            "answer_status": result.get('answer_status', 'accepted'),
+            "native": result.get('native'),
             "label": result.get("label"),
             "accepted": result.get("accepted"),
             "conflict": result.get("conflict"),

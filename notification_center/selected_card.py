@@ -176,14 +176,16 @@ def apply_selection_receipt(
     result: dict[str, Any] = {"selection": receipt, "card": None}
     if card is None:
         return result
+    keyboard = selection_keyboard(choice_buttons, str(card['receipt']['choice_id'])) if choice_buttons is not None else dict(reply_markup or {'inline_keyboard': []})
+    if choice_buttons is not None and reply_markup:
+        keyboard['inline_keyboard'].extend(reply_markup.get('inline_keyboard') or [])
     result["card"] = apply_selected_card(
         api,
         chat_id=card["chat_id"],
         message_id=card["message_id"],
         base_text=base_text,
         label=str(card["receipt"]["label"]),
-        reply_markup=(selection_keyboard(choice_buttons, str(card["receipt"]["choice_id"]))
-                      if choice_buttons is not None else reply_markup),
+        reply_markup=keyboard,
         entities=entities,
     )
     return result

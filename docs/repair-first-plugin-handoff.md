@@ -322,3 +322,118 @@ historical-reference reopen and rejected reconciliation proofs. Fast reference
 checks expect 1 second / maximum 5; focused card cases expect 2 / maximum 10.
 The combined run is bounded at 180 seconds, 2 GiB and two CPU slots. Portable
 plugin validation passed; its immutable `0.1.0` instruction bundle was not changed.
+
+## Phase 2: one incident/family card and bounded native readback
+
+The verified VUSA duplicate sent `health.diagnosis_session` as message 6460
+before `telegram.main:initial` created message 6461. All future phases now
+select the first **confirmed send from any phase**, ordered by actual receipt
+time. The existing delivery table supplies the atomic creation fence across
+SQLite connections. A concurrent `sending` or an unresolved `uncertain`
+creation cannot authorize another message. Telegram uncertainty does not gate
+incident ingress or native repair jobs. A recovery during initial transport
+preserves its actual receipt and edits that message. Historical message IDs,
+cards and documents are retained; no runtime migration or deletion was run.
+
+`incident_card.render` supplies the Russian projection and controls for initial,
+session, outcome, progress, question, answer and legacy edit paths. Critical and
+emergency cards offer “Прочитал”; this acknowledges attention without resolving
+the incident or cancelling queued repair. Confirmed session receipts replace
+“Исправить через ИИ” with “✅ ИИ запущен”, linking that exact session.
+Notification muting uses the project/recipient/event-family scope and leaves
+monitoring and repair admission running. Accepted choice callbacks remain
+visible with the canonical `✅` marker, including later question/progress edits.
+Replies to incident questions add no separate confirmation message.
+
+An incident question binds explicitly by `incident_id`, or by an unambiguous
+exact harness/native ID recorded on the incident. An ambiguous match requires
+the explicit ID. Its question is queued on the original card. Standalone Debug
+questions retain their separate single card. Closed incidents withdraw pending
+ordinary questions with an audit reason: late HTTP/voice, button and text answers
+return `no_accept`, create no completion and send no native message. Historical
+accepted answers and result references remain canonical. Definite unadmitted
+completion rows are cancelled on closure; unknown/in-flight admissions are
+never replayed or rewritten. Linked legacy analysis/progress goes through the
+same incident renderer and cannot replace recovery/title/controls with plain
+question text.
+
+Similar incidents retain independent records, jobs, audits, states and links.
+Only matching project, recipient, consumer, event type, signal and issue family
+share an original family card. The family is explicit where available; typed
+host/fleet load/cpu/ram/disk signals can group across hosts. Unrecognized checks
+retain their source identity. Existing shown cards are not reassigned. Partial
+recovery in either member order says that incidents remain open, and never says
+that the entire group recovered. Reading/answering one member does not resolve
+or acknowledge the others. A group with a closed parent and an open critical child offers a host-labelled ACK for that specific child; after ACK the next unread critical member is offered on the same card.
+
+`IncidentProgressReader` uses spare capacity in the existing agent worker pool,
+at most two reads per batch. It reads the **stored** harness/native ID via
+`/api/sessions/{harness}/{nativeID}/details?limit=5&history=auto`, not `/progress`
+or `quick=1`. The exact live session contract was checked read-only in this
+Codex session. Projection contains session status/permission/activity and only
+the last assistant `parts.type=text`, redacted and capped at 500 characters.
+Reasoning, tool arguments/output and raw `message.text` are excluded. A read
+failure does not invent idle or activity. Incomplete history is presented as
+the last available answer, with its timestamp.
+
+Changed background projections are persisted on existing incident rows and
+flushed through the existing durable delivery queue, no sooner than 15 seconds
+after the previous edit. Identical projections coalesce. The latest queued
+state survives restart; ingress and real repair jobs are not rate limited.
+Human choice/ACK and explicit recovery reactions retain priority. Only a new
+send has `disable_notification`: critical/emergency is audible by default,
+routine sends are silent, and edits never produce sound. Native fast-ACK
+`queue:true` coupling is Root's separate canonical `088` change; this executor
+did not edit that foreign WIP.
+
+AdminConfigStore and the existing settings form expose: card edit floor 15s,
+family window 300s, grouping on, native progress on, all notifications visible,
+critical sound on, routine sound off. All are live settings; invalid booleans,
+nonfinite values, excessive windows and an edit floor below 15s are rejected.
+No scheduler, router, manual skill copies, token move or plugin instruction
+change was introduced; bundle `0.1.0` stays immutable.
+
+Focused regressions: fast reference/render tests expect <1s/max5s; the real
+worker/Telegram transport fence tests expect 2s/max10s; SDK/HTTP/button/reply
+and linked-progress tests expect 3s/max10s. These are fast unit or focused
+integration tests; no slow/nightly/broad suite was run. The final combined
+release evidence is recorded in `.agents/tasks/noticeplace-phase2-ready-20261012.md`.
+Root owns installation and actual Debug Telegram/phone acceptance after the
+frozen branch SHA. Source/fixture checks are not that live acceptance.
+
+
+## Phase 2 repair constructor and native completion binding
+
+The actual AutoSellBot session contained a persisted diagnose-only/no-tools
+instruction followed by appended repair-first prose. Diagnosis and legacy
+orchestrator profiles now use a whole source-owned GSD execution contract;
+their persisted `instruction` is replaced before bounded profile validation.
+URL, CWD, harness, model policy, protected config-file and callback scope checks
+remain enforced. Planner mapping is no longer a prerequisite. Existing legacy
+JSON observations do not create another planner session or a three-plan menu.
+The example profile now describes repair and has no planner mapping.
+
+The prompt includes bounded, redacted original incident and health source,
+host, signal, fingerprint, correlation and evidence/trace references. The
+existing delivery-payload and GPTAdmin event projections retain original
+`evidence_refs`, including consumer endpoints. It directs the native harness
+to discover and read installed original `gsd-debug`/`gsd-quick`, read project
+AGENTS.md/runbooks, reproduce the consumer failure, repair its cause and verify
+that consumer without a new planning bootstrap. Missing Notice MCP does not
+forbid repository/tools/repair: the prompt names the protected AskHuman env
+file for human questions and the existing project-scoped callback JSON for
+progress, without exposing credentials. Source observations cannot resolve.
+
+A plain terminal assistant/GSD turn completes the bounded observer without a
+JSON gate. If the observation window expires while native work continues, the
+helper returns `observer_only/awaiting_executor`; GPTAdmin preserves these flags
+and core accepts the observation without a failure/verification/recovery claim.
+Actual native terminal failure still fails. Existing autopilot keeps the same
+executor; no repair was replayed and no new live session was created here.
+
+`arm_session_autopilot` carries optional
+`noticeIncident:{incidentId:<original>,project:<original>}` in the existing PUT
+body, together with the authoritative launch receipt's harness/native ID/CWD.
+Herder owns persistence and original-card completion/progress delivery. Exact
+protected callback schema and endpoint contract were sent to that native owner;
+Root owns runtime integration/GSD installation and real original-session repair.

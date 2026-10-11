@@ -13,17 +13,18 @@ class TelegramControlPolicyTests(unittest.TestCase):
     def test_important_message_uses_native_reply_and_keeps_ai_and_mute_controls(self) -> None:
         keyboard = telegram_inline_keyboard(self.codec, {"id": "inc_important", "severity": "important"})
 
-        self.assertEqual([["AI", "🔕 Отключить такие"]], [[button["text"] for button in row] for row in keyboard["inline_keyboard"]])
+        self.assertEqual([["Исправить через ИИ"], ["Отключить такие уведомления"]], [[button["text"] for button in row] for row in keyboard["inline_keyboard"]])
 
         restored = telegram_inline_keyboard(self.codec, {"id": "inc_important", "severity": "important", "notifications_muted": True})
-        self.assertEqual("🔔 Включить обратно", restored["inline_keyboard"][0][1]["text"])
+        self.assertEqual("Включить такие уведомления", restored["inline_keyboard"][-1][0]["text"])
 
-    def test_only_exact_critical_gets_acknowledgement_and_snooze_controls(self) -> None:
+    def test_critical_and_emergency_get_human_read_controls(self) -> None:
         critical = telegram_inline_keyboard(self.codec, {"id": "inc_critical", "severity": "critical"})
         emergency = telegram_inline_keyboard(self.codec, {"id": "inc_emergency", "severity": "emergency"})
 
-        self.assertEqual([["ACK", "Snooze 15m"], ["AI", "🔕 Отключить такие"]], [[button["text"] for button in row] for row in critical["inline_keyboard"]])
-        self.assertEqual([["AI", "🔕 Отключить такие"]], [[button["text"] for button in row] for row in emergency["inline_keyboard"]])
+        expected=[["Прочитал"],["Исправить через ИИ"],["Отключить такие уведомления"]]
+        self.assertEqual(expected,[[button["text"] for button in row] for row in critical["inline_keyboard"]])
+        self.assertEqual(expected,[[button["text"] for button in row] for row in emergency["inline_keyboard"]])
 
     def test_severity_route_overrides_default_chat_and_optionally_sets_topic(self) -> None:
         route = telegram_destination(

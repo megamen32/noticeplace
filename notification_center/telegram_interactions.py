@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 
 from .core import NotificationCenter, ValidationError
 from .health_workflow import TelegramHealthPlanCodec, health_plan_keyboard
+from .incident_card import controls as incident_controls
 from .selected_card import apply_selected_card, apply_selection_receipt, canonical_choice_ref
 
 
@@ -164,15 +165,8 @@ class TelegramInteractionPoller:
         self._api("sendMessage", {"chat_id": chat_id, "text": text[:1200]})
 
     def _incident_control_row(self, incident: Mapping[str, Any]) -> list[dict[str, str]]:
-        incident_id = str(incident["id"])
-        muted = bool(incident.get("notifications_muted"))
-        return [
-            {"text": "AI", "callback_data": self._codec.encode("ai", incident_id)},
-            {
-                "text": "🔔 Включить обратно" if muted else "🔕 Отключить такие",
-                "callback_data": self._codec.encode("unmute" if muted else "mute", incident_id),
-            },
-        ]
+        from .incident_card import controls
+        return [button for row in controls(self._codec, incident, self._center.latest_agent_session(str(incident['id']))) for button in row]
 
     def _allowed(self, user_id: Any) -> bool:
         return str(user_id) in self._allowed_user_ids
@@ -204,6 +198,7 @@ class TelegramInteractionPoller:
             base_text=str(message.get("text") or ""),
             label=label,
             entities=message.get("entities"),
+            reply_markup=message.get('reply_markup') if isinstance(message.get('reply_markup'), dict) else None,
         )
 
     def _mark_health_choice_message(
@@ -268,25 +263,13 @@ class TelegramInteractionPoller:
         incident = self._center.get_incident(incident_id)
         if not chat_id or not isinstance(message_id, int) or message_id <= 0 or incident is None:
             return
+        from .incident_card import render
+        _, keyboard = render(self._center.incident_card_payload(incident_id), self._codec)
         plans = self._center.latest_health_plans(incident_id)
-        if plans and self._health_plan_codec is not None and str(incident.get("event_type") or "").startswith("health."):
+        if plans and self._health_plan_codec is not None and incident.get('state') != 'resolved':
             selection = self._center.latest_health_selection(incident_id) or {}
-            keyboard = health_plan_keyboard(
-                self._health_plan_codec,
-                incident_id,
-                plans,
-                selected_plan_id=str(selection.get("plan_id") or "") or None,
-            )
-            keyboard["inline_keyboard"].append(self._incident_control_row(incident))
-        else:
-            rows = (
-                [[
-                    {"text": "ACK", "callback_data": self._codec.encode("ack", incident_id)},
-                    {"text": "Snooze 15m", "callback_data": self._codec.encode("snz", incident_id)},
-                ]] if str(incident["severity"]) == "critical" else []
-            )
-            rows.append(self._incident_control_row(incident))
-            keyboard = {"inline_keyboard": rows}
+            keyboard['inline_keyboard'] = health_plan_keyboard(self._health_plan_codec, incident_id, plans,
+                selected_plan_id=str(selection.get('plan_id') or '') or None)['inline_keyboard'] + keyboard['inline_keyboard']
         self._api("editMessageReplyMarkup", {
             "chat_id": chat_id,
             "message_id": str(message_id),
@@ -331,7 +314,8 @@ class TelegramInteractionPoller:
         if completed.get("card") == "marked" or completed.get("card") == "already_marked":
             self._answer(callback_id, f"✅ Выбрано: {completed.get('label') or selected.get('label')}")
         else:
-            self._answer(callback_id, f"choice: {completed.get('state')}")
+            self._answer(callback_id, 'Ответ не принят: вопрос уже закрыт.' if completed.get('answer_status') == 'no_accept'
+                         else 'Ответ сохранён; обновление карточки ожидает подтверждения.')
 
     def _handle_callback(self, callback: dict[str, Any]) -> None:
         callback_id = str(callback.get("id") or "")
@@ -371,7 +355,8 @@ class TelegramInteractionPoller:
                     if result.get("state") == "inactive":
                         self._answer(callback_id, "Инцидент уже закрыт; запуск не требуется")
                         return
-                    self._answer(callback_id, "AI уже запущен" if result.get("idempotent") else "AI начал диагностику")
+                    session = self._center.latest_agent_session(incident_id)
+                    self._answer(callback_id, 'ИИ уже работает' if session else 'Задание на исправление принято в очередь')
                     return
                 result = self._center.apply_telegram_action(incident_id, action, f"telegram:{actor_id}")
                 if action in {"mute", "unmute"}:
@@ -385,7 +370,11 @@ class TelegramInteractionPoller:
                     chat_id = str(callback.get("message", {}).get("chat", {}).get("id") or "")
                     if chat_id:
                         self._message(chat_id, f"Reply with /ask {incident_id} followed by your question.")
-                self._answer(callback_id, f"{action}: {result['state']}")
+                if action == 'ack':
+                    self._refresh_action_keyboard(callback, incident_id)
+                    self._answer(callback_id, 'Прочитано. Проверка и исправление продолжаются.')
+                else:
+                    self._answer(callback_id, 'Состояние уведомления обновлено')
                 return
             if parsed is not None and len(parsed) == 3:
                 action, incident_id, plan_id = parsed
@@ -430,6 +419,8 @@ class TelegramInteractionPoller:
                         )
                         message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
                         chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+                        from .incident_card import render
+                        current_text = render(self._center.incident_card_payload(incident_id), self._codec)[0]
                         applied = apply_selection_receipt(
                             self._center,
                             self._api,
@@ -439,13 +430,14 @@ class TelegramInteractionPoller:
                             label=label,
                             actor=f"telegram:{actor_id}",
                             source="telegram",
-                            base_text=str(message.get("text") or ""),
-                            entities=message.get("entities"),
+                            base_text=current_text,
                             chat_id=str(chat.get("id") or ""),
                             message_id=message.get("message_id"),
                             choice_buttons=[{"choice_id": str(choice["choice_id"]), "label": str(choice["label"]),
                                              "callback_data": self._codec.encode("choice", incident_id, choice_id=str(index))}
                                             for index, choice in enumerate(self._center.latest_choice_request(incident_id)["choices"])],
+                            reply_markup={'inline_keyboard': incident_controls(
+                                self._codec, self._center.get_incident(incident_id), self._center.latest_agent_session(incident_id))},
                         )
                         self._answer(callback_id, f"✅ Выбрано: {applied['selection']['label']}")
                         return
@@ -486,9 +478,12 @@ class TelegramInteractionPoller:
         reply_message_id = reply.get("message_id")
         if allowed_actor and chat_id and isinstance(reply_message_id, int) and text:
             from .http_api import complete_human_request
-            answered = self._center.human_request_for_reply(
-                chat_id, reply_message_id, f"telegram:{actor_id}"
-            )
+            try:
+                answered = self._center.human_request_for_reply(chat_id, reply_message_id, f"telegram:{actor_id}")
+            except ValidationError as error:
+                with self._center._lock, self._center._connection:
+                    self._center._audit(None, 'human_request.reply_rejected', f'telegram:{actor_id}', {'reason': str(error)})
+                return
             if answered is not None:
                 # One canonical completion for a free-text answer too: the same
                 # card is marked and the bound native session continues once.
@@ -507,13 +502,14 @@ class TelegramInteractionPoller:
                     notice = "Ответ сохранён. Подтверждение передачи в сессию агента пока не получено."
                 else:
                     notice = "Ответ принят."
-                self._message(chat_id, notice)
+                if not answered.get('incident_id'):
+                    self._message(chat_id, notice)
                 return
             incident = self._center.record_telegram_reply(
                 chat_id, reply_message_id, f"telegram:{actor_id}", text
             )
             if incident is not None:
-                self._message(chat_id, "Ответ передан в сессию агента." if self._relay_reply_to_session(incident, text, chat_id, message_id) else "Ответ привязан к инциденту.")
+                self._relay_reply_to_session(incident, text, chat_id, message_id)
                 return
         if (
             self._inbox_sink is not None

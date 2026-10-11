@@ -237,8 +237,27 @@ class AdminConsoleTests(unittest.TestCase):
             "telegram_critical_repeat_seconds": "121",
         }
         self.store.set_runtime_settings(values, "sso:operator")
-        self.assertEqual(values, self.store.snapshot()["runtime_settings"])
+        actual=self.store.snapshot()['runtime_settings']
+        self.assertEqual(values,{key:actual[key] for key in values})
         self.assertEqual(0, self.restarts)
+
+    def test_card_policy_defaults_are_visible_live_and_validate_edit_floor(self) -> None:
+        """Focused integration: operator form and shared DB, <1s / maximum3s."""
+        values=self.store.runtime_settings()
+        self.assertEqual('15',values['telegram_card_edit_interval_seconds'])
+        self.assertEqual('1',values['telegram_critical_sound_enabled'])
+        self.assertEqual('0',values['telegram_routine_sound_enabled'])
+        code,body=self._request('GET','/')
+        self.assertEqual(200,code)
+        self.assertIn('Объединять похожие уведомления',body.decode())
+        self.assertIn('name="telegram_native_progress_enabled"',body.decode())
+        with self.assertRaises(ValidationError):
+            self.store.set_runtime_settings({'telegram_card_edit_interval_seconds':'14'},'operator')
+        with self.assertRaises(ValidationError):
+            self.store.set_runtime_settings({'telegram_routine_sound_enabled':'2'},'operator')
+        self.store.set_runtime_settings({'telegram_card_edit_interval_seconds':'30','telegram_routine_sound_enabled':'1'},'operator')
+        self.assertEqual('30',self.store.runtime_settings()['telegram_card_edit_interval_seconds'])
+        self.assertEqual(0,self.restarts)
 
     def test_preset_and_custom_topics_share_the_same_live_editor(self) -> None:
         self.store._consumer_notification_center().set_runtime_setting("telegram_topics_json", json.dumps({
