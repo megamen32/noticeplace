@@ -25,7 +25,7 @@ _HEALTH_CALLBACK_DEFAULT = "/home/roomhacker/.config/gptadmin/health-callback.js
 _HEALTH_JOB_IDS = {"health-diagnosis", "health-remediation"}
 _HEALTH_STAGE_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
 _HEALTH_PLAN_IDS = ("observe", "repair", "verify")
-from .health_workflow import HEALTH_EXECUTION_PROFILE
+from .health_workflow import HEALTH_EXECUTION_PROFILE, health_execution_routes
 
 _HEALTH_EXECUTION_PROFILES = (HEALTH_EXECUTION_PROFILE,)
 
@@ -340,17 +340,55 @@ def _launch_policy_profile(profile: dict[str, str], runner: Any, *, choose_prefe
     return profile
 
 
-def _incident_profile(profile: dict[str, str], runner: Any) -> dict[str, str]:
-    """Read the separately saved incident route and verify native availability."""
+def _launch_policy(profile: Mapping[str, str], runner: Any) -> dict[str, Any]:
+    """Read the saved Agent Herder launch policy once per job."""
     parsed = urllib.parse.urlsplit(profile["url"])
     base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
-    policy = _read_json_request(urllib.request.Request(base + "/api/automation/launch-policy", headers={"Accept": "application/json"}), runner)
+    return _read_json_request(
+        urllib.request.Request(base + "/api/automation/launch-policy", headers={"Accept": "application/json"}), runner)
+
+
+def _policy_model_available(base: str, harness: str, route: str, runner: Any) -> bool:
+    """Verify one declared route against the harness's live model catalog."""
+    catalog = _read_json_request(
+        urllib.request.Request(f"{base}/api/models?harness={urllib.parse.quote(harness)}", headers={"Accept": "application/json"}),
+        runner, response_limit=_SESSION_DETAILS_LIMIT,
+    )
+    return catalog.get("stale") is not True and route in catalog.get("models", [])
+
+
+def _incident_profile(profile: dict[str, str], runner: Any, project: str = "", policy: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """Resolve the incident's configured route and verify native availability.
+
+    A project with an explicit Agent Herder ``projectRoutes`` entry uses that
+    ordered harness list. Any other project keeps the pinned OpenCode
+    subscription route. The order is read once from the saved policy, so there
+    is exactly one decision and no second fallback loop.
+    """
+    parsed = urllib.parse.urlsplit(profile["url"])
+    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    if policy is None:
+        policy = _launch_policy(profile, runner)
+    from .health_workflow import health_execution_routes
+
+    routes = health_execution_routes(policy, project)
+    if len(routes) > 1:
+        allowed = policy.get("allowedHarnesses") if isinstance(policy.get("allowedHarnesses"), list) else []
+        for execution in routes[1:]:
+            harness = str(execution["runtime"])
+            if allowed and harness not in allowed:
+                continue
+            route = _health_model_route(execution)
+            if not _policy_model_available(base, harness, route, runner):
+                continue
+            return {**profile, "harness": harness, "model": route, "reasoning": execution["reasoning"],
+                    "topic": execution["topic"], "orchestrator_model": route, "orchestrator_requested_model": route}
+        raise RuntimeError("Configured project routes have no available harness; no runtime/provider fallback")
     execution = policy.get("incidentExecution")
     if execution != HEALTH_EXECUTION_PROFILE:
         raise RuntimeError("Incident execution must be saved as OpenCode / MiniMax по подписке / MiniMax-M3.1-Flash-Preview; no runtime/provider fallback")
     route = _health_model_route(execution)
-    catalog = _read_json_request(urllib.request.Request(base + "/api/models?harness=opencode", headers={"Accept": "application/json"}), runner, response_limit=_SESSION_DETAILS_LIMIT)
-    if catalog.get("stale") is True or route not in catalog.get("models", []):
+    if not _policy_model_available(base, "opencode", route, runner):
         raise RuntimeError(f"OpenCode subscription model unavailable: {route}; no provider fallback")
     return {**profile, "harness": "opencode", "model": route, "reasoning": execution["reasoning"], "topic": "health",
             "orchestrator_model": route, "orchestrator_requested_model": route}
@@ -553,8 +591,14 @@ def _extract_health_diagnosis(details: Mapping[str, Any]) -> dict[str, Any] | No
     return None
 
 
-def _extract_health_remediation(details: Mapping[str, Any], expected_plan_id: str) -> dict[str, Any] | None:
-    """Find a bounded terminal remediation receipt in Hermes assistant output."""
+def _extract_health_receipt(details: Mapping[str, Any], expected_plan_id: str | None = None, rejections: list[str] | None = None) -> dict[str, Any] | None:
+    """Find one bounded, independently verified health receipt in assistant output.
+
+    The same fail-closed gate serves the repair-first executor and the legacy
+    remediation job: a verdict needs a distinct source and verifier identity, a
+    fingerprint, and real evidence. ``expected_plan_id`` additionally pins the
+    receipt to a selected legacy plan.
+    """
     decoder = json.JSONDecoder()
     for text in reversed(_assistant_texts(details)):
         for index, character in enumerate(text):
@@ -566,7 +610,10 @@ def _extract_health_remediation(details: Mapping[str, Any], expected_plan_id: st
                 continue
             if not isinstance(candidate, dict):
                 continue
-            nested = candidate.get("health_remediation") or candidate.get("health_result")
+            nested = (
+                candidate.get("repair_first") or candidate.get("health_remediation")
+                or candidate.get("health_receipt") or candidate.get("health_result")
+            )
             if isinstance(nested, dict):
                 candidate = nested
             plan_id = str(candidate.get("plan_id") or "").strip()
@@ -578,7 +625,18 @@ def _extract_health_remediation(details: Mapping[str, Any], expected_plan_id: st
             # degraded outcome rather than a reason to discard a complete,
             # independently verified receipt.
             observed_state = "degraded" if isinstance(raw_observed_state, Mapping) else str(raw_observed_state).strip().lower()
-            if plan_id != expected_plan_id or status not in {"completed", "remediation_complete", "resolved", "degraded"} or not step:
+            def reject(reason: str) -> bool:
+                if rejections is not None:
+                    rejections.append(reason)
+                return True
+
+            if expected_plan_id is None:
+                if plan_id and plan_id not in _HEALTH_PLAN_IDS:
+                    continue
+                plan_id = plan_id or "repair"
+            elif plan_id != expected_plan_id:
+                continue
+            if status not in {"completed", "remediation_complete", "resolved", "degraded", "repaired"} or not step:
                 continue
             if observed_state not in {"healthy", "degraded", "unknown"}:
                 continue
@@ -594,11 +652,14 @@ def _extract_health_remediation(details: Mapping[str, Any], expected_plan_id: st
                 # useful evidence but cannot establish an independent health
                 # verdict. It must never resolve the incident.
                 if not evidence_refs:
+                    reject("observation without evidence")
                     continue
             else:
                 if not all((verification_id, source_id, source_fingerprint, verifier_id, evidence_refs, trace_refs)):
+                    reject("repair-first receipt has no independent verification")
                     continue
                 if source_id == verifier_id:
+                    reject("repair-first receipt verifier repeats the source")
                     continue
             return {
                 "status": "completed",
@@ -613,6 +674,37 @@ def _extract_health_remediation(details: Mapping[str, Any], expected_plan_id: st
                 "trace_refs": trace_refs,
             }
     return None
+
+
+def _extract_pending_question(details: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Find one bounded "I need a decision" receipt from the executor turn."""
+    decoder = json.JSONDecoder()
+    for text in reversed(_assistant_texts(details)):
+        for index, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                candidate, _ = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(candidate, dict):
+                continue
+            nested = candidate.get("health_question") or candidate.get("question")
+            if isinstance(nested, dict):
+                candidate = nested
+            if candidate.get("needs_human") is not True:
+                continue
+            return {
+                "needs_human": True,
+                "question_ref": str(candidate.get("question_ref") or "")[:128],
+                "reason": " ".join(str(candidate.get("reason") or "").replace("\x00", "").splitlines()).strip()[:500],
+            }
+    return None
+
+
+def _extract_health_remediation(details: Mapping[str, Any], expected_plan_id: str) -> dict[str, Any] | None:
+    """Legacy alias kept for the remediation job's pinned-plan receipt."""
+    return _extract_health_receipt(details, expected_plan_id)
 
 
 def _post_health_plans(
@@ -731,7 +823,92 @@ def post_health_session_started(
     return {"status": "session_link_attached", "event_id": str(response.get("event_id") or "")[:128]}
 
 
+def _post_repair_first(
+    base_url: str,
+    token: str,
+    event: dict[str, Any],
+    session_id: str,
+    result: dict[str, Any],
+    profile: Mapping[str, str],
+    elapsed_ms: int,
+    runner: Any,
+) -> dict[str, Any]:
+    """Publish one repair-first outcome through the existing health receipt seams.
+
+    Progress, independent verification, and resolution stay separate HTTP calls
+    so the core keeps applying its existing fail-closed resolution gate; nothing
+    here resolves an incident from the executor's own words.
+    """
+    incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
+    health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
+    incident_id = str(incident.get("id") or "").strip()
+    if not incident_id:
+        raise RuntimeError("repair-first receipt is missing incident id")
+    plan_id = str(result.get("plan_id") or "repair")
+    fingerprint = hashlib.sha256(
+        json.dumps({"plan_id": plan_id, "step": result["step"], "evidence_refs": result["evidence_refs"]}, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:64]
+    trace_refs = list(dict.fromkeys([
+        f"trace:agent-herder:{session_id}",
+        f"trace:{profile['harness']}:{session_id}",
+        *_bounded_refs(health.get("trace_refs")),
+        *result["trace_refs"],
+    ]))[:16]
+    root = f"{base_url}/v1/incidents/{urllib.parse.quote(incident_id, safe='')}/health"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json"}
+
+    def post(action: str, body: Mapping[str, Any], key: str) -> dict[str, Any]:
+        request = urllib.request.Request(
+            f"{root}/{action}",
+            data=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode(),
+            headers={**headers, "Idempotency-Key": key[:512]},
+            method="POST",
+        )
+        return _read_json_request(request, runner)
+
+    progress = post("progress", {
+        "plan_id": plan_id, "step": result["step"], "evidence_refs": result["evidence_refs"],
+        "progress_fingerprint": fingerprint, "actor": "agent-herder",
+    }, f"repair-first:{incident_id}:{session_id}:{fingerprint}")
+    receipt = {
+        "callback_status": "repair_first_recorded",
+        "path": "repair-first",
+        "plan_id": plan_id,
+        "observed_state": result["observed_state"],
+        "step": result["step"],
+        "evidence_refs": result["evidence_refs"],
+        "trace_refs": trace_refs,
+        "correlation_id": str(health.get("correlation_id") or event.get("correlation_id") or "").strip()[:128],
+        "elapsed_ms": elapsed_ms,
+        "progress": progress,
+    }
+    if result["observed_state"] != "healthy":
+        receipt["resolved"] = False
+        return receipt
+    # The verifier identity must stay distinct from the remediation actor, or
+    # the core predicate rejects the receipt instead of silently resolving.
+    verification = post("verification", {
+        "source_id": result["source_id"], "verification_id": result["verification_id"],
+        "observed_state": "healthy", "evidence_refs": result["evidence_refs"],
+        "fingerprint": result["source_fingerprint"], "actor": result["verifier_id"],
+    }, f"repair-first:{incident_id}:{session_id}:verification:{result['verification_id']}")
+    resolved = post("resolve", {
+        "source_id": result["source_id"], "verification_id": result["verification_id"],
+        "actor": result["verifier_id"], "elapsed_ms": elapsed_ms, "trace_refs": trace_refs,
+        "plan_id": plan_id,
+    }, f"repair-first:{incident_id}:{session_id}:resolve:{result['verification_id']}")
+    receipt.update(verification=verification, resolution=resolved, resolved=True)
+    return receipt
+
+
 def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], session_id: str, runner: Any, started_at: float, session_callback: Callable[[Mapping[str, Any]], Any] | None = None) -> dict[str, Any]:
+    """Await one repair-first outcome in the executor's own session.
+
+    The standard path is a single executor session that repairs first and
+    returns one verified health receipt. A pending question keeps the incident
+    open for the operator's answer in the same native session; the legacy
+    planner plus three-plan card remains only as a compatibility fallback.
+    """
     if not profile["orchestrator_name"] or profile["orchestrator_requested_model"] != profile["orchestrator_model"]:
         raise RuntimeError("health diagnosis profile has no approved orchestrator mapping")
     incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
@@ -740,6 +917,9 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
     poll_seconds = _profile_seconds(profile, "poll_seconds", 1, 0.2, 10)
     last_fingerprint = ""
     diagnosis: dict[str, Any] | None = None
+    repair_first: dict[str, Any] | None = None
+    question: dict[str, Any] | None = None
+    rejected_reason = ""
     diagnosis_completed_at = 0.0
     while True:
         progress = _session_json(profile, session_id, "/progress?limit=5&history=auto", runner)
@@ -750,20 +930,62 @@ def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], sessio
         if str(session.get("status") or "") in {"idle", "completed", "done"}:
             # Only the latest turn is needed for the terminal JSON receipt.
             details = _session_json(profile, session_id, "/details?limit=1&history=auto", runner)
+            rejections: list[str] = []
+            repair_first = _extract_health_receipt(details, None, rejections)
+            question = _extract_pending_question(details)
             diagnosis = _extract_health_diagnosis(details)
-            if diagnosis is not None:
+            if repair_first is None and rejections:
+                # A claimed repair that fails the verification gate is terminal
+                # too: it posts no card and resolves nothing, and the session
+                # does not keep waiting for a verdict it will never get.
+                rejected_reason = rejections[0]
+            else:
+                rejected_reason = ""
+            if repair_first is not None or rejected_reason or question is not None or diagnosis is not None:
                 diagnosis_completed_at = time.monotonic()
                 break
         if time.monotonic() >= deadline:
             raise RuntimeError("health diagnosis did not produce a diagnosis before timeout")
         time.sleep(poll_seconds)
 
+    elapsed_ms = max(0, int((time.monotonic() - started_at) * 1000))
+    if rejected_reason:
+        return {
+            'status': 'completed', 'session_id': session_id, 'diagnosis_session_id': session_id,
+            'path': 'repair-first', 'resolved': False, 'receipt_rejected': rejected_reason,
+            'elapsed_ms': elapsed_ms, 'useful_progress': bool(last_fingerprint),
+            'progress_fingerprint': last_fingerprint,
+            **({'diagnosis': diagnosis['diagnosis']} if diagnosis else {}),
+            **({'notify_user': diagnosis['notify_user'], 'notification_reason': diagnosis['notification_reason']} if diagnosis else {}),
+        }
+    if question is not None:
+        # The operator's answer returns through the bound Herder human request
+        # and continues this same session; no plan card and no second executor.
+        return {
+            'status': 'completed', 'session_id': session_id, 'diagnosis_session_id': session_id,
+            'path': 'repair-first', 'awaiting_human': True, 'resolved': False,
+            'elapsed_ms': elapsed_ms, 'useful_progress': bool(last_fingerprint),
+            'progress_fingerprint': last_fingerprint, 'question_ref': question['question_ref'],
+            'question_reason': question['reason'],
+            **({'diagnosis': diagnosis['diagnosis']} if diagnosis else {}),
+            **({'notify_user': diagnosis['notify_user'], 'notification_reason': diagnosis['notification_reason']} if diagnosis else {}),
+        }
+    if repair_first is not None:
+        return {
+            'status': 'completed', 'session_id': session_id, 'diagnosis_session_id': session_id,
+            'elapsed_ms': elapsed_ms, 'useful_progress': bool(last_fingerprint),
+            'progress_fingerprint': last_fingerprint,
+            **({'diagnosis': diagnosis['diagnosis']} if diagnosis else {}),
+            **({'notify_user': diagnosis['notify_user'], 'notification_reason': diagnosis['notification_reason']} if diagnosis else {}),
+            **_post_repair_first(callback_url, callback_token, event, session_id, repair_first, profile, elapsed_ms, runner),
+        }
+
     health = event.get('health') if isinstance(event.get('health'), Mapping) else {}
     decision = {'notify_user': diagnosis.get('notify_user') is not False,
                 'notification_reason': diagnosis.get('notification_reason', '')}
     if health.get('notification_review_required') is True and not decision['notify_user']:
         return {'status': 'completed', 'session_id': session_id, 'diagnosis_session_id': session_id,
-                'elapsed_ms': max(0, int((time.monotonic() - started_at) * 1000)),
+                'elapsed_ms': elapsed_ms,
                 'useful_progress': bool(last_fingerprint), 'progress_fingerprint': last_fingerprint,
                 'diagnosis': diagnosis['diagnosis'], **decision}
     orchestrator_started_at = diagnosis_completed_at
@@ -927,15 +1149,18 @@ def run_profile(
     if not isinstance(incident, dict):
         raise RuntimeError("agent job event is missing incident telemetry")
     profile = _validate_profile(profile_override if profile_override is not None else _load_profile(profile_id, config_path))
+    incident_project = str(incident.get("project") or "")
+    policy = _launch_policy(profile, runner) if profile_id in _HEALTH_JOB_IDS else {}
+    allowed_routes = health_execution_routes(policy, incident_project)
     if profile_id == "health-diagnosis":
-        profile = _incident_profile(profile, runner)
+        profile = _incident_profile(profile, runner, incident_project, policy)
     if profile_id == "health-remediation":
         health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
         selection = health.get("selection") if isinstance(health.get("selection"), Mapping) else {}
         execution = selection.get("execution") if isinstance(selection.get("execution"), Mapping) else {}
         normalized_execution = {key: str(execution.get(key) or "") for key in _HEALTH_EXECUTION_PROFILES[0]}
-        if normalized_execution not in _HEALTH_EXECUTION_PROFILES:
-            raise RuntimeError("health remediation event has an unsupported execution profile")
+        if normalized_execution not in [dict(route) for route in allowed_routes]:
+            raise RuntimeError("health remediation event has an execution profile this project does not allow")
         profile = {
             **profile,
             "harness": normalized_execution["runtime"],
@@ -945,7 +1170,7 @@ def run_profile(
         }
     started_at = time.monotonic()
     if profile_id == "health-remediation":
-        profile = _incident_profile(profile, runner)
+        profile = _incident_profile(profile, runner, incident_project, policy)
     if profile_id == "health-diagnosis":
         if not profile["orchestrator_name"] or profile["orchestrator_requested_model"] != profile["orchestrator_model"]:
             raise RuntimeError("health diagnosis profile has no approved orchestrator mapping")
@@ -961,12 +1186,37 @@ def run_profile(
     }
     if profile_id == 'health-diagnosis':
         request_body['message'] += (
+            '\n\nРаботай по принципу repair-first: сам найди причину по реальному источнику и сразу чини '
+            'до восстановления потребителя. Не останавливайся на описании или наборе вариантов; отдельный '
+            'планировщик и обязательная тройка планов больше не являются стандартным путём. '
+            'Вопрос оператору задавай только тогда, когда путь действительно непонятен или нужен выбор, '
+            'и только существующим инструментом Agent Herder human_request_create, привязанным к этой '
+            'же нативной сессии: ответ вернётся сюда же, отдельный ожидающий процесс не нужен. '
+            'Прогресс публикуй через noticeplace_incident_progress. '
+            'Не задавай вопрос, если можешь проверить источник и довести исправление сам.'
+        )
+        request_body['message'] += (
             '\n\nОцени, требуется ли внимание человека. В итоговый JSON диагностики добавь '
             'notify_user (настоящий boolean true/false) и notification_reason (короткое объяснение по-русски). '
             'Выбирай false для краткого скачка или известного стабильного состояния без влияния на сервис '
             'и без действия человека; true при заметном влиянии, необходимости решения или нехватке '
             'данных для безопасного вывода. Не объявляй инцидент исправленным без проверки источника. '
             'Это решение об обычном уведомлении; критические события уже доставлены напрямую.'
+        )
+        request_body['message'] += (
+            '\n\nГлавный результат — фактическое восстановление потребителя, а не текст. '
+            'Чтобы Notice Place мог принять машинную отметку, оставь в конце один короткий JSON-объект '
+            'без markdown; формат текста при этом свободный. Полезны два вида: '
+            '{"repair_first": {"status": "completed", "plan_id": "repair", "step": "короткое действие '
+            'по-русски", "observed_state": "healthy|degraded|unknown", "source_id": "идентификатор '
+            'реально проверенного источника", "source_fingerprint": "отпечаток этого источника", '
+            '"verifier_id": "другой идентификатор независимой проверки", "verification_id": '
+            '"идентификатор проверки", "evidence_refs": ["..."], "trace_refs": ["..."]}} — '
+            'source_id и verifier_id обязаны различаться, без независимой проверки источника исправление '
+            'не считается восстановлением; либо {"health_question": {"needs_human": true, '
+            '"question_ref": "непрозрачная ссылка на вопрос", "reason": "почему нужен выбор"}} — '
+            'если ты уже задал вопрос оператору и ждёшь ответа. Если отметки нет, инцидент просто '
+            'останется без вердикта, ничего не будет закрыто.'
         )
     health_result: dict[str, str] = {}
     if profile_id == "health-remediation":
@@ -1009,10 +1259,11 @@ def run_profile(
             # record_agent_job_result will retry the same durable link from the
             # terminal receipt if this immediate callback was unavailable.
             receipt["session_notice"] = "deferred"
-    if profile_id == "health-remediation":
-        # Recovery sessions run under Agent Herder autopilot: the judge keeps
-        # the session working across turns and reports done/needs-human back
-        # through Notice Place. Arming is best-effort and never fails the job.
+    if profile_id in _HEALTH_JOB_IDS:
+        # Executor and recovery sessions run under Agent Herder autopilot: the
+        # judge keeps one session working across turns and reports done or
+        # needs-human back through Notice Place. Arming is best-effort and
+        # never fails the job.
         try:
             receipt["autopilot_armed"] = arm_session_autopilot(profile["harness"], receipt["session_id"], profile["cwd"], runner)
         except Exception:

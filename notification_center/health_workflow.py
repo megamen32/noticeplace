@@ -85,8 +85,57 @@ def _safe_plan_id(plan_id: Any) -> str:
     return value
 
 
-def normalize_health_execution(value: Any) -> dict[str, str]:
-    """Pin new incident work to the subscription route; never fall back."""
+def health_execution_profile(harness: str, model: str, topic: str = "health", reasoning: str = "") -> dict[str, str]:
+    """Normalize one policy-declared harness route into an execution profile."""
+    safe_model = _bounded_text(model, 256)
+    provider, _, rest = safe_model.partition("/")
+    route_model, _, suffix = rest.partition("$")
+    return {
+        "runtime": _bounded_text(harness, 32).lower(),
+        "provider": _bounded_text(provider or harness, 64).lower(),
+        "model": _bounded_text(route_model or safe_model, 64),
+        "reasoning": _bounded_text(suffix or reasoning or HEALTH_EXECUTION_PROFILE["reasoning"], 16).lower(),
+        "topic": _bounded_text(topic or HEALTH_EXECUTION_PROFILE["topic"], 64).lower(),
+    }
+
+
+def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, str], ...]:
+    """Build the execution profiles one incident may legally run.
+
+    An explicitly configured per-project route wins and keeps its declared
+    order; an unconfigured project stays on the pinned subscription route. The
+    order comes from the Agent Herder launch policy, so a fallback is visible
+    configuration instead of a hidden retry.
+    """
+    routes: list[dict[str, str]] = [dict(HEALTH_EXECUTION_PROFILE)]
+    configured = policy.get("projectRoutes") if isinstance(policy, Mapping) else None
+    if not isinstance(configured, Mapping) or not project:
+        return tuple(routes)
+    route = configured.get(project)
+    raw_models: Any = None
+    if isinstance(route, Mapping):
+        raw_harnesses = route.get("harnesses") or route.get("fallbackHarnesses") or []
+        raw_models = route.get("models")
+    elif isinstance(route, list):
+        raw_harnesses = route
+    else:
+        return tuple(routes)
+    if not isinstance(raw_harnesses, list):
+        return tuple(routes)
+    models = raw_models if isinstance(raw_models, Mapping) else {}
+    global_models = policy.get("models") if isinstance(policy.get("models"), Mapping) else {}
+    for harness in raw_harnesses:
+        name = _bounded_text(harness, 32).lower()
+        model = _bounded_text(models.get(name) or global_models.get(name), 256)
+        if not name or not model:
+            continue
+        routes.append(health_execution_profile(name, model))
+    return tuple(routes)
+
+
+def normalize_health_execution(value: Any, routes: tuple[dict[str, str], ...] | None = None) -> dict[str, str]:
+    """Accept the pinned subscription route and configured project routes only."""
+    allowed = [dict(route) for route in (routes if routes is not None else (HEALTH_EXECUTION_PROFILE,))]
     if value is None:
         return dict(HEALTH_EXECUTION_PROFILE)
     if not isinstance(value, Mapping):
@@ -95,7 +144,7 @@ def normalize_health_execution(value: Any) -> dict[str, str]:
     runtime = _bounded_text(value.get("runtime") or HEALTH_EXECUTION_PROFILE["runtime"], 32).lower()
     provider = _bounded_text(value.get("provider") or HEALTH_EXECUTION_PROFILE["provider"], 64).lower()
     provider = {"openai": "openai-codex", "codex": "openai-codex", "openai/codex": "openai-codex"}.get(provider, provider)
-    model = _bounded_text(value.get("model") or HEALTH_EXECUTION_PROFILE["model"], 64)
+    model = _bounded_text(value.get("model") or HEALTH_EXECUTION_PROFILE["model"], 256)
     reasoning = _bounded_text(value.get("reasoning") or HEALTH_EXECUTION_PROFILE["reasoning"], 16).lower()
     topic = _bounded_text(value.get("topic") or value.get("topic_key") or HEALTH_EXECUTION_PROFILE["topic"], 64).lower()
     result = {
@@ -105,9 +154,32 @@ def normalize_health_execution(value: Any) -> dict[str, str]:
         "reasoning": reasoning,
         "topic": topic,
     }
-    if result != HEALTH_EXECUTION_PROFILE:
-        raise ValidationError("health execution must use OpenCode / minimax-coding-plan / MiniMax-M3.1-Flash-Preview; no provider fallback")
+    if result not in allowed:
+        raise ValidationError("health execution must use a configured incident route; no provider fallback")
     return result
+
+
+def bounded_health_execution(value: Any) -> dict[str, str]:
+    """Normalize any well-formed execution profile without a route allowlist.
+
+    Storage and replay paths use this because the per-project allowlist lives in
+    the Agent Herder launch policy. Launch itself still refuses any route the
+    project does not declare.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValidationError("health execution profile must be an object")
+    runtime = _bounded_text(value.get("runtime"), 32).lower()
+    provider = _bounded_text(value.get("provider"), 64).lower()
+    model = _bounded_text(value.get("model"), 256)
+    reasoning = _bounded_text(value.get("reasoning"), 16).lower()
+    topic = _bounded_text(value.get("topic") or value.get("topic_key"), 64).lower()
+    if not runtime or not model or not topic:
+        raise ValidationError("health execution profile requires runtime, model, and topic")
+    provider = {"openai": "openai-codex", "codex": "openai-codex", "openai/codex": "openai-codex"}.get(provider, provider)
+    return {"runtime": runtime, "provider": provider, "model": model,
+            "reasoning": reasoning or HEALTH_EXECUTION_PROFILE["reasoning"], "topic": topic}
 
 
 def normalize_health_signal(signal: Mapping[str, Any]) -> dict[str, Any]:
@@ -412,8 +484,9 @@ class HealthWorkflow:
             idempotency_key,
         )
 
-    def resolve(self, incident_id: str, source_id: str, verification_id: str, actor: str, elapsed_ms: int | None = None, trace_refs: list[str] | None = None) -> dict[str, Any]:
+    def resolve(self, incident_id: str, source_id: str, verification_id: str, actor: str, elapsed_ms: int | None = None, trace_refs: list[str] | None = None, executor_plan_id: str | None = None) -> dict[str, Any]:
         bounded_elapsed = max(0, min(86_400_000, int(elapsed_ms or 0)))
+        executor_plan = _bounded_text(executor_plan_id, 64) or None
         return self._center.resolve_health_incident(
             incident_id,
             _bounded_text(source_id, 128),
@@ -421,4 +494,5 @@ class HealthWorkflow:
             actor,
             elapsed_ms=bounded_elapsed,
             trace_refs=_bounded_refs(trace_refs or []),
+            executor_plan_id=executor_plan,
         )
