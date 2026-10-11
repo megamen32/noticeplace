@@ -1,4 +1,4 @@
-"""Host-local allowlist boundary between ShellMCP and Agent Herder."""
+"""Host-local allowlist boundary between ShellMCP and Agent Herder.""""""Host-local allowlist boundary between ShellMCP and Agent Herder."""
 
 from __future__ import annotations
 
@@ -348,50 +348,82 @@ def _launch_policy(profile: Mapping[str, str], runner: Any) -> dict[str, Any]:
         urllib.request.Request(base + "/api/automation/launch-policy", headers={"Accept": "application/json"}), runner)
 
 
-def _policy_model_available(base: str, harness: str, route: str, runner: Any) -> bool:
-    """Verify one declared route against the harness's live model catalog."""
-    catalog = _read_json_request(
-        urllib.request.Request(f"{base}/api/models?harness={urllib.parse.quote(harness)}", headers={"Accept": "application/json"}),
-        runner, response_limit=_SESSION_DETAILS_LIMIT,
-    )
-    return catalog.get("stale") is not True and route in catalog.get("models", [])
-
-
 def _incident_profile(profile: dict[str, str], runner: Any, project: str = "", policy: Mapping[str, Any] | None = None) -> dict[str, str]:
-    """Resolve the incident's configured route and verify native availability.
+    """Resolve the preferred native route for one incident project.
 
-    A project with an explicit Agent Herder ``projectRoutes`` entry uses that
-    ordered harness list. Any other project keeps the pinned OpenCode
-    subscription route. The order is read once from the saved policy, so there
-    is exactly one decision and no second fallback loop.
+    Agent Herder owns admission, availability, and any fallback. This reads the
+    saved policy once and returns the declared preference without probing
+    catalogs and without a second fallback loop; the launch request carries the
+    project and a stable operation id, and the response receipt is authoritative.
+    """
+    if policy is None:
+        policy = _launch_policy(profile, runner)
+    from .health_workflow import HEALTH_EXECUTION_PROFILE, health_execution_routes
+
+    routes = health_execution_routes(policy, project)
+    if len(routes) == 1 and policy.get("incidentExecution") != HEALTH_EXECUTION_PROFILE:
+        raise RuntimeError("Incident execution must be saved as OpenCode / MiniMax по подписке / MiniMax-M3.1-Flash-Preview; no runtime/provider fallback")
+    execution = dict(routes[0])
+    route = _health_model_route(execution)
+    return {**profile, "harness": execution["runtime"], "model": route, "reasoning": execution["reasoning"],
+            "topic": execution["topic"], "orchestrator_model": route, "orchestrator_requested_model": route,
+            "harness_order": ",".join(item["runtime"] for item in routes)}
+
+
+_PROJECT_LAUNCH_OUTCOMES = {
+    "accepted", "admission_unknown", "human_hold", "handoff_required", "no_harness", "pre_admission_rejected",
+}
+
+
+def project_launch(profile: Mapping[str, str], project: str, cwd: str, message: str, runner: Any,
+                   operation_id: str = "", harness: str = "", model: str = "", mode: str = "") -> dict[str, Any]:
+    """One Agent Herder admission call for one project.
+
+    Agent Herder owns the harness order, quota, availability, and every retry.
+    A repeat of the same operation id is read from its durable log, so an
+    accepted or unknown admission is never launched twice here.
     """
     parsed = urllib.parse.urlsplit(profile["url"])
     base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
-    if policy is None:
-        policy = _launch_policy(profile, runner)
-    from .health_workflow import health_execution_routes
+    payload = {"project": project, "cwd": cwd, "message": message, "mode": mode or "queue"}
+    if operation_id:
+        payload["operation_id"] = operation_id
+    if harness:
+        payload["harness"] = harness
+    if model:
+        payload["model"] = model
+    request = urllib.request.Request(
+        f"{base}/api/automation/project-launch",
+        data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    return _read_json_request(request, runner, timeout=90)
 
-    routes = health_execution_routes(policy, project)
-    if len(routes) > 1:
-        allowed = policy.get("allowedHarnesses") if isinstance(policy.get("allowedHarnesses"), list) else []
-        for execution in routes[1:]:
-            harness = str(execution["runtime"])
-            if allowed and harness not in allowed:
-                continue
-            route = _health_model_route(execution)
-            if not _policy_model_available(base, harness, route, runner):
-                continue
-            return {**profile, "harness": harness, "model": route, "reasoning": execution["reasoning"],
-                    "topic": execution["topic"], "orchestrator_model": route, "orchestrator_requested_model": route}
-        raise RuntimeError("Configured project routes have no available harness; no runtime/provider fallback")
-    execution = policy.get("incidentExecution")
-    if execution != HEALTH_EXECUTION_PROFILE:
-        raise RuntimeError("Incident execution must be saved as OpenCode / MiniMax по подписке / MiniMax-M3.1-Flash-Preview; no runtime/provider fallback")
-    route = _health_model_route(execution)
-    if not _policy_model_available(base, "opencode", route, runner):
-        raise RuntimeError(f"OpenCode subscription model unavailable: {route}; no provider fallback")
-    return {**profile, "harness": "opencode", "model": route, "reasoning": execution["reasoning"], "topic": "health",
-            "orchestrator_model": route, "orchestrator_requested_model": route}
+
+def _operation_id(event: Mapping[str, Any], profile_id: str, plan_id: str = "") -> str:
+    """One stable operation identity per incident stage and plan.
+
+    Agent Herder keys the native session by this id, so an accepted or unknown
+    launch is never started a second time by a retry here.
+    """
+    incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
+    identity = f"{incident.get('id') or 'incident'}:{profile_id}:{plan_id or profile_id}"
+    return hashlib.sha256(identity.encode()).hexdigest()[:32]
+
+
+def _admission_receipt(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Read one launch admission receipt without inventing a verdict."""
+    admission = result.get("admission") if isinstance(result.get("admission"), Mapping) else {}
+    status = str(admission.get("status") or ("accepted" if result.get("sessionId") else "unknown"))[:32]
+    attempt = admission.get("attempt")
+    return {
+        "status": status,
+        "reason": str(admission.get("reason") or result.get("reason") or "")[:200],
+        "attempt": int(attempt) if str(attempt or "").isdigit() else 1,
+        "picked_harness": str(result.get("harness") or "")[:32],
+        "picked_model": str(result.get("model") or "")[:256],
+    }
 
 
 def _stop_session(profile: Mapping[str, str], session_id: str, runner: Any) -> None:
@@ -1207,6 +1239,7 @@ def run_profile(
             "reasoning": normalized_execution["reasoning"],
             "topic": normalized_execution["topic"],
         }
+    health_result: dict[str, str] = {}
     started_at = time.monotonic()
     if profile_id == "health-remediation":
         profile = _incident_profile(profile, runner, incident_project, policy)
@@ -1216,6 +1249,8 @@ def run_profile(
         # Validate the callback credential before creating a session, avoiding
         # an untracked agent if the result sink is unavailable.
         _load_health_callback(profile, str(incident.get("project") or ""))
+    plan_for_operation = str((health_result or {}).get("plan_id") or "")
+    operation_id = _operation_id(event, profile_id, plan_for_operation)
     request_body = {
         "harness": profile["harness"],
         "name": _health_session_name(profile, profile_id, event),
@@ -1223,6 +1258,13 @@ def run_profile(
         "mode": profile["mode"],
         "message": _telemetry_message(profile["instruction"], incident),
     }
+    if profile_id in _HEALTH_JOB_IDS:
+        # One admission call: the project and a stable operation id let Agent
+        # Herder resolve, admit, and key the native session once.
+        request_body["project"] = incident_project
+        request_body["operationId"] = operation_id
+        if profile.get("harness_order"):
+            request_body["harnessOrder"] = profile["harness_order"]
     if profile_id == 'health-diagnosis':
         request_body['message'] += (
             '\n\nРаботай по принципу repair-first: сам найди причину по реальному источнику и сразу чини '
@@ -1257,7 +1299,6 @@ def run_profile(
             'если ты уже задал вопрос оператору и ждёшь ответа. Если отметки нет, инцидент просто '
             'останется без вердикта, ничего не будет закрыто.'
         )
-    health_result: dict[str, str] = {}
     if profile_id == "health-remediation":
         plan_id, request_body["message"] = _health_remediation_message(profile, event, incident)
         request_body["model"] = profile["model"]
@@ -1267,26 +1308,58 @@ def run_profile(
     sources = event_sources(event) if profile_id in _HEALTH_JOB_IDS else []
     if profile_id in _HEALTH_JOB_IDS:
         request_body.update(source_launch_fields(profile, sources, lambda request, **options: _read_json_request(request, runner, **options)))
-    request = urllib.request.Request(
-        profile["url"],
-        data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode(),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
-    )
-    result = _read_json_request(request, runner)
-    if result.get("ok") is not True or not str(result.get("sessionId") or ""):
+    if profile_id in _HEALTH_JOB_IDS:
+        # One admission call decides harness, model, and retry. Agent Herder
+        # stops on accepted, unknown, or human hold; only a pre-admission
+        # rejection is retryable, and it retries inside Agent Herder.
+        result = project_launch(
+            profile, incident_project, profile["cwd"], request_body["message"], runner,
+            operation_id=operation_id, harness=profile["harness"], model=profile["model"], mode=profile["mode"],
+        )
+    else:
+        request = urllib.request.Request(
+            profile["url"],
+            data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode(),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        result = _read_json_request(request, runner)
+        result = {**result, "outcome": "accepted", "selected_harness": result.get("harness", profile["harness"]),
+                  "session_id": result.get("sessionId", "")}
+    outcome = str(result.get("outcome") or "accepted")
+    if outcome not in _PROJECT_LAUNCH_OUTCOMES:
+        raise RuntimeError(f"Agent Herder returned an unknown launch outcome: {outcome}")
+    session_id = str(result.get("session_id") or result.get("sessionId") or "")
+    if outcome in {"accepted", "handoff_required"} and not session_id:
+        raise RuntimeError(f"Agent Herder reported {outcome} without a session identity")
+    if outcome == "no_harness":
+        raise RuntimeError(f"Agent Herder has no runnable harness for this project: {incident_project}")
+    if outcome == "pre_admission_rejected":
         from .health_workflow import sanitize_bounded_text
-        reason = sanitize_bounded_text(result.get("error") or "no session identity", 256)
-        raise RuntimeError(f"Agent Herder did not accept the allowlisted session job: {reason}")
+        raise RuntimeError("Agent Herder rejected this launch before admission: "
+                           + sanitize_bounded_text(result.get("routing_reason") or result.get("reason") or "", 200))
+    if outcome in {"admission_unknown", "human_hold"}:
+        # Terminal for this operation id: Agent Herder keeps the durable log,
+        # so no second executor and no local retry can start here.
+        raise RuntimeError(f"Agent Herder launch stopped as {outcome} for operation {operation_id}")
     receipt = {
         "ok": True,
         "profile": profile_id,
-        "session_id": str(result["sessionId"]),
-        "created": result.get("created") is True,
+        "session_id": session_id,
+        "created": outcome == "accepted",
         "delivery": str(result.get("delivery") or ""),
-        "harness": profile["harness"],
+        "harness": str(result.get("selected_harness") or profile["harness"]),
+        "model": str(result.get("model") or profile["model"]),
+        "mode": str(result.get("mode") or profile["mode"]),
+        "project": incident_project,
+        "operation_id": str(result.get("operation_id") or operation_id),
+        "admission": {
+            "status": outcome,
+            "reason": str(result.get("routing_reason") or result.get("reason") or "")[:200],
+            "attempts": [dict(attempt) for attempt in (result.get("attempts") or []) if isinstance(attempt, Mapping)][:8],
+        },
+        "handoff": outcome == "handoff_required",
         "name": request_body["name"],
-        **({"model": profile["model"]} if profile["model"] else {}),
         **health_result,
     }
     if profile_id in _HEALTH_JOB_IDS and session_callback is not None:

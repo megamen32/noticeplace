@@ -99,38 +99,79 @@ def health_execution_profile(harness: str, model: str, topic: str = "health", re
     }
 
 
-def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, str], ...]:
-    """Build the execution profiles one incident may legally run.
+def resolve_project_route(configured: Any, aliases: Any, project: str) -> Any:
+    """Resolve one card project or workspace root to its declared route.
 
-    An explicitly configured per-project route wins and keeps its declared
-    order; an unconfigured project stays on the pinned subscription route. The
-    order comes from the Agent Herder launch policy, so a fallback is visible
-    configuration instead of a hidden retry.
+    Agent Herder matches a project by its card identifier, its canonical name,
+    or its workspace root, case-insensitively. Notice Place uses the same
+    matching so one incident can never resolve to two different routes, and it
+    never guesses a route from a similar component name.
     """
-    routes: list[dict[str, str]] = [dict(HEALTH_EXECUTION_PROFILE)]
-    configured = policy.get("projectRoutes") if isinstance(policy, Mapping) else None
-    if not isinstance(configured, Mapping) or not project:
-        return tuple(routes)
-    route = configured.get(project)
+    if not isinstance(configured, Mapping):
+        return None
+    wanted = project.strip().casefold()
+    if not wanted:
+        return None
+    for key, entry in configured.items():
+        if str(key).strip().casefold() == wanted:
+            return entry
+    if isinstance(aliases, Mapping):
+        for key, target in aliases.items():
+            if str(key).strip().casefold() != wanted:
+                continue
+            if isinstance(target, str):
+                for route_key, route in configured.items():
+                    if str(route_key).strip().casefold() == target.strip().casefold():
+                        return route
+            elif isinstance(target, Mapping):
+                return target
+    for entry in configured.values():
+        if not isinstance(entry, Mapping):
+            continue
+        declared = entry.get("aliases")
+        if isinstance(declared, list) and wanted in {_bounded_text(item, 128).casefold() for item in declared}:
+            return entry
+    return None
+
+
+def health_execution_profile(harness: str, model: str, topic: str = "health", reasoning: str = "") -> dict[str, str]:
+    """Normalize one policy-declared harness route into an execution profile."""
+    safe_model = _bounded_text(model, 256)
+    provider, _, rest = safe_model.partition("/")
+    route_model, _, suffix = rest.partition("$")
+    return {
+        "runtime": _bounded_text(harness, 32).lower(),
+        "provider": _bounded_text(provider or harness, 64).lower(),
+        "model": _bounded_text(route_model or safe_model, 64),
+        "reasoning": _bounded_text(suffix or reasoning or HEALTH_EXECUTION_PROFILE["reasoning"], 16).lower(),
+        "topic": _bounded_text(topic or HEALTH_EXECUTION_PROFILE["topic"], 64).lower(),
+    }
+
+
+def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, str], ...]:
+    """Return the declared preference for one incident project.
+
+    The route order lives in the Agent Herder launch policy and is applied by
+    Agent Herder at launch time; Notice Place only reports the declared
+    preference so the request is well formed.
+    """
+    routes_map = policy.get("projectRoutes") if isinstance(policy, Mapping) else None
+    route = resolve_project_route(routes_map, policy.get("projectAliases") if isinstance(policy, Mapping) else None, project) if project else None
+    raw_harnesses: Any = []
     raw_models: Any = None
     if isinstance(route, Mapping):
         raw_harnesses = route.get("harnesses") or route.get("fallbackHarnesses") or []
         raw_models = route.get("models")
     elif isinstance(route, list):
         raw_harnesses = route
-    else:
-        return tuple(routes)
-    if not isinstance(raw_harnesses, list):
-        return tuple(routes)
     models = raw_models if isinstance(raw_models, Mapping) else {}
     global_models = policy.get("models") if isinstance(policy.get("models"), Mapping) else {}
-    for harness in raw_harnesses:
+    for harness in raw_harnesses if isinstance(raw_harnesses, list) else []:
         name = _bounded_text(harness, 32).lower()
         model = _bounded_text(models.get(name) or global_models.get(name), 256)
-        if not name or not model:
-            continue
-        routes.append(health_execution_profile(name, model))
-    return tuple(routes)
+        if name and model:
+            return (health_execution_profile(name, model),)
+    return (dict(HEALTH_EXECUTION_PROFILE),)
 
 
 def normalize_health_execution(value: Any, routes: tuple[dict[str, str], ...] | None = None) -> dict[str, str]:

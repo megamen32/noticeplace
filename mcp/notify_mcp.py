@@ -244,8 +244,15 @@ def _noticeplace_api(method: str, path: str, payload: Optional[Dict[str, Any]] =
         method=method,
         headers=headers,
     )
-    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=8) as response:
-        return json.loads(response.read())
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=8) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as error:
+        try:
+            failure = json.loads(error.read() or b"{}")
+        except ValueError:
+            failure = {}
+        raise RuntimeError(str(failure.get("error") or failure.get("message") or f"Notice Place HTTP {error.code}")) from error
 
 
 def _noticeplace_base_url() -> str:
@@ -314,29 +321,27 @@ def _human_request_call(cfg: Dict[str, Any], method: str, path: str = "", payloa
 
 
 def tool_noticeplace_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Create a bound operator question and return immediately.
+    """Create the operator question bound to this session, exactly once.
 
-    The question is persisted and its Telegram card is rendered by Notice
-    Place, and the native target is stored with it. The call never polls: the
-    answer returns through Agent Herder's own completion seam and continues the
-    same native session.
+    The binding comes from Agent Herder ``human_request_create``, which owns the
+    native session. This tool makes one Notice Place question row and one card
+    from that binding and returns immediately; the answer continues the same
+    native session through Agent Herder's completion seam.
     """
     message = str(args.get("message") or "").strip()
     if not message:
         raise ValueError("message is required")
     harness = str(args.get("harness") or "").strip()
     session_id = str(args.get("session_id") or "").strip()
+    request_id = str(args.get("request_id") or "").strip()
     cwd = str(args.get("cwd") or "").strip()
-    if not (harness and session_id and cwd):
-        raise ValueError("harness, session_id, and cwd bind the answer to this session")
+    if not (request_id and harness and session_id):
+        raise ValueError("request_id, harness, and session_id come from Agent Herder human_request_create")
     cfg = _human_request_config()
     choices = args.get("choices")
     mode = "choice" if choices else "question"
-    wait_seconds = min(max(int(args.get("wait_seconds", 0)), 0), 3600)
-    request_id = str(args.get("request_id") or "").strip()
-    if not request_id:
-        raise ValueError("request_id is the opaque id from Agent Herder human_request_create")
-    created = _human_request_call(cfg, "POST", payload={
+    expires_at = args.get("expires_at")
+    payload = {
         "schema": "ask_human.request.v1",
         "request_id": request_id,
         "project": cfg["project"],
@@ -345,17 +350,22 @@ def tool_noticeplace_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
         "message": message,
         "choices": choices if choices else None,
         "allowed_actors": cfg["actors"],
-        "expires_at": time.time() + max(wait_seconds + 60, 300),
-        "incident_id": str(args.get("incident_id") or "").strip() or None,
-        "native_target": {"harness": harness, "session_id": session_id, "cwd": cwd},
-    })
+        "native_target": {"harness": harness, "session_id": session_id, **({"cwd": cwd} if cwd else {})},
+    }
+    incident_id = str(args.get("incident_id") or "").strip()
+    if incident_id:
+        payload["incident_id"] = incident_id
+    if expires_at is not None:
+        payload["expires_at"] = float(expires_at)
+    created = _human_request_call(cfg, "POST", payload=payload)
     return {
         "request_id": request_id,
         "state": created.get("state"),
         "continuation": "resume",
         "native": {"harness": harness, "session_id": session_id, "cwd": cwd},
-        "incident_id": created.get("incident_id"),
+        "incident_id": incident_id or None,
         "card": (created.get("telegram") or {}).get("status"),
+        "idempotent": bool(created.get("idempotent")),
     }
 
 
@@ -411,6 +421,19 @@ def tool_noticeplace_answer(args: Dict[str, Any]) -> Dict[str, Any]:
         "value": result.get("response_value"),
         "card": (result.get("telegram") or {}).get("status"),
     }
+
+
+def tool_noticeplace_question_result(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Read the canonical answer for one question this session asked.
+
+    A resumed session calls this with the request id from the resume prompt.
+    A secret request returns only its opaque reference.
+    """
+    cfg = _human_request_config()
+    request_id = str(args.get("request_id") or "").strip()
+    if not request_id:
+        raise ValueError("request_id is required")
+    return _human_request_call(cfg, "GET", "/" + urllib.parse.quote(request_id, safe="") + "/result")
 
 
 def tool_noticeplace_incident_progress(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -853,24 +876,24 @@ TOOLS = {
         "handler": tool_ask_human,
     },
     "noticeplace_ask_human": {
-        "description": "Задать оператору вопрос, привязанный к этой же нативной сессии: карточка Notice Place создаётся сразу, ответ вернётся в эту же сессию. Вызов не ждёт ответа и не опрашивает его. request_id — непрозрачный идентификатор из Agent Herder human_request_create.",
+        "description": "Создать вопрос оператору, привязанный к этой нативной сессии: ровно один вопрос и одна карточка Notice Place. Значения request_id, harness и session_id берутся из Agent Herder human_request_create. Вызов не ждёт ответа.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "request_id": {"type": "string", "description": "Непрозрачный request_id из Agent Herder human_request_create."},
+                "request_id": {"type": "string", "description": "binding.request_id из Agent Herder human_request_create."},
+                "harness": {"type": "string", "description": "binding.native_target.harness."},
+                "session_id": {"type": "string", "description": "binding.native_target.session_id."},
+                "cwd": {"type": ["string", "null"], "description": "binding.native_target.cwd, если он есть."},
                 "message": {"type": "string", "description": "Текст вопроса на русском."},
                 "choices": {
                     "type": ["array", "null"], "minItems": 2, "maxItems": 4,
                     "items": {"type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string"}}, "required": ["label", "value"], "additionalProperties": False},
                     "description": "Два-четыре варианта ответа; иначе вопрос со свободным ответом.",
                 },
-                "harness": {"type": "string", "description": "Харнесс этой сессии."},
-                "session_id": {"type": "string", "description": "Идентификатор этой нативной сессии."},
-                "cwd": {"type": "string", "description": "Абсолютный каталог этой сессии."},
                 "incident_id": {"type": ["string", "null"], "description": "Инцидент Notice Place, к которому относится вопрос."},
-                "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 3600, "default": 0, "description": "Время жизни вопроса; ответа инструмент не ждёт."},
+                "expires_at": {"type": ["number", "null"], "description": "Момент истечения из binding, если он задан."},
             },
-            "required": ["request_id", "message", "harness", "session_id", "cwd"],
+            "required": ["request_id", "harness", "session_id", "message"],
             "additionalProperties": False,
         },
         "handler": tool_noticeplace_ask_human,
@@ -903,6 +926,18 @@ TOOLS = {
             "additionalProperties": False,
         },
         "handler": tool_noticeplace_answer,
+    },
+    "noticeplace_question_result": {
+        "description": "Прочитать канонический ответ по вопросу Notice Place по его request_id. Вызывай после того, как Agent Herder сообщил, что вопрос answered: ответ выводится из хранилища, а не из присланного текста. Для секретного вопроса возвращается только непрозрачная ссылка.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "request_id из сообщения о возобновлении или из noticeplace_pending_questions."},
+            },
+            "required": ["request_id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_noticeplace_question_result,
     },
     "noticeplace_incident_progress": {
         "description": "Опубликовать ограниченный прогресс по инциденту Notice Place и, при наличии, независимую проверку источника. Итог исправления закрывает инцидент только при реальной проверке.",

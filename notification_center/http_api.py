@@ -1747,7 +1747,7 @@ def send_human_request_telegram(
             raise RuntimeError("TELEGRAM_CALLBACK_SECRET is required for AskHuman choices")
         codec = TelegramActionCodec(secret)
         rows = [
-            [{"text": str(choice["label"])[:80], "callback_data": codec.encode("human_choice", str(request["request_id"]), choice_id=str(index))}]
+            [{"text": str(choice["label"])[:80], "callback_data": codec.encode_human_choice(str(request["request_id"]), str(index))}]
             for index, choice in enumerate(request.get("choices") or [])
         ]
         payload["reply_markup"] = json.dumps({"inline_keyboard": rows}, ensure_ascii=False, separators=(",", ":"))
@@ -1816,7 +1816,7 @@ def refresh_human_request_original(
             if not secret:
                 raise ValidationError("Telegram callback secret is not configured")
             codec = TelegramActionCodec(secret)
-            rows = [[{"text": choice["label"], "callback_data": codec.encode("human_choice", request_id, choice_id=str(index))}]
+            rows = [[{"text": choice["label"], "callback_data": codec.encode_human_choice(request_id, str(index))}]
                     for index, choice in enumerate(request["choices"])]
         if request["mode"] == "choice" or request["state"] != "pending":
             payload["reply_markup"] = json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
@@ -2022,6 +2022,15 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                 except ValidationError as error:
                     self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
+            if parsed_path.path.startswith("/v1/human-requests/") and parsed_path.path.endswith("/result"):
+                try:
+                    request_id = parsed_path.path[len("/v1/human-requests/"):-len("/result")]
+                    self._reply(HTTPStatus.OK, center.human_request_result_receipt(_bearer(self), request_id))
+                except AuthorizationError as error:
+                    self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
+                except ValidationError as error:
+                    self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
             if self.path.startswith("/v1/human-requests/"):
                 try:
                     request_id = self.path.rsplit("/", 1)[-1]
@@ -2057,6 +2066,8 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     if body.get("action") == "resolve":
                         self._reply(HTTPStatus.OK, center.resolve_event(token, key, body))
                         return
+                    # Agent Herder owns the question binding and delivery, so a
+                    # plain ingress event never becomes a second question card.
                     self._reply(HTTPStatus.ACCEPTED, center.create_event(token, key, body, request_meta=self._request_meta()))
                     return
                 if self.path == "/v1/human-requests":
@@ -2103,6 +2114,11 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     self._reply(HTTPStatus.CREATED, _human_request_http_result(refreshed))
                     return
                 parts = self.path.split("/")
+                if len(parts) == 5 and parts[:3] == ["", "v1", "human-requests"] and parts[4] == "result":
+                    if set(body) - {"actor"}:
+                        raise ValidationError("question result accepts no payload fields")
+                    self._reply(HTTPStatus.OK, center.human_request_result_receipt(token, parts[3]))
+                    return
                 if len(parts) == 5 and parts[:3] == ["", "v1", "human-requests"]:
                     request_id, action = parts[3], parts[4]
                     if action == "original":

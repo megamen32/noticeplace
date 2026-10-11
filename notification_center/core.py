@@ -53,6 +53,7 @@ _HEALTH_REMEDIATION_ACTORS = {"agent-herder", "health-remediation"}
 _SYNTHETIC_HEALTH_CORRELATION_PREFIX = "corr:live-health-canary:"
 _CHOICE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _CHOICE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_HEALTH_REPAIR_FIRST_PLAN_IDS = frozenset({"observe", "repair", "verify"})
 
 
 class NotificationCenterError(Exception):
@@ -706,6 +707,41 @@ class NotificationCenter:
             result["idempotent"] = False
             return result
 
+    def human_request_result_receipt(self, token: str, request_id: str) -> dict[str, Any]:
+        """Return the canonical answer reference for a resumed session.
+
+        The stored answer is returned only for an ordinary question or choice.
+        A secret request exposes its opaque reference alone, so a resumed turn
+        can never read a secret payload.
+        """
+        request = self.human_request_producer_view(self._human_request_result(self._human_request_row(token, request_id)))
+        value = request.get("response_value")
+        kind = str(request.get("kind") or "user")
+        receipt = {
+            "schema": "ask_human.result.v1",
+            "request_id": str(request["request_id"]),
+            "state": str(request["state"]),
+            "kind": kind,
+            "result_ref": self._selection_result_ref(str(request["request_id"]), value, str(request.get("response_actor") or "")),
+            "native": {
+                "harness": str(request.get("native_harness") or ""),
+                "session_id": str(request.get("native_session_id") or ""),
+                "cwd": str(request.get("native_cwd") or ""),
+            },
+        }
+        if kind == "secret":
+            receipt["answer"] = None
+            receipt["answer_withheld"] = "secret requests return only an opaque reference"
+        else:
+            receipt["answer"] = value
+        return receipt
+
+    @staticmethod
+    def _selection_result_ref(request_id: str, value: Any, actor: str) -> str:
+        """Stable opaque answer reference derived from the stored answer."""
+        digest = hashlib.sha256(f"{request_id}:{value or ''}:{actor}".encode()).hexdigest()
+        return f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
+
     def get_human_request(self, token: str, request_id: str) -> dict[str, Any]:
         """Return the stable current state of one authorized human request."""
         with self._lock, self._connection:
@@ -737,6 +773,15 @@ class NotificationCenter:
                 (time.time(), request_id),
             )
             return self._human_request_result(self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone())
+
+    def human_request_ids(self, limit: int = 200) -> list[str]:
+        """Bounded candidate list for resolving a compact Telegram callback."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT request_id FROM human_requests ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(500, int(limit))),),
+            ).fetchall()
+        return [str(row["request_id"]) for row in rows]
 
     def get_human_request_from_telegram(self, request_id: str) -> dict[str, Any]:
         """Read one request for the signed, allowlisted in-process Telegram poller."""
@@ -3084,9 +3129,16 @@ class NotificationCenter:
         if not idempotency_key.strip():
             raise ValidationError("Idempotency-Key is required")
         safe_plan = self._health_text(plan_id or "", 64)
-        if safe_plan not in self._health_plan_candidates(incident_id):
-            raise ValidationError("unknown health plan")
-        if self._health_selected_plan(incident_id) != safe_plan:
+        candidates = self._health_plan_candidates(incident_id)
+        # A repair-first executor has no plan card: its own pinned plan carries
+        # the progress. A card-backed incident keeps the selection gate.
+        repair_first = not candidates and safe_plan in _HEALTH_REPAIR_FIRST_PLAN_IDS
+        if not repair_first:
+            if safe_plan not in candidates:
+                raise ValidationError("unknown health plan")
+            if self._health_selected_plan(incident_id) != safe_plan:
+                raise ValidationError("health progress requires the selected plan")
+        elif self._health_selected_plan(incident_id) not in (None, safe_plan):
             raise ValidationError("health progress requires the selected plan")
         safe_step = self._health_text(step or "", 128)
         safe_evidence = self._health_value(evidence_value or [])
