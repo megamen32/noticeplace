@@ -1138,13 +1138,28 @@ class NotificationCenter:
                 return None
             return self._resolve_human_request_row(self._expire_human_request(row), str(actor).strip(), str(value).strip())
 
-    def cancel_human_request(self, token: str, request_id: str, actor: str) -> dict[str, Any]:
-        """Cancel one pending request without changing any existing terminal state."""
+    def human_request_is_bound(self, request_id: str) -> bool:
+        """Whether one question is governed by the Agent Herder pending gate."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT native_harness FROM human_requests WHERE request_id = ?", (str(request_id),)
+            ).fetchone()
+        return bool(row is not None and row["native_harness"])
+
+    def cancel_human_request(self, token: str, request_id: str, actor: str, reason: str | None = None) -> dict[str, Any]:
+        """Cancel one pending request without changing any existing terminal state.
+
+        A bound question is normally closed by Agent Herder; an explicit reason
+        allows the Herder emergency exit, which is terminal and never resumes
+        the native session.
+        """
         actor = str(actor).strip() or "api"
         with self._lock, self._connection:
             row = self._expire_human_request(self._human_request_row(token, request_id))
             if row["native_harness"]:
-                raise ValidationError("a question bound to a native session is closed by Agent Herder, not cancelled here")
+                if not str(reason or "").strip():
+                    raise ValidationError("a question bound to a native session is closed by Agent Herder, not cancelled here")
+                self._audit(str(request_id), "native_question_withdrawn", actor, {"reason": str(reason)[:200]})
             if row["state"] != "pending":
                 raise ValidationError(f"human request is {row['state']}")
             update = self._connection.execute(

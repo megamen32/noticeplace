@@ -300,13 +300,17 @@ def _human_request_config() -> Dict[str, Any]:
     return {**cfg, "human_url": base_url.rstrip("/"), "actors": actors}
 
 
-def _human_request_call(cfg: Dict[str, Any], method: str, path: str = "", payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _human_request_call(cfg: Dict[str, Any], method: str, path: str = "", payload: Optional[Dict[str, Any]] = None,
+                        idempotency_key: Optional[str] = None) -> Dict[str, Any]:
     """Call one authenticated Human Request endpoint."""
+    headers = {"Authorization": f"Bearer {cfg['token']}", "Content-Type": "application/json"}
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
     request = urllib.request.Request(
         cfg["human_url"] + path,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None,
         method=method,
-        headers={"Authorization": f"Bearer {cfg['token']}", "Content-Type": "application/json"},
+        headers=headers,
     )
     try:
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=8) as response:
@@ -341,6 +345,8 @@ def tool_noticeplace_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
     if str(args.get("kind") or "user").strip().lower() != "user":
         raise ValueError("noticeplace_ask_human binds ordinary questions only; secrets stay in AskSecret")
     choices = args.get("choices")
+    if choices is not None and not 2 <= len(choices) <= 4:
+        raise ValueError("a choice question needs between two and four options")
     mode = "choice" if choices else "question"
     expires_at = args.get("expires_at")
     payload = {
@@ -360,7 +366,8 @@ def tool_noticeplace_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
         payload["incident_id"] = incident_id
     if expires_at is not None:
         payload["expires_at"] = float(expires_at)
-    created = _human_request_call(cfg, "POST", payload=payload)
+    created = _human_request_call(cfg, "POST", payload=payload,
+                                  idempotency_key=f"human-request:{request_id}")
     return {
         "request_id": request_id,
         "state": created.get("state"),
@@ -417,7 +424,7 @@ def tool_noticeplace_answer(args: Dict[str, Any]) -> Dict[str, Any]:
     result = _human_request_call(cfg, "POST", "/" + urllib.parse.quote(request_id, safe="") + "/resolve", payload={
         "value": value,
         "actor": actor,
-    })
+    }, idempotency_key=f"human-request:{request_id}:answer")
     return {
         "request_id": result.get("request_id"),
         "state": result.get("state"),

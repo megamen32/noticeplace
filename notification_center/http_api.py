@@ -2135,6 +2135,12 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     self._reply(HTTPStatus.ACCEPTED, center.create_event(token, key, body, request_meta=self._request_meta()))
                     return
                 if self.path == "/v1/human-requests":
+                    # Agent Herder dedups its retries with this key, so a repeat
+                    # must describe exactly the same question.
+                    key = self.headers.get("Idempotency-Key") or ""
+                    request_id = str(body.get("request_id") or "")
+                    if key and key != f"human-request:{request_id}":
+                        raise IdempotencyConflict("Idempotency-Key does not match this human request id")
                     if not body.get("allowed_actors"):
                         configured_actors = {
                             item.strip()
@@ -2200,7 +2206,11 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     elif action == "progress":
                         result = refresh_human_request_progress(center, token, request_id, body)
                     elif action == "cancel":
-                        result = center.cancel_human_request(token, request_id, str(body.get("actor") or "api"))
+                        reason = str(body.get("reason") or "")
+                        if center.human_request_is_bound(request_id) and not reason:
+                            raise ValidationError("cancelling a bound question requires an explicit reason")
+                        result = center.cancel_human_request(token, request_id, str(body.get("actor") or "api"),
+                                                             reason=reason or None)
                     else:
                         self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown human request action"})
                         return
