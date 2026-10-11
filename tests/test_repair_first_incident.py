@@ -67,6 +67,15 @@ class RepairFirstExecutorTests(unittest.TestCase):
             requests.append(request)
             if "/api/autopilot/sessions/" in url:
                 return _Response({"enabled": True, "sessionId": "executor-native"})
+            if url.endswith("/api/automation/project-launch"):
+                return _Response({
+                    "outcome": "accepted", "operation_id": json.loads(request.data)["operation_id"],
+                    "project": json.loads(request.data)["project"],
+                    "selected_harness": json.loads(request.data)["harness"],
+                    "model": json.loads(request.data)["model"], "mode": "queue",
+                    "session_id": "executor-native", "routing_reason": "declared route",
+                    "attempts": [{"harness": "opencode", "outcome": "accepted", "reason": "declared route"}],
+                })
             if url.endswith("/api/sessions/new-or-resume"):
                 return _Response({"ok": True, "created": True, "sessionId": "executor-native", "delivery": "accepted"})
             if "/progress?" in url:
@@ -148,12 +157,12 @@ class RepairFirstExecutorTests(unittest.TestCase):
         self.assertEqual("ask-42", receipt["question_ref"])
         self.assertEqual("executor-native", receipt["session_id"])
         self.assertEqual([], self._health_actions(requests))
-        self.assertEqual(1, len([r for r in requests if "/api/sessions/new-or-resume" in str(getattr(r, "full_url", ""))]))
+        self.assertEqual(1, len([r for r in requests if "project-launch" in str(getattr(r, "full_url", ""))]))
 
     def test_prompt_states_repair_first_without_forcing_one_final_format(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             _, requests = self._run({"executor": json.dumps({"health_question": {"needs_human": True}})}, root)
-        message = json.loads([r for r in requests if "/api/sessions/new-or-resume" in str(getattr(r, "full_url", ""))][0].data)["message"]
+        message = json.loads([r for r in requests if "project-launch" in str(getattr(r, "full_url", ""))][0].data)["message"]
         self.assertIn("repair-first", message)
         self.assertIn("noticeplace_incident_progress", message)
         self.assertIn("human_request_create", message)
@@ -175,6 +184,14 @@ class ProjectRouteTests(unittest.TestCase):
                 harness = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("harness", [""])[0]
                 return _Response({"models": models.get(harness, []), "stale": False})
             requests.append(request)
+            if "project-launch" in url:
+                body = json.loads(request.data)
+                return _Response({
+                    "outcome": "accepted", "operation_id": body["operation_id"], "project": body["project"],
+                    "selected_harness": body["harness"], "model": body["model"], "mode": body.get("mode", "queue"),
+                    "session_id": "route-native", "routing_reason": "declared route",
+                    "attempts": [{"harness": body["harness"], "outcome": "accepted", "reason": "declared route"}],
+                })
             return _Response({"ok": True, "created": True, "sessionId": "route-native", "delivery": "accepted"})
         return runner
 
@@ -211,21 +228,69 @@ class ProjectRouteTests(unittest.TestCase):
         self.assertEqual("opencode", receipt["harness"])
         self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", receipt["model"])
 
-    def test_configured_project_route_applies_its_declared_order(self) -> None:
-        policy = self._policy({"TelegramAuto": {"harnesses": ["opencode", "zcode"]}})
-        receipt, _ = self._run("TelegramAuto", policy, {"zcode": ["account:zai-individual-coding-plan/GLM-5.3-Flash$high"]})
+    def test_configured_project_route_applies_and_keeps_its_declared_order(self) -> None:
+        policy = self._policy({"TelegramAuto": {"harnesses": ["zcode", "opencode"]}})
+        receipt, requests = self._run("TelegramAuto", policy, {"zcode": ["account:zai-individual-coding-plan/GLM-5.3-Flash$high"]})
+        # Agent Herder owns admission and fallback, so NoticePlace sends the
+        # declared order once instead of probing and looping itself.
         self.assertEqual("zcode", receipt["harness"])
         self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash$high", receipt["model"])
+        launch = [json.loads(r.data) for r in requests if "project-launch" in str(r.full_url)][0]
+        self.assertEqual("TelegramAuto", launch["project"])
+        self.assertEqual("zcode", launch["harness"])
+        self.assertEqual(32, len(launch["operation_id"]))
+        self.assertEqual("TelegramAuto", launch["project"])
 
-    def test_unavailable_first_route_falls_through_to_the_next_configured_one(self) -> None:
-        policy = self._policy({"TelegramAuto": {"harnesses": ["zcode", "opencode"]}})
-        receipt, _ = self._run("TelegramAuto", policy, {"opencode": ["minimax-coding-plan/MiniMax-M3.1-Flash-Preview"]})
+    def test_declared_aliases_resolve_case_insensitively_like_herder(self) -> None:
+        policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator", "autotelegramviews"],
+                                                "harnesses": ["zcode"]}})
+        for project in ("tg-commentator", "TG-Commentator", "autotelegramviews", "AutoTelegramViews"):
+            with self.subTest(project=project):
+                receipt, _ = self._run(project, policy, {"zcode": ["account:zai-individual-coding-plan/GLM-5.3-Flash$high"]})
+                self.assertEqual("zcode", receipt["harness"])
+
+    def test_undeclared_project_name_is_never_guessed(self) -> None:
+        policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator"], "harnesses": ["zcode"]}})
+        receipt, _ = self._run("autosell", policy, {"zcode": ["account:zai-individual-coding-plan/GLM-5.3-Flash$high"]})
         self.assertEqual("opencode", receipt["harness"])
 
-    def test_no_available_route_refuses_instead_of_guessing(self) -> None:
-        policy = self._policy({"TelegramAuto": {"harnesses": ["zcode"]}})
-        with self.assertRaisesRegex(RuntimeError, "no available harness"):
-            self._run("TelegramAuto", policy, {"opencode": []})
+    def test_admission_receipt_is_authoritative_and_never_relaunched(self) -> None:
+        policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator"], "harnesses": ["opencode", "zcode"]}})
+        requests: list[object] = []
+        profile = {
+            "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "name": "health",
+            "harness": "opencode", "cwd": "/tmp", "mode": "queue", "instruction": "Чини.",
+            "orchestrator_name": "planner", "orchestrator_model": "configured",
+            "orchestrator_requested_model": "configured",
+        }
+        event = {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
+                 "incident": {"id": "inc-1", "project": "tg-commentator", "severity": "critical",
+                              "title": "t", "body": "b", "dedup_key": "d", "occurrences": 1}}
+
+        def runner(request, **_kwargs):
+            url = str(getattr(request, "full_url", ""))
+            if url.endswith("/api/automation/launch-policy"):
+                return _Response(policy)
+            requests.append(request)
+            return _Response({"outcome": "accepted", "operation_id": "op-admission",
+                              "project": "tg-commentator", "selected_harness": "zcode",
+                              "model": "account:zai-individual-coding-plan/GLM-5.3-Flash$high", "mode": "queue",
+                              "session_id": "zcode-native", "routing_reason": "declared route",
+                              "attempts": [{"harness": "zcode", "outcome": "accepted", "reason": "declared route"}]})
+
+        with patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "token")), \
+             patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
+            receipt = agent_job_helper.run_profile("health-diagnosis", event, Path("unused"), runner=runner, profile_override=profile)
+        self.assertEqual("zcode", receipt["harness"], "the launch receipt outranks the requested harness")
+        self.assertEqual("accepted", receipt["admission"]["status"])
+        self.assertEqual(1, len(receipt["admission"]["attempts"]))
+        launches = [r for r in requests if "project-launch" in str(r.full_url)]
+        self.assertEqual(1, len(launches), "exactly one admission call, never a second executor")
+        # The durable operation id is stable for the same incident and stage, so
+        # a repeat is read from Agent Herder's log instead of launching again.
+        sent_operation = json.loads(launches[0].data)["operation_id"]
+        self.assertEqual(32, len(sent_operation))
+        self.assertEqual(sent_operation, agent_job_helper._operation_id(event, "health-diagnosis"))
 
 
 class SelectedCardUpdaterTests(unittest.TestCase):
@@ -334,6 +399,38 @@ class SelectedCardUpdaterTests(unittest.TestCase):
         receipt = self.center.selection_receipt("req-1")
         self.assertEqual("observe", receipt["choice_id"])
         self.assertEqual("telegram", receipt["source"])
+
+    def test_uuid_request_id_uses_the_compact_signed_callback(self) -> None:
+        request_id = "6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44"
+        self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": request_id, "project": "hermes",
+            "recipient": "me", "mode": "choice", "message": "Что делать?",
+            "choices": [{"label": "Починить", "value": "repair"}, {"label": "Наблюдать", "value": "observe"}],
+            "allowed_actors": ["telegram:42"],
+        })
+        self.center.bind_human_request_message("p", request_id, "-100", 7)
+        data = self.codec.encode_human_choice(request_id, "1")
+        self.assertLessEqual(len(data.encode()), 64)
+        self.assertNotIn(request_id, data)
+        self.assertEqual((request_id, "1"), self.codec.decode_human_choice(data, self.center.human_request_ids()))
+        self.assertIsNone(self.codec.decode_human_choice(data, ["11111111-1111-4111-8111-111111111111"]))
+
+        edits: list[dict[str, object]] = []
+
+        def api(method: str, payload: dict[str, object]) -> dict[str, object]:
+            if method == "getUpdates":
+                return {"ok": True, "result": []}
+            edits.append(payload)
+            return {"ok": True, "result": {"message_id": 7, "chat": {"id": -100}}}
+
+        poller = self._poller(api)
+        with patch.object(poller, "_api", api):
+            poller._handle_callback({
+                "id": "cb", "from": {"id": 42}, "data": data,
+                "message": {"chat": {"id": -100}, "message_id": 7, "text": "Что делать?"},
+            })
+        self.assertTrue(any("✅ Выбрано: Наблюдать" in str(edit.get("text", "")) for edit in edits))
+        self.assertEqual("observe", self.center.selection_receipt(request_id)["choice_id"])
 
     def test_incident_choice_result_is_canonical_and_edits_the_incident_card(self) -> None:
         created = self.center.create_event("p", "choice", {

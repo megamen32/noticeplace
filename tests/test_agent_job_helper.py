@@ -28,6 +28,17 @@ class _Response:
         return json.dumps(self._payload).encode()
 
 
+def project_launch_response(session_id: str, harness: str = "opencode",
+                            model: str = "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                            outcome: str = "accepted", **extra: object) -> dict:
+    """Agent Herder's project-launch admission receipt, as the tests consume it."""
+    return {"outcome": outcome, "operation_id": "op-1", "project": "fleet-health",
+            "selected_harness": harness, "model": model, "mode": "queue",
+            "session_id": session_id, "delivery": "accepted", "routing_reason": "declared route",
+            "attempts": [{"harness": harness, "outcome": outcome, "reason": "declared route", "input_id": "in-1"}],
+            **extra}
+
+
 class AgentJobHelperTests(unittest.TestCase):
     def test_web_policy_changes_harness_without_forwarding_foreign_model(self) -> None:
         profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "codex", "model": "gpt-5.6-sol", "orchestrator_model": "gpt-5.6-sol", "orchestrator_requested_model": "gpt-5.6-sol"}
@@ -225,10 +236,9 @@ class AgentJobHelperTests(unittest.TestCase):
                 url = str(getattr(request, "full_url", ""))
                 if "/api/autopilot/sessions/" in url:
                     return _Response({"enabled": True, "sessionId": "codex-health-diagnosis-1"})
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("codex-health-diagnosis-1"))
                 if url.endswith("/api/sessions/new-or-resume"):
-                    session_calls += 1
-                    if session_calls == 1:
-                        return _Response({"ok": True, "created": True, "sessionId": "codex-health-diagnosis-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
                     body = json.loads(getattr(request, "data").decode())
                     self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", body["model"])
                     self.assertEqual("queue", body["mode"])
@@ -297,8 +307,8 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
-                if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("codex-health-1"))
                 if "/progress?" in url:
                     return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
                 if "/details?" in url:
@@ -322,7 +332,9 @@ class AgentJobHelperTests(unittest.TestCase):
             )
             self.assertEqual("codex-health-1", result["session_id"])
             self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", result["model"])
-            body = json.loads(requests[0].data)
+            self.assertEqual("accepted", result["admission"]["status"])
+            self.assertEqual("health-monitor", result["project"])
+            body = json.loads([r for r in requests if "project-launch" in str(r.full_url)][0].data)
             self.assertEqual("opencode", body["harness"])
             self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", body["model"])
             self.assertIn("selected plan repair", body["message"])
@@ -363,8 +375,8 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
-                if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("codex-health-1"))
                 if "/api/autopilot/sessions/" in url:
                     return _Response({"harness": "opencode", "sessionId": "codex-health-1", "enabled": True, "source": "session"})
                 if "/progress?" in url:
@@ -429,8 +441,8 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
-                if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "hermes-timeout-1", "delivery": "accepted"})
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("hermes-timeout-1"))
                 if "/progress?" in url:
                     progress_calls += 1
                     return _Response({"session": {"status": "running" if progress_calls == 1 else "idle"}, "fingerprint": f"progress:{progress_calls}"})
@@ -481,6 +493,8 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("codex-1" if "codex" in url else "opencode-1"))
                 if url.endswith("/api/sessions/new-or-resume"):
                     return _Response({"ok": True, "created": True, "sessionId": "codex-retry-1", "delivery": "accepted"})
                 if "/progress?" in url:
@@ -587,6 +601,8 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("codex-1" if "codex" in url else "opencode-1"))
                 if url.endswith("/api/sessions/new-or-resume"):
                     return _Response({"ok": True, "created": True, "sessionId": "opencode-legacy-1", "delivery": "accepted"})
                 if "/progress?" in url:

@@ -148,6 +148,13 @@ class HealthNotificationDecisionTests(unittest.TestCase):
                 return Response({'models': ['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'], 'stale': False})
             if '/api/autopilot/sessions/' in url:
                 return Response({'enabled': True, 'sessionId': 'real-native-id'})
+            if '/api/automation/project-launch' in url:
+                requests.append(request)
+                return Response({'outcome': 'accepted', 'operation_id': 'op-quiet',
+                                 'selected_harness': 'opencode',
+                                 'model': 'minimax-coding-plan/MiniMax-M3.1-Flash-Preview',
+                                 'mode': 'queue', 'session_id': 'real-native-id',
+                                 'routing_reason': 'declared route', 'attempts': []})
             requests.append(request)
             return Response({'ok': True, 'sessionId': 'real-native-id', 'created': True})
         profile = {'url': 'http://127.0.0.1:18787/api/sessions/new-or-resume', 'name': 'diagnosis',
@@ -165,15 +172,18 @@ class HealthNotificationDecisionTests(unittest.TestCase):
              patch.object(agent_job_helper, '_session_json', side_effect=session_json):
             receipt = agent_job_helper.run_profile('health-diagnosis', event, Path('unused'),
                 profile_override=profile, runner=runner, session_callback=callback)
-        self.assertEqual(1, len(requests))
+        launches = [r for r in requests if 'project-launch' in str(r.full_url)]
+        self.assertEqual(1, len(launches), 'one admission call, no planner session')
         self.assertEqual(1, len(callbacks))
         self.assertFalse(receipt['notify_user'])
         self.assertEqual('real-native-id', receipt['session_id'])
         self.assertNotIn('orchestrator_session_id', receipt)
-        body = json.loads(requests[0].data)
+        body = json.loads([r for r in requests if "project-launch" in str(r.full_url)][0].data)
         self.assertIn('notify_user', body['message'])
         self.assertNotIn('humanRequested', body)
-        self.assertEqual([], body['sourceSessions'])
+        # The incident project drives admission; no ancestor is consumed here.
+        self.assertEqual(created['incident_id'] and body['project'], body['project'])
+        self.assertNotIn('sourceSessions', body)
 
     def test_optional_judgement_requires_boolean(self):
         def parse(value):

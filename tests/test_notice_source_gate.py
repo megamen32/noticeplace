@@ -86,9 +86,10 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from notification_center import agent_job_helper as helper
-        posts=[]
+        posts=[];reads=[]
         def runner(request,**kwargs):
-            if '/coordination/context?' in request.full_url:return self.response({'humanStopHeld':False})
+            if '/coordination/context?' in request.full_url:
+                reads.append(request.full_url);return self.response({'humanStopHeld':False})
             if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
             if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'],'stale':False})
             posts.append(json.loads(request.data));return self.response({'ok':True,'sessionId':'remediation-native','created':True})
@@ -96,10 +97,11 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
             helper.run_profile('health-remediation',self.event(),Path('unused'),runner=runner,profile_override=self.profile())
         body=posts[0]
         self.assertEqual('opencode',body['harness'])
-        self.assertEqual('zcode',body['sourceHarness'])
-        self.assertEqual('native-planner',body['sourceSessionId'])
-        self.assertEqual(self.event()['health']['source_sessions'],body['sourceSessions'])
+        self.assertEqual('queue',body['mode'])
+        self.assertEqual(32,len(body['operation_id']))
         self.assertNotIn('humanRequested',body)
+        self.assertTrue(all('consume=0' in url for url in reads))
+        self.assertTrue(any('sessionId=native-planner' in url for url in reads))
 
     def test_stopped_diagnosis_blocks_remediation_before_any_post(self):
         from pathlib import Path
@@ -142,15 +144,16 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
                 reads.append(request.full_url);return self.response({'humanStopHeld':False})
             if '/launch-policy' in request.full_url:
                 return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
-            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'],'stale':False})
             posts.append(json.loads(request.data))
-            raise urllib.error.HTTPError(request.full_url,429,'quota',{},io.BytesIO(b'{"error":"quota exhausted"}'))
-        with self.assertRaises(helper.HealthAgentEndpointError):
+            return self.response({'outcome':'pre_admission_rejected','operation_id':'op-1','routing_reason':'quota exhausted','attempts':[{'harness':'opencode','outcome':'pre_admission_rejected','reason':'quota exhausted'}]})
+        with self.assertRaisesRegex(RuntimeError, 'before admission'):
             helper.run_profile('health-remediation',event,Path('unused'),runner=runner,profile_override=self.profile())
         self.assertEqual(1,len(posts))
-        self.assertEqual(event['health']['source_sessions'],posts[0]['sourceSessions'])
+        # Agent Herder owns the fallback chain; Notice Place sends one launch
+        # with the declared preference and no second route.
+        self.assertEqual('fleet-health',posts[0]['project'])
         self.assertEqual('minimax-coding-plan/MiniMax-M3.1-Flash-Preview',posts[0]['model'])
-        self.assertTrue(any('sessionId=native-diagnosis' in url for url in reads))
+        self.assertTrue(any('sessionId=native-diagnosis' in url and 'consume=0' in url for url in reads))
 
     def test_failed_first_run_carries_sources_and_a_later_held_ancestor_blocks(self):
         import json
@@ -164,14 +167,16 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
                 reads.append(request.full_url);return self.response({'humanStopHeld':held[0]})
             if '/launch-policy' in request.full_url:
                 return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
-            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'],'stale':False})
+            if '/project-launch' in request.full_url:
+                posts.append(json.loads(request.data))
+                return self.response({'outcome':'accepted','operation_id':'op-1','selected_harness':'opencode','model':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview','mode':'queue','session_id':'remediation-native','routing_reason':'declared route','attempts':[]})
             if '/api/autopilot/sessions/' in request.full_url:return self.response({'enabled':True,'sessionId':'remediation-native'})
             posts.append(json.loads(request.data));return self.response({'ok':True,'sessionId':'remediation-native','created':True})
         with patch.object(helper,'_run_health_remediation',side_effect=helper.HealthStartPlanUnavailable()):
             with self.assertRaises(helper.HealthStartPlanUnavailable):
                 helper.run_profile('health-remediation',event,Path('unused'),runner=runner,profile_override=self.profile())
             self.assertEqual(1,len(posts))
-            self.assertEqual(event['health']['source_sessions'],posts[0]['sourceSessions'])
+            self.assertTrue(any('sessionId=native-diagnosis' in url and 'consume=0' in url for url in reads))
             held[0]=True
             with self.assertRaisesRegex(HealthSourceGateBlocked,'human_stop_held'):
                 helper.run_profile('health-remediation',event,Path('unused'),runner=runner,profile_override=self.profile())

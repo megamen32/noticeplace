@@ -50,7 +50,7 @@ class OriginalBackfillTests(unittest.TestCase):
         self.assertIn("  # Оригинал 🧭\n",self.calls[0][1]["text"])
         keyboard=json.loads(self.calls[0][1]["reply_markup"])
         codec=TelegramActionCodec("x"*32)
-        self.assertEqual("1",codec.decode(keyboard["inline_keyboard"][1][0]["callback_data"])[2])
+        self.assertEqual(("userio-1", "1"),codec.decode_human_choice(keyboard["inline_keyboard"][1][0]["callback_data"], ["userio-1"]))
 
     def test_resolved_choice_stays_resolved_and_is_not_reopened(self):
         before=self.center.resolve_human_request("owner","userio-1","telegram:42","send_1")

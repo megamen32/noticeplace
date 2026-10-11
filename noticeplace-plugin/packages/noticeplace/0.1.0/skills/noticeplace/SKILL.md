@@ -9,24 +9,30 @@ Repair first, report briefly, and ask only what you cannot decide yourself.
 
 ## The one supported question path
 
-A bound question needs two facts that only you have: your own native session
-and the opaque request id from Agent Herder `human_request_create`.
+Ask with **Agent Herder `human_request_create`** and nothing else. It binds your
+own harness, `sessionId`, and `cwd` in Herder and delivers one Notice Place
+card for that question.
 
-1. Call Agent Herder `human_request_create` with **your** harness, `sessionId`,
-   and `cwd`. That creates the Herder binding only — it does **not** deliver
-   anything to the human on its own.
-2. Call `noticeplace_ask_human` with that `request_id`, your `harness`,
-   `session_id`, and `cwd`, plus the question text and its options. Notice Place
-   persists the question, renders its card, and stores the native target.
-   This call returns immediately; it never polls.
-3. The answer arrives from Telegram, voice, or phone. Notice Place records it,
-   marks the same card, and continues **your** session through Agent Herder's
-   own completion seam. You do not poll for it and you do not start a second
-   waiting process.
+From that binding, create the Notice Place side exactly once with
+`noticeplace_ask_human` using `binding.request_id`,
+`binding.native_target.harness`, `binding.native_target.session_id`, the
+message, and the choices. Do **not** create a second question or a second card:
+one creation means one card, one pending question, and one answer.
 
-`ask_human` without a native target stays available for plain notifications and
-blocking questions; it binds nothing and resumes nothing. Never combine it with
-a manual resume.
+The answer arrives from Telegram, voice, or phone. Notice Place records it, marks
+the same card, and continues **your** session through Agent Herder's own
+completion seam. You do not poll for it and you do not start a second waiting
+process.
+
+When Agent Herder resumes you it says the question is answered and gives the
+`request_id` plus an answer reference. Read the canonical answer with
+`noticeplace_question_result(request_id=...)` and apply it. That value comes from
+durable storage, never from the message text, so a replayed or conflicting
+answer cannot change it. A secret question returns only an opaque reference.
+
+`ask_human` stays available for a plain notification or an unbound blocking
+question. It binds nothing and resumes nothing, so never pair it with a manual
+resume.
 
 ## Reading and answering questions
 

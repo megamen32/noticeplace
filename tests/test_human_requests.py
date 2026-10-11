@@ -192,7 +192,9 @@ class HumanRequestTests(unittest.TestCase):
         keyboard = json.loads(str(calls[0][1]["reply_markup"]))
         callbacks = [row[0]["callback_data"] for row in keyboard["inline_keyboard"]]
         self.assertEqual(3, len(callbacks))
-        self.assertTrue(all(codec.decode(value) for value in callbacks))
+        # Choice buttons use the compact signed selector: a UUID request id can
+        # never fit beside an incident id in the 64-byte Telegram budget.
+        self.assertTrue(all(codec.decode_human_choice(value, ["deploy-1"]) for value in callbacks))
 
         update = {"update_id": 30, "callback_query": {
             "id": "choice", "from": {"id": 42}, "data": callbacks[1],
