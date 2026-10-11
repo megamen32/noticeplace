@@ -338,6 +338,8 @@ def tool_noticeplace_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
     if not (request_id and harness and session_id):
         raise ValueError("request_id, harness, and session_id come from Agent Herder human_request_create")
     cfg = _human_request_config()
+    if str(args.get("kind") or "user").strip().lower() != "user":
+        raise ValueError("noticeplace_ask_human binds ordinary questions only; secrets stay in AskSecret")
     choices = args.get("choices")
     mode = "choice" if choices else "question"
     expires_at = args.get("expires_at")
@@ -351,6 +353,7 @@ def tool_noticeplace_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
         "choices": choices if choices else None,
         "allowed_actors": cfg["actors"],
         "native_target": {"harness": harness, "session_id": session_id, **({"cwd": cwd} if cwd else {})},
+        "kind": "user",
     }
     incident_id = str(args.get("incident_id") or "").strip()
     if incident_id:
@@ -416,10 +419,13 @@ def tool_noticeplace_answer(args: Dict[str, Any]) -> Dict[str, Any]:
         "actor": actor,
     })
     return {
-        "request_id": request_id,
+        "request_id": result.get("request_id"),
         "state": result.get("state"),
-        "value": result.get("response_value"),
-        "card": (result.get("telegram") or {}).get("status"),
+        "value": result.get("value"),
+        "label": result.get("label"),
+        # Card rendering and native delivery are separate outcomes.
+        "card": result.get("card"),
+        "native": result.get("native"),
     }
 
 

@@ -1620,11 +1620,71 @@ def record_incident_choice_result(
     }
 
 
+def complete_human_request(
+    center: NotificationCenter,
+    request: Mapping[str, Any],
+    value: str,
+    actor: str,
+    source: str,
+    api: Any | None = None,
+    base_text: str = "",
+    entities: Any = None,
+    chat_id: str = "",
+    message_id: Any = None,
+    runner: Any = urllib.request.urlopen,
+) -> dict[str, Any]:
+    """One canonical completion for every answer surface.
+
+    HTTP, a Telegram button, and a free-text reply all end here: the first
+    accepted value wins, the same card is marked from the canonical receipt, and
+    the bound native session is resumed exactly once. Card rendering and native
+    delivery are reported separately, because one can succeed while the other
+    does not.
+    """
+    request_id = str(request.get("request_id") or "")
+    answer = str(value or "").strip()
+    if not request_id or not answer:
+        raise ValidationError("completion requires a request id and an answer")
+    was_pending = str(request.get("state") or "") == "pending"
+    if was_pending:
+        resolved = center.resolve_human_request_for_surface(request_id, actor, answer)
+    else:
+        # An already answered question keeps its first value and never resumes
+        # the native session a second time.
+        resolved = dict(request)
+    canonical_value = str(resolved.get("response_value") or answer)
+    label = next(
+        (str(choice.get("label") or "") for choice in (resolved.get("choices") or [])
+         if isinstance(choice, Mapping) and str(choice.get("value") or "") == canonical_value),
+        "",
+    )
+    receipt: dict[str, Any] = {}
+    if canonical_value != "deep_analysis" and was_pending:
+        card = mark_human_request_resolved_card(center, resolved, actor, api, base_text=base_text,
+                                                entities=entities, chat_id=chat_id, message_id=message_id,
+                                                source=source)
+        receipt["card"] = card
+    native = resume_human_request_native_session(center, resolved, actor, runner) if was_pending else {"status": "already_answered"}
+    return {
+        "request_id": request_id,
+        "state": str(resolved.get("state") or ""),
+        "value": canonical_value if canonical_value != "deep_analysis" else None,
+        "label": label or None,
+        "card": receipt.get("card", {}).get("status", "skipped"),
+        "native": native or {"status": "not_bound"},
+    }
+
+
 def mark_human_request_resolved_card(
     center: NotificationCenter,
     request: Mapping[str, Any],
     actor: str,
     api: Any | None = None,
+    base_text: str = "",
+    entities: Any = None,
+    chat_id: str = "",
+    message_id: Any = None,
+    source: str = "api",
 ) -> dict[str, Any]:
     """Mark the same card for any non-Telegram resolver of a human request.
 
@@ -1633,9 +1693,11 @@ def mark_human_request_resolved_card(
     message that asked the question.
     """
     request_id = str(request.get("request_id") or "")
-    chat_id, message_id = str(request.get("telegram_chat_id") or ""), request.get("telegram_message_id")
-    if not request_id or not chat_id or not isinstance(message_id, int) or message_id <= 0:
+    bound_chat = chat_id or str(request.get("telegram_chat_id") or "")
+    bound_message = message_id if isinstance(message_id, int) else request.get("telegram_message_id")
+    if not request_id or not bound_chat or not isinstance(bound_message, int) or bound_message <= 0:
         return {"status": "card_is_not_bound"}
+    chat_id, message_id = bound_chat, bound_message
     value = str(request.get("response_value") or "")
     if not value or value == "deep_analysis":
         return {"status": "skipped"}
@@ -1649,9 +1711,10 @@ def mark_human_request_resolved_card(
     if not label:
         return {"status": "empty_answer"}
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    if not bot_token:
+    if api is None and not bot_token:
+        # The in-process poller already owns a bound Bot API client.
         return {"status": "not_configured"}
-    base_text = render_human_request_original({**request, "state": "pending"})[0]
+    rendered = base_text or render_human_request_original({**request, "state": "pending"})[0]
     applied = apply_selection_receipt(
         center,
         api or (lambda method, body: telegram_api(bot_token, method, body)),
@@ -1660,8 +1723,9 @@ def mark_human_request_resolved_card(
         choice_id=canonical_choice_ref(value),
         label=label,
         actor=actor,
-        source="api",
-        base_text=base_text,
+        source=source,
+        base_text=rendered,
+        entities=entities,
         chat_id=chat_id,
         message_id=message_id,
     )
@@ -2129,12 +2193,10 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         )
                     elif action == "resolve":
                         actor_value = str(body.get("actor") or "api")
-                        result = center.resolve_human_request(token, request_id, actor_value, str(body.get("value") or ""))
-                        card = mark_human_request_resolved_card(center, result, actor_value)
-                        result = {**result, "telegram": card}
-                        resumed = resume_human_request_native_session(center, result, actor_value)
-                        if resumed:
-                            result = {**result, "native": resumed}
+                        pending = center.get_human_request(token, request_id)
+                        completed = complete_human_request(
+                            center, pending, str(body.get("value") or ""), actor_value, "api")
+                        result = {**center.get_human_request(token, request_id), **completed}
                     elif action == "progress":
                         result = refresh_human_request_progress(center, token, request_id, body)
                     elif action == "cancel":

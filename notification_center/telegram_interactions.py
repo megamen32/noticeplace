@@ -299,7 +299,9 @@ class TelegramInteractionPoller:
 
     def _handle_human_choice(self, callback: dict[str, Any], callback_id: str, actor_id: Any,
                              request_id: str, index: str) -> None:
-        """Resolve one choice tap on the exact card that asked the question."""
+        """Resolve one choice tap through the same canonical completion."""
+        from .http_api import complete_human_request
+
         with self._center.delivery_send_lock():
             request = self._center.get_human_request_from_telegram(request_id)
             if request.get("original_text") or any(choice.get("value") == "deep_analysis" for choice in request.get("choices", [])):
@@ -312,41 +314,23 @@ class TelegramInteractionPoller:
                 selected = choices[int(index)]
             except (IndexError, TypeError, ValueError):
                 raise ValidationError("human request choice is invalid")
-            result = self._center.resolve_human_request_from_telegram(
-                request_id, f"telegram:{actor_id}", str(selected.get("value") or "")
-            )
-            if result.get("response_value") == "deep_analysis":
-                from .human_request_progress import edit_progress_card
-                edit_progress_card(result, self._api)
-                self._center.confirm_human_request_progress_card(request_id)
-                self._answer(callback_id, "Принял, запускаю глубокий разбор…"
-                             if (result.get("progress") or {}).get("phase") == "accepted" else "Карточка разбора обновлена.")
-                return
-            if result.get("original_text"):
+            if request.get("original_text"):
                 from .human_request_original import render_human_request_original
-                text, _ = render_human_request_original({**result, "state": "pending"})
+                text, _ = render_human_request_original({**request, "state": "pending"})
                 message = {**callback.get("message", {}), "text": text}
                 message.pop("entities", None)
                 callback = {**callback, "message": message}
             message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
             chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
-            # Mark the accepted value, not the requested one: the receipt stays
-            # canonical for a later voice or API replay of the same answer.
-            apply_selection_receipt(
-                self._center,
-                self._api,
-                request_id=request_id,
-                incident_id=request_id,
-                choice_id=canonical_choice_ref(str(result.get("response_value") or selected.get("value") or "")),
-                label=str(selected.get("label") or selected.get("value") or ""),
-                actor=f"telegram:{actor_id}",
-                source="telegram",
-                base_text=str(message.get("text") or ""),
-                entities=message.get("entities"),
-                chat_id=str(chat.get("id") or ""),
-                message_id=message.get("message_id"),
+            completed = complete_human_request(
+                self._center, request, str(selected.get("value") or ""), f"telegram:{actor_id}", "telegram",
+                self._api, base_text=str(message.get("text") or ""), entities=message.get("entities"),
+                chat_id=str(chat.get("id") or ""), message_id=message.get("message_id"),
             )
-        self._answer(callback_id, f"choice: {result['state']}")
+        if completed.get("card") == "marked" or completed.get("card") == "already_marked":
+            self._answer(callback_id, f"✅ Выбрано: {completed.get('label') or selected.get('label')}")
+        else:
+            self._answer(callback_id, f"choice: {completed.get('state')}")
 
     def _handle_callback(self, callback: dict[str, Any]) -> None:
         callback_id = str(callback.get("id") or "")
@@ -495,10 +479,19 @@ class TelegramInteractionPoller:
         reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else {}
         reply_message_id = reply.get("message_id")
         if allowed_actor and chat_id and isinstance(reply_message_id, int) and text:
-            resolved = self._center.resolve_human_reply_from_telegram(
-                chat_id, reply_message_id, f"telegram:{actor_id}", text
+            from .http_api import complete_human_request
+            answered = self._center.human_request_for_reply(
+                chat_id, reply_message_id, f"telegram:{actor_id}"
             )
-            if resolved is not None:
+            if answered is not None:
+                # One canonical completion for a free-text answer too: the same
+                # card is marked and the bound native session continues once.
+                complete_human_request(
+                    self._center, answered, text, f"telegram:{actor_id}", "telegram_text", self._api,
+                    chat_id=chat_id, message_id=reply_message_id,
+                )
+                self._message(chat_id, "Ответ принят и передан в сессию агента." if answered.get("native_harness")
+                              else "Ответ принят.")
                 return
             incident = self._center.record_telegram_reply(
                 chat_id, reply_message_id, f"telegram:{actor_id}", text

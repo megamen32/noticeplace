@@ -371,12 +371,14 @@ def _incident_profile(profile: dict[str, str], runner: Any, project: str = "", p
 
 
 _PROJECT_LAUNCH_OUTCOMES = {
-    "accepted", "admission_unknown", "human_hold", "handoff_required", "no_harness", "pre_admission_rejected",
+    "accepted", "admission_unknown", "human_hold", "handoff_required", "no_harness",
+    "pre_admission_rejected", "in_flight",
 }
 
 
 def project_launch(profile: Mapping[str, str], project: str, cwd: str, message: str, runner: Any,
-                   operation_id: str = "", harness: str = "", model: str = "", mode: str = "") -> dict[str, Any]:
+                   operation_id: str = "", harness: str = "", model: str = "", mode: str = "",
+                   harness_order: str = "") -> dict[str, Any]:
     """One Agent Herder admission call for one project.
 
     Agent Herder owns the harness order, quota, availability, and every retry.
@@ -392,6 +394,10 @@ def project_launch(profile: Mapping[str, str], project: str, cwd: str, message: 
         payload["harness"] = harness
     if model:
         payload["model"] = model
+    if harness_order:
+        # The configured project route decides the order; this profile value is
+        # only a hint and must never override the saved route.
+        payload["harness_order"] = [item for item in harness_order.split(",") if item][:8]
     request = urllib.request.Request(
         f"{base}/api/automation/project-launch",
         data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(),
@@ -399,6 +405,51 @@ def project_launch(profile: Mapping[str, str], project: str, cwd: str, message: 
         method="POST",
     )
     return _read_json_request(request, runner, timeout=90)
+
+
+def _launch_receipt(result: Mapping[str, Any], profile: Mapping[str, str], operation_id: str, project: str) -> dict[str, Any]:
+    """Turn one project-launch response into a receipt, or fail closed.
+
+    An unknown outcome, a refused route, or a reserved-but-unknown attempt is
+    terminal: repeating the same operation id never starts a second executor
+    here. A configured project is described by the receipt, never by the
+    profile that asked for the launch.
+    """
+    outcome = str(result.get("outcome") or "accepted")
+    if outcome not in _PROJECT_LAUNCH_OUTCOMES:
+        raise RuntimeError(f"Agent Herder returned an unknown launch outcome: {outcome}")
+    session_id = str(result.get("session_id") or result.get("sessionId") or "")
+    if outcome in {"accepted", "handoff_required"} and not session_id:
+        raise RuntimeError(f"Agent Herder reported {outcome} without a session identity")
+    if outcome == "no_harness":
+        raise RuntimeError(f"Agent Herder has no runnable harness for this project: {project}")
+    if outcome == "pre_admission_rejected":
+        from .health_workflow import sanitize_bounded_text
+        raise RuntimeError("Agent Herder rejected this launch before admission: "
+                           + sanitize_bounded_text(result.get("routing_reason") or result.get("reason") or "", 200))
+    if outcome in {"admission_unknown", "human_hold", "in_flight"}:
+        # Terminal for this operation id. An in_flight attempt is a reservation
+        # whose result is unknown; repeating it never starts a second executor.
+        raise RuntimeError(f"Agent Herder launch stopped as {outcome} for operation {operation_id}")
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "created": outcome == "accepted",
+        "delivery": str(result.get("delivery") or ""),
+        "harness": str(result.get("selected_harness") or profile["harness"]),
+        "model": str(result.get("model") or profile["model"]),
+        "mode": str(result.get("mode") or profile["mode"]),
+        "cwd": str(result.get("cwd") or profile["cwd"]),
+        "routing_reason": str(result.get("routing_reason") or result.get("reason") or "")[:200],
+        "project": project,
+        "operation_id": str(result.get("operation_id") or operation_id),
+        "admission": {
+            "status": outcome,
+            "reason": str(result.get("routing_reason") or result.get("reason") or "")[:200],
+            "attempts": [dict(attempt) for attempt in (result.get("attempts") or []) if isinstance(attempt, Mapping)][:8],
+        },
+        "handoff": outcome == "handoff_required",
+    }
 
 
 def _operation_id(event: Mapping[str, Any], profile_id: str, plan_id: str = "") -> str:
@@ -1303,6 +1354,7 @@ def run_profile(
         result = project_launch(
             profile, incident_project, profile["cwd"], request_body["message"], runner,
             operation_id=operation_id, harness=profile["harness"], model=profile["model"], mode=profile["mode"],
+            harness_order=str(profile.get("harness_order") or ""),
         )
     else:
         request = urllib.request.Request(
@@ -1314,40 +1366,10 @@ def run_profile(
         result = _read_json_request(request, runner)
         result = {**result, "outcome": "accepted", "selected_harness": result.get("harness", profile["harness"]),
                   "session_id": result.get("sessionId", "")}
-    outcome = str(result.get("outcome") or "accepted")
-    if outcome not in _PROJECT_LAUNCH_OUTCOMES:
-        raise RuntimeError(f"Agent Herder returned an unknown launch outcome: {outcome}")
-    session_id = str(result.get("session_id") or result.get("sessionId") or "")
-    if outcome in {"accepted", "handoff_required"} and not session_id:
-        raise RuntimeError(f"Agent Herder reported {outcome} without a session identity")
-    if outcome == "no_harness":
-        raise RuntimeError(f"Agent Herder has no runnable harness for this project: {incident_project}")
-    if outcome == "pre_admission_rejected":
-        from .health_workflow import sanitize_bounded_text
-        raise RuntimeError("Agent Herder rejected this launch before admission: "
-                           + sanitize_bounded_text(result.get("routing_reason") or result.get("reason") or "", 200))
-    if outcome in {"admission_unknown", "human_hold"}:
-        # Terminal for this operation id: Agent Herder keeps the durable log,
-        # so no second executor and no local retry can start here.
-        raise RuntimeError(f"Agent Herder launch stopped as {outcome} for operation {operation_id}")
     receipt = {
-        "ok": True,
         "profile": profile_id,
-        "session_id": session_id,
-        "created": outcome == "accepted",
-        "delivery": str(result.get("delivery") or ""),
-        "harness": str(result.get("selected_harness") or profile["harness"]),
-        "model": str(result.get("model") or profile["model"]),
-        "mode": str(result.get("mode") or profile["mode"]),
-        "project": incident_project,
-        "operation_id": str(result.get("operation_id") or operation_id),
-        "admission": {
-            "status": outcome,
-            "reason": str(result.get("routing_reason") or result.get("reason") or "")[:200],
-            "attempts": [dict(attempt) for attempt in (result.get("attempts") or []) if isinstance(attempt, Mapping)][:8],
-        },
-        "handoff": outcome == "handoff_required",
         "name": request_body["name"],
+        **_launch_receipt(result, profile, operation_id, incident_project),
         **health_result,
     }
     if profile_id in _HEALTH_JOB_IDS and session_callback is not None:
@@ -1364,14 +1386,21 @@ def run_profile(
         # judge keeps one session working across turns and reports done or
         # needs-human back through Notice Place. Arming is best-effort and
         # never fails the job.
+        # The launch receipt is authoritative. For a configured project the
+        # route owns harness, model, and workspace root; profile values apply
+        # only to an unconfigured project, so arming and polling follow the
+        # receipt and never the requested profile.
+        launched = {**profile, "harness": receipt["harness"], "model": receipt.get("model") or profile["model"],
+                    "cwd": str(receipt.get("cwd") or profile["cwd"])}
         try:
-            receipt["autopilot_armed"] = arm_session_autopilot(profile["harness"], receipt["session_id"], profile["cwd"], runner)
+            receipt["autopilot_armed"] = arm_session_autopilot(
+                launched["harness"], receipt["session_id"], launched["cwd"], runner)
         except Exception:
             receipt["autopilot_armed"] = False
     if profile_id == "health-diagnosis":
-        receipt.update(_run_health_diagnosis(profile, event, receipt["session_id"], runner, started_at, session_callback))
+        receipt.update(_run_health_diagnosis(launched, event, receipt["session_id"], runner, started_at, session_callback))
     elif profile_id == "health-remediation":
-        receipt.update(_run_health_remediation(profile, event, receipt["session_id"], health_result["plan_id"], runner, started_at))
+        receipt.update(_run_health_remediation(launched, event, receipt["session_id"], health_result["plan_id"], runner, started_at))
     return receipt
 
 

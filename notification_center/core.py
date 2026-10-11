@@ -275,7 +275,8 @@ class NotificationCenter:
                     incident_id TEXT,
                     native_harness TEXT,
                     native_session_id TEXT,
-                    native_cwd TEXT
+                    native_cwd TEXT,
+                    kind TEXT NOT NULL DEFAULT 'user'
                 );
                 """
             )
@@ -313,6 +314,8 @@ class NotificationCenter:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_progress_confirmed_at REAL")
             if "incident_id" not in human_request_columns:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN incident_id TEXT")
+            if "kind" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'")
             for column in ("native_harness", "native_session_id", "native_cwd"):
                 if column not in human_request_columns:
                     self._connection.execute(f"ALTER TABLE human_requests ADD COLUMN {column} TEXT")
@@ -587,8 +590,14 @@ class NotificationCenter:
         return row
 
     def _expire_human_request(self, row: sqlite3.Row) -> sqlite3.Row:
-        """Persist expiry for an overdue pending request and return its current row."""
+        """Persist expiry for an overdue pending request and return its current row.
+
+        A question bound to a native session is owned by the Agent Herder
+        pending gate, so Notice Place never expires or cancels it on its own.
+        """
         expires_at = row["expires_at"]
+        if "native_harness" in row.keys() and row["native_harness"]:
+            return row
         if row["state"] == "pending" and expires_at is not None and float(expires_at) <= time.time():
             self._connection.execute("UPDATE human_requests SET state = 'expired' WHERE request_id = ? AND state = 'pending'", (row["request_id"],))
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
@@ -647,6 +656,12 @@ class NotificationCenter:
             raise ValidationError("native_target harness is not supported")
         if native["cwd"] and not os.path.isabs(native["cwd"]):
             raise ValidationError("native_target cwd must be an absolute path")
+        kind = str(request.get("kind") or "user").strip().lower()
+        if kind not in {"user", "secret"}:
+            raise ValidationError("human request kind must be user or secret")
+        if kind == "secret" and any(native.values()):
+            # A secret is delivered by AskSecret as an opaque reference only.
+            raise ValidationError("a secret request cannot bind a native session")
         raw_incident_id = request.get("incident_id")
         if raw_incident_id is not None and not isinstance(raw_incident_id, str):
             raise ValidationError("human request incident_id must be a string")
@@ -675,6 +690,7 @@ class NotificationCenter:
                 and (row["native_harness"] if "native_harness" in row.keys() else None) == (native["harness"] or None)
                 and (row["native_session_id"] if "native_session_id" in row.keys() else None) == (native["session_id"] or None)
                 and (row["native_cwd"] if "native_cwd" in row.keys() else None) == (native["cwd"] or None)
+                and (row["kind"] if "kind" in row.keys() else "user") == kind
             )
 
         now = time.time()
@@ -690,8 +706,8 @@ class NotificationCenter:
                 return result
             try:
                 self._connection.execute(
-                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at, incident_id, native_harness, native_session_id, native_cwd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
-                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires, incident_id, native["harness"] or None, native["session_id"] or None, native["cwd"] or None),
+                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at, incident_id, native_harness, native_session_id, native_cwd, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
+                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires, incident_id, native["harness"] or None, native["session_id"] or None, native["cwd"] or None, kind),
                 )
             except sqlite3.IntegrityError as error:
                 existing = self._connection.execute(
@@ -1075,6 +1091,42 @@ class NotificationCenter:
                 raise ValidationError("human request not found")
             return self._resolve_human_request_row(self._expire_human_request(row), actor, value)
 
+    def human_request_for_reply(self, chat_id: str, message_id: int, actor: str) -> dict[str, Any] | None:
+        """Find the question a Telegram reply answers, without resolving it yet."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM human_requests WHERE telegram_chat_id = ? AND telegram_message_id = ? "
+                "AND mode = 'question' ORDER BY created_at DESC LIMIT 1",
+                (str(chat_id), int(message_id)),
+            ).fetchone()
+            if row is None:
+                return None
+            if str(actor) not in json.loads(str(row["allowed_actors_json"])):
+                raise ValidationError("human response actor is not allowed")
+            return self._human_request_result(self._expire_human_request(row))
+
+    def resolve_human_request_for_surface(self, request_id: str, actor: str, value: str) -> dict[str, Any]:
+        """Resolve one request from any surface, keeping the first accepted value.
+
+        Telegram buttons, free-text replies, HTTP, and voice all use this, so a
+        later conflicting answer can never replace the accepted one.
+        """
+        actor = str(actor).strip()
+        value = str(value).strip()
+        if not actor or not value or len(value) > 4000:
+            raise ValidationError("human response actor and value are required")
+        with self._lock, self._connection:
+            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            if row is None:
+                raise ValidationError("human request not found")
+            if row["native_harness"]:
+                # A bound question is governed by the Agent Herder pending gate.
+                self._expire_human_request(row)
+                return self._human_request_result(
+                    self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+                ) if row["state"] != "pending" else self._resolve_human_request_row(row, actor, value)
+            return self._resolve_human_request_row(self._expire_human_request(row), actor, value)
+
     def resolve_human_reply_from_telegram(self, chat_id: str, message_id: int, actor: str, value: str) -> dict[str, Any] | None:
         """Resolve only a reply correlated to the exact sent Telegram question."""
         with self._lock, self._connection:
@@ -1091,6 +1143,8 @@ class NotificationCenter:
         actor = str(actor).strip() or "api"
         with self._lock, self._connection:
             row = self._expire_human_request(self._human_request_row(token, request_id))
+            if row["native_harness"]:
+                raise ValidationError("a question bound to a native session is closed by Agent Herder, not cancelled here")
             if row["state"] != "pending":
                 raise ValidationError(f"human request is {row['state']}")
             update = self._connection.execute(
