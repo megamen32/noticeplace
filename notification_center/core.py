@@ -2273,7 +2273,10 @@ class NotificationCenter:
             selected = self.latest_health_selection(incident_id) or {}
             if safe_plan not in HEALTH_PLAN_IDS or str(selected.get("plan_id") or "") != safe_plan:
                 raise ValidationError("health remediation session plan does not match the selected plan")
-        elif safe_plan:
+        elif safe_plan and self._health_plan_candidates(incident_id):
+            # With a plan card present a plan id on the diagnosis stage would
+            # look like a selection. A repair-first executor names the plan it
+            # ran, and that is an observation, not a selection.
             raise ValidationError("diagnosis and orchestrator sessions do not select a repair plan")
         parsed = urllib.parse.urlsplit(public_base_url.strip().rstrip("/"))
         if parsed.scheme != "https" or not parsed.hostname or parsed.query or parsed.fragment:
@@ -2486,11 +2489,12 @@ class NotificationCenter:
         receipt: Mapping[str, Any],
         health_context: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Turn one repair-first executor outcome into durable health outcomes.
+        """Record what a repair-first executor observed, without resolving.
 
-        The executor's terminal message is not a resolution claim. Resolution
-        still needs an independent verification receipt from a non-remediation
-        actor whose source and fingerprint match the original signal.
+        The executor is the actor that repaired, never the actor that verifies.
+        Its claim keeps the original source identity and fingerprint so the
+        independent producer can check exactly that source, but it can never
+        close the incident on its own.
         """
         agent_receipt = receipt.get("agent_receipt")
         if not isinstance(agent_receipt, Mapping):
@@ -2518,16 +2522,13 @@ class NotificationCenter:
             return {"accepted": False, "resolved": False, "reason": "repair-first receipt requires a step and a bounded observed_state"}
         plan_id = self._health_text(agent_receipt.get("plan_id") or "repair", 64)
         evidence_refs = refs(agent_receipt.get("evidence_refs"))
+        source_id = self._health_text(agent_receipt.get("source_id") or "", 128)
+        source_fingerprint = self._health_text(agent_receipt.get("source_fingerprint") or "", 128)
         progress_fingerprint = self._health_text(agent_receipt.get("progress_fingerprint") or "", 128)
         if not progress_fingerprint:
             progress_fingerprint = hashlib.sha256(
                 json.dumps({"plan_id": plan_id, "step": step, "evidence_refs": evidence_refs}, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()[:64]
-        trace_refs: list[str] = []
-        for value in (health_context.get("trace_refs"), agent_receipt.get("trace_refs")):
-            for trace_ref in refs(value):
-                if trace_ref not in trace_refs:
-                    trace_refs.append(trace_ref)
         try:
             previous_progress = self.latest_health_progress(incident_id, plan_id)
             if previous_progress is not None and all(
@@ -2549,56 +2550,55 @@ class NotificationCenter:
                 )
         except ValidationError as error:
             return {"accepted": False, "resolved": False, "reason": self._health_text(error, 256)}
-        if observed_state != "healthy":
-            return {
-                "accepted": True, "resolved": False, "progress": progress,
-                "reason": f"repair-first executor finished with observed_state={observed_state}",
-                "outcome_delivery_id": self.schedule_health_outcome(
-                    incident_id, observed_state if observed_state in {"degraded", "unknown"} else "unknown",
-                    f"repair-first:{progress_fingerprint}",
-                ),
+        outcome: dict[str, Any] = {
+            "accepted": True, "resolved": False, "progress": progress,
+            "observed_state": observed_state,
+            "source_id": source_id, "source_fingerprint": source_fingerprint,
+            "awaiting_verification": observed_state == "healthy",
+        }
+        if observed_state == "healthy":
+            outcome["reason"] = "executor observation recorded; an independent producer verification must close this incident"
+            outcome["verification_required"] = {
+                "source_id": source_id, "source_fingerprint": source_fingerprint, "plan_id": plan_id,
             }
-        verification = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["verification"])
-        if not isinstance(verification, Mapping) or not self._health_text(verification.get("actor") or "", 128):
-            return {
-                "accepted": False, "resolved": False, "progress": progress,
-                "reason": "an independent health verification receipt is required before a repair-first executor can resolve",
-            }
-        if not self._health_verification_is_independent(verification):
-            return {
-                "accepted": False, "resolved": False, "progress": progress,
-                "reason": "health verification must come from an independent actor",
-            }
-        source_id = self._health_text(verification.get("source_id") or "", 128)
-        verifier_id = self._health_text(verification.get("verifier_id") or "", 128)
-        verification_id = self._health_text(verification.get("verification_id") or "", 128)
-        fingerprint = self._health_text(verification.get("fingerprint") or "", 128)
-        if not source_id or not verifier_id or not verification_id or not bool(verification.get("healthy")):
-            return {
-                "accepted": False, "resolved": False, "progress": progress,
-                "reason": "independent health verification receipt is incomplete or unhealthy",
-            }
-        expected_source_id = self._health_text(health_context.get("source_id") or "", 128)
-        expected_fingerprint = self._health_text(health_context.get("source_fingerprint") or "", 128)
-        if expected_source_id and source_id != expected_source_id:
-            return {"accepted": False, "resolved": False, "progress": progress, "reason": "health verification source must match the original source"}
-        if expected_fingerprint and fingerprint != expected_fingerprint:
-            return {"accepted": False, "resolved": False, "progress": progress, "reason": "health verification fingerprint must match the original source"}
-        receipt_source_id = self._health_text(agent_receipt.get("source_id") or "", 128)
-        receipt_verifier_id = self._health_text(agent_receipt.get("verifier_id") or "", 128)
-        if receipt_source_id and receipt_source_id != source_id:
-            return {"accepted": False, "resolved": False, "progress": progress, "reason": "repair-first receipt source does not match the independent verification"}
-        if receipt_verifier_id and receipt_verifier_id != verifier_id:
-            return {"accepted": False, "resolved": False, "progress": progress, "reason": "repair-first receipt verifier does not match the independent verification"}
-        try:
-            elapsed_ms = max(0, min(86_400_000, int(receipt.get("elapsed_ms") or 0)))
-        except (TypeError, ValueError):
-            elapsed_ms = 0
+        else:
+            outcome["outcome_delivery_id"] = self.schedule_health_outcome(
+                incident_id, observed_state, f"repair-first:{progress_fingerprint}"
+            )
+        return outcome
+
+    def _resolve_after_independent_verification(self, incident_id: str, verification: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Resolve a repair-first incident once an independent producer verified it.
+
+        The executor only observed; this is the first point where the original
+        source can actually be closed, and it reuses the unchanged fail-closed
+        resolution gate.
+        """
+        if self._health_selected_plan(incident_id) is not None:
+            return None
+        payload = verification.get("payload") if isinstance(verification.get("payload"), Mapping) else verification
+        plan_ids = [
+            str(self._health_text(event.get("payload", {}).get("plan_id") or "", 64))
+            for event in self._health_events(incident_id, HEALTH_UPDATE_EVENT_TYPES["progress"])
+        ]
+        plan_id = next((value for value in plan_ids if value in _HEALTH_REPAIR_FIRST_PLAN_IDS), "")
+        if not plan_id or not self._health_useful_progress_exists(incident_id, plan_id):
+            return None
+        if not self._health_verification_is_independent(payload):
+            return None
+        source_id = self._health_text(payload.get("source_id") or "", 128)
+        verification_id = self._health_text(payload.get("verification_id") or "", 128)
+        if not source_id or not verification_id or not bool(payload.get("healthy")):
+            return None
+        if not self._healthy_verification_matches(incident_id):
+            return None
+        if self.get_incident(incident_id)["state"] == "resolved":
+            return {"resolved": True, "idempotent": True}
         resolved = self.resolve_health_incident(
-            incident_id, source_id, verification_id, "agent-herder",
-            elapsed_ms=elapsed_ms, trace_refs=trace_refs[:16], executor_plan_id=plan_id,
+            incident_id, source_id, verification_id, "producer:verification",
+            elapsed_ms=0, executor_plan_id=plan_id,
         )
-        return {"accepted": True, "resolved": True, "progress": progress, "verification": verification, "resolved_incident": resolved}
+        return {"resolved": True, "resolved_incident": resolved}
 
     def record_agent_job_result(self, incident_id: str, delivery_id: str, job_name: str, receipt: Mapping[str, Any], health_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Persist a bounded terminal agent-job receipt without raw command output."""
@@ -3280,6 +3280,11 @@ class NotificationCenter:
         result["observed_state"] = state
         result["source_id"] = source_id
         result["verifier_id"] = verifier_id
+        # A repair-first executor only observes; this independent producer
+        # receipt is the first authority that may close such an incident.
+        resolved = self._resolve_after_independent_verification(incident_id, payload)
+        if resolved:
+            result["resolved_incident"] = resolved
         return result
 
     def resolve_health_incident(self, incident_id: str, source_id: str, verification_id: str, actor: str, elapsed_ms: int | None = None, trace_refs: list[str] | None = None, executor_plan_id: str | None = None) -> dict[str, Any]:

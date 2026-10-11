@@ -456,21 +456,25 @@ def tool_noticeplace_incident_progress(args: Dict[str, Any]) -> Dict[str, Any]:
         "plan_id": plan_id, "step": step, "evidence_refs": evidence_refs,
         "progress_fingerprint": fingerprint, "actor": "noticeplace-plugin",
     }, idempotency_key=progress_key)
-    verification = None
-    source_id = str(args.get("source_id") or "").strip()[:128]
-    verifier_id = str(args.get("verifier_id") or "").strip()[:128]
-    verification_id = str(args.get("verification_id") or "").strip()[:128]
+    # The executor observes; it never verifies. An independent producer posts
+    # POST /v1/incidents/{id}/health/verification, and only that receipt can
+    # close a healthy repair-first incident.
     observed_state = str(args.get("observed_state") or "").strip().lower()
-    if observed_state or source_id or verifier_id or verification_id:
-        if not (source_id and verifier_id and verification_id and observed_state in {"healthy", "degraded"}):
-            raise ValueError("an independent verification needs source_id, verifier_id, verification_id and observed_state")
-        if source_id == verifier_id:
-            raise ValueError("verifier_id must differ from source_id")
-        verification = _noticeplace_api("POST", f"{root}/health/verification", {
-            "source_id": source_id, "verification_id": verification_id, "observed_state": observed_state,
-            "evidence_refs": evidence_refs, "fingerprint": fingerprint or None, "actor": verifier_id,
-        }, idempotency_key=f"noticeplace-verification:{incident_id}:{verification_id}")
-    return {"incident_id": incident_id, "plan_id": plan_id, "progress": receipt, "verification": verification}
+    if observed_state:
+        if observed_state not in {"healthy", "degraded", "unknown"}:
+            raise ValueError("observed_state must be healthy, degraded, or unknown")
+        if args.get("verifier_id") or args.get("verification_id"):
+            raise ValueError("the executor cannot verify its own work; use the producer verification callback")
+    return {
+        "incident_id": incident_id, "plan_id": plan_id, "progress": receipt,
+        "observed_state": observed_state or None,
+        "awaiting_verification": observed_state == "healthy",
+        "verification_required": {
+            "source_id": str(args.get("source_id") or "")[:128],
+            "source_fingerprint": fingerprint,
+            "callback": f"POST /v1/incidents/{incident_id}/health/verification",
+        } if observed_state == "healthy" else None,
+    }
 
 
 def tool_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -940,7 +944,7 @@ TOOLS = {
         "handler": tool_noticeplace_question_result,
     },
     "noticeplace_incident_progress": {
-        "description": "Опубликовать ограниченный прогресс по инциденту Notice Place и, при наличии, независимую проверку источника. Итог исправления закрывает инцидент только при реальной проверке.",
+        "description": "Опубликовать ограниченный прогресс по инциденту Notice Place. Исполнитель только наблюдает: он не проверяет сам себя и не закрывает инцидент. Закрытие делает независимый producer через /health/verification.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -952,11 +956,9 @@ TOOLS = {
                     "description": "Ссылки на реально проверенный источник.",
                 },
                 "plan_id": {"type": "string", "default": "repair", "description": "repair по умолчанию; observe не выносит вердикт."},
-                "source_id": {"type": ["string", "null"], "description": "Идентификатор проверенного источника."},
+                "source_id": {"type": ["string", "null"], "description": "Идентификатор реально прочитанного источника."},
                 "source_fingerprint": {"type": ["string", "null"], "description": "Отпечаток этого источника."},
-                "verifier_id": {"type": ["string", "null"], "description": "Другой идентификатор независимой проверки."},
-                "verification_id": {"type": ["string", "null"], "description": "Идентификатор проверки."},
-                "observed_state": {"type": ["string", "null"], "enum": ["healthy", "degraded"], "description": "Вердикт независимой проверки."},
+                "observed_state": {"type": ["string", "null"], "enum": ["healthy", "degraded", "unknown"], "description": "Что исполнитель наблюдает. Это не верификация."},
             },
             "required": ["incident_id", "step", "evidence_refs"],
             "additionalProperties": False,

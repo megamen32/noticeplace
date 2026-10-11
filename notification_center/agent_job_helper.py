@@ -713,34 +713,31 @@ def _extract_health_receipt(details: Mapping[str, Any], expected_plan_id: str | 
                 continue
             evidence_refs = _bounded_refs(candidate.get("evidence_refs"))
             trace_refs = _bounded_refs(candidate.get("trace_refs"))
-            verification_id = str(candidate.get("verification_id") or "").strip()[:128]
             source_id = str(candidate.get("source_id") or "").strip()[:128]
             source_fingerprint = str(candidate.get("source_fingerprint") or candidate.get("fingerprint") or "").strip()[:128]
-            verifier_id = str(candidate.get("verifier_id") or candidate.get("verification_source_id") or "").strip()[:128]
             observation_without_verdict = plan_id == "observe" and observed_state == "unknown"
-            if observation_without_verdict:
-                # Observation is allowed to finish honestly when it collected
-                # useful evidence but cannot establish an independent health
-                # verdict. It must never resolve the incident.
+            if expected_plan_id is None:
+                # A repair-first executor reports what it did and which source it
+                # read. It is not a verifier: its own identity never becomes the
+                # verifying actor and its claim never closes the incident.
+                if not (source_id and source_fingerprint and evidence_refs):
+                    reject("repair-first observation needs a source identity, fingerprint, and evidence")
+                    continue
+            elif observation_without_verdict:
                 if not evidence_refs:
                     reject("observation without evidence")
                     continue
             else:
-                if not all((verification_id, source_id, source_fingerprint, verifier_id, evidence_refs, trace_refs)):
-                    reject("repair-first receipt has no independent verification")
-                    continue
-                if source_id == verifier_id:
-                    reject("repair-first receipt verifier repeats the source")
+                if not all((source_id, source_fingerprint, evidence_refs, trace_refs)):
+                    reject("remediation receipt has no source identity or evidence")
                     continue
             return {
                 "status": "completed",
                 "plan_id": plan_id,
                 "step": step[:128],
                 "observed_state": observed_state,
-                "verification_id": verification_id,
                 "source_id": source_id,
                 "source_fingerprint": source_fingerprint,
-                "verifier_id": verifier_id,
                 "evidence_refs": evidence_refs,
                 "trace_refs": trace_refs,
             }
@@ -904,11 +901,11 @@ def _post_repair_first(
     elapsed_ms: int,
     runner: Any,
 ) -> dict[str, Any]:
-    """Publish one repair-first outcome through the existing health receipt seams.
+    """Publish the executor's observation and stop short of any resolution.
 
-    Progress, independent verification, and resolution stay separate HTTP calls
-    so the core keeps applying its existing fail-closed resolution gate; nothing
-    here resolves an incident from the executor's own words.
+    Repair-first admission and progress are the executor's own work. Resolution
+    stays with an independent producer verification receipt, so nothing here
+    posts a verification or closes the incident from the executor's message.
     """
     incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
     health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
@@ -926,50 +923,41 @@ def _post_repair_first(
         *result["trace_refs"],
     ]))[:16]
     root = f"{base_url}/v1/incidents/{urllib.parse.quote(incident_id, safe='')}/health"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json"}
-
-    def post(action: str, body: Mapping[str, Any], key: str) -> dict[str, Any]:
-        request = urllib.request.Request(
-            f"{root}/{action}",
-            data=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode(),
-            headers={**headers, "Idempotency-Key": key[:512]},
-            method="POST",
-        )
-        return _read_json_request(request, runner)
-
-    progress = post("progress", {
-        "plan_id": plan_id, "step": result["step"], "evidence_refs": result["evidence_refs"],
-        "progress_fingerprint": fingerprint, "actor": "agent-herder",
-    }, f"repair-first:{incident_id}:{session_id}:{fingerprint}")
-    receipt = {
-        "callback_status": "repair_first_recorded",
+    progress_request = urllib.request.Request(
+        f"{root}/progress",
+        data=json.dumps({
+            "plan_id": plan_id, "step": result["step"], "evidence_refs": result["evidence_refs"],
+            "progress_fingerprint": fingerprint, "actor": "agent-herder",
+        }, ensure_ascii=False, separators=(",", ":")).encode(),
+        headers={
+            "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Idempotency-Key": f"repair-first:{incident_id}:{session_id}:{fingerprint}"[:512],
+        },
+        method="POST",
+    )
+    progress = _read_json_request(progress_request, runner)
+    original = health
+    return {
+        "callback_status": "repair_first_progress_recorded",
         "path": "repair-first",
         "plan_id": plan_id,
         "observed_state": result["observed_state"],
         "step": result["step"],
         "evidence_refs": result["evidence_refs"],
         "trace_refs": trace_refs,
-        "correlation_id": str(health.get("correlation_id") or event.get("correlation_id") or "").strip()[:128],
+        "correlation_id": str(original.get("correlation_id") or event.get("correlation_id") or "").strip()[:128],
         "elapsed_ms": elapsed_ms,
         "progress": progress,
+        "resolved": False,
+        "awaiting_verification": True,
+        "verification_required": {
+            "source_id": result["source_id"],
+            "source_fingerprint": result["source_fingerprint"],
+            "plan_id": plan_id,
+            "callback": f"POST {root}/verification",
+        },
     }
-    if result["observed_state"] != "healthy":
-        receipt["resolved"] = False
-        return receipt
-    # The verifier identity must stay distinct from the remediation actor, or
-    # the core predicate rejects the receipt instead of silently resolving.
-    verification = post("verification", {
-        "source_id": result["source_id"], "verification_id": result["verification_id"],
-        "observed_state": "healthy", "evidence_refs": result["evidence_refs"],
-        "fingerprint": result["source_fingerprint"], "actor": result["verifier_id"],
-    }, f"repair-first:{incident_id}:{session_id}:verification:{result['verification_id']}")
-    resolved = post("resolve", {
-        "source_id": result["source_id"], "verification_id": result["verification_id"],
-        "actor": result["verifier_id"], "elapsed_ms": elapsed_ms, "trace_refs": trace_refs,
-        "plan_id": plan_id,
-    }, f"repair-first:{incident_id}:{session_id}:resolve:{result['verification_id']}")
-    receipt.update(verification=verification, resolution=resolved, resolved=True)
-    return receipt
 
 
 def _run_health_diagnosis(profile: dict[str, str], event: dict[str, Any], session_id: str, runner: Any, started_at: float, session_callback: Callable[[Mapping[str, Any]], Any] | None = None) -> dict[str, Any]:
