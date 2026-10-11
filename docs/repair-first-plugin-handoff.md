@@ -16,24 +16,31 @@ needs. Deployment, phone canary, and the release remain root's.
    stage.
 3. That session repairs first. No planner session, no mandatory JSON menu, and no
    three-plan card in the standard path.
-4. Its terminal receipt is posted through the existing health seams:
-   `progress` → `verification` → `resolve`. The core applies the unchanged
-   fail-closed gate: `source_id != verifier_id`, matching fingerprint, real
-   `evidence_refs`, independent verification actor. A claim without independent
-   proof is terminal, posts nothing, and resolves nothing.
-5. A question needs **two** facts only the agent has:
-   `agent-herder_human_request_create` creates the Herder binding (it delivers
-   nothing by itself), then the new `noticeplace_ask_human` tool persists the
-   Notice Place question with that `request_id` plus harness/`sessionId`/`cwd`,
-   renders the card, and stores the native target. It returns immediately and
-   never polls. On the answer, Notice Place calls Herder's existing
-   `POST /internal/human-requests/ask-user-completion` once with an opaque
-   `result_ref`; Herder's `claimResume` is single-winner, so a duplicate answer
-   cannot start a second executor. Legacy blocking `ask_human` without a target
-   still exists for plain notifications.
-6. Any operator answer — Telegram button, voice, phone, API — lands in one
-   `selection_receipts` row and is rendered by one updater on the same card.
+4. Its terminal receipt is an **observation**: the step it performed, the
+   evidence it read, and the identity plus fingerprint of the original source it
+   touched. Notice Place posts it as progress only
+   (`POST /v1/incidents/{id}/health/progress`, plan `repair`, actor
+   `agent-herder`). The executor never posts a verification and never resolves
+   the incident from its own message.
+5. A healthy observation leaves the incident **open** with
+   `awaiting_verification: true` and `verification_required: {source_id,
+   source_fingerprint, plan_id}`.
+6. An independent producer closes it through the existing verification seam:
 
+```http
+POST /v1/incidents/{incident_id}/health/verification
+Authorization: Bearer <project token>
+Idempotency-Key: <stable per probe>
+{"source_id": "<original source_id>", "verification_id": "<probe id>",
+ "observed_state": "healthy", "fingerprint": "<original source_fingerprint>",
+ "evidence_refs": ["<probe evidence>"], "actor": "<probe identity>"}
+```
+
+   Notice Place resolves the repair-first incident only when that receipt is
+   independent (`actor` is neither `agent-herder` nor `health-remediation`,
+   `verifier_id != source_id`), matches the original source and fingerprint, and
+   useful progress exists for the executor plan. Any other combination leaves
+   the incident open. No second executor and no planner is involved.
 ## 2. Launch: one Agent Herder admission call
 
 Notice Place no longer picks a harness and no longer loops over fallbacks. For

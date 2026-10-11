@@ -403,10 +403,12 @@ class AgentJobHelperTests(unittest.TestCase):
 
             self.assertEqual("completed", result["status"])
             self.assertEqual("repair", result["plan_id"])
-            self.assertEqual("verify-health-1", result["verification_id"])
+            # The executor is an observer: it keeps the source identity and
+            # fingerprint it read, and never carries a verifying identity.
             self.assertEqual("host:vusa", result["source_id"])
             self.assertEqual("source-fingerprint-1", result["source_fingerprint"])
-            self.assertEqual("health-monitor-independent", result["verifier_id"])
+            self.assertNotIn("verifier_id", result)
+            self.assertNotIn("verification_id", result)
             self.assertTrue(result["useful_progress"])
             self.assertEqual("progress:repair-1", result["progress_fingerprint"])
             self.assertTrue(result["autopilot_armed"])
@@ -553,7 +555,8 @@ class AgentJobHelperTests(unittest.TestCase):
 
         self.assertIsNotNone(receipt)
         self.assertEqual("unknown", receipt["observed_state"])
-        self.assertEqual("", receipt["verification_id"])
+        self.assertNotIn("verifier_id", receipt)
+        self.assertNotIn("verification_id", receipt)
         self.assertEqual(["journal:worker:last-100"], receipt["evidence_refs"])
 
     def test_health_remediation_accepts_completed_plan_with_degraded_source(self) -> None:

@@ -49,11 +49,15 @@ resume.
 `noticeplace_incident_progress(incident_id, step, evidence_refs, ...)` publishes
 a bounded receipt. `evidence_refs` must point at a source you really checked.
 
-Recovery is never claimed by words. Pass `source_id`, `source_fingerprint`,
-`verifier_id`, `verification_id`, and `observed_state` only after an
-**independent** check of the original source, and `verifier_id` must differ from
-`source_id`. Without that complete verification the incident stays open, which
-is the intended outcome, not a failure.
+You observe; you never verify yourself. Pass `source_id` and
+`source_fingerprint` for the original source you actually read, plus
+`observed_state` when you are confident. Do not send `verifier_id` or
+`verification_id`: the tool rejects them.
+
+A healthy observation leaves the incident open with `awaiting_verification` and
+the exact `source_id` and `source_fingerprint` a separate probe must confirm.
+Only an independent producer verification can close it. An incident that stays
+open is the intended outcome, not a failure.
 
 ## Handling rules
 

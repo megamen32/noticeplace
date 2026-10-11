@@ -120,32 +120,33 @@ class RepairFirstExecutorTests(unittest.TestCase):
         return [str(getattr(r, "full_url", "")).rsplit("/health/", 1)[-1]
                 for r in requests if "/health/" in str(getattr(r, "full_url", ""))]
 
-    def test_verified_repair_resolves_without_planner_or_plan_card(self) -> None:
+    def test_repair_first_observation_records_progress_and_never_resolves(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             receipt, requests = self._run({"executor": json.dumps({"repair_first": {
                 "status": "completed", "plan_id": "repair", "step": "Освободил место и перезапустил юнит",
                 "observed_state": "healthy", "source_id": "disk-source", "source_fingerprint": "fp-1",
-                "verifier_id": "disk-verifier", "verification_id": "verify-1",
                 "evidence_refs": ["probe:disk"], "trace_refs": ["trace:executor"],
             }})}, root)
         self.assertTrue(receipt["autopilot_armed"])
         self.assertEqual("repair-first", receipt["path"])
-        self.assertTrue(receipt["resolved"])
+        self.assertFalse(receipt["resolved"])
+        self.assertTrue(receipt["awaiting_verification"])
+        self.assertEqual("disk-source", receipt["verification_required"]["source_id"])
+        self.assertEqual("fp-1", receipt["verification_required"]["source_fingerprint"])
+        self.assertEqual(["progress"], self._health_actions(requests),
+                         "the executor posts progress only: no verification and no resolve")
         self.assertNotIn("plans_count", receipt)
-        self.assertEqual(["progress", "verification", "resolve"], self._health_actions(requests))
         self.assertFalse(any("plans" in str(getattr(r, "full_url", "")) for r in requests))
 
-    def test_unverified_claim_is_terminal_and_never_resolves(self) -> None:
+    def test_executor_observation_without_a_source_identity_is_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             receipt, requests = self._run({"executor": json.dumps({"repair_first": {
                 "status": "completed", "plan_id": "repair", "step": "Починил",
-                "observed_state": "healthy", "source_id": "same-source", "source_fingerprint": "fp-1",
-                "verifier_id": "same-source", "verification_id": "verify-1",
+                "observed_state": "healthy", "source_id": "disk-source", "source_fingerprint": "",
                 "evidence_refs": ["probe:disk"], "trace_refs": ["trace:executor"],
             }})}, root)
         self.assertEqual("completed", receipt["status"])
-        self.assertFalse(receipt["resolved"])
-        self.assertIn("verifier repeats the source", receipt["receipt_rejected"])
+        self.assertFalse(receipt.get("resolved"))
         self.assertEqual([], self._health_actions(requests))
 
     def test_pending_question_keeps_one_session_and_posts_no_card(self) -> None:
@@ -169,6 +170,67 @@ class RepairFirstExecutorTests(unittest.TestCase):
         self.assertIn("notify_user", message)
         self.assertNotIn("Других финальных форматов нет", message)
         self.assertNotIn("noticeplace_ask_human", message)
+
+
+class IndependentVerificationTests(unittest.TestCase):
+    """Only a separate producer receipt may close a repair-first incident."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.center = NotificationCenter(Path(self.directory.name) / "notice.sqlite3",
+                                         {"p": {"project": "fleet-health", "max_severity": "critical"}}, default_quiet_hours=[])
+        self.addCleanup(self.directory.cleanup)
+        self.addCleanup(self.center._connection.close)
+        self.created = self.center.create_event("p", "health", {
+            "schema": "notify.event.v1", "project": "fleet-health", "recipient": "me", "kind": "incident",
+            "severity": "critical", "title": "Диск", "body": "Диск заполнен", "dedup_key": "health:disk",
+            "event_type": "health.degraded", "source_id": "disk-source", "host_id": "host",
+            "signal_type": "disk", "correlation_id": "corr", "source_fingerprint": "fp-1",
+        })
+
+    def _executor_progress(self) -> dict[str, object]:
+        receipt = {"status": "completed", "agent_receipt": {
+            "path": "repair-first", "plan_id": "repair", "step": "Освободил место",
+            "observed_state": "healthy", "source_id": "disk-source", "source_fingerprint": "fp-1",
+            "evidence_refs": ["probe:disk"], "session_id": "ses-executor", "harness": "opencode",
+        }}
+        return self.center.record_agent_job_result(
+            self.created["incident_id"], "d1", "health-diagnosis", receipt,
+            {"source_id": "disk-source", "source_fingerprint": "fp-1"})
+
+    def test_executor_receipt_leaves_the_incident_open(self) -> None:
+        outcome = self._executor_progress()
+        self.assertTrue(outcome["accepted"])
+        self.assertFalse(outcome["resolved"])
+        self.assertTrue(outcome["awaiting_verification"])
+        self.assertEqual("open", self.center.get_incident(self.created["incident_id"])["state"])
+
+    def test_independent_producer_verification_closes_the_incident(self) -> None:
+        self._executor_progress()
+        result = self.center.record_health_verification(self.created["incident_id"], "probe:server100", {
+            "source_id": "disk-source", "verifier_id": "disk-probe", "verification_id": "probe-1",
+            "healthy": True, "fingerprint": "fp-1", "evidence_refs": ["probe:disk"],
+        }, "probe-1")
+        self.assertTrue(result["healthy"])
+        self.assertEqual("resolved", self.center.get_incident(self.created["incident_id"])["state"])
+
+    def test_self_attested_verification_is_refused(self) -> None:
+        self._executor_progress()
+        # The executor's own actor can never be the verifying authority.
+        with self.assertRaises(ValidationError):
+            self.center.record_health_verification(self.created["incident_id"], "agent-herder", {
+                "source_id": "disk-source", "verifier_id": "disk-probe", "verification_id": "probe-2",
+                "healthy": True, "fingerprint": "fp-1", "evidence_refs": ["probe:disk"],
+            }, "probe-2")
+        self.assertEqual("open", self.center.get_incident(self.created["incident_id"])["state"])
+
+    def test_verification_for_another_fingerprint_does_not_close(self) -> None:
+        self._executor_progress()
+        self.center.record_health_verification(self.created["incident_id"], "probe:server100", {
+            "source_id": "disk-source", "verifier_id": "disk-probe", "verification_id": "probe-3",
+            "healthy": True, "fingerprint": "different", "evidence_refs": ["probe:disk"],
+        }, "probe-3")
+        self.assertEqual("open", self.center.get_incident(self.created["incident_id"])["state"])
 
 
 class ProjectRouteTests(unittest.TestCase):
