@@ -19,10 +19,16 @@ needs. Deployment, phone canary, and the release remain root's.
    fail-closed gate: `source_id != verifier_id`, matching fingerprint, real
    `evidence_refs`, independent verification actor. A claim without independent
    proof is terminal, posts nothing, and resolves nothing.
-5. A question is raised by that same session through **Agent Herder
-   `human_request_create`** (harness + `sessionId` + `cwd` + Notify tuple). Herder
-   owns the binding and resumes that native session. NoticePlace `ask_human`
-   alone never binds and never resumes, and the skill says so explicitly.
+5. A question needs **two** facts only the agent has:
+   `agent-herder_human_request_create` creates the Herder binding (it delivers
+   nothing by itself), then the new `noticeplace_ask_human` tool persists the
+   Notice Place question with that `request_id` plus harness/`sessionId`/`cwd`,
+   renders the card, and stores the native target. It returns immediately and
+   never polls. On the answer, Notice Place calls Herder's existing
+   `POST /internal/human-requests/ask-user-completion` once with an opaque
+   `result_ref`; Herder's `claimResume` is single-winner, so a duplicate answer
+   cannot start a second executor. Legacy blocking `ask_human` without a target
+   still exists for plain notifications.
 6. Any operator answer — Telegram button, voice, phone, API — lands in one
    `selection_receipts` row and is rendered by one updater on the same card.
 
@@ -64,6 +70,9 @@ once.
   server does not implement and which made the installed Python SDK raise
   `RuntimeError: Unsupported protocol version from server`. Supported handshake
   revisions: `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`.
+- `noticeplace_ask_human` — creates the bound question and its card; returns
+  immediately with `continuation: "resume"`, never polls. Requires the Herder
+  `request_id` and the agent's own harness/`session_id`/`cwd`.
 - `noticeplace_pending_questions` — bounded human-readable question, options
   `{value,label}`, `incident_id`, and the exact native routing
   (`native.harness`, `native.session_id`, `native.session_url`) taken from the
@@ -81,7 +90,8 @@ once.
 | Call | Purpose |
 | --- | --- |
 | `GET /v1/human-requests?state=pending&limit=20` | Open questions with options and native routing. |
-| `POST /v1/human-requests/{request_id}/resolve` | Record a free-form or choice answer; marks the bound card. |
+| `POST /v1/human-requests` | Create the bound question (`native_target` = harness/session_id/cwd). Renders and binds the card. |
+| `POST /v1/human-requests/{request_id}/resolve` | Record a free-form or choice answer; marks the bound card and resumes the bound native session once. |
 | `POST /v1/incidents/{incident_id}/choice-result` | Record the canonical choice for an incident card. Body: `request_id`, `choice_id`, `actor`, `source`. |
 | `POST /v1/incidents/{incident_id}/health/progress` | Bounded progress receipt. |
 | `POST /v1/incidents/{incident_id}/health/verification` | Independent verification receipt. |
@@ -94,6 +104,11 @@ once.
  "accepted":false,"conflict":true,"card":{"edited":true},
  "card_status":"marked"}
 ```
+
+`resolve` also returns `{"native": {"status": "resuming", "continuation": "resume"}}`
+when the question carried a native target, and `{"telegram": {"status": ...}}`
+where the status is the **real** card outcome (`marked`, `already_marked`,
+`keyboard_only_retry`, `card_is_not_bound`) — never a promised checkmark.
 
 The first accepted answer is canonical; a conflicting repeat returns
 `accepted:false, conflict:true` and never re-marks the card. Free-form answers

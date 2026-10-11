@@ -395,6 +395,115 @@ class SelectedCardUpdaterTests(unittest.TestCase):
         self.assertNotIn("response_value", question)
 
 
+class BoundQuestionTests(unittest.TestCase):
+    """The bound question really persists, renders, and resumes one native session."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.center = NotificationCenter(Path(self.directory.name) / "notice.sqlite3",
+                                         {"p": {"project": "hermes", "max_severity": "critical"}}, default_quiet_hours=[])
+        self.addCleanup(self.directory.cleanup)
+        self.addCleanup(self.center._connection.close)
+        self.herder_calls: list[dict] = []
+
+    def _resume_runner(self, request, **_kwargs):
+        self.herder_calls.append(json.loads(request.data.decode()))
+        return _Response({"request_id": self.herder_calls[-1]["request_id"], "status": "resuming", "continuation": "resume"})
+
+    def _native_resume(self, request: dict, actor: str = "api") -> dict:
+        from notification_center.http_api import resume_human_request_native_session
+        return resume_human_request_native_session(self.center, request, actor, self._resume_runner)
+
+    def test_bound_question_persists_the_native_target_and_is_not_polled(self) -> None:
+        request_id = "6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44"
+        created = self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": request_id, "project": "hermes",
+            "recipient": "me", "mode": "choice", "message": "Диск заполнен. Чинить сейчас?",
+            "choices": [{"label": "Да, чинить", "value": "repair"}, {"label": "Наблюдать", "value": "observe"}],
+            "allowed_actors": ["telegram:42"],
+            "native_target": {"harness": "opencode", "session_id": "ses_exec_1", "cwd": "/srv/app"},
+        })
+        self.assertEqual("pending", created["state"])
+        pending = self.center.list_human_requests("p")[0]
+        self.assertEqual("opencode", pending["native"]["harness"])
+        self.assertEqual("ses_exec_1", pending["native"]["session_id"])
+        self.assertEqual("/srv/app", pending["native"]["cwd"])
+        self.assertEqual(["repair", "observe"], [choice["value"] for choice in pending["choices"]])
+        self.assertEqual([], self.herder_calls)
+
+    def test_incomplete_native_target_is_refused(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.center.create_human_request("p", {
+                "schema": "ask_human.request.v1", "request_id": "req-partial", "project": "hermes",
+                "recipient": "me", "mode": "question", "message": "Вопрос?",
+                "allowed_actors": ["telegram:42"],
+                "native_target": {"harness": "opencode", "session_id": "ses_1"},
+            })
+
+    def test_answer_resumes_the_bound_session_once_through_the_existing_herder_seam(self) -> None:
+        request_id = "6f1d4b8e-9a3c-4d21-9f0b-2f6c1d5e7a44"
+        self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": request_id, "project": "hermes",
+            "recipient": "me", "mode": "choice", "message": "Чинить сейчас?",
+            "choices": [{"label": "Да, чинить", "value": "repair"}, {"label": "Наблюдать", "value": "observe"}],
+            "allowed_actors": ["telegram:42"],
+            "native_target": {"harness": "opencode", "session_id": "ses_exec_1", "cwd": "/srv/app"},
+        })
+        self.center.bind_human_request_message("p", request_id, "-100", 7)
+        resolved = self.center.resolve_human_request_from_telegram(request_id, "telegram:42", "repair")
+        calls: list[dict] = []
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}):
+            mark_human_request_resolved_card(self.center, resolved, "telegram:42", fake_telegram_api(calls))
+            first = self._native_resume(resolved)
+            repeated = self._native_resume(resolved)
+        self.assertEqual("resuming", first["status"])
+        self.assertEqual("resuming", repeated["status"])
+        self.assertEqual(2, len(self.herder_calls))
+        self.assertEqual("ask.user.completed", self.herder_calls[0]["event"])
+        self.assertEqual(request_id, self.herder_calls[0]["request_id"])
+        self.assertNotEqual(self.herder_calls[0]["result_ref"], "")
+        self.assertNotIn("repair", json.dumps(self.herder_calls[0]))
+        self.assertTrue(any("✅ Выбрано: Да, чинить" in str(call.get("text", "")) for call in calls))
+
+    def test_unbound_question_never_resumes_anything(self) -> None:
+        self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": "req-plain", "project": "hermes",
+            "recipient": "me", "mode": "question", "message": "Просто уведомление?",
+            "allowed_actors": ["telegram:42"],
+        })
+        resolved = self.center.resolve_human_request_from_telegram("req-plain", "telegram:42", "да")
+        self.assertEqual({}, self._native_resume(resolved))
+        self.assertEqual([], self.herder_calls)
+
+    def test_card_status_reports_a_real_edit_instead_of_always_marked(self) -> None:
+        self.center.create_human_request("p", {
+            "schema": "ask_human.request.v1", "request_id": "req-card", "project": "hermes",
+            "recipient": "me", "mode": "question", "message": "Текст вопроса?",
+            "allowed_actors": ["telegram:42"],
+        })
+        self.center.bind_human_request_message("p", "req-card", "-100", 7)
+        resolved = self.center.resolve_human_request_from_telegram("req-card", "telegram:42", "ответ")
+
+        def rejecting_api(method: str, payload: dict) -> dict:
+            if method == "editMessageText":
+                raise RuntimeError("Bad Request: message is not modified")
+            return {"ok": True, "result": payload}
+
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}):
+            unchanged = mark_human_request_resolved_card(self.center, resolved, "api", rejecting_api)
+            self.assertEqual("already_marked", unchanged["status"])
+            self.assertTrue(unchanged["card"]["edited"])
+
+            def failing_api(method: str, _payload: dict) -> dict:
+                if method == "editMessageText":
+                    raise RuntimeError("Bad Request: can't parse message text")
+                return {"ok": True}
+
+            keyboard_only = mark_human_request_resolved_card(self.center, resolved, "api", failing_api)
+        self.assertEqual("keyboard_only_retry", keyboard_only["status"])
+        self.assertFalse(keyboard_only["card"]["edited"])
+
+
 class McpNegotiationTests(unittest.TestCase):
     """The installed SDK's handshake contract must be satisfied, not guessed."""
 

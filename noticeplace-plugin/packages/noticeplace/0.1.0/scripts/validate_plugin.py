@@ -14,7 +14,7 @@ SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 SEMVER = re.compile(r"^0\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
-TOOLS = ("noticeplace_pending_questions", "noticeplace_answer", "noticeplace_incident_progress")
+TOOLS = ("noticeplace_ask_human", "noticeplace_pending_questions", "noticeplace_answer", "noticeplace_incident_progress")
 
 
 def load(name: str) -> dict:
@@ -60,6 +60,8 @@ def validate() -> str:
             raise ValueError(f"skills: {tool} contract is missing")
     if "human_request_create" not in skill_text:
         raise ValueError("skills: the supported native question binding is missing")
+    if "does **not** deliver" not in skill_text:
+        raise ValueError("skills: must not promise delivery from the binding tool alone")
 
     secret_patterns = (
         re.compile(r"sk-[A-Za-z0-9]{16,}"),

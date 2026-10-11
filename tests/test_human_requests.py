@@ -364,9 +364,14 @@ class HumanRequestHttpTests(unittest.TestCase):
         status, read = self.call("GET", "/v1/human-requests/deploy-1")
         self.assertEqual(200, status)
         self.assertFalse(read["telegram_document_required"])
+        # resolve additionally returns the real card outcome and, for a bound
+        # question, the native continuation receipt.
+        self.assertEqual(resolved["telegram"]["status"], "card_is_not_bound")
+        self.assertNotIn("native", resolved)
         self.assertEqual(resolved, {
-            key: value for key, value in read.items() if key != "telegram_document_required"
-        })
+            key: value for key, value in read.items()
+            if key not in {"telegram_document_required", "telegram"}
+        } | {"telegram": resolved["telegram"]})
 
     def test_create_route_allows_four_choices_and_is_exactly_idempotent(self) -> None:
         """Keep HTTP retries safe without widening the public AskHuman MCP schema."""
