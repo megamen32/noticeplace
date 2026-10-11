@@ -134,14 +134,24 @@ class HealthNotificationDecisionTests(unittest.TestCase):
             self.assertEqual([], self.queued_messages(created['incident_id']))
         class Response:
             status = 200
+            def __init__(self, payload): self.payload = payload
             def __enter__(self): return self
             def __exit__(self, *_args): pass
-            def read(self, *_args): return b'{"ok":true,"sessionId":"real-native-id","created":true}'
+            def read(self, *_args): return json.dumps(self.payload).encode()
         def runner(request, **_kwargs):
+            url = str(getattr(request, 'full_url', ''))
+            if url.endswith('/api/automation/launch-policy'):
+                return Response({'version': 1, 'incidentExecution': dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
+                                 'allowedHarnesses': ['opencode'], 'preferredHarness': 'opencode',
+                                 'models': {'opencode': 'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
+            if '/api/models?' in url:
+                return Response({'models': ['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'], 'stale': False})
+            if '/api/autopilot/sessions/' in url:
+                return Response({'enabled': True, 'sessionId': 'real-native-id'})
             requests.append(request)
-            return Response()
+            return Response({'ok': True, 'sessionId': 'real-native-id', 'created': True})
         profile = {'url': 'http://127.0.0.1:18787/api/sessions/new-or-resume', 'name': 'diagnosis',
-            'harness': 'codex', 'cwd': self.tmp.name, 'instruction': 'Read only.', 'mode': 'queue',
+            'harness': 'opencode', 'cwd': self.tmp.name, 'instruction': 'Read only.', 'mode': 'queue',
             'orchestrator_name': 'planner', 'orchestrator_model': 'configured', 'orchestrator_requested_model': 'configured'}
         details = {'messages': [{'role': 'assistant', 'text': json.dumps({'status': 'diagnosis_complete',
             'diagnosis': 'Сервис работает.', 'notify_user': False, 'notification_reason': 'Действий человека не требуется.'})}]}

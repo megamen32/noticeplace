@@ -19,8 +19,23 @@ def test_instructions_state_exact_event_contract():
 def test_instructions_recovery_names_real_resolve_flow():
     recovery = data_recovery = noticeplace_instructions()["api"]["recovery"]
     assert "action='resolve'" in data_recovery
-    assert "НЕТ" in recovery  # /health/* эндпоинтов нет — явно
-    assert "requires explicit plan selection" in recovery
+    assert "НЕТ" in recovery  # для обычных инцидентов /health/* эндпоинтов нет — явно
+    # Repair-first: an executor resolves a health incident only with an
+    # independent source verification, never with the plan-selection gate.
+    assert "независимая проверка источника" in recovery
+    assert "source_id и verifier_id различаются" in recovery
+    assert "requires explicit plan selection" not in recovery
+
+
+def test_instructions_name_the_repair_first_question_and_receipt_seams():
+    api = noticeplace_instructions()["api"]
+    assert "GET /v1/human-requests?state=pending" in api["pending_questions"]
+    assert "POST /v1/human-requests/{request_id}/resolve" in api["answer_question"]
+    assert "POST /v1/incidents/{incident_id}/choice-result" in api["answer_choice"]
+    assert "/health/progress" in api["incident_progress"]
+    repair = noticeplace_instructions()["automatic_repair"]
+    assert "human_request_create" in repair
+    assert "автопилот" in repair
 
 
 def test_instructions_automatic_repair_names_wire_fields():

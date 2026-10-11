@@ -223,6 +223,8 @@ class AgentJobHelperTests(unittest.TestCase):
                 nonlocal session_calls
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
+                if "/api/autopilot/sessions/" in url:
+                    return _Response({"enabled": True, "sessionId": "codex-health-diagnosis-1"})
                 if url.endswith("/api/sessions/new-or-resume"):
                     session_calls += 1
                     if session_calls == 1:
@@ -260,6 +262,7 @@ class AgentJobHelperTests(unittest.TestCase):
             )
             self.assertEqual("codex-health-diagnosis-1", result["session_id"])
             self.assertEqual("codex-health-orchestrator-1", result["orchestrator_session_id"])
+            self.assertTrue(result["autopilot_armed"])
             self.assertEqual(3, result["plans_count"])
             self.assertEqual("plans_attached", result["callback_status"])
             self.assertIn("trace:agent-herder:codex-health-diagnosis-1", result["trace_refs"])
@@ -269,7 +272,7 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertGreaterEqual(result["orchestration"]["diagnosis_elapsed_ms"], 0)
             self.assertGreaterEqual(result["orchestration"]["orchestrator_elapsed_ms"], 0)
             self.assertNotIn("health-callback-token", json.dumps(result))
-            self.assertEqual(7, len(requests))
+            self.assertEqual(8, len(requests))
 
     def test_health_remediation_profile_requires_selected_plan_and_routes_to_subscription(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -508,12 +511,17 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertEqual(2, progress_calls)
 
     def test_legacy_start_plan_is_rejected_without_creating_any_session(self) -> None:
-        runner = mock.Mock()
-        with self.assertRaisesRegex(RuntimeError, "unsupported execution profile"):
+        requests: list[object] = []
+        def runner(request, **_kwargs):
+            requests.append(request)
+            return _Response({"version": 1, "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
+                              "allowedHarnesses": ["opencode"], "preferredHarness": "opencode",
+                              "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"}})
+        with self.assertRaisesRegex(RuntimeError, "execution profile"):
             run_profile("health-remediation", {"schema":"notify.agent-job.v1", "job_id":"health-remediation", "incident":{"id":"legacy"},
                 "health":{"selection":{"plan_id":"repair", "execution":{"runtime":"zcode","provider":"account:zai-start-plan","model":"GLM-5.3-Flash","reasoning":"high","topic":"health"}}}},
                 Path("unused"), runner=runner, profile_override={"url":"http://127.0.0.1:18787/api/sessions/new-or-resume", "harness":"zcode","name":"legacy","cwd":"/tmp","instruction":"Read only."})
-        runner.assert_not_called()
+        self.assertFalse(any("new-or-resume" in str(getattr(r, "full_url", "")) for r in requests))
 
     def test_health_remediation_rejects_terminal_receipt_without_independent_proof(self) -> None:
         details = {"messages": [{"role": "assistant", "text": json.dumps({
