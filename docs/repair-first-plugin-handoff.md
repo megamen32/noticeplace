@@ -473,7 +473,7 @@ Legacy cards without metadata report that the executor is unspecified, without
 inferring it from project or prose and without inventing a link. Summary truncation
 and same-message edits cannot remove the independent identity/button.
 
-Focused producer-payload/HTTP/DB/restart/card-worker regression uses an 8KiB summary,
+Focused producer-payload/HTTP/DB/restart/card-worker regression uses a summary longer than the card body limit,
 checks one create/message42 and subsequent edit42, executor metadata, scope/authority
 rejection, legacy/no-URL behavior and bound native receipt/current-progress priority.
 Herder owns writing genuine producer metadata; Notice owns this validator/projector/
