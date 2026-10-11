@@ -22,9 +22,10 @@ from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
 from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
 from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import DirectHealthRemediationAdapter, DurableHealthRemediationAdapter, GptAdminAgentJobAdapter
-from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, normalize_health_recommendation, validate_health_plans
+from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, normalize_health_recommendation, sanitize_bounded_text, validate_health_plans
 from .instructions import noticeplace_instructions
 from .human_request_original import render_human_request_original
+from .selected_card import apply_selection_receipt, canonical_choice_ref
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
 from .telegram_format import telegram_html
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
@@ -1549,6 +1550,124 @@ def _bearer(handler: BaseHTTPRequestHandler) -> str:
     return token
 
 
+def record_incident_choice_result(
+    center: NotificationCenter,
+    token: str,
+    incident_id: str,
+    body: Mapping[str, Any],
+    api: Any | None = None,
+) -> dict[str, Any]:
+    """Record one canonical choice answer for an incident's choice card.
+
+    Any resolver may call this — Telegram, voice, phone, or API. The incident's
+    own choice presentation decides the accepted option, so a resolver cannot
+    mark a card with a value that never belonged to it, and the first accepted
+    answer stays canonical on a later conflicting repeat.
+    """
+    center.authorize_incident(token, incident_id)
+    request_id = str(body.get("request_id") or "").strip()
+    requested = str(body.get("choice_id") or "").strip()
+    actor = str(body.get("actor") or "api").strip()[:128]
+    source = str(body.get("source") or "api").strip()[:32]
+    if not request_id or not requested:
+        raise ValidationError("choice result requires request_id and choice_id")
+    presentation = center.latest_choice_request(incident_id)
+    if presentation is None or str(presentation["choice_request_id"]) != request_id:
+        raise ValidationError("choice request does not belong to this incident")
+    selection = center.get_telegram_choice(incident_id, requested)
+    canonical_id = canonical_choice_ref(str(selection["choice_id"]))
+    label = str(selection["label"])
+    card = center.original_telegram_card(incident_id)
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if card is None or not bot_token:
+        # The canonical answer is still recorded; only the card edit waits for
+        # a confirmed Telegram delivery receipt.
+        receipt = center.record_selection_receipt(
+            request_id=request_id, incident_id=incident_id, choice_id=canonical_id,
+            label=label, actor=actor, source=source,
+        )
+        applied: dict[str, Any] = {"selection": receipt, "card": None, "status": "card_is_not_bound"}
+    else:
+        applied = apply_selection_receipt(
+            center,
+            api or (lambda method, body_: telegram_api(bot_token, method, body_)),
+            request_id=request_id,
+            incident_id=incident_id,
+            choice_id=canonical_id,
+            label=label,
+            actor=actor,
+            source=source,
+            chat_id=str(card["chat_id"]),
+            message_id=int(card["message_id"]),
+            base_text=str(selection.get("title") or ""),
+        )
+    stored = applied.get("selection") if isinstance(applied.get("selection"), Mapping) else {}
+    # The first accepted answer stays canonical, so a later conflicting
+    # resolver always sees and confirms the already accepted option.
+    accepted_id = str(stored.get("choice_id") or canonical_id)
+    accepted_label = str(stored.get("label") or label)
+    return {
+        "schema": "noticeplace.choice_result.v1",
+        "incident_id": incident_id,
+        "request_id": request_id,
+        "choice_id": accepted_id,
+        "label": accepted_label,
+        "requested_choice_id": canonical_id,
+        "accepted": bool(stored.get("accepted")),
+        "conflict": bool(stored.get("conflict")),
+        "card": applied.get("card"),
+        "card_status": applied.get("status", "marked"),
+    }
+
+
+def mark_human_request_resolved_card(
+    center: NotificationCenter,
+    request: Mapping[str, Any],
+    actor: str,
+    api: Any | None = None,
+) -> dict[str, Any]:
+    """Mark the same card for any non-Telegram resolver of a human request.
+
+    Voice, phone, and API answers share the receipt-driven updater with the
+    Telegram poller, so the operator always sees one accepted answer on the one
+    message that asked the question.
+    """
+    request_id = str(request.get("request_id") or "")
+    chat_id, message_id = str(request.get("telegram_chat_id") or ""), request.get("telegram_message_id")
+    if not request_id or not chat_id or not isinstance(message_id, int) or message_id <= 0:
+        return {"status": "card_is_not_bound"}
+    value = str(request.get("response_value") or "")
+    if not value or value == "deep_analysis":
+        return {"status": "skipped"}
+    choices = request.get("choices") if isinstance(request.get("choices"), list) else []
+    label = next(
+        (str(choice.get("label") or "") for choice in choices
+         if isinstance(choice, Mapping) and str(choice.get("value") or "") == value),
+        "",
+    )
+    label = sanitize_bounded_text(label or value, 128)
+    if not label:
+        return {"status": "empty_answer"}
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not bot_token:
+        return {"status": "not_configured"}
+    base_text = render_human_request_original({**request, "state": "pending"})[0]
+    applied = apply_selection_receipt(
+        center,
+        api or (lambda method, body: telegram_api(bot_token, method, body)),
+        request_id=request_id,
+        incident_id=request_id,
+        choice_id=canonical_choice_ref(value),
+        label=label,
+        actor=actor,
+        source="api",
+        base_text=base_text,
+        chat_id=chat_id,
+        message_id=message_id,
+    )
+    return {"status": "marked", **applied}
+
+
 def send_human_request_telegram(
     center: NotificationCenter,
     producer_token: str,
@@ -1851,6 +1970,20 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                 except NotificationCenterError as error:
                     self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
                 return
+            if parsed_path.path == "/v1/human-requests":
+                try:
+                    query = urllib.parse.parse_qs(parsed_path.query)
+                    questions = center.list_human_requests(
+                        _bearer(self),
+                        str((query.get("state") or ["pending"])[0]),
+                        int((query.get("limit") or ["20"])[0]),
+                    )
+                    self._reply(HTTPStatus.OK, {"schema": "ask_human.pending_list.v1", "questions": questions})
+                except AuthorizationError as error:
+                    self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
+                except ValidationError as error:
+                    self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
             if self.path.startswith("/v1/human-requests/"):
                 try:
                     request_id = self.path.rsplit("/", 1)[-1]
@@ -1941,7 +2074,11 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                             center, token, request_id, body.get("original_text"), str(body.get("actor") or "operator"),
                         )
                     elif action == "resolve":
-                        result = center.resolve_human_request(token, request_id, str(body.get("actor") or ""), str(body.get("value") or ""))
+                        actor_value = str(body.get("actor") or "api")
+                        result = center.resolve_human_request(token, request_id, actor_value, str(body.get("value") or ""))
+                        card = mark_human_request_resolved_card(center, result, actor_value)
+                        if card.get("status") == "marked":
+                            result = {**result, "telegram": card}
                     elif action == "progress":
                         result = refresh_human_request_progress(center, token, request_id, body)
                     elif action == "cancel":
@@ -1955,6 +2092,9 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     incident_id, action = parts[3], parts[4]
                     center.authorize_incident(token, incident_id)
                     actor = str(body.get("actor") or "api")
+                    if action == "choice-result":
+                        self._reply(HTTPStatus.OK, record_incident_choice_result(center, token, incident_id, body))
+                        return
                     if action == "ack":
                         self._reply(HTTPStatus.OK, center.acknowledge(incident_id, actor))
                     elif action == "resolve":
@@ -2047,6 +2187,7 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                             actor,
                             elapsed_ms=int(body.get("elapsed_ms") or 0),
                             trace_refs=body.get("trace_refs") if isinstance(body.get("trace_refs"), list) else [],
+                            executor_plan_id=str(body.get("plan_id") or "") or None,
                         )
                     else:
                         self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown health action"})

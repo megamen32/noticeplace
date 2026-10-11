@@ -237,6 +237,17 @@ class NotificationCenter:
                     last_attempt_at REAL NOT NULL,
                     last_delivery_id TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS selection_receipts (
+                    request_id TEXT PRIMARY KEY,
+                    incident_id TEXT NOT NULL,
+                    choice_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    actor TEXT,
+                    chat_id TEXT,
+                    message_id INTEGER,
+                    created_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS human_requests (
                     request_id TEXT PRIMARY KEY,
                     project TEXT NOT NULL,
@@ -258,7 +269,8 @@ class NotificationCenter:
                     telegram_message_id INTEGER,
                     telegram_document_message_id INTEGER,
                     telegram_document_file_id TEXT,
-                    telegram_document_state TEXT
+                    telegram_document_state TEXT,
+                    incident_id TEXT
                 );
                 """
             )
@@ -294,6 +306,8 @@ class NotificationCenter:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN progress_json TEXT")
             if "telegram_progress_confirmed_at" not in human_request_columns:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_progress_confirmed_at REAL")
+            if "incident_id" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN incident_id TEXT")
             for column, definition in (
                 ("policy_step_id", "TEXT"),
                 ("repeat_number", "INTEGER"),
@@ -376,8 +390,8 @@ class NotificationCenter:
                 (f"profile_{profile_key}", profile_key.title(), f"builtin:{profile_key}", f"builtin-{profile_key}", max_severity, now, now, quiet_hours, profile_key),
             )
 
-    def _scope(self, token: str, project: str) -> Mapping[str, Any]:
-        """Validate a token's project boundary without requiring an event severity."""
+    def _token_scope(self, token: str) -> Mapping[str, Any]:
+        """Resolve one token's stored scope without a project comparison."""
         scope = self._tokens.get(token)
         if scope is None:
             token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -387,6 +401,11 @@ class NotificationCenter:
             if row is None:
                 raise AuthorizationError("invalid bearer token")
             scope = {"project": row["project"], "max_severity": row["max_severity"], "consumer_id": row["id"]}
+        return scope
+
+    def _scope(self, token: str, project: str) -> Mapping[str, Any]:
+        """Validate a token's project boundary without requiring an event severity."""
+        scope = self._token_scope(token)
         if scope.get("project") not in ("*", project):
             raise AuthorizationError("token is not allowed for this project")
         return scope
@@ -608,6 +627,13 @@ class NotificationCenter:
         expires = float(expires_at) if expires_at is not None else None
         recipient = str(request["recipient"]).strip()
         message = str(request["message"]).strip()[:4000]
+        raw_incident_id = request.get("incident_id")
+        if raw_incident_id is not None and not isinstance(raw_incident_id, str):
+            raise ValidationError("human request incident_id must be a string")
+        incident_id = str(raw_incident_id or "").strip()[:128] or None
+        if incident_id is not None:
+            if self.get_incident(incident_id) is None:
+                raise ValidationError("human request incident not found")
         raw_original_text = request.get("original_text")
         if raw_original_text is not None and not isinstance(raw_original_text, str):
             raise ValidationError("human request original_text must be a string")
@@ -625,6 +651,7 @@ class NotificationCenter:
                 and json.loads(str(row["choices_json"])) == choices
                 and json.loads(str(row["allowed_actors_json"])) == actors
                 and row["expires_at"] == expires
+                and (row["incident_id"] if "incident_id" in row.keys() else None) == incident_id
             )
 
         now = time.time()
@@ -640,8 +667,8 @@ class NotificationCenter:
                 return result
             try:
                 self._connection.execute(
-                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires),
+                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at, incident_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires, incident_id),
                 )
             except sqlite3.IntegrityError as error:
                 existing = self._connection.execute(
@@ -696,6 +723,69 @@ class NotificationCenter:
             if row is None:
                 raise ValidationError("human request not found")
             return self._human_request_result(self._expire_human_request(row))
+
+    def list_human_requests(self, token: str, state: str = "pending", limit: int = 20) -> list[dict[str, Any]]:
+        """List the caller's open questions with bounded, human-readable content.
+
+        A phone or agent needs the question text, its options, and the exact
+        native session the answer continues. Only the caller's own project
+        scope is queried; a wildcard token sees every project it may already
+        act on.
+        """
+        safe_state = str(state or "pending").strip()[:32]
+        if safe_state not in {"pending", "resolving", "resolved", "cancelled", "expired"}:
+            raise ValidationError("unsupported human request state filter")
+        bounded_limit = max(1, min(50, int(limit)))
+        project = str(self._token_scope(token).get("project") or "")
+        if not project:
+            return []
+        with self._lock:
+            if project == "*":
+                rows = self._connection.execute(
+                    "SELECT * FROM human_requests WHERE state = ? ORDER BY created_at DESC LIMIT ?",
+                    (safe_state, bounded_limit),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT * FROM human_requests WHERE project = ? AND state = ? ORDER BY created_at DESC LIMIT ?",
+                    (project, safe_state, bounded_limit),
+                ).fetchall()
+        return [self._pending_question_view(self._expire_human_request(row)) for row in rows]
+
+    def _pending_question_view(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Bound one question to what a resolver may read and answer.
+
+        The stored answer, the attached document, and any original analysis text
+        never appear here, so a phone read cannot leak a secret payload.
+        """
+        from .health_workflow import sanitize_bounded_text
+
+        choices = json.loads(str(row["choices_json"]))
+        incident_id = str(row["incident_id"] or "") if "incident_id" in row.keys() else ""
+        native: dict[str, Any] = {}
+        if incident_id:
+            session = self.latest_health_agent_session(incident_id)
+            if session:
+                native = {
+                    "harness": str(session.get("harness") or "")[:32],
+                    "session_id": str(session.get("session_id") or "")[:128],
+                    "session_url": str(session.get("session_url") or "")[:512],
+                }
+        return {
+            "schema": "ask_human.pending.v1",
+            "request_id": str(row["request_id"]),
+            "project": str(row["project"]),
+            "mode": str(row["mode"]),
+            "state": str(row["state"]),
+            "created_at": float(row["created_at"]),
+            "expires_at": float(row["expires_at"]) if row["expires_at"] is not None else None,
+            "incident_id": incident_id,
+            "message": sanitize_bounded_text(row["message"], 400),
+            "choices": [{"value": str(choice.get("value") or "")[:128], "label": str(choice.get("label") or "")[:80]}
+                        for choice in choices if isinstance(choice, dict)],
+            "native": native,
+            "telegram_bound": bool(row["telegram_chat_id"] and row["telegram_message_id"]),
+        }
 
     def bind_human_request_message(self, token: str, request_id: str, chat_id: str, message_id: int) -> dict[str, Any]:
         """Bind one sent Telegram message once for callbacks and delivery proof."""
@@ -2314,6 +2404,127 @@ class NotificationCenter:
         except ValidationError as error:
             return {"accepted": False, "resolved": False, "reason": self._health_text(error, 256), "progress": locals().get("progress")}
 
+    def _record_health_repair_first_receipt(
+        self,
+        incident_id: str,
+        delivery_id: str,
+        receipt: Mapping[str, Any],
+        health_context: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Turn one repair-first executor outcome into durable health outcomes.
+
+        The executor's terminal message is not a resolution claim. Resolution
+        still needs an independent verification receipt from a non-remediation
+        actor whose source and fingerprint match the original signal.
+        """
+        agent_receipt = receipt.get("agent_receipt")
+        if not isinstance(agent_receipt, Mapping):
+            return {"accepted": False, "resolved": False, "reason": "agent repair-first receipt is missing"}
+        if agent_receipt.get("awaiting_human") is True:
+            return {
+                "accepted": True, "resolved": False, "awaiting_human": True,
+                "question_ref": self._health_text(agent_receipt.get("question_ref") or "", 128),
+                "reason": "one operator answer is pending in the bound session",
+            }
+
+        def refs(value: Any) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            result: list[str] = []
+            for item in value[:16]:
+                bounded = self._health_text(item, 128)
+                if bounded and bounded not in result:
+                    result.append(bounded)
+            return result
+
+        step = self._health_text(agent_receipt.get("step") or "", 128)
+        observed_state = self._health_text(agent_receipt.get("observed_state") or "", 32)
+        if not step or observed_state not in {"healthy", "degraded", "unknown"}:
+            return {"accepted": False, "resolved": False, "reason": "repair-first receipt requires a step and a bounded observed_state"}
+        plan_id = self._health_text(agent_receipt.get("plan_id") or "repair", 64)
+        evidence_refs = refs(agent_receipt.get("evidence_refs"))
+        progress_fingerprint = self._health_text(agent_receipt.get("progress_fingerprint") or "", 128)
+        if not progress_fingerprint:
+            progress_fingerprint = hashlib.sha256(
+                json.dumps({"plan_id": plan_id, "step": step, "evidence_refs": evidence_refs}, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:64]
+        trace_refs: list[str] = []
+        for value in (health_context.get("trace_refs"), agent_receipt.get("trace_refs")):
+            for trace_ref in refs(value):
+                if trace_ref not in trace_refs:
+                    trace_refs.append(trace_ref)
+        try:
+            previous_progress = self.latest_health_progress(incident_id, plan_id)
+            if previous_progress is not None and all(
+                previous_progress.get(field) == expected
+                for field, expected in (
+                    ("step", step),
+                    ("evidence_refs", evidence_refs),
+                    ("progress_fingerprint", progress_fingerprint),
+                )
+            ):
+                progress = {"idempotent": True, "payload": previous_progress}
+            else:
+                progress = self.record_health_progress(
+                    incident_id,
+                    f"{delivery_id}:health.progress:{progress_fingerprint}",
+                    plan_id, step, evidence_refs, progress_fingerprint,
+                    step.strip().lower() in {"heartbeat", "keepalive", "heartbeat-only"},
+                    "agent-herder",
+                )
+        except ValidationError as error:
+            return {"accepted": False, "resolved": False, "reason": self._health_text(error, 256)}
+        if observed_state != "healthy":
+            return {
+                "accepted": True, "resolved": False, "progress": progress,
+                "reason": f"repair-first executor finished with observed_state={observed_state}",
+                "outcome_delivery_id": self.schedule_health_outcome(
+                    incident_id, observed_state if observed_state in {"degraded", "unknown"} else "unknown",
+                    f"repair-first:{progress_fingerprint}",
+                ),
+            }
+        verification = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["verification"])
+        if not isinstance(verification, Mapping) or not self._health_text(verification.get("actor") or "", 128):
+            return {
+                "accepted": False, "resolved": False, "progress": progress,
+                "reason": "an independent health verification receipt is required before a repair-first executor can resolve",
+            }
+        if not self._health_verification_is_independent(verification):
+            return {
+                "accepted": False, "resolved": False, "progress": progress,
+                "reason": "health verification must come from an independent actor",
+            }
+        source_id = self._health_text(verification.get("source_id") or "", 128)
+        verifier_id = self._health_text(verification.get("verifier_id") or "", 128)
+        verification_id = self._health_text(verification.get("verification_id") or "", 128)
+        fingerprint = self._health_text(verification.get("fingerprint") or "", 128)
+        if not source_id or not verifier_id or not verification_id or not bool(verification.get("healthy")):
+            return {
+                "accepted": False, "resolved": False, "progress": progress,
+                "reason": "independent health verification receipt is incomplete or unhealthy",
+            }
+        expected_source_id = self._health_text(health_context.get("source_id") or "", 128)
+        expected_fingerprint = self._health_text(health_context.get("source_fingerprint") or "", 128)
+        if expected_source_id and source_id != expected_source_id:
+            return {"accepted": False, "resolved": False, "progress": progress, "reason": "health verification source must match the original source"}
+        if expected_fingerprint and fingerprint != expected_fingerprint:
+            return {"accepted": False, "resolved": False, "progress": progress, "reason": "health verification fingerprint must match the original source"}
+        receipt_source_id = self._health_text(agent_receipt.get("source_id") or "", 128)
+        receipt_verifier_id = self._health_text(agent_receipt.get("verifier_id") or "", 128)
+        if receipt_source_id and receipt_source_id != source_id:
+            return {"accepted": False, "resolved": False, "progress": progress, "reason": "repair-first receipt source does not match the independent verification"}
+        if receipt_verifier_id and receipt_verifier_id != verifier_id:
+            return {"accepted": False, "resolved": False, "progress": progress, "reason": "repair-first receipt verifier does not match the independent verification"}
+        try:
+            elapsed_ms = max(0, min(86_400_000, int(receipt.get("elapsed_ms") or 0)))
+        except (TypeError, ValueError):
+            elapsed_ms = 0
+        resolved = self.resolve_health_incident(
+            incident_id, source_id, verification_id, "agent-herder",
+            elapsed_ms=elapsed_ms, trace_refs=trace_refs[:16], executor_plan_id=plan_id,
+        )
+        return {"accepted": True, "resolved": True, "progress": progress, "verification": verification, "resolved_incident": resolved}
+
     def record_agent_job_result(self, incident_id: str, delivery_id: str, job_name: str, receipt: Mapping[str, Any], health_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Persist a bounded terminal agent-job receipt without raw command output."""
         if self.get_incident(incident_id) is None:
@@ -2385,6 +2596,21 @@ class NotificationCenter:
                 stage=job_name,
                 model=self._health_text(result.get("model") or summary.get("model") or "", 256),
             )
+        if job_name == HEALTH_DIAGNOSIS_AGENT_JOB and str(result.get("path") or "") == "repair-first" and summary["status"] == "completed":
+            # One executor session repaired the consumer itself; its outcome
+            # still has to pass the independent-verification gate.
+            repair_first_result = self._record_health_repair_first_receipt(incident_id, delivery_id, receipt, context)
+            if not repair_first_result.get("accepted") and not repair_first_result.get("awaiting_human"):
+                with self._lock, self._connection:
+                    self._audit(
+                        incident_id,
+                        "health.repair_first_receipt_rejected",
+                        "worker",
+                        {"delivery_id": delivery_id, "reason": self._health_text(repair_first_result.get("reason") or "unknown", 256)},
+                    )
+            if not repair_first_result.get("resolved") and not repair_first_result.get("outcome_delivery_id") and not repair_first_result.get("awaiting_human"):
+                self.schedule_health_outcome(incident_id, "unknown", f"repair-first:{delivery_id}")
+            return {**repair_first_result, "health_workflow": True, "repair_first": True}
         if job_name == HEALTH_REMEDIATION_AGENT_JOB and summary["status"] == "completed" and isinstance(health_context, Mapping):
             workflow_result = self._record_health_remediation_receipt(incident_id, delivery_id, receipt, health_context)
             if not workflow_result.get("accepted"):
@@ -2402,6 +2628,11 @@ class NotificationCenter:
             if summary["status"] == "failed":
                 self.schedule_health_outcome(incident_id, "failed", f"agent-result:{delivery_id}")
             elif summary["status"] == "completed":
+                if str(result.get("path") or "") == "repair-first":
+                    # The executor already published its own verified outcome;
+                    # scheduling a second "plans_ready" card here would undo
+                    # the repair-first contract.
+                    return {"accepted": True, "resolved": False, "health_workflow": True, "repair_first": True}
                 status = "plans_ready" if job_name == "health-diagnosis" and len(self.latest_health_plans(incident_id)) == 3 else "unknown"
                 self.schedule_health_outcome(incident_id, status, f"agent-result:{delivery_id}")
         return {"accepted": True, "resolved": False, "health_workflow": False}
@@ -2450,10 +2681,10 @@ class NotificationCenter:
     @classmethod
     def _health_execution(cls, value: Any) -> dict[str, str]:
         """Return only the canonical, bounded remediation execution profile."""
-        from .health_workflow import normalize_health_execution
+        from .health_workflow import bounded_health_execution
 
         try:
-            execution = normalize_health_execution(value)
+            execution = bounded_health_execution(value)
         except ValidationError:
             return {}
         return {key: cls._health_text(item, 64) for key, item in execution.items()}
@@ -2585,7 +2816,8 @@ class NotificationCenter:
                 continue
             stage = str(row["event_type"])
             newest_rank.setdefault(stage, len(newest_rank))
-            candidate = {"harness": harness, "session_id": session_id, "stage": stage.replace("_session_started", "")}
+            candidate = {"harness": harness, "session_id": session_id, "stage": stage.replace("_session_started", ""),
+                         "session_url": self._health_text(data.get("session_url") or "", 512)}
             rank = (stage_rank.get(stage, 9), newest_rank[stage])
             if best is None or rank < best[0]:
                 best = (rank, candidate)
@@ -2968,17 +3200,25 @@ class NotificationCenter:
         result["verifier_id"] = verifier_id
         return result
 
-    def resolve_health_incident(self, incident_id: str, source_id: str, verification_id: str, actor: str, elapsed_ms: int | None = None, trace_refs: list[str] | None = None) -> dict[str, Any]:
-        """Resolve only when the original source has a matching healthy receipt."""
+    def resolve_health_incident(self, incident_id: str, source_id: str, verification_id: str, actor: str, elapsed_ms: int | None = None, trace_refs: list[str] | None = None, executor_plan_id: str | None = None) -> dict[str, Any]:
+        """Resolve only when the original source has a matching healthy receipt.
+
+        ``executor_plan_id`` names the plan a single repair-first executor ran.
+        It replaces a human plan selection for the useful-progress requirement
+        only; every other gate, including independent verification and the
+        original source fingerprint, still applies unchanged.
+        """
         current = self.get_incident(incident_id)
         if current is None:
             raise ValidationError("incident not found")
         if self._health_original_event(incident_id) is None:
             raise ValidationError("health intake receipt is required before resolution")
         selected_plan = self._health_selected_plan(incident_id)
-        if not selected_plan:
+        executor_plan = self._health_text(executor_plan_id or "", 64)
+        if not selected_plan and not executor_plan:
             raise ValidationError("health incident requires explicit plan selection before resolution")
-        if not self._health_useful_progress_exists(incident_id, selected_plan):
+        progress_plan = selected_plan or executor_plan
+        if not self._health_useful_progress_exists(incident_id, progress_plan):
             raise ValidationError("health incident requires useful progress for the selected plan before resolution")
         original = self._health_original_event(incident_id) or {}
         original_source = self._health_text(original.get("source_id") or original.get("producer") or "", 128)
@@ -3017,6 +3257,9 @@ class NotificationCenter:
             "elapsed_ms": elapsed_ms if elapsed_ms is not None else 0,
             "trace_refs": resolved_trace_refs,
         }
+        if not selected_plan and executor_plan:
+            resolved_payload["plan_id"] = executor_plan
+            resolved_payload["selection"] = "repair_first_executor"
         if correlation_id:
             resolved_payload["correlation_id"] = correlation_id
         self._record_health_event(
@@ -3344,6 +3587,13 @@ class NotificationCenter:
                 return {"choice_request_id": request_id, "choices": normalized}
         return None
 
+    def latest_choice_request(self, incident_id: str) -> dict[str, Any] | None:
+        """Expose one incident's validated opaque choice presentation."""
+        with self._lock:
+            if self.get_incident(incident_id) is None:
+                raise ValidationError("incident not found")
+            return self._latest_choice_event(incident_id)
+
     def get_telegram_choice(self, incident_id: str, choice_id: str) -> dict[str, str]:
         """Resolve an opaque Telegram choice to its pending request identity."""
         with self._lock:
@@ -3371,6 +3621,96 @@ class NotificationCenter:
                 actor,
                 {"choice_id": choice_id, "request_id": request_id, "status": status[:64]},
             )
+
+    def record_selection_receipt(
+        self,
+        *,
+        request_id: str,
+        incident_id: str,
+        choice_id: str,
+        label: str,
+        actor: str,
+        source: str,
+        chat_id: str = "",
+        message_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Store the single canonical answer for one question or choice request.
+
+        The first accepted result wins for its request. A later repeat keeps the
+        stored identity even when it asked for a different option, so Telegram,
+        voice, and API resolvers all mark the same accepted choice.
+        """
+        safe_request = str(request_id or "").strip()
+        safe_incident = str(incident_id or "").strip()
+        safe_choice = str(choice_id or "").strip()
+        safe_label = " ".join(str(label or "").replace("\x00", "").splitlines()).strip()[:128]
+        safe_source = str(source or "").strip()[:32]
+        safe_chat = str(chat_id or "").strip()[:64]
+        if not _CHOICE_REQUEST_ID_RE.fullmatch(safe_request) or not _CHOICE_REQUEST_ID_RE.fullmatch(safe_incident):
+            raise ValidationError("selection receipt identity is invalid")
+        if not _CHOICE_ID_RE.fullmatch(safe_choice) or not safe_label or not safe_source:
+            raise ValidationError("selection receipt requires a bounded choice and label")
+        if message_id is not None and (not isinstance(message_id, int) or message_id <= 0):
+            raise ValidationError("selection receipt message id must be a positive integer")
+        with self._lock, self._connection:
+            self._audit(safe_incident, "selection_receipt_recorded", actor, {
+                "request_id": safe_request, "choice_id": safe_choice, "source": safe_source,
+            })
+            existing = self._connection.execute(
+                "SELECT * FROM selection_receipts WHERE request_id = ?", (safe_request,)
+            ).fetchone()
+            if existing is None:
+                self._connection.execute(
+                    "INSERT INTO selection_receipts(request_id, incident_id, choice_id, label, source, actor, chat_id, message_id, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (safe_request, safe_incident, safe_choice, safe_label, safe_source, str(actor or "")[:128],
+                     safe_chat or None, message_id, time.time()),
+                )
+                stored = self._connection.execute(
+                    "SELECT * FROM selection_receipts WHERE request_id = ?", (safe_request,)
+                ).fetchone()
+                return {**self._selection_receipt(stored), "accepted": True, "conflict": False}
+        stored = self._connection.execute(
+            "SELECT * FROM selection_receipts WHERE request_id = ?", (safe_request,)
+        ).fetchone()
+        return {**self._selection_receipt(stored), "accepted": False, "conflict": stored["choice_id"] != safe_choice}
+
+    def selection_receipt(self, request_id: str) -> dict[str, Any] | None:
+        """Read the canonical accepted answer for one request."""
+        safe_request = str(request_id or "").strip()
+        if not _CHOICE_REQUEST_ID_RE.fullmatch(safe_request):
+            raise ValidationError("selection receipt identity is invalid")
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM selection_receipts WHERE request_id = ?", (safe_request,)
+            ).fetchone()
+        return self._selection_receipt(row) if row is not None else None
+
+    @staticmethod
+    def _selection_receipt(row: sqlite3.Row) -> dict[str, Any]:
+        receipt = dict(row)
+        receipt["message_id"] = receipt["message_id"] if isinstance(receipt["message_id"], int) else None
+        receipt["chat_id"] = str(receipt["chat_id"] or "")
+        return receipt
+
+    def selection_receipt_card(self, request_id: str) -> dict[str, Any] | None:
+        """Return the Telegram card that owns one canonical selection receipt."""
+        receipt = self.selection_receipt(request_id)
+        if receipt is None:
+            return None
+        chat_id, message_id = str(receipt.get("chat_id") or ""), receipt.get("message_id")
+        if not chat_id or not isinstance(message_id, int):
+            with self._lock:
+                row = self._connection.execute(
+                    "SELECT telegram_chat_id, telegram_message_id FROM human_requests WHERE request_id = ?",
+                    (str(request_id),),
+                ).fetchone()
+            if row is None:
+                return None
+            chat_id, message_id = str(row["telegram_chat_id"] or ""), row["telegram_message_id"]
+        if not chat_id or not isinstance(message_id, int):
+            return None
+        return {"chat_id": chat_id, "message_id": message_id, "receipt": receipt}
 
     def delivery_payload(self, delivery: Mapping[str, Any]) -> dict[str, Any]:
         """Build the safe adapter payload for a previously claimed delivery."""
@@ -3618,7 +3958,7 @@ class NotificationCenter:
     @staticmethod
     def _health_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         """Bound health workflow payloads before they are persisted."""
-        from .health_workflow import _bounded_refs, _bounded_summary, _bounded_text, normalize_health_execution, normalize_health_recommendation
+        from .health_workflow import _bounded_refs, _bounded_summary, _bounded_text, bounded_health_execution, normalize_health_recommendation
 
         result: dict[str, Any] = {}
         for key, value in payload.items():
@@ -3632,7 +3972,7 @@ class NotificationCenter:
                 result[key] = _bounded_refs(value)
             elif key == "execution":
                 try:
-                    result[key] = normalize_health_execution(value)
+                    result[key] = bounded_health_execution(value)
                 except ValidationError:
                     result[key] = {}
             elif key == "plans" and isinstance(value, list):
@@ -3642,7 +3982,7 @@ class NotificationCenter:
                         "title": _bounded_summary(item.get("title")),
                         "summary": _bounded_summary(item.get("summary")),
                         "step": _bounded_text(item.get("step"), 64),
-                        "execution": normalize_health_execution(item.get("execution")),
+                        "execution": bounded_health_execution(item.get("execution")),
                     }
                     for item in value
                     if isinstance(item, Mapping)

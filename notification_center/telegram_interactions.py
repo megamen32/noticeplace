@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 
 from .core import NotificationCenter, ValidationError
 from .health_workflow import TelegramHealthPlanCodec, health_plan_keyboard
+from .selected_card import apply_selected_card, apply_selection_receipt, canonical_choice_ref
 
 
 class TelegramActionCodec:
@@ -151,43 +152,24 @@ class TelegramInteractionPoller:
         return known.get(plan_id, value or plan_id)
 
     def _dismiss_choice_message(self, callback: dict[str, Any], label: str) -> None:
-        """Remove choice buttons and leave a visible selected marker."""
+        """Remove choice buttons and leave a visible selected marker.
+
+        Thin wrapper over the shared receipt-driven updater so a voice or API
+        resolver marks exactly the same card text.
+        """
         message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
         chat_id = str(message.get("chat", {}).get("id") or "") if isinstance(message.get("chat"), dict) else ""
         message_id = message.get("message_id")
         if not chat_id or not isinstance(message_id, int) or message_id <= 0:
             return
-        current_text = str(message.get("text") or "").rstrip()
-        marker = f"✅ Выбрано: {label[:128]}"
-        budget = 4096 - len(marker.encode("utf-16-le")) // 2 - 2
-        current_text = current_text.encode("utf-16-le")[:max(0, budget) * 2].decode("utf-16-le", errors="ignore")
-        text = f"{current_text}\n\n{marker}" if current_text else marker
-        payload = {
-            "chat_id": chat_id,
-            "message_id": str(message_id),
-            "text": text[:4096],
-            "reply_markup": json.dumps({"inline_keyboard": []}, ensure_ascii=False, separators=(",", ":")),
-        }
-        # Callback text is already rendered; retain its formatting on edit.
-        if isinstance(message.get("entities"), list):
-            limit = len(current_text.encode("utf-16-le")) // 2
-            entities = [entity for entity in message["entities"]
-                        if isinstance(entity, dict)
-                        and isinstance(entity.get("offset"), int)
-                        and isinstance(entity.get("length"), int)
-                        and 0 <= entity["offset"] < entity["offset"] + entity["length"] <= limit]
-            payload["entities"] = json.dumps(entities, ensure_ascii=False)
-        try:
-            self._api("editMessageText", payload)
-        except Exception:
-            # The choice already resumed the session. If text editing is
-            # rejected (for example because Telegram has a stale message
-            # snapshot), still make a best-effort keyboard-only removal.
-            self._api("editMessageReplyMarkup", {
-                "chat_id": chat_id,
-                "message_id": str(message_id),
-                "reply_markup": payload["reply_markup"],
-            })
+        apply_selected_card(
+            self._api,
+            chat_id=chat_id,
+            message_id=message_id,
+            base_text=str(message.get("text") or ""),
+            label=label,
+            entities=message.get("entities"),
+        )
 
     def _mark_health_choice_message(
         self,
@@ -355,8 +337,34 @@ class TelegramInteractionPoller:
                         str(selection["request_id"]),
                         str(result.get("status") or "accepted"),
                     )
-                    if result.get("duplicate") is not True:
-                        self._dismiss_choice_message(callback, str(selection["label"]))
+                    # Agent Herder owns the accepted option for the bound native
+                    # session. When it answers with its own choice identity, that
+                    # canonical result wins over the option tapped here, so a
+                    # voice answer followed by a tap marks one and the same card.
+                    canonical = canonical_choice_ref(str(result.get("choice_id") or selected_choice_id))
+                    if canonical not in {str(choice["choice_id"]) for choice in self._center.latest_choice_request(incident_id)["choices"]}:
+                        canonical = canonical_choice_ref(selected_choice_id)
+                    label = next(
+                        (str(choice["label"]) for choice in self._center.latest_choice_request(incident_id)["choices"]
+                         if canonical_choice_ref(str(choice["choice_id"])) == canonical),
+                        str(selection["label"]),
+                    )
+                    message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+                    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+                    apply_selection_receipt(
+                        self._center,
+                        self._api,
+                        request_id=str(selection["request_id"]),
+                        incident_id=incident_id,
+                        choice_id=canonical,
+                        label=label,
+                        actor=f"telegram:{actor_id}",
+                        source="telegram",
+                        base_text=str(message.get("text") or ""),
+                        entities=message.get("entities"),
+                        chat_id=str(chat.get("id") or ""),
+                        message_id=message.get("message_id"),
+                    )
                     self._answer(callback_id, f"choice: {str(result.get('status') or 'accepted')}")
                     return
                 if action == "human_choice":
@@ -387,7 +395,24 @@ class TelegramInteractionPoller:
                             message = {**callback.get("message", {}), "text": text}
                             message.pop("entities", None)
                             callback = {**callback, "message": message}
-                        self._dismiss_choice_message(callback, str(selected.get("label") or selected.get("value") or ""))
+                        message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+                        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+                        # Mark the accepted value, not the requested one: the
+                        # receipt stays canonical for a later voice/API replay.
+                        apply_selection_receipt(
+                            self._center,
+                            self._api,
+                            request_id=incident_id,
+                            incident_id=incident_id,
+                            choice_id=canonical_choice_ref(str(result.get("response_value") or selected.get("value") or "")),
+                            label=str(selected.get("label") or selected.get("value") or ""),
+                            actor=f"telegram:{actor_id}",
+                            source="telegram",
+                            base_text=str(message.get("text") or ""),
+                            entities=message.get("entities"),
+                            chat_id=str(chat.get("id") or ""),
+                            message_id=message.get("message_id"),
+                        )
                     self._answer(callback_id, f"choice: {result['state']}")
                     return
             self._answer(callback_id, "Недопустимое действие")
