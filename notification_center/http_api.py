@@ -1614,6 +1614,9 @@ def record_incident_choice_result(
         )
         applied: dict[str, Any] = {"selection": receipt, "card": None, "status": "card_is_not_bound"}
     else:
+        codec = telegram_action_codec_from_environment()
+        if codec is None:
+            raise ValidationError("Telegram choice callbacks are not configured")
         applied = apply_selection_receipt(
             center,
             api or (lambda method, body_: telegram_api(bot_token, method, body_)),
@@ -1626,6 +1629,9 @@ def record_incident_choice_result(
             chat_id=str(card["chat_id"]),
             message_id=int(card["message_id"]),
             base_text=str(selection.get("title") or ""),
+            choice_buttons=[{"choice_id": str(choice["choice_id"]), "label": str(choice["label"]),
+                             "callback_data": codec.encode("choice", incident_id, choice_id=str(index))}
+                            for index, choice in enumerate(presentation["choices"])],
         )
     stored = applied.get("selection") if isinstance(applied.get("selection"), Mapping) else {}
     # The first accepted answer stays canonical, so a later conflicting
@@ -1658,6 +1664,7 @@ def complete_human_request(
     chat_id: str = "",
     message_id: Any = None,
     runner: Any = urllib.request.urlopen,
+    choice_codec: TelegramActionCodec | None = None,
 ) -> dict[str, Any]:
     """One canonical completion for every answer surface.
 
@@ -1691,7 +1698,7 @@ def complete_human_request(
             or (legacy_analysis and not resolved.get("telegram_progress_confirmed_at"))):
         card = _deliver_human_completion_card(
             center, resolved, canonical_actor, api, base_text=base_text, entities=entities,
-            chat_id=chat_id, message_id=message_id, source=source)
+            chat_id=chat_id, message_id=message_id, source=source, choice_codec=choice_codec)
     label = next(
         (str(choice.get("label") or "") for choice in (resolved.get("choices") or [])
          if isinstance(choice, Mapping) and str(choice.get("value") or "") == canonical_value),
@@ -1789,6 +1796,7 @@ def mark_human_request_resolved_card(
     chat_id: str = "",
     message_id: Any = None,
     source: str = "api",
+    choice_codec: TelegramActionCodec | None = None,
 ) -> dict[str, Any]:
     """Mark the same card for any non-Telegram resolver of a human request.
 
@@ -1830,6 +1838,14 @@ def mark_human_request_resolved_card(
         center.confirm_human_request_progress_card(request_id)
         return {"status": "marked"}
     rendered = base_text or render_human_request_original({**request, "state": "pending"})[0]
+    buttons = None
+    if choices:
+        codec = choice_codec or telegram_action_codec_from_environment()
+        if codec is None:
+            return {"status": "not_configured"}
+        buttons = [{"choice_id": canonical_choice_ref(str(choice["value"])), "label": str(choice["label"]),
+                    "callback_data": codec.encode_human_choice(request_id, str(index))}
+                   for index, choice in enumerate(choices)]
     applied = apply_selection_receipt(
         center,
         api or (lambda method, body: telegram_api(bot_token, method, body)),
@@ -1840,6 +1856,7 @@ def mark_human_request_resolved_card(
         actor=actor,
         source=source,
         base_text=rendered,
+        choice_buttons=buttons,
         entities=entities,
         chat_id=chat_id,
         message_id=message_id,

@@ -271,6 +271,95 @@ class ReadyBindingTests(unittest.TestCase):
         self.assertEqual(1, len(_HerderHandler.completions))
         self.assertEqual(1, sum(method == "editMessageText" for method, _ in self.telegram))
 
+    def test_answer_keeps_both_buttons_and_conflicting_callback_acknowledges_canonical_choice(self) -> None:
+        from notification_center.telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
+        self._create_bound()
+        initial = json.loads(next(p["reply_markup"] for m, p in self.telegram if m == "sendMessage"))
+        self._call("noticeplace_answer", {"request_id": self.request_id, "value": "repair"})
+        marked = json.loads(next(p["reply_markup"] for m, p in self.telegram if m == "editMessageText"))
+        rows = marked["inline_keyboard"]
+        self.assertEqual(2, len(rows), "answer must retain both visible choices")
+        self.assertEqual(["✅ Починить", "Наблюдать"], [row[0]["text"] for row in rows])
+        self.assertEqual([r[0]["callback_data"] for r in initial["inline_keyboard"]],
+                         [r[0]["callback_data"] for r in rows])
+        codec = TelegramActionCodec("s" * 32)
+        poller = TelegramInteractionPoller(self.center, "bot-token", {"42"}, codec,
+            api=lambda method, payload: http_api.telegram_api("bot-token", method, payload))
+        poller._handle_callback({"id": "conflicting-repeat", "from": {"id": 42},
+            "data": rows[1][0]["callback_data"], "message": {"chat": {"id": -100}, "message_id": 42,
+                                                                         "text": "Починить сейчас?"}})
+        self.assertEqual(1, len(_HerderHandler.completions))
+        self.assertEqual("repair", self.center.get_human_request("p", self.request_id)["response_value"])
+        acknowledgements = [p["text"] for m, p in self.telegram if m == "answerCallbackQuery"]
+        self.assertEqual(["✅ Выбрано: Починить"], acknowledgements)
+
+    def test_future_canonical_reference_matches_herder_strict_uuid_gate(self) -> None:
+        import re
+        self._create_bound()
+        self._call("noticeplace_answer", {"request_id": self.request_id, "value": "repair"})
+        result = self._call("noticeplace_question_result", {"request_id": self.request_id})
+        # Herder's strict request-identity gate requires RFC UUID variant bits;
+        # the completion gate additionally accepts old opaque hex references.
+        strict = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
+        self.assertRegex(result["result_ref"], strict)
+        self.assertEqual(result["result_ref"], _HerderHandler.completions[0]["body"]["result_ref"])
+
+    def test_historical_completion_reference_stays_canonical_in_real_result_handler(self) -> None:
+        self._create_bound()
+        self._call("noticeplace_answer", {"request_id": self.request_id, "value": "repair"})
+        historical = "6944969d-ac29-5003-fba0-a545f0c2891c"
+        with self.center._lock, self.center._connection:
+            self.center._connection.execute("UPDATE human_request_completions SET result_ref=? WHERE request_id=?",
+                                            (historical, self.request_id))
+        result = self._call("noticeplace_question_result", {"request_id": self.request_id})
+        self.assertEqual(historical, result["result_ref"], "stored completion reference overrides recomputation")
+        self.assertEqual("repair", result["answer"])
+
+    def test_incident_buttons_remain_visible_and_repeat_never_resumes_again(self) -> None:
+        from notification_center.telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
+        choice_request = '11111111-1111-4111-8111-111111111111'
+        created = self.center.create_event('p', 'incident-buttons', {
+            'schema': 'notify.event.v1', 'project': 'hermes', 'recipient': 'me', 'kind': 'notification',
+            'severity': 'important', 'title': 'Выбери путь', 'body': 'Нужен выбор', 'dedup_key': 'incident-buttons',
+            'choice_request_id': choice_request,
+            'choices': [{'choice_id': 'repair', 'label': 'Починить'}, {'choice_id': 'observe', 'label': 'Наблюдать'}]})
+        incident_id = created['incident_id']
+        codec = TelegramActionCodec('s' * 32)
+        sender = http_api.TelegramSender('bot-token', '-100', action_codec=codec, center=self.center)
+        import io
+        import urllib.parse
+        def fake_sender_network(request, **kwargs):
+            payload = {key: values[0] for key, values in urllib.parse.parse_qs(request.data.decode()).items()}
+            method = request.full_url.rsplit('/', 1)[-1]
+            return io.BytesIO(json.dumps(http_api.telegram_api('bot-token', method, payload)).encode())
+        with patch('notification_center.http_api.urllib.request.urlopen', side_effect=fake_sender_network):
+            http_api.DeliveryWorker(self.center, sender).run_once()
+        initial = json.loads(next(p['reply_markup'] for m,p in self.telegram if m == 'sendMessage'))
+        native = []
+        def resume(request_id, choice_id, actor):
+            native.append((request_id, choice_id, actor))
+            return {'status': 'accepted', 'choice_id': choice_id}
+        poller = TelegramInteractionPoller(self.center, 'bot-token', {'42'}, codec, choice_callback=resume,
+            api=lambda method, payload: http_api.telegram_api('bot-token', method, payload))
+        def tap(index):
+            poller._handle_callback({'id': f'incident-{index}', 'from': {'id': 42},
+                'data': initial['inline_keyboard'][index][0]['callback_data'],
+                'message': {'chat': {'id': -100}, 'message_id': 42, 'text': 'Выбери путь'}})
+        tap(1)
+        edits = [p for m,p in self.telegram if m == 'editMessageText']
+        marked = json.loads(edits[-1]['reply_markup'])['inline_keyboard']
+        self.assertEqual(['Починить', '✅ Наблюдать'], [r[0]['text'] for r in marked])
+        self.assertEqual([r[0]['callback_data'] for r in initial['inline_keyboard']],
+                         [r[0]['callback_data'] for r in marked])
+        repeat = self._call('noticeplace_answer', {'incident_id': incident_id, 'request_id': choice_request,
+                                                  'choice_id': 'repair'})
+        self.assertEqual('observe', repeat['choice_id'])
+        self.assertTrue(repeat['conflict'])
+        tap(0)
+        self.assertEqual(1, len(native))
+        self.assertEqual('observe', self.center.selection_receipt(choice_request)['choice_id'])
+        self.assertEqual('✅ Выбрано: Наблюдать', [p['text'] for m,p in self.telegram if m == 'answerCallbackQuery'][-1])
+
     def test_expired_and_cancelled_http_answers_explicitly_accept_nothing(self) -> None:
         for state in ("expired", "cancelled"):
             request_id = f"req-{state}"

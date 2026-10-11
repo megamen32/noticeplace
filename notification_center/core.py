@@ -340,6 +340,20 @@ class NotificationCenter:
             for column in ("native_harness", "native_session_id", "native_cwd"):
                 if column not in human_request_columns:
                     self._connection.execute(f"ALTER TABLE human_requests ADD COLUMN {column} TEXT")
+            if "response_result_ref" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN response_result_ref TEXT")
+            # Freeze historical references before changing the future UUID
+            # generator. An existing completion outbox is authoritative.
+            historical_answers = self._connection.execute(
+                "SELECT h.request_id, h.response_value, h.response_actor, c.result_ref"
+                " FROM human_requests h LEFT JOIN human_request_completions c ON c.request_id=h.request_id"
+                " WHERE h.state='resolved' AND h.response_result_ref IS NULL AND h.response_value IS NOT NULL",
+            ).fetchall()
+            for answer in historical_answers:
+                result_ref = answer["result_ref"] or self._legacy_selection_result_ref(
+                    str(answer["request_id"]), answer["response_value"], str(answer["response_actor"] or ""))
+                self._connection.execute("UPDATE human_requests SET response_result_ref=? WHERE request_id=?",
+                                         (result_ref, answer["request_id"]))
             for column, definition in (
                 ("policy_step_id", "TEXT"),
                 ("repeat_number", "INTEGER"),
@@ -599,7 +613,7 @@ class NotificationCenter:
         result["allowed_actors"] = json.loads(str(result.pop("allowed_actors_json")))
         result["progress"] = json.loads(result.pop("progress_json") or "null")
         if result.get("kind") == "secret":
-            result["result_ref"] = NotificationCenter._selection_result_ref(
+            result["result_ref"] = result.get("response_result_ref") or NotificationCenter._selection_result_ref(
                 str(result["request_id"]), result.get("response_value"), str(result.get("response_actor") or ""))
             result["response_value"] = None
         return result
@@ -757,6 +771,7 @@ class NotificationCenter:
         """
         with self._lock:
             request = self.human_request_producer_view(self._human_request_result(self._human_request_row(token, request_id)))
+            completion = self.human_request_completion(request_id)
         value = request.get("response_value")
         kind = str(request.get("kind") or "user")
         receipt = {
@@ -764,7 +779,9 @@ class NotificationCenter:
             "request_id": str(request["request_id"]),
             "state": str(request["state"]),
             "kind": kind,
-            "result_ref": request.get("result_ref") or self._selection_result_ref(str(request["request_id"]), value, str(request.get("response_actor") or "")),
+            "result_ref": (completion.get("result_ref") or request.get("response_result_ref")
+                           or request.get("result_ref") or self._selection_result_ref(
+                               str(request["request_id"]), value, str(request.get("response_actor") or ""))),
             "native": {
                 "harness": str(request.get("native_harness") or ""),
                 "session_id": str(request.get("native_session_id") or ""),
@@ -780,7 +797,12 @@ class NotificationCenter:
 
     @staticmethod
     def _selection_result_ref(request_id: str, value: Any, actor: str) -> str:
-        """Stable opaque answer reference derived from the stored answer."""
+        """A deterministic RFC UUID accepted by Herder's strict UUID gate."""
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"noticeplace:human-answer:{request_id}:{value or ''}:{actor}"))
+
+    @staticmethod
+    def _legacy_selection_result_ref(request_id: str, value: Any, actor: str) -> str:
+        """Only for freezing historical published references during migration."""
         digest = hashlib.sha256(f"{request_id}:{value or ''}:{actor}".encode()).hexdigest()
         return f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
 
@@ -1029,8 +1051,9 @@ class NotificationCenter:
             raise ValidationError("human response is not a valid choice")
         resolved_at = time.time()
         update = self._connection.execute(
-            "UPDATE human_requests SET state = 'resolved', response_value = ?, response_actor = ?, resolved_at = ? WHERE request_id = ? AND state = 'pending'",
-            (value, actor, resolved_at, row["request_id"]),
+            "UPDATE human_requests SET state = 'resolved', response_value = ?, response_actor = ?, resolved_at = ?,"
+            " response_result_ref = ? WHERE request_id = ? AND state = 'pending'",
+            (value, actor, resolved_at, self._selection_result_ref(str(row["request_id"]), value, actor), row["request_id"]),
         )
         current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
         if update.rowcount != 1:
@@ -1190,7 +1213,8 @@ class NotificationCenter:
         if not (request_id and harness and session_id and cwd):
             return {}
         actor = str(request.get("response_actor") or "")
-        result_ref = self._selection_result_ref(request_id, request.get("response_value"), actor)
+        result_ref = str(request.get("response_result_ref") or self._selection_result_ref(
+            request_id, request.get("response_value"), actor))
         now = time.time()
         with self._lock:
             existing = self._connection.execute(
@@ -1227,6 +1251,47 @@ class NotificationCenter:
                 " WHERE request_id = ? AND state IN ('pending', 'retryable') AND next_attempt_at <= ?",
                 (time.time(), request_id, time.time()),
             ).rowcount == 1
+
+    def reconcile_unadmitted_human_completion(
+        self, token: str, request_id: str, result_ref: str, verified_herder_record: Mapping[str, Any],
+        evidence_ref: str, actor: str,
+    ) -> dict[str, Any]:
+        """Operator-only explicit reconciliation after proven pre-admission failure.
+
+        The operator supplies a freshly verified Herder registry receipt: the
+        same pending request and target, with no attempt or answer admission.
+        This seam is never called by the worker or by an ordinary answer. It
+        preserves the canonical reference and audits the exact evidence.
+        """
+        evidence = str(evidence_ref or "").strip()
+        actor = str(actor or "").strip()
+        if not evidence or len(evidence) > 1024 or not actor or len(actor) > 128:
+            raise ValidationError("reconciliation requires bounded operator identity and evidence")
+        proof = verified_herder_record
+        target = proof.get("target") if isinstance(proof.get("target"), Mapping) else {}
+        if (proof.get("requestId") != request_id or proof.get("status") != "pending"
+                or any(proof.get(field) for field in ("attemptId", "resultRef", "resolutionRef", "receipt", "resumeLeaseExpiresAt"))):
+            raise ValidationError("reconciliation requires verified Herder pending with no admission attempt")
+        with self._lock, self._connection:
+            request = self._human_request_row(token, request_id)
+            completion = self.human_request_completion(request_id)
+            if (request["state"] != "resolved" or request["kind"] != "user" or not completion
+                    or completion["result_ref"] != str(result_ref)
+                    or str(target.get("agent") or target.get("harness") or "") != completion["harness"]
+                    or target.get("sessionId") != completion["session_id"]
+                    or target.get("cwd") != completion["cwd"]):
+                raise ValidationError("reconciliation proof does not match the canonical question and native target")
+            if completion["state"] != "unknown":
+                raise ValidationError("only an unknown completion with proven non-admission can be reconciled")
+            self._connection.execute(
+                "UPDATE human_request_completions SET state='retryable', next_attempt_at=?, updated_at=?,"
+                " reason='operator verified Herder pending before admission' WHERE request_id=? AND state='unknown'",
+                (time.time() + 30, time.time(), request_id))
+            self._audit(request_id, "human_completion.pre_admission_reconciled", actor, {
+                "request_id": request_id, "result_ref": str(result_ref), "evidence_ref": evidence,
+                "herder_status": "pending", "previous_state": "unknown",
+            })
+            return self.human_request_completion(request_id)
 
     def due_human_completion_cards(self, limit: int = 8) -> list[dict[str, Any]]:
         with self._lock:

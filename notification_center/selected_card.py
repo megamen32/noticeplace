@@ -38,6 +38,14 @@ def selected_marker(label: str, prefix: str = _SELECTED_PREFIX) -> str:
     return f"{prefix} {text[:128]}"
 
 
+def selection_keyboard(buttons: list[Mapping[str, Any]], choice_id: str) -> dict[str, Any]:
+    """Retain each signed callback and mark only the canonical option."""
+    return {"inline_keyboard": [[{
+        "text": (("✅ " if str(button["choice_id"]) == choice_id else "") + str(button["label"]))[:80],
+        "callback_data": str(button["callback_data"]),
+    }] for button in buttons]}
+
+
 def selected_card_text(base_text: str, label: str, prefix: str = _SELECTED_PREFIX) -> str:
     """Append the accepted marker once, keeping the message inside Telegram limits."""
     marker = selected_marker(label, prefix)
@@ -89,11 +97,11 @@ def apply_selected_card(
     reply_markup: Mapping[str, Any] | None = None,
     entities: Any = None,
 ) -> dict[str, Any]:
-    """Mark one accepted choice on one card and remove its decision buttons.
+    """Mark one accepted choice on one card with its supplied keyboard.
 
     Returns a receipt with ``edited`` so a replayed resolver can stay silent.
-    A rejected text edit still falls back to a keyboard-only removal, because
-    the answer is already durable and the buttons must not stay actionable.
+    A rejected text edit falls back to the same keyboard-only update. Choice
+    callbacks remain visible; canonical completion owns their repeat handling.
     """
     if not str(chat_id or "") or not isinstance(message_id, int) or message_id <= 0:
         return {"edited": False, "reason": "card_is_not_bound"}
@@ -143,6 +151,7 @@ def apply_selection_receipt(
     source: str,
     base_text: str = "",
     reply_markup: Mapping[str, Any] | None = None,
+    choice_buttons: list[Mapping[str, Any]] | None = None,
     entities: Any = None,
     chat_id: str = "",
     message_id: Any = None,
@@ -173,7 +182,8 @@ def apply_selection_receipt(
         message_id=card["message_id"],
         base_text=base_text,
         label=str(card["receipt"]["label"]),
-        reply_markup=reply_markup,
+        reply_markup=(selection_keyboard(choice_buttons, str(card["receipt"]["choice_id"]))
+                      if choice_buttons is not None else reply_markup),
         entities=entities,
     )
     return result

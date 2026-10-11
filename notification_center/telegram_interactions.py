@@ -326,6 +326,7 @@ class TelegramInteractionPoller:
                 self._center, request, str(selected.get("value") or ""), f"telegram:{actor_id}", "telegram",
                 self._api, base_text=str(message.get("text") or ""), entities=message.get("entities"),
                 chat_id=str(chat.get("id") or ""), message_id=message.get("message_id"),
+                choice_codec=self._codec,
             )
         if completed.get("card") == "marked" or completed.get("card") == "already_marked":
             self._answer(callback_id, f"✅ Выбрано: {completed.get('label') or selected.get('label')}")
@@ -397,52 +398,57 @@ class TelegramInteractionPoller:
                     self._answer(callback_id, f"✅ Выбрано: {label}")
                     return
                 if action == "choice":
-                    if self._choice_callback is None:
-                        raise ValidationError("Agent Herder choice callback is not configured")
-                    selection = self._center.get_telegram_choice(incident_id, plan_id)
-                    selected_choice_id = str(selection["choice_id"])
-                    result = self._choice_callback(
-                        str(selection["request_id"]),
-                        selected_choice_id,
-                        f"telegram:{actor_id}",
-                    )
-                    self._center.record_telegram_choice(
-                        incident_id,
-                        selected_choice_id,
-                        f"telegram:{actor_id}",
-                        str(selection["request_id"]),
-                        str(result.get("status") or "accepted"),
-                    )
-                    # Agent Herder owns the accepted option for the bound native
-                    # session. When it answers with its own choice identity, that
-                    # canonical result wins over the option tapped here, so a
-                    # voice answer followed by a tap marks one and the same card.
-                    canonical = canonical_choice_ref(str(result.get("choice_id") or selected_choice_id))
-                    if canonical not in {str(choice["choice_id"]) for choice in self._center.latest_choice_request(incident_id)["choices"]}:
-                        canonical = canonical_choice_ref(selected_choice_id)
-                    label = next(
-                        (str(choice["label"]) for choice in self._center.latest_choice_request(incident_id)["choices"]
-                         if canonical_choice_ref(str(choice["choice_id"])) == canonical),
-                        str(selection["label"]),
-                    )
-                    message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
-                    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
-                    apply_selection_receipt(
-                        self._center,
-                        self._api,
-                        request_id=str(selection["request_id"]),
-                        incident_id=incident_id,
-                        choice_id=canonical,
-                        label=label,
-                        actor=f"telegram:{actor_id}",
-                        source="telegram",
-                        base_text=str(message.get("text") or ""),
-                        entities=message.get("entities"),
-                        chat_id=str(chat.get("id") or ""),
-                        message_id=message.get("message_id"),
-                    )
-                    self._answer(callback_id, f"choice: {str(result.get('status') or 'accepted')}")
-                    return
+                    with self._center.delivery_send_lock():
+                        selection = self._center.get_telegram_choice(incident_id, plan_id)
+                        selected_choice_id = str(selection["choice_id"])
+                        existing = self._center.selection_receipt(str(selection["request_id"]))
+                        if existing:
+                            result = {"status": "already_answered", "choice_id": existing["choice_id"]}
+                        else:
+                            if self._choice_callback is None:
+                                raise ValidationError("Agent Herder choice callback is not configured")
+                            result = self._choice_callback(
+                                str(selection["request_id"]), selected_choice_id, f"telegram:{actor_id}")
+                        self._center.record_telegram_choice(
+                            incident_id,
+                            selected_choice_id,
+                            f"telegram:{actor_id}",
+                            str(selection["request_id"]),
+                            str(result.get("status") or "accepted"),
+                        )
+                        # Agent Herder owns the accepted option for the bound native
+                        # session. When it answers with its own choice identity, that
+                        # canonical result wins over the option tapped here, so a
+                        # voice answer followed by a tap marks one and the same card.
+                        canonical = canonical_choice_ref(str(result.get("choice_id") or selected_choice_id))
+                        if canonical not in {str(choice["choice_id"]) for choice in self._center.latest_choice_request(incident_id)["choices"]}:
+                            canonical = canonical_choice_ref(selected_choice_id)
+                        label = next(
+                            (str(choice["label"]) for choice in self._center.latest_choice_request(incident_id)["choices"]
+                             if canonical_choice_ref(str(choice["choice_id"])) == canonical),
+                            str(selection["label"]),
+                        )
+                        message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+                        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+                        applied = apply_selection_receipt(
+                            self._center,
+                            self._api,
+                            request_id=str(selection["request_id"]),
+                            incident_id=incident_id,
+                            choice_id=canonical,
+                            label=label,
+                            actor=f"telegram:{actor_id}",
+                            source="telegram",
+                            base_text=str(message.get("text") or ""),
+                            entities=message.get("entities"),
+                            chat_id=str(chat.get("id") or ""),
+                            message_id=message.get("message_id"),
+                            choice_buttons=[{"choice_id": str(choice["choice_id"]), "label": str(choice["label"]),
+                                             "callback_data": self._codec.encode("choice", incident_id, choice_id=str(index))}
+                                            for index, choice in enumerate(self._center.latest_choice_request(incident_id)["choices"])],
+                        )
+                        self._answer(callback_id, f"✅ Выбрано: {applied['selection']['label']}")
+                        return
                 if action == "human_choice":
                     self._handle_human_choice(callback, callback_id, actor_id, incident_id, plan_id)
                     return

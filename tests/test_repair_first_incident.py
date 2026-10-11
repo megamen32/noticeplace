@@ -384,6 +384,7 @@ class ProjectRouteTests(unittest.TestCase):
         self.assertEqual(sent_operation, agent_job_helper._operation_id(event, "health-diagnosis"))
 
 
+@patch.dict(os.environ, {"TELEGRAM_CALLBACK_SECRET": "x" * 32})
 class SelectedCardUpdaterTests(unittest.TestCase):
     """Telegram, voice, and API share one canonical receipt and one updater."""
 
@@ -583,6 +584,7 @@ class SelectedCardUpdaterTests(unittest.TestCase):
         self.assertNotIn("response_value", question)
 
 
+@patch.dict(os.environ, {"TELEGRAM_CALLBACK_SECRET": "x" * 32})
 class BoundQuestionTests(unittest.TestCase):
     """The bound question really persists, renders, and resumes one native session."""
 

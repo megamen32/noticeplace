@@ -275,3 +275,50 @@ repeat, the shared card marker, and the MCP handshake plus tools list.
 The earlier handoff recorded four broad-suite baseline failures (`test_http_api`
 remote-MCP trio and `test_notification_center_clients`) on base `e42bf57`.
 That historical claim was not rerun in this finite focused verification.
+
+## Acceptance follow-up: buttons and canonical UUID references
+
+Root observed that the real answer card removed its two buttons, and Herder
+rejected an old opaque result hash before native admission because its variant
+bits were not RFC UUID bits. The first real answer was read once through the
+installed `noticeplace_question_result` tool and saved in ignored
+`.tmp/native-noticeplace-acceptance.json`. No answer, create, resume, phone call,
+topic or runtime change was replayed by this executor.
+
+Choice human cards and incident choice cards now retain the original signed
+callbacks for every option, prefixing only the canonical winning option with
+`✅`. A repeat acknowledges that canonical label and cannot invoke a second
+incident native callback. Text-edit fallback updates the same complete keyboard.
+Free-text and legacy analysis card behaviour remains covered separately.
+
+Future answers persist a deterministic RFC UUIDv5 reference in the answer
+transaction. `human_request_result_receipt` reads an existing completion's
+`result_ref` first. A migration freezes older resolved answer references in
+`response_result_ref`, using the existing outbox reference when present and the
+original hash only for historical rows without an outbox. No existing outbox
+reference, answer or selection is rewritten.
+
+Root has the explicit scoped core seam
+`reconcile_unadmitted_human_completion(token, request_id, result_ref,
+verified_herder_record, evidence_ref, actor)`. It accepts only the caller's
+resolved ordinary question, an `unknown` outbox with the exact canonical
+reference, and a freshly verified Herder `pending` record for the same native
+target with no attempt, result admission, receipt or lease. It preserves the
+reference and records `human_completion.pre_admission_reconciled` with the
+operator and evidence. The worker and ordinary answer flow never call this
+seam. Root must reconcile the specific verified pre-admission failure after
+install; this executor did not reset the live outbox.
+
+Evidence for the Telegram edit contract was read in order: local official
+TL `replyInlineMarkup`, `keyboardInlineButton` and `messages.editMessage`;
+[Android BotInlineKeyboard](https://github.com/DrKLO/Telegram/blob/master/TMessagesProj/src/main/java/org/telegram/messenger/BotInlineKeyboard.java)
+renders every supplied row and each button's text; the installed Notice Bot API
+wrapper accepts a method and payload using stdlib HTTP. No topic creation or
+new router was added. Root owns the existing Debug topic and project route.
+
+Focused release: **122 tests passed in 50.69 seconds**, including real HTTP,
+MCP, sender and callback handlers, canonical native single-delivery regressions,
+historical-reference reopen and rejected reconciliation proofs. Fast reference
+checks expect 1 second / maximum 5; focused card cases expect 2 / maximum 10.
+The combined run is bounded at 180 seconds, 2 GiB and two CPU slots. Portable
+plugin validation passed; its immutable `0.1.0` instruction bundle was not changed.
