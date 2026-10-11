@@ -20,6 +20,19 @@ CARD_SETTINGS = {
     'telegram_routine_sound_enabled': ('0', 'Звук обычного уведомления'),
 }
 
+EXECUTOR_LABELS = {'opencode': 'OpenCode', 'codex': 'Codex', 'hermes': 'Hermes', 'zcode': 'ZCode',
+                   'claude': 'Claude Code', 'qoder': 'Qoder', 'fast-agent': 'FastAgent', 'chatgpt': 'ChatGPT'}
+
+
+def display_session_url(identity: Any) -> str:
+    if not isinstance(identity, Mapping) or identity.get('harness') not in EXECUTOR_LABELS:
+        return ''
+    native_id = identity.get('session_id')
+    if not isinstance(native_id, str) or not native_id:
+        return ''
+    expected = 'https://agent.bezrabotnyi.com/#/session/' + urllib.parse.quote(f"{identity['harness']}:{native_id}", safe="!'()*")
+    return expected if identity.get('session_url') == expected else ''
+
 
 def setting(center: Any, key: str) -> float:
     default = CARD_SETTINGS[key][0]
@@ -38,7 +51,7 @@ def session_url(session: Any) -> str:
     return url if parsed.scheme == 'https' and parsed.hostname == 'agent.bezrabotnyi.com' else ''
 
 
-def controls(codec: Any, incident: Mapping[str, Any], session: Any = None) -> list[list[dict[str, str]]]:
+def controls(codec: Any, incident: Mapping[str, Any], session: Any = None, *, execution_identity: Any = None) -> list[list[dict[str, str]]]:
     if codec is None:
         return []
     incident_id = str(incident['id'])
@@ -52,6 +65,9 @@ def controls(codec: Any, incident: Mapping[str, Any], session: Any = None) -> li
     muted = bool(incident.get('notifications_muted'))
     rows.extend([[ai], [{'text': 'Включить такие уведомления' if muted else 'Отключить такие уведомления',
                          'callback_data': codec.encode('unmute' if muted else 'mute', incident_id)}]])
+    display_url = display_session_url(execution_identity) if not session else ''
+    if display_url:
+        rows.append([{'text': 'Сессия · ' + EXECUTOR_LABELS[execution_identity['harness']], 'url': display_url}])
     return rows
 
 
@@ -68,6 +84,10 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
     incident = payload['incident']
     outcome = payload.get('health_outcome') or {}
     session = payload.get('ai_session') or payload.get('health_session') or {}
+    # A recorded native launch outranks producer display metadata. Display-only
+    # identity never becomes ai_session or a launch/current-running assertion.
+    identity = session or payload.get('execution_identity') or {}
+    executor = EXECUTOR_LABELS.get(identity.get('harness')) if isinstance(identity, Mapping) else None
     state = incident.get('state')
     status = str(outcome.get('status') or '')
     members = payload.get('group_members') or []
@@ -103,11 +123,20 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
                  'ram': 'На сервере не хватает памяти', 'disk': 'На сервере заканчивается место',
                  'https': 'Сайт не отвечает на проверку'}.get((payload.get('health_context') or {}).get('signal_type'),
                                                            'Мониторинг сообщил о проблеме сервиса')
-    text = f"{heading} · {sanitize_bounded_text(incident['project'], 96)}\n\n{title}"
+    text = heading + ('\n\nИсполнитель: ' + executor if executor else '\n\nИсполнитель не указан.')
+    if executor:
+        model = sanitize_bounded_text(identity.get('model'), 256)
+        cwd = sanitize_bounded_text(identity.get('cwd'), 220)
+        if model:
+            text += '\nМодель: ' + model
+        if cwd:
+            text += '\nРабочий каталог: ' + cwd
+    text += '\n\n' + title
     body = sanitize_bounded_text(incident.get('body'), 800)
     if body and re.search('[А-Яа-яЁё]', body):
         text += '\n\n' + body
     text += '\n\n' + explanation
+    text += '\n\nПроект уведомления: ' + sanitize_bounded_text(incident['project'], 96)
     if state == 'acknowledged':
         text += '\nВы прочитали уведомление. Проверка и исправление продолжаются.'
     progress = payload.get('native_progress')
@@ -124,7 +153,7 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
             if progress.get('assistant_timestamp'):
                 text += ' (' + sanitize_bounded_text(progress['assistant_timestamp'], 40) + ')'
             text += ':\n' + answer
-    url = session_url(session)
+    url = session_url(session) if session else display_session_url(identity)
     if url:
         text += '\n\nСсылка на сессию: ' + url
     rows = []
@@ -160,7 +189,7 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
             text += '\n• ' + label + member_status
             member_url = session_url(member.get('session'))
             text += '\n' + (member_url or 'https://notify.bezrabotnyi.com/admin/?history=' + urllib.parse.quote(str(member['id'])))
-    control_rows = controls(codec, incident, session)
+    control_rows = controls(codec, incident, session, execution_identity=identity)
     if codec is not None and len(members) > 1:
         attention = next((m for m in members if m.get('state') in {'open','snoozed'} and m.get('severity') in {'critical','emergency'}), None)
         if attention:

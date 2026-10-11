@@ -492,6 +492,28 @@ class NotificationCenter:
         self._scope(token, project)
 
     @staticmethod
+    def _validate_execution_identity(value: Any) -> None:
+        """Optional producer display metadata, never delivery/execution authority."""
+        fields = {"harness", "session_id", "model", "cwd", "session_url"}
+        if not isinstance(value, Mapping) or set(value) - fields or not {"harness", "session_id"} <= set(value):
+            raise ValidationError("execution_identity must contain only bounded native display fields")
+        for key, limit in (("harness", 32), ("session_id", 512), ("model", 256), ("cwd", 2048), ("session_url", 2048)):
+            if key in value and (not isinstance(value[key], str) or len(value[key]) > limit
+                                 or any(ord(char) < 32 or ord(char) == 127 for char in value[key])):
+                raise ValidationError(f"execution_identity.{key} must be a bounded string without control characters")
+        if value["harness"] not in {"opencode", "codex", "hermes", "zcode", "claude", "qoder", "fast-agent", "chatgpt"}:
+            raise ValidationError("execution_identity harness is unsupported")
+        if not value["session_id"].strip() or value["session_id"] != value["session_id"].strip():
+            raise ValidationError("execution_identity requires the actual native session id")
+        if "cwd" in value and not os.path.isabs(value["cwd"]):
+            raise ValidationError("execution_identity cwd must be absolute")
+        if "session_url" in value:
+            expected = "https://agent.bezrabotnyi.com/#/session/" + urllib.parse.quote(
+                f"{value['harness']}:{value['session_id']}", safe="!'()*")  # Producer encodeURIComponent.
+            if value["session_url"] != expected:
+                raise ValidationError("execution_identity URL must match the exact native identity")
+
+    @staticmethod
     def _validate_event(event: Mapping[str, Any]) -> None:
         """Validate the intentionally small v1 event contract; raises ValidationError."""
         required = ("project", "recipient", "kind", "severity", "title", "dedup_key")
@@ -500,6 +522,8 @@ class NotificationCenter:
             raise ValidationError(f"missing required event fields: {', '.join(missing)}")
         if event.get("schema", "notify.event.v1") != "notify.event.v1":
             raise ValidationError("unsupported event schema")
+        if "execution_identity" in event:
+            NotificationCenter._validate_execution_identity(event["execution_identity"])
         if str(event["severity"]) not in SEVERITIES:
             raise ValidationError("unsupported severity")
         if str(event["kind"]) not in ("incident", "notification", "audit", "log"):
@@ -2571,6 +2595,22 @@ class NotificationCenter:
             ).fetchone()
         return json.loads(row["payload_json"]) if row else None
 
+    def latest_execution_identity(self, incident_id: str) -> dict[str, Any] | None:
+        """Read only display metadata; leave native job/session ownership untouched."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload_json FROM events WHERE incident_id=? AND json_type(payload_json,'$.execution_identity')='object' "
+                "ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident_id,),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            identity = json.loads(row["payload_json"])["execution_identity"]
+            self._validate_execution_identity(identity)
+        except (KeyError, ValueError, TypeError, ValidationError):
+            return None  # Historical unvalidated metadata is not a native receipt.
+        return dict(identity)
+
     def health_notification_decision(self, incident_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._connection.execute("SELECT payload_json FROM audit_events WHERE incident_id=? "
@@ -4264,6 +4304,9 @@ class NotificationCenter:
         if incident is None:
             raise ValidationError("delivery references missing incident")
         payload = {"delivery": dict(delivery), "incident": incident}
+        identity = self.latest_execution_identity(str(incident["id"]))
+        if identity is not None:
+            payload["execution_identity"] = identity
         confirmed_card = self.original_telegram_card(str(incident["id"]))
         choice_presentation = self._latest_choice_event(str(incident["id"]))
         if choice_presentation is not None:

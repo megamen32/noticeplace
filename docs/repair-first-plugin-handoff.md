@@ -446,3 +446,36 @@ cannot post progress to another project; use the protected original-project
 callback map/HTTP seam described above. The real MCP/HTTP/DB regression proves
 missing actors do not gate Autosell progress, wrong-project tokens fail, and
 question actor validation remains enforced. No new MCP or token scope was added.
+
+
+## Generic executor display identity (2026-10-12)
+
+Generic done/human producer events may include optional `execution_identity`.
+It is independent of the summary body and uses the existing event JSON storage;
+no schema version, plugin bundle, table, scheduler or topic is added.
+
+Required keys: `harness` (opencode/codex/hermes/zcode/claude/qoder/fast-agent/chatgpt),
+`session_id` (actual native ID, nonempty <=512 chars, no padding/control chars).
+Optional string keys: `model` <=256, absolute `cwd` <=2048, `session_url` <=2048.
+Only those keys are accepted. If supplied, session_url must be exactly
+`https://agent.bezrabotnyi.com/#/session/` plus JavaScript
+`encodeURIComponent(harness + ':' + session_id)`. Missing URL stays missing.
+Invalid metadata is rejected at event ingress; old unvalidated metadata is ignored.
+
+Core projects latest validated display identity separately from `incident.body`.
+It never creates `ai_session`, native bindings/jobs, launch/resume rights or native
+readback. Existing project authorization and top-level forbidden authority fields
+remain intact. Real registered health/session receipts outrank display metadata.
+The central card prominently identifies the actual executor/model/CWD, retains the
+actual native URL as a separate session button and shows the technical project as
+separate context. Display metadata does not claim confirmed launch or current work.
+Legacy cards without metadata report that the executor is unspecified, without
+inferring it from project or prose and without inventing a link. Summary truncation
+and same-message edits cannot remove the independent identity/button.
+
+Focused producer-payload/HTTP/DB/restart/card-worker regression uses an 8KiB summary,
+checks one create/message42 and subsequent edit42, executor metadata, scope/authority
+rejection, legacy/no-URL behavior and bound native receipt/current-progress priority.
+Herder owns writing genuine producer metadata; Notice owns this validator/projector/
+renderer. Root owns install and actual Telegram acceptance; no historical generic
+router notification was replayed or changed by this executor.

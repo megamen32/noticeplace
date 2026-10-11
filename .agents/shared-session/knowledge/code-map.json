@@ -279,6 +279,33 @@
           "observed_sha256": "aa10ef369af517be179ea51a01e51ba69884265e6791eef6acbc8e2f9d4382e7"
         }
       ]
+    },
+    "noticeplace.execution-display": {
+      "key": "noticeplace.execution-display",
+      "kind": "failure-shield",
+      "confidence": "verified",
+      "summary": "Generic executor identity belongs to typed event.execution_identity, independent of truncated body/project context. Display only: never assign ai_session/job/readback/native rights. Exact supplied URL, legacy honest unknown, bound receipt priority.",
+      "git_head": "2c54bd89458fccfefeedce90c5447d93b57fd976",
+      "verified_at": "2026-10-12T01:16:45.598968+03:00",
+      "evidence": [
+        "tests/test_execution_identity.py: RED then actual HTTP/DB/reopen/worker long summary one message42/edit42; auth/authority rejection, legacy/no-URL, native priority and JS encoding GREEN"
+      ],
+      "locations": [
+        {
+          "path": "notification_center/core.py",
+          "symbol": "_validate_execution_identity/latest_execution_identity/delivery_payload",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "f3b28e320a728a4381ef32b00a1827aeb3ed9c597c6982ddfcaaeec0cdeee471"
+        },
+        {
+          "path": "notification_center/incident_card.py",
+          "symbol": "render/controls/display_session_url",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "98abeb5506034f0f9725b6708862c5b0dab4fb3e323c032c6966f7c07308aa86"
+        }
+      ]
     }
   },
   "schema_version": 1
