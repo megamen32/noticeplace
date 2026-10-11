@@ -60,11 +60,13 @@ def controls(codec: Any, incident: Mapping[str, Any], session: Any = None, *, ex
         rows.append([{'text': '✅ Прочитал' if incident.get('state') == 'acknowledged' else 'Прочитал',
                       'callback_data': codec.encode('ack', incident_id)}])
     url = session_url(session)
-    ai = ({'text': '✅ ИИ запущен', 'url': url} if url else
-          {'text': 'Исправить через ИИ', 'callback_data': codec.encode('ai', incident_id)})
+    if url:
+        rows.append([{'text': '✅ ИИ запущен', 'url': url}])
+    elif incident.get('kind', 'incident') == 'incident':
+        rows.append([{'text': 'Исправить через ИИ', 'callback_data': codec.encode('ai', incident_id)}])
     muted = bool(incident.get('notifications_muted'))
-    rows.extend([[ai], [{'text': 'Включить такие уведомления' if muted else 'Отключить такие уведомления',
-                         'callback_data': codec.encode('unmute' if muted else 'mute', incident_id)}]])
+    rows.append([{'text': 'Включить такие уведомления' if muted else 'Отключить такие уведомления',
+                  'callback_data': codec.encode('unmute' if muted else 'mute', incident_id)}])
     display_url = display_session_url(execution_identity) if not session else ''
     if display_url:
         rows.append([{'text': 'Сессия · ' + EXECUTOR_LABELS[execution_identity['harness']], 'url': display_url}])
@@ -92,7 +94,17 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
     status = str(outcome.get('status') or '')
     members = payload.get('group_members') or []
     remaining = sum(member.get('state') != 'resolved' for member in members)
-    if state == 'resolved':
+    informational = incident.get('kind') == 'notification' and not session_url(session)
+    if informational:
+        heading = {'emergency': 'Аварийная ситуация', 'critical': 'Требуется внимание',
+                   'important': 'Важное уведомление'}.get(incident.get('severity'), 'Уведомление')
+        if incident.get('event_type') == 'agent.done':
+            explanation = 'Сессия сообщила о завершении работы. Это информационное уведомление о её результате.'
+        else:
+            explanation = 'Информационное уведомление о работе сессии. Текущее состояние сессии не указано.'
+        if display_session_url(identity):
+            explanation += ' Подробности доступны по ссылке на сессию.'
+    elif state == 'resolved':
         heading = 'Изменилась срочность проблемы' if status == 'phase_changed' else 'Состояние восстановилось'
         explanation = ('Сигнал ещё активен. Прежний этап закрыт; восстановление не подтверждено.' if status == 'phase_changed'
                        else 'Мониторинг подтвердил восстановление. Инцидент закрыт; действий от вас не требуется.')
@@ -119,7 +131,7 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
         explanation = 'Состояние каждого сервиса и история проверки доступны по отдельным ссылкам ниже.'
     title = sanitize_bounded_text(incident['title'], 500)
     if not re.search('[А-Яа-яЁё]', title):
-        title = {'load': 'Повышена нагрузка на сервер', 'cpu': 'Повышена нагрузка на процессор',
+        title = 'Сообщение о работе сессии' if informational else {'load': 'Повышена нагрузка на сервер', 'cpu': 'Повышена нагрузка на процессор',
                  'ram': 'На сервере не хватает памяти', 'disk': 'На сервере заканчивается место',
                  'https': 'Сайт не отвечает на проверку'}.get((payload.get('health_context') or {}).get('signal_type'),
                                                            'Мониторинг сообщил о проблеме сервиса')
@@ -138,9 +150,11 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
     text += '\n\n' + explanation
     text += '\n\nПроект уведомления: ' + sanitize_bounded_text(incident['project'], 96)
     if state == 'acknowledged':
-        text += '\nВы прочитали уведомление. Проверка и исправление продолжаются.'
+        text += '\nВы прочитали уведомление.'
+        if not informational:
+            text += ' Проверка и исправление продолжаются.'
     progress = payload.get('native_progress')
-    if isinstance(progress, Mapping) and state != 'resolved':
+    if isinstance(progress, Mapping) and state != 'resolved' and not informational:
         if progress.get('needs_permission'):
             text += '\n\nСессия ожидает разрешения в Agent Herder.'
         elif progress.get('status') in {'running', 'busy', 'working'}:

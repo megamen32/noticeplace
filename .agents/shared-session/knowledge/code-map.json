@@ -306,6 +306,26 @@
           "observed_sha256": "98abeb5506034f0f9725b6708862c5b0dab4fb3e323c032c6966f7c07308aa86"
         }
       ]
+    },
+    "noticeplace.notification-informational": {
+      "key": "noticeplace.notification-informational",
+      "kind": "failure-shield",
+      "confidence": "verified",
+      "summary": "Unbound kind=notification is informational, not health admission/running repair. No AI start callback; typed agent.done may report completion, prose/legacy never determines status. ACK/mute/choices/native display link and real admitted health controls remain.",
+      "git_head": "08ed03b91a4fbdead229e9ffe984eb413214604a",
+      "verified_at": "2026-10-12T01:28:43.730487+03:00",
+      "evidence": [
+        "tests/test_execution_identity.py: real HTTP/DB/restart/worker RED then GREEN for explanatory text/no-AI; typed vs prose and critical ACK/mute/choices/link; release82 PASS"
+      ],
+      "locations": [
+        {
+          "path": "notification_center/incident_card.py",
+          "symbol": "render/controls",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "7bb550cf106c7427f51e6ee5f6dcb95484b0334cc868dfc14819ecc8a3d7055c"
+        }
+      ]
     }
   },
   "schema_version": 1

@@ -60,6 +60,10 @@ class ExecutionIdentityTests(unittest.TestCase):
             self.assertIn('Исполнитель: OpenCode',initial['text']);self.assertIn(self.identity['model'],initial['text'])
             self.assertIn(self.identity['cwd'],initial['text']);self.assertIn('Проект уведомления: hermes',initial['text'])
             self.assertNotIn('Уведомление · hermes',initial['text'])
+            self.assertNotIn('Инцидент принят',initial['text'])
+            self.assertNotIn('Проверка и исправление выполняются',initial['text'])
+            self.assertIn('Сессия сообщила о завершении работы',initial['text'])
+            self.assertFalse(any(b.get('callback_data','').startswith('n:ai:') for b in buttons))
             self.assertTrue(any(b.get('url')==self.identity['session_url'] for b in buttons))
             self.assertFalse(any(b.get('text')=='✅ ИИ запущен' for b in buttons),'display metadata is not a launch receipt')
             payload=reopened.incident_card_payload(created['incident_id'])
@@ -125,3 +129,31 @@ class ExecutionIdentityTests(unittest.TestCase):
         buttons=[b for row in keyboard['inline_keyboard'] for b in row]
         self.assertTrue(any(b.get('url','').endswith('codex%3Aactual-bound') and b['text']=='✅ ИИ запущен' for b in buttons))
         self.assertFalse(any(b.get('url')==self.identity['session_url'] for b in buttons))
+
+    def test_notification_keeps_ack_mute_url_choices_and_does_not_guess_done_from_prose(self):
+        """Fast unit real stored events: informational type/controls (<1s/max3s)."""
+        for event_type in ('agent.done','agent.legacy'):
+            with self.subTest(event_type=event_type):
+                created=self.center.create_event('p','info-'+event_type,{**self.event,'event_type':event_type,
+                    'dedup_key':'info-'+event_type,'severity':'critical','title':'Работа завершена',
+                    'body':'Сессия завершила работу, исправила проблему.','choice_request_id':'question-'+event_type,
+                    'choices':[{'choice_id':'read','label':'Посмотрел'},{'choice_id':'details','label':'Нужны подробности'}]})
+                payload=self.center.incident_card_payload(created['incident_id'])
+                text,keyboard=render(payload,self.codec)
+                buttons=[b for row in keyboard['inline_keyboard'] for b in row]
+                self.assertNotIn('Проверка и исправление выполняются',text)
+                self.assertFalse(any(b.get('callback_data','').startswith('n:ai:') for b in buttons))
+                self.assertTrue(any(b.get('callback_data','').startswith('n:ack:') for b in buttons))
+                self.assertTrue(any(b.get('callback_data','').startswith('n:mute:') for b in buttons))
+                self.assertEqual(2,sum(b.get('callback_data','').startswith('n:choice:') for b in buttons))
+                self.assertTrue(any(b.get('url')==self.identity['session_url'] for b in buttons))
+                if event_type=='agent.done':self.assertIn('Сессия сообщила о завершении работы',text)
+                else:
+                    self.assertIn('Текущее состояние сессии не указано',text)
+                    self.assertNotIn('Сессия сообщила о завершении работы',text)
+
+                self.center.acknowledge(created['incident_id'],'operator:test')
+                text,keyboard=render(self.center.incident_card_payload(created['incident_id']),self.codec)
+                self.assertIn('Вы прочитали уведомление.',text)
+                self.assertNotIn('Проверка и исправление продолжаются',text)
+                self.assertTrue(any(b.get('text')=='✅ Прочитал' for row in keyboard['inline_keyboard'] for b in row))

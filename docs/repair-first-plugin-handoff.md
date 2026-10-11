@@ -479,3 +479,18 @@ rejection, legacy/no-URL behavior and bound native receipt/current-progress prio
 Herder owns writing genuine producer metadata; Notice owns this validator/projector/
 renderer. Root owns install and actual Telegram acceptance; no historical generic
 router notification was replayed or changed by this executor.
+
+
+## Informational notification controls and explanation
+
+A kind=notification card without an admitted native health/session receipt is
+informational. Typed event_type=agent.done says that the session reported completion;
+legacy/other event types leave session status unspecified regardless of title/body.
+Display execution identity is still not an admission. Such cards do not assert
+accepted/continuing health repair and offer no unsupported AI start callback.
+Critical/emergency ACK, mute, original native display URL and choices remain;
+ACK text on an informational card does not promise ongoing repair. Real supported
+incidents retain AI start, and admitted native receipts retain their confirmed URL
+controls and current progress. The same original card consumer path is unchanged.
+Root owns a safe existing-card refresh after install; source does not replay the
+already admitted historical event or restart completed native repair.
