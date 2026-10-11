@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -270,7 +271,10 @@ class NotificationCenter:
                     telegram_document_message_id INTEGER,
                     telegram_document_file_id TEXT,
                     telegram_document_state TEXT,
-                    incident_id TEXT
+                    incident_id TEXT,
+                    native_harness TEXT,
+                    native_session_id TEXT,
+                    native_cwd TEXT
                 );
                 """
             )
@@ -308,6 +312,9 @@ class NotificationCenter:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_progress_confirmed_at REAL")
             if "incident_id" not in human_request_columns:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN incident_id TEXT")
+            for column in ("native_harness", "native_session_id", "native_cwd"):
+                if column not in human_request_columns:
+                    self._connection.execute(f"ALTER TABLE human_requests ADD COLUMN {column} TEXT")
             for column, definition in (
                 ("policy_step_id", "TEXT"),
                 ("repeat_number", "INTEGER"),
@@ -627,6 +634,18 @@ class NotificationCenter:
         expires = float(expires_at) if expires_at is not None else None
         recipient = str(request["recipient"]).strip()
         message = str(request["message"]).strip()[:4000]
+        raw_native = request.get("native_target") if isinstance(request.get("native_target"), Mapping) else {}
+        native = {
+            "harness": str(raw_native.get("harness") or "").strip()[:32],
+            "session_id": str(raw_native.get("session_id") or "").strip()[:512],
+            "cwd": str(raw_native.get("cwd") or "").strip()[:4096],
+        }
+        if any(native.values()) and not all(native.values()):
+            raise ValidationError("native_target requires harness, session_id, and cwd together")
+        if native["harness"] and native["harness"] not in {"opencode", "codex", "claude", "zcode", "hermes", "fast-agent"}:
+            raise ValidationError("native_target harness is not supported")
+        if native["cwd"] and not os.path.isabs(native["cwd"]):
+            raise ValidationError("native_target cwd must be an absolute path")
         raw_incident_id = request.get("incident_id")
         if raw_incident_id is not None and not isinstance(raw_incident_id, str):
             raise ValidationError("human request incident_id must be a string")
@@ -652,6 +671,9 @@ class NotificationCenter:
                 and json.loads(str(row["allowed_actors_json"])) == actors
                 and row["expires_at"] == expires
                 and (row["incident_id"] if "incident_id" in row.keys() else None) == incident_id
+                and (row["native_harness"] if "native_harness" in row.keys() else None) == (native["harness"] or None)
+                and (row["native_session_id"] if "native_session_id" in row.keys() else None) == (native["session_id"] or None)
+                and (row["native_cwd"] if "native_cwd" in row.keys() else None) == (native["cwd"] or None)
             )
 
         now = time.time()
@@ -667,8 +689,8 @@ class NotificationCenter:
                 return result
             try:
                 self._connection.execute(
-                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at, incident_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
-                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires, incident_id),
+                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at, incident_id, native_harness, native_session_id, native_cwd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires, incident_id, native["harness"] or None, native["session_id"] or None, native["cwd"] or None),
                 )
             except sqlite3.IntegrityError as error:
                 existing = self._connection.execute(
@@ -761,15 +783,23 @@ class NotificationCenter:
         from .health_workflow import sanitize_bounded_text
 
         choices = json.loads(str(row["choices_json"]))
-        incident_id = str(row["incident_id"] or "") if "incident_id" in row.keys() else ""
+        keys = row.keys()
+        incident_id = str(row["incident_id"] or "") if "incident_id" in keys else ""
         native: dict[str, Any] = {}
-        if incident_id:
+        stored_harness = str(row["native_harness"] or "") if "native_harness" in keys else ""
+        stored_session = str(row["native_session_id"] or "") if "native_session_id" in keys else ""
+        if stored_harness and stored_session:
+            native = {"harness": stored_harness, "session_id": stored_session,
+                      "cwd": str(row["native_cwd"] or "") if "native_cwd" in keys else "",
+                      "session_url": "", "source": "request_binding"}
+        if incident_id and not native:
             session = self.latest_health_agent_session(incident_id)
             if session:
                 native = {
                     "harness": str(session.get("harness") or "")[:32],
                     "session_id": str(session.get("session_id") or "")[:128],
                     "session_url": str(session.get("session_url") or "")[:512],
+                    "cwd": "", "source": "incident_session",
                 }
         return {
             "schema": "ask_human.pending.v1",

@@ -1665,7 +1665,45 @@ def mark_human_request_resolved_card(
         chat_id=chat_id,
         message_id=message_id,
     )
-    return {"status": "marked", **applied}
+    card = applied.get("card") if isinstance(applied.get("card"), Mapping) else {}
+    # Report what Telegram actually did. An identical edit already proves the
+    # marker is on the card; a keyboard-only fallback removed the buttons but is
+    # not a confirmed checkmark and must not claim one.
+    card_status = "marked" if card.get("edited") else str(card.get("reason") or "not_edited")
+    if card.get("reason") == "already_marked":
+        card_status = "already_marked"
+    return {"status": card_status, "card": {"edited": bool(card.get("edited"))}, "selection": applied.get("selection")}
+
+
+def resume_human_request_native_session(
+    center: NotificationCenter,
+    request: Mapping[str, Any],
+    actor: str,
+    runner: Any = urllib.request.urlopen,
+) -> dict[str, Any]:
+    """Continue the bound native session once, through Agent Herder's own seam.
+
+    Nothing is resumed here when the question was not bound to a session: an
+    unbound question is a notice, not a blocked executor. The result reference
+    is opaque and derived, so no answer text leaves Notice Place.
+    """
+    harness = str(request.get("native_harness") or "")
+    session_id = str(request.get("native_session_id") or "")
+    cwd = str(request.get("native_cwd") or "")
+    if not (harness and session_id and cwd):
+        return {}
+    from .agent_job_helper import resume_bound_native_session
+
+    request_id = str(request.get("request_id") or "")
+    result_ref = hashlib.sha256(f"{request_id}:{request.get('response_value')}:{actor}".encode()).hexdigest()
+    result_ref = f"{result_ref[:8]}-{result_ref[8:12]}-{result_ref[12:16]}-{result_ref[16:20]}-{result_ref[20:32]}"
+    try:
+        outcome = resume_bound_native_session(request_id, harness, session_id, cwd, result_ref, runner)
+    except Exception as error:
+        with center._lock, center._connection:
+            center._audit(request_id, "native_resume_unavailable", actor, {"reason": str(error)[:200]})
+        return {"status": "unavailable", "reason": str(error)[:200]}
+    return {"status": str(outcome.get("status") or "resuming"), "continuation": str(outcome.get("continuation") or "resume")}
 
 
 def send_human_request_telegram(
@@ -2077,8 +2115,10 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         actor_value = str(body.get("actor") or "api")
                         result = center.resolve_human_request(token, request_id, actor_value, str(body.get("value") or ""))
                         card = mark_human_request_resolved_card(center, result, actor_value)
-                        if card.get("status") == "marked":
-                            result = {**result, "telegram": card}
+                        result = {**result, "telegram": card}
+                        resumed = resume_human_request_native_session(center, result, actor_value)
+                        if resumed:
+                            result = {**result, "native": resumed}
                     elif action == "progress":
                         result = refresh_human_request_progress(center, token, request_id, body)
                     elif action == "cancel":

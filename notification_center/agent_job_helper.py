@@ -445,6 +445,45 @@ def arm_session_autopilot(harness: str, session_id: str, cwd: str, runner: Any =
     return result.get("enabled") is True and str(result.get("sessionId") or "") == safe_session
 
 
+def resume_bound_native_session(request_id: str, harness: str, session_id: str, cwd: str, result_ref: str, runner: Any = urllib.request.urlopen) -> dict[str, Any]:
+    """Continue the one native session a question was bound to.
+
+    This is Agent Herder's existing completion seam, not a second resume path:
+    its ``claimResume`` is single-winner, so a replayed or duplicate answer can
+    never start a second executor. Only an opaque result reference crosses the
+    boundary; the answer itself stays in Notice Place.
+    """
+    safe_request = str(request_id or "").strip()
+    safe_harness = str(harness or "").strip()
+    safe_session = str(session_id or "").strip()
+    safe_cwd = os.path.normpath(str(cwd or "").strip())
+    safe_result = str(result_ref or "").strip()
+    uuid_re = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+    if not (uuid_re.fullmatch(safe_request) and uuid_re.fullmatch(safe_result)):
+        raise ValueError("native resume requires the Herder request id and an opaque result reference")
+    if safe_harness not in {"opencode", "codex", "claude", "zcode"} or not safe_session or len(safe_session) > 512:
+        raise ValueError("native resume target is incomplete")
+    if not safe_cwd or not os.path.isabs(safe_cwd):
+        raise ValueError("native resume requires an absolute CWD")
+    profile = _herder_loopback_profile()
+    parsed = urllib.parse.urlsplit(profile["url"])
+    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    body = {
+        "event": "ask.user.completed",
+        "event_version": 1,
+        "status": "completed",
+        "request_id": safe_request,
+        "result_ref": safe_result,
+    }
+    request = urllib.request.Request(
+        f"{base}/internal/human-requests/ask-user-completion",
+        data=json.dumps(body, separators=(",", ":")).encode(),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    return _read_json_request(request, runner, timeout=30)
+
+
 def relay_operator_reply(harness: str, session_id: str, incident_id: str, text: str, source_ref: str, runner: Any = urllib.request.urlopen) -> bool:
     """Forward one operator reply from an incident card into its live agent session."""
     safe_harness = str(harness or "").strip()

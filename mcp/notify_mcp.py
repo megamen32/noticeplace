@@ -313,6 +313,52 @@ def _human_request_call(cfg: Dict[str, Any], method: str, path: str = "", payloa
     return body
 
 
+def tool_noticeplace_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a bound operator question and return immediately.
+
+    The question is persisted and its Telegram card is rendered by Notice
+    Place, and the native target is stored with it. The call never polls: the
+    answer returns through Agent Herder's own completion seam and continues the
+    same native session.
+    """
+    message = str(args.get("message") or "").strip()
+    if not message:
+        raise ValueError("message is required")
+    harness = str(args.get("harness") or "").strip()
+    session_id = str(args.get("session_id") or "").strip()
+    cwd = str(args.get("cwd") or "").strip()
+    if not (harness and session_id and cwd):
+        raise ValueError("harness, session_id, and cwd bind the answer to this session")
+    cfg = _human_request_config()
+    choices = args.get("choices")
+    mode = "choice" if choices else "question"
+    wait_seconds = min(max(int(args.get("wait_seconds", 0)), 0), 3600)
+    request_id = str(args.get("request_id") or "").strip()
+    if not request_id:
+        raise ValueError("request_id is the opaque id from Agent Herder human_request_create")
+    created = _human_request_call(cfg, "POST", payload={
+        "schema": "ask_human.request.v1",
+        "request_id": request_id,
+        "project": cfg["project"],
+        "recipient": cfg["recipient"],
+        "mode": mode,
+        "message": message,
+        "choices": choices if choices else None,
+        "allowed_actors": cfg["actors"],
+        "expires_at": time.time() + max(wait_seconds + 60, 300),
+        "incident_id": str(args.get("incident_id") or "").strip() or None,
+        "native_target": {"harness": harness, "session_id": session_id, "cwd": cwd},
+    })
+    return {
+        "request_id": request_id,
+        "state": created.get("state"),
+        "continuation": "resume",
+        "native": {"harness": harness, "session_id": session_id, "cwd": cwd},
+        "incident_id": created.get("incident_id"),
+        "card": (created.get("telegram") or {}).get("status"),
+    }
+
+
 def tool_noticeplace_pending_questions(args: Dict[str, Any]) -> Dict[str, Any]:
     """List this project's open questions with bounded text, options, and routing."""
     cfg = _human_request_config()
@@ -805,6 +851,29 @@ TOOLS = {
             "additionalProperties": False,
         },
         "handler": tool_ask_human,
+    },
+    "noticeplace_ask_human": {
+        "description": "Задать оператору вопрос, привязанный к этой же нативной сессии: карточка Notice Place создаётся сразу, ответ вернётся в эту же сессию. Вызов не ждёт ответа и не опрашивает его. request_id — непрозрачный идентификатор из Agent Herder human_request_create.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "Непрозрачный request_id из Agent Herder human_request_create."},
+                "message": {"type": "string", "description": "Текст вопроса на русском."},
+                "choices": {
+                    "type": ["array", "null"], "minItems": 2, "maxItems": 4,
+                    "items": {"type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string"}}, "required": ["label", "value"], "additionalProperties": False},
+                    "description": "Два-четыре варианта ответа; иначе вопрос со свободным ответом.",
+                },
+                "harness": {"type": "string", "description": "Харнесс этой сессии."},
+                "session_id": {"type": "string", "description": "Идентификатор этой нативной сессии."},
+                "cwd": {"type": "string", "description": "Абсолютный каталог этой сессии."},
+                "incident_id": {"type": ["string", "null"], "description": "Инцидент Notice Place, к которому относится вопрос."},
+                "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 3600, "default": 0, "description": "Время жизни вопроса; ответа инструмент не ждёт."},
+            },
+            "required": ["request_id", "message", "harness", "session_id", "cwd"],
+            "additionalProperties": False,
+        },
+        "handler": tool_noticeplace_ask_human,
     },
     "noticeplace_pending_questions": {
         "description": "Показать открытые вопросы Notice Place, доступные твоему проекту: краткий текст вопроса, варианты ответа и точная нативная сессия, в которую вернётся ответ. Используй вместо опроса в цикле.",
