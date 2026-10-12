@@ -1,0 +1,8 @@
+# Fast Agent projection: client-managed bearer token stays in fast-agent.secrets.yaml.
+mcp:
+  servers:
+    NoticePlace:
+      command: /opt/noticeplace/bin/ask-human-mcp
+      args: []
+      env:
+        ASK_HUMAN_ENV_FILE: /home/roomhacker/.config/ask-human/env

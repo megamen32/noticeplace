@@ -2,6 +2,6 @@
   "name": "noticeplace-local",
   "owner": {"name": "megamen32"},
   "plugins": [
-    {"name": "noticeplace", "source": "./packages/noticeplace/0.1.0", "version": "0.1.0"}
+    {"name": "noticeplace", "source": "./packages/noticeplace/0.1.1", "version": "0.1.1"}
   ]
 }

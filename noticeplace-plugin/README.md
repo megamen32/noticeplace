@@ -9,11 +9,11 @@ question whose answer returns to the same native session.
 The canonical package directory follows the Agent Harness Fleet layout:
 
 ```text
-noticeplace-plugin/packages/noticeplace/0.1.0/plugin.json
-noticeplace-plugin/packages/noticeplace/0.1.0/mcp.json
-noticeplace-plugin/packages/noticeplace/0.1.0/skills/noticeplace/SKILL.md
-noticeplace-plugin/packages/noticeplace/0.1.0/.codex-plugin/plugin.json
-noticeplace-plugin/packages/noticeplace/0.1.0/.zcode-plugin/plugin.json
+noticeplace-plugin/packages/noticeplace/0.1.1/plugin.json
+noticeplace-plugin/packages/noticeplace/0.1.1/mcp.json
+noticeplace-plugin/packages/noticeplace/0.1.1/skills/noticeplace/SKILL.md
+noticeplace-plugin/packages/noticeplace/0.1.1/.codex-plugin/plugin.json
+noticeplace-plugin/packages/noticeplace/0.1.1/.zcode-plugin/plugin.json
 noticeplace-plugin/.agents/plugins/marketplace.json
 noticeplace-plugin/.claude-plugin/marketplace.json
 ```
@@ -42,15 +42,30 @@ target harness → Preview → Apply**. Native Codex and ZCode marketplaces are
 included at the paths above and point to the same versioned package. Native CLI
 installation and consumer acceptance belong to the release owner.
 
-Every projection invokes `/opt/noticeplace/bin/ask-human-mcp`, using the existing
+Portable clients resolve `./bin/ask-human-mcp` inside the versioned package; it forwards to the existing `/opt/noticeplace/bin/ask-human-mcp`. Native Codex/ZCode/OpenCode/FastAgent projections keep their original absolute runtime command, using the existing
 protected `ASK_HUMAN_ENV_FILE` path. The bundle contains no secret values and
 requires no manual skill copies. Validate it with:
 
 ```bash
-python3 noticeplace-plugin/packages/noticeplace/0.1.0/scripts/validate_plugin.py
-zcode plugins validate noticeplace-plugin/packages/noticeplace/0.1.0 --json
+python3 noticeplace-plugin/packages/noticeplace/0.1.1/scripts/validate_plugin.py
+zcode plugins validate noticeplace-plugin/packages/noticeplace/0.1.1 --json
 ```
 
 ## Source
 
 Maintained in [`megamen32/noticeplace`](https://github.com/megamen32/noticeplace).
+
+
+Hermes supports the portable package directly. Replace the existing Notice plugin
+using its official installer, pinned to the published source commit:
+
+```bash
+hermes plugins install 'https://github.com/megamen32/noticeplace.git#noticeplace-plugin/packages/noticeplace/0.1.1' --ref <published-main-SHA> --force --enable --yes-deps
+```
+
+Version `0.1.0` is unchanged and remains historical. `0.1.1` fixes command-token
+conformance with [Agent Plugins 1.0 section7.2.1](https://agent-plugins.org/specification#721-discovery-and-configuration).
+No manual MCP entry, copied token, project grant, runtime-core edit, question replay
+or native repair restart is needed. Existing protected `ASK_HUMAN_ENV_FILE` stays
+at its original path. Verify read-only `noticeplace_instructions` through Hermes'
+registered MCP tool after installation.

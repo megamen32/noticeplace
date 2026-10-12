@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "NoticePlace": {
+      "type": "stdio",
+      "command": "./bin/ask-human-mcp",
+      "args": [],
+      "env": {
+        "ASK_HUMAN_ENV_FILE": "/home/roomhacker/.config/ask-human/env"
+      }
+    }
+  }
+}
