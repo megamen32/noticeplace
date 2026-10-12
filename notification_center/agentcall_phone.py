@@ -86,6 +86,20 @@ class AgentCallPhoneAdapter:
             "incident_id": str(incident.get("id") or "")[:128],
             "agent_context": agent_context,
         }
+        if event_type == "secretary.call":
+            # Ordinary assistant messages use the existing durable call route;
+            # incident escalation context and foreign agent sessions do not apply.
+            note = " ".join(str(incident.get("operator_note") or "").split())[:500]
+            request.update({
+                "message": f"Я помощник Никиты. {body}",
+                "context": (
+                    "Вы помощник Никиты. Ведите обычный разговор о переданном сообщении. "
+                    "Не выдумывайте обещания или сведения, которых нет в сообщении.\n"
+                    f"Сообщение: {body}\n{note}"
+                ),
+                "repeat": 1,
+                "agent_context": {"event_type": "secretary.call"},
+            })
         raw = self._requester(
             self._socket_path,
             json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode(),
