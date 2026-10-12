@@ -326,6 +326,41 @@
           "observed_sha256": "7bb550cf106c7427f51e6ee5f6dcb95484b0334cc868dfc14819ecc8a3d7055c"
         }
       ]
+    },
+    "noticeplace.plugin.hermes-stdio": {
+      "key": "noticeplace.plugin.hermes-stdio",
+      "kind": "failure-shield",
+      "confidence": "verified",
+      "summary": "Portable AgentPlugins stdio command must be bare or ./package-relative. Immutable0.1.1 ships a package launcher forwarding to the existing protected runtime; native harness projections remain unchanged. Official Hermes PluginManager normalizes server names; derive ownership map for native discovery, never add a manual duplicate MCP.",
+      "git_head": "547f9e36fc7dac9e3e6665c5ea57e8e23ede52b7",
+      "verified_at": "2026-10-12T03:51:12.196418+03:00",
+      "evidence": [
+        "Actual official Hermes c573316 loader RED then4 focused GREEN; native-root spaces/projections/validator",
+        "Official pinned installer source547f9e3 and native registry one noticeplace_instructions PASS6106bytes; immutable env/config/foreign10 staged WIP guards"
+      ],
+      "locations": [
+        {
+          "path": "noticeplace-plugin/packages/noticeplace/0.1.1/mcp.json",
+          "symbol": "mcpServers.NoticePlace",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "ff8df5a34289f2e6778e22d19cc246ea1cdd32310a167c039fc2186ba9b04d96"
+        },
+        {
+          "path": "noticeplace-plugin/packages/noticeplace/0.1.1/bin/ask-human-mcp",
+          "symbol": "runtime-forwarding",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "449eb2ae9dfeebff50dfe4c259cd5479c561be0ec4844c47395013e6a850c0a9"
+        },
+        {
+          "path": "noticeplace-plugin/packages/noticeplace/0.1.1/scripts/validate_plugin.py",
+          "symbol": "validate",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "046cdd3bdd917db8b05553377075904ede04f41f81e5bd255007e98abe91981c"
+        }
+      ]
     }
   },
   "schema_version": 1

@@ -36,3 +36,33 @@ one read-only noticeplace_instructions via the native registry. No LLM/native se
 creation or old human-request/callback/repair replay.
 
 Native install/consumer outcome will be appended after the published-source install.
+
+
+## Published source and real native acceptance
+
+Source547f9e36fc7dac9e3e6665c5ea57e8e23ede52b7 was scoped fast-forward published
+to remote main and the owned branch before installation. Supported command:
+hermes plugins install https://github.com/megamen32/noticeplace.git#noticeplace-plugin/packages/noticeplace/0.1.1
+--ref547f9e36fc7dac9e3e6665c5ea57e8e23ede52b7 --force --enable --yes-deps.
+Official installer exited0, retained selection, installed under
+/home/roomhacker/.hermes/plugins/noticeplace, and reported gateway activation
+with18 MCP tools/1skill and no session/restart requirement.
+
+Actual selected Hermes PM interpreter/dependencies were used, not system Python
+or a copied credential environment. Official PluginManager normalizes portable
+NoticePlace to native noticeplace; the first probe assumed literal case and stopped
+BEFORE a tool call. Corrected probe derives the owned server from the manager's
+public ownership map, asserts effective config matches the package launcher (no
+native-config shadow), uses official MCP discovery restricted to that server and
+invokes registry.dispatch for exactly one mcp__noticeplace__noticeplace_instructions.
+PASS: result6106bytes, native_calls1, discovery/call/cleanup21.272s. Own MCP child
+closed by native lifecycle; gateway/other owners were not stopped. Installer and
+consumer logs/receipt remain under ignored .tmp/plugin-hermes-{install,native-consumer}.log
+and plugin-hermes-native-receipt.json. No model/native session/AskHuman/callback/repair
+call was issued. Existing GSD metadata warnings are unrelated; no new bootstrap or
+planning state was created or changed.
+
+Final guards PASS: immutable0.1.0 package bytes, ten canonical foreign staged files,
+staged diff/blob entries, ASK_HUMAN_ENV_FILE and Hermes config.yaml bytes unchanged.
+Canonical local main checkout remains on its preserved WIP base; published remote
+main contains the scoped package fix. Do not reset/switch that checkout to sync it.
