@@ -1,0 +1,12 @@
+{
+  "$comment": "Codex/ZCode native MCP projection. Same authenticated stdio server, no credentials here.",
+  "mcpServers": {
+    "noticeplace": {
+      "command": "/opt/noticeplace/bin/ask-human-mcp",
+      "args": [],
+      "env": {
+        "ASK_HUMAN_ENV_FILE": "/home/roomhacker/.config/ask-human/env"
+      }
+    }
+  }
+}

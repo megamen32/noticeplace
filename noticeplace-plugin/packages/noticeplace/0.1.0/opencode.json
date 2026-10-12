@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "$comment": "OpenCode projection of the same portable package.",
+  "mcp": {
+    "noticeplace": {
+      "type": "local",
+      "command": [
+        "/opt/noticeplace/bin/ask-human-mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "ASK_HUMAN_ENV_FILE": "/home/roomhacker/.config/ask-human/env"
+      }
+    }
+  }
+}

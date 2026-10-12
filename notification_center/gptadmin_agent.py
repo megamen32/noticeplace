@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .health_workflow import HEALTH_EXECUTION_PROFILE, normalize_health_execution, sanitize_bounded_text
+from .health_workflow import HEALTH_EXECUTION_PROFILE, bounded_health_execution, sanitize_bounded_text
 from .source_gate import source_chain
 
 
@@ -51,6 +51,7 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
             "signal_type": _safe_health_ref(health_context.get("signal_type"), 64),
             "correlation_id": _safe_health_ref(health_context.get("correlation_id")),
             "source_fingerprint": _safe_health_ref(health_context.get("source_fingerprint")),
+            "evidence_refs": [_safe_health_ref(ref, 512) for ref in health_context.get("evidence_refs", [])[:16]] if isinstance(health_context.get("evidence_refs"), list) else [],
             "trace_refs": [_safe_health_ref(ref) for ref in health_context.get("trace_refs", [])[:16]] if isinstance(health_context.get("trace_refs"), list) else [],
         }
         if isinstance(health_context.get('notification_review_required'), bool):
@@ -174,7 +175,7 @@ def _safe_health_ref(value: Any, limit: int = 128) -> str:
 
 def _bounded_health_execution(value: Any) -> dict[str, str]:
     try:
-        return normalize_health_execution(value)
+        return bounded_health_execution(value)
     except Exception as error:
         raise RuntimeError("health remediation request has an unsupported execution profile") from error
 
@@ -375,7 +376,15 @@ class GptAdminAgentJobAdapter:
             "source_fingerprint": _safe_health_ref(parsed_stdout.get("source_fingerprint") or parsed_stdout.get("fingerprint") or "", 128),
             "verifier_id": _safe_health_ref(parsed_stdout.get("verifier_id") or parsed_stdout.get("verification_source_id") or "", 128),
             "observed_state": _safe_health_ref(parsed_stdout.get("observed_state") or "", 32),
+            "path": _safe_health_ref(parsed_stdout.get("path") or "", 32),
         }
+        if parsed_stdout.get("awaiting_human") is True:
+            receipt["awaiting_human"] = True
+            receipt["question_ref"] = _safe_health_ref(parsed_stdout.get("question_ref") or "", 128)
+            receipt["question_reason"] = _safe_health_ref(parsed_stdout.get("question_reason") or "", 500)
+        for flag in ("observer_only", "awaiting_executor"):
+            if parsed_stdout.get(flag) is True:
+                receipt[flag] = True
         if type(parsed_stdout.get('notify_user')) is bool:
             receipt['notify_user'] = parsed_stdout['notify_user']
             receipt['notification_reason'] = _safe_health_ref(parsed_stdout.get('notification_reason') or '', 500)

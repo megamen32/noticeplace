@@ -20,6 +20,9 @@ class HealthNotificationDecisionTests(unittest.TestCase):
         self.center = NotificationCenter(Path(self.tmp.name) / 'db', {'token': {'project': 'fleet',
             'max_severity': 'emergency', 'agent_jobs': ['health-diagnosis']}}, default_quiet_hours=[])
         self.addCleanup(self.center._connection.close)
+        # The optional old quiet policy remains available; the current default
+        # explicitly keeps all notifications visible.
+        self.center.set_runtime_setting('telegram_all_notifications_enabled','0')
 
     def create(self, severity='important', **changes):
         self.event = {'schema': 'notify.event.v1', 'project': 'fleet', 'recipient': 'me', 'kind': 'incident',
@@ -134,14 +137,31 @@ class HealthNotificationDecisionTests(unittest.TestCase):
             self.assertEqual([], self.queued_messages(created['incident_id']))
         class Response:
             status = 200
+            def __init__(self, payload): self.payload = payload
             def __enter__(self): return self
             def __exit__(self, *_args): pass
-            def read(self, *_args): return b'{"ok":true,"sessionId":"real-native-id","created":true}'
+            def read(self, *_args): return json.dumps(self.payload).encode()
         def runner(request, **_kwargs):
+            url = str(getattr(request, 'full_url', ''))
+            if url.endswith('/api/automation/launch-policy'):
+                return Response({'version': 1, 'incidentExecution': dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
+                                 'allowedHarnesses': ['opencode'], 'preferredHarness': 'opencode',
+                                 'models': {'opencode': 'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
+            if '/api/models?' in url:
+                return Response({'models': ['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'], 'stale': False})
+            if '/api/autopilot/sessions/' in url:
+                return Response({'enabled': True, 'sessionId': 'real-native-id'})
+            if '/api/automation/project-launch' in url:
+                requests.append(request)
+                return Response({'outcome': 'accepted', 'operation_id': 'op-quiet',
+                                 'selected_harness': 'opencode',
+                                 'model': 'minimax-coding-plan/MiniMax-M3.1-Flash-Preview',
+                                 'mode': 'queue', 'session_id': 'real-native-id',
+                                 'routing_reason': 'declared route', 'attempts': []})
             requests.append(request)
-            return Response()
+            return Response({'ok': True, 'sessionId': 'real-native-id', 'created': True})
         profile = {'url': 'http://127.0.0.1:18787/api/sessions/new-or-resume', 'name': 'diagnosis',
-            'harness': 'codex', 'cwd': self.tmp.name, 'instruction': 'Read only.', 'mode': 'queue',
+            'harness': 'opencode', 'cwd': self.tmp.name, 'instruction': 'Read only.', 'mode': 'queue',
             'orchestrator_name': 'planner', 'orchestrator_model': 'configured', 'orchestrator_requested_model': 'configured'}
         details = {'messages': [{'role': 'assistant', 'text': json.dumps({'status': 'diagnosis_complete',
             'diagnosis': 'Сервис работает.', 'notify_user': False, 'notification_reason': 'Действий человека не требуется.'})}]}
@@ -155,15 +175,18 @@ class HealthNotificationDecisionTests(unittest.TestCase):
              patch.object(agent_job_helper, '_session_json', side_effect=session_json):
             receipt = agent_job_helper.run_profile('health-diagnosis', event, Path('unused'),
                 profile_override=profile, runner=runner, session_callback=callback)
-        self.assertEqual(1, len(requests))
+        launches = [r for r in requests if 'project-launch' in str(r.full_url)]
+        self.assertEqual(1, len(launches), 'one admission call, no planner session')
         self.assertEqual(1, len(callbacks))
         self.assertFalse(receipt['notify_user'])
         self.assertEqual('real-native-id', receipt['session_id'])
         self.assertNotIn('orchestrator_session_id', receipt)
-        body = json.loads(requests[0].data)
+        body = json.loads([r for r in requests if "project-launch" in str(r.full_url)][0].data)
         self.assertIn('notify_user', body['message'])
         self.assertNotIn('humanRequested', body)
-        self.assertEqual([], body['sourceSessions'])
+        # The incident project drives admission; no ancestor is consumed here.
+        self.assertEqual(created['incident_id'] and body['project'], body['project'])
+        self.assertNotIn('sourceSessions', body)
 
     def test_optional_judgement_requires_boolean(self):
         def parse(value):

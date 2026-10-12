@@ -6,6 +6,7 @@ Notify tools remain available so installed callers do not break.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -20,7 +21,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 from notification_center.core import DEFAULT_CONSUMER_QUIET_HOURS
@@ -228,19 +229,40 @@ def notify_center_send_text(message: str, title: str, request_key: str) -> Dict[
     return {"http_status": status, "ok": status == 202, "incident_id": body.get("incident_id"), "event_id": body.get("event_id")}
 
 
-def _noticeplace_api(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _noticeplace_api(method: str, path: str, payload: Optional[Dict[str, Any]] = None,
+                     idempotency_key: Optional[str] = None) -> Dict[str, Any]:
     """Call the project-scoped Notice Place API without exposing credentials."""
     cfg = notify_center_config()
     event_url = cfg["event_url"].rstrip("/")
     base_url = event_url[:-len("/events")] if event_url.endswith("/events") else event_url
+    headers = {"Authorization": f"Bearer {cfg['token']}", "Content-Type": "application/json"}
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
     request = urllib.request.Request(
         base_url + path,
         data=json.dumps(payload or {}, ensure_ascii=False).encode("utf-8") if payload is not None else None,
         method=method,
-        headers={"Authorization": f"Bearer {cfg['token']}", "Content-Type": "application/json"},
+        headers=headers,
     )
-    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=8) as response:
-        return json.loads(response.read())
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=8) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as error:
+        try:
+            failure = json.loads(error.read() or b"{}")
+        except ValueError:
+            failure = {}
+        raise RuntimeError(str(failure.get("error") or failure.get("message") or f"Notice Place HTTP {error.code}")) from error
+
+
+def _noticeplace_base_url() -> str:
+    event_url = notify_center_config()["event_url"].rstrip("/")
+    return event_url[:-len("/events")] if event_url.endswith("/events") else event_url
+
+
+def _human_request_url(request_id: str) -> str:
+    """Build the Human Request URL from the shared Notice Place base."""
+    return _human_request_config()["human_url"]
 
 
 def tool_noticeplace_list_mutes(_args: Dict[str, Any]) -> Dict[str, Any]:
@@ -278,13 +300,17 @@ def _human_request_config() -> Dict[str, Any]:
     return {**cfg, "human_url": base_url.rstrip("/"), "actors": actors}
 
 
-def _human_request_call(cfg: Dict[str, Any], method: str, path: str = "", payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _human_request_call(cfg: Dict[str, Any], method: str, path: str = "", payload: Optional[Dict[str, Any]] = None,
+                        idempotency_key: Optional[str] = None) -> Dict[str, Any]:
     """Call one authenticated Human Request endpoint."""
+    headers = {"Authorization": f"Bearer {cfg['token']}", "Content-Type": "application/json"}
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
     request = urllib.request.Request(
         cfg["human_url"] + path,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None,
         method=method,
-        headers={"Authorization": f"Bearer {cfg['token']}", "Content-Type": "application/json"},
+        headers=headers,
     )
     try:
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=8) as response:
@@ -296,6 +322,178 @@ def _human_request_call(cfg: Dict[str, Any], method: str, path: str = "", payloa
     if status < 200 or status >= 300:
         raise RuntimeError(str(body.get("error") or body.get("message") or f"AskHuman HTTP {status}"))
     return body
+
+
+def tool_noticeplace_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Create the operator question bound to this session, exactly once.
+
+    The binding comes from Agent Herder ``human_request_create``, which owns the
+    native session. This tool makes one Notice Place question row and one card
+    from that binding and returns immediately; the answer continues the same
+    native session through Agent Herder's completion seam.
+    """
+    message = str(args.get("message") or "").strip()
+    if not message:
+        raise ValueError("message is required")
+    harness = str(args.get("harness") or "").strip()
+    session_id = str(args.get("session_id") or "").strip()
+    request_id = str(args.get("request_id") or "").strip()
+    cwd = str(args.get("cwd") or "").strip()
+    if not (request_id and harness and session_id and cwd and os.path.isabs(cwd)):
+        raise ValueError("request_id, harness, session_id and absolute cwd come from Agent Herder human_request_create")
+    cfg = _human_request_config()
+    if str(args.get("kind") or "user").strip().lower() != "user":
+        raise ValueError("noticeplace_ask_human binds ordinary questions only; secrets stay in AskSecret")
+    choices = args.get("choices")
+    if choices is not None and not isinstance(choices, list):
+        raise ValueError("choices must be a list")
+    if choices and not 2 <= len(choices) <= 4:
+        raise ValueError("a choice question needs between two and four options")
+    mode = "choice" if choices else "question"
+    expires_at = args.get("expires_at")
+    payload = {
+        "schema": "ask_human.request.v1",
+        "request_id": request_id,
+        "project": cfg["project"],
+        "recipient": cfg["recipient"],
+        "mode": mode,
+        "message": message,
+        "choices": choices if choices else None,
+        "allowed_actors": cfg["actors"],
+        "native_target": {"harness": harness, "session_id": session_id, **({"cwd": cwd} if cwd else {})},
+        "kind": "user",
+    }
+    incident_id = str(args.get("incident_id") or "").strip()
+    if incident_id:
+        payload["incident_id"] = incident_id
+    if expires_at is not None:
+        payload["expires_at"] = float(expires_at)
+    created = _human_request_call(cfg, "POST", payload=payload,
+                                  idempotency_key=f"human-request:{request_id}")
+    return {
+        "request_id": request_id,
+        "state": created.get("state"),
+        "continuation": "resume",
+        "native": {"harness": harness, "session_id": session_id, "cwd": cwd},
+        "incident_id": created.get("incident_id") or incident_id or None,
+        "card": (created.get("telegram") or {}).get("status"),
+        "idempotent": bool(created.get("idempotent")),
+    }
+
+
+def tool_noticeplace_pending_questions(args: Dict[str, Any]) -> Dict[str, Any]:
+    """List this project's open questions with bounded text, options, and routing."""
+    cfg = _human_request_config()
+    state = str(args.get("state") or "pending").strip()[:32]
+    limit = min(max(int(args.get("limit", 20)), 1), 50)
+    return _human_request_call(cfg, "GET", f"?state={urllib.parse.quote(state)}&limit={limit}")
+
+
+def tool_noticeplace_answer(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Record one human answer and mark the same card with the accepted option.
+
+    Two shapes are answered through the same receipt: a Notice Place question
+    (``request_id``) and an incident choice card (``incident_id`` plus the
+    ``request_id`` and ``choice_id`` shown by the pending list).
+    """
+    cfg = _human_request_config()
+    request_id = str(args.get("request_id") or "").strip()
+    value = str(args.get("value") or "").strip()
+    incident_id = str(args.get("incident_id") or "").strip()
+    choice_id = str(args.get("choice_id") or "").strip()
+    actor = str(args.get("actor") or cfg["actors"][0])
+    if incident_id:
+        if not request_id or not choice_id:
+            raise ValueError("incident answers require request_id and choice_id from the pending question")
+        base = _noticeplace_base_url()
+        result = _noticeplace_api(
+            "POST",
+            f"/incidents/{urllib.parse.quote(incident_id, safe='')}/choice-result",
+            {"request_id": request_id, "choice_id": choice_id, "actor": actor, "source": str(args.get("source") or "voice")},
+            idempotency_key=f"choice-result:{incident_id}:{request_id}:{choice_id}",
+        )
+        return {
+            "incident_id": incident_id,
+            "request_id": request_id,
+            "choice_id": result.get("choice_id"),
+            "answer_status": result.get('answer_status', 'accepted'),
+            "native": result.get('native'),
+            "label": result.get("label"),
+            "accepted": result.get("accepted"),
+            "conflict": result.get("conflict"),
+            "card": (result.get("card") or {}).get("edited"),
+        }
+    if not request_id or not value:
+        raise ValueError("request_id and value are required")
+    result = _human_request_call(cfg, "POST", "/" + urllib.parse.quote(request_id, safe="") + "/resolve", payload={
+        "value": value,
+        "actor": actor,
+    }, idempotency_key=f"human-request:{request_id}:answer")
+    return {
+        "request_id": result.get("request_id"),
+        "state": result.get("state"),
+        "value": result.get("value"),
+        "label": result.get("label"),
+        "answer_status": result.get("answer_status"),
+        "accepted": result.get("accepted", False),
+        "conflict": result.get("conflict", False),
+        # Card rendering and native delivery are separate outcomes.
+        "card": result.get("card"),
+        "native": result.get("native"),
+    }
+
+
+def tool_noticeplace_question_result(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Read the canonical answer for one question this session asked.
+
+    A resumed session calls this with the request id from the resume prompt.
+    A secret request returns only its opaque reference.
+    """
+    cfg = _human_request_config()
+    request_id = str(args.get("request_id") or "").strip()
+    if not request_id:
+        raise ValueError("request_id is required")
+    return _human_request_call(cfg, "GET", "/" + urllib.parse.quote(request_id, safe="") + "/result")
+
+
+def tool_noticeplace_incident_progress(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Publish executor progress using project auth, independent of human identities."""
+    incident_id = str(args.get("incident_id") or "").strip()
+    step = str(args.get("step") or "").strip()[:128]
+    if not incident_id or not step:
+        raise ValueError("incident_id and step are required")
+    evidence_refs = [str(item)[:128] for item in (args.get("evidence_refs") or [])[:10]]
+    if not evidence_refs:
+        raise ValueError("evidence_refs must contain at least one real source reference")
+    plan_id = str(args.get("plan_id") or "repair").strip()[:64]
+    root = "/incidents/" + urllib.parse.quote(incident_id, safe="")
+    fingerprint = str(args.get("source_fingerprint") or "").strip()[:128]
+    progress_key = "noticeplace-progress:" + hashlib.sha256(
+        f"{incident_id}:{plan_id}:{step}:{','.join(sorted(evidence_refs))}".encode("utf-8")
+    ).hexdigest()[:32]
+    receipt = _noticeplace_api("POST", f"{root}/health/progress", {
+        "plan_id": plan_id, "step": step, "evidence_refs": evidence_refs,
+        "progress_fingerprint": fingerprint, "actor": "noticeplace-plugin",
+    }, idempotency_key=progress_key)
+    # The executor observes; it never verifies. An independent producer posts
+    # POST /v1/incidents/{id}/health/verification, and only that receipt can
+    # close a healthy repair-first incident.
+    observed_state = str(args.get("observed_state") or "").strip().lower()
+    if observed_state:
+        if observed_state not in {"healthy", "degraded", "unknown"}:
+            raise ValueError("observed_state must be healthy, degraded, or unknown")
+        if args.get("verifier_id") or args.get("verification_id"):
+            raise ValueError("the executor cannot verify its own work; use the producer verification callback")
+    return {
+        "incident_id": incident_id, "plan_id": plan_id, "progress": receipt,
+        "observed_state": observed_state or None,
+        "awaiting_verification": observed_state == "healthy",
+        "verification_required": {
+            "source_id": str(args.get("source_id") or "")[:128],
+            "source_fingerprint": fingerprint,
+            "callback": f"POST /v1/incidents/{incident_id}/health/verification",
+        } if observed_state == "healthy" else None,
+    }
 
 
 def tool_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -333,6 +531,9 @@ def tool_ask_human(args: Dict[str, Any]) -> Dict[str, Any]:
         "status": current.get("state"),
         "value": current.get("response_value"),
         "actor": current.get("response_actor"),
+        # wait_seconds=0 keeps the call non-blocking: the answer returns
+        # through the bound native session instead of a polling loop here.
+        "continuation": "answered" if current.get("state") != "pending" else "resume",
     }
 
 
@@ -697,6 +898,92 @@ TOOLS = {
         },
         "handler": tool_ask_human,
     },
+    "noticeplace_ask_human": {
+        "description": "Создать вопрос оператору, привязанный к этой нативной сессии: ровно один вопрос и одна карточка Notice Place. Значения request_id, harness и session_id берутся из Agent Herder human_request_create. Вызов не ждёт ответа.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "binding.request_id из Agent Herder human_request_create."},
+                "harness": {"type": "string", "description": "binding.native_target.harness."},
+                "session_id": {"type": "string", "description": "binding.native_target.session_id."},
+                "cwd": {"type": ["string", "null"], "description": "binding.native_target.cwd, если он есть."},
+                "message": {"type": "string", "description": "Текст вопроса на русском."},
+                "choices": {
+                    "type": ["array", "null"], "minItems": 2, "maxItems": 4,
+                    "items": {"type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string"}}, "required": ["label", "value"], "additionalProperties": False},
+                    "description": "Два-четыре варианта ответа; иначе вопрос со свободным ответом.",
+                },
+                "incident_id": {"type": ["string", "null"], "description": "Инцидент Notice Place, к которому относится вопрос."},
+                "expires_at": {"type": ["number", "null"], "description": "Момент истечения из binding, если он задан."},
+            },
+            "required": ["request_id", "harness", "session_id", "cwd", "message"],
+            "additionalProperties": False,
+        },
+        "handler": tool_noticeplace_ask_human,
+    },
+    "noticeplace_pending_questions": {
+        "description": "Показать открытые вопросы Notice Place, доступные твоему проекту: краткий текст вопроса, варианты ответа и точная нативная сессия, в которую вернётся ответ. Используй вместо опроса в цикле.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "state": {"type": "string", "enum": ["pending", "resolving", "resolved", "cancelled", "expired"], "default": "pending"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+            },
+            "additionalProperties": False,
+        },
+        "handler": tool_noticeplace_pending_questions,
+    },
+    "noticeplace_answer": {
+        "description": "Записать ответ человека и отметить галочкой ту же карточку. Для вопроса: request_id и value. Для карточки выбора инцидента: incident_id, request_id и choice_id из noticeplace_pending_questions. При конфликте побеждает первый принятый ответ.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "Непрозрачная ссылка на вопрос или на запрос выбора."},
+                "value": {"type": "string", "description": "Принятый ответ человека для обычного вопроса."},
+                "incident_id": {"type": ["string", "null"], "description": "Инцидент, если вопрос задан карточкой выбора."},
+                "choice_id": {"type": ["string", "null"], "description": "Вариант ответа из карточки выбора."},
+                "actor": {"type": ["string", "null"], "description": "Кто дал ответ; по умолчанию первый разрешённый актор."},
+                "source": {"type": ["string", "null"], "description": "Источник ответа, например voice или phone."},
+            },
+            "required": ["request_id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_noticeplace_answer,
+    },
+    "noticeplace_question_result": {
+        "description": "Прочитать канонический ответ по вопросу Notice Place по его request_id. Вызывай после того, как Agent Herder сообщил, что вопрос answered: ответ выводится из хранилища, а не из присланного текста. Для секретного вопроса возвращается только непрозрачная ссылка.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "request_id из сообщения о возобновлении или из noticeplace_pending_questions."},
+            },
+            "required": ["request_id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_noticeplace_question_result,
+    },
+    "noticeplace_incident_progress": {
+        "description": "Опубликовать ограниченный прогресс по инциденту Notice Place. Исполнитель только наблюдает: он не проверяет сам себя и не закрывает инцидент. Закрытие делает независимый producer через /health/verification.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "incident_id": {"type": "string", "description": "Идентификатор инцидента Notice Place."},
+                "step": {"type": "string", "description": "Короткое непустое действие на русском, до 128 символов."},
+                "evidence_refs": {
+                    "type": "array", "minItems": 1, "maxItems": 10,
+                    "items": {"type": "string"},
+                    "description": "Ссылки на реально проверенный источник.",
+                },
+                "plan_id": {"type": "string", "default": "repair", "description": "repair по умолчанию; observe не выносит вердикт."},
+                "source_id": {"type": ["string", "null"], "description": "Идентификатор реально прочитанного источника."},
+                "source_fingerprint": {"type": ["string", "null"], "description": "Отпечаток этого источника."},
+                "observed_state": {"type": ["string", "null"], "enum": ["healthy", "degraded", "unknown"], "description": "Что исполнитель наблюдает. Это не верификация."},
+            },
+            "required": ["incident_id", "step", "evidence_refs"],
+            "additionalProperties": False,
+        },
+        "handler": tool_noticeplace_incident_progress,
+    },
     "noticeplace_instructions": {
         "description": "Короткая инструкция для AI и сервисов: когда использовать Notice Place, какой русский текст писать и как получить автоматические кнопки диагностики и исправления.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -957,6 +1244,23 @@ def http_mcp_dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return json.loads(response.read())
 
 
+# Protocol revisions this server can actually serve. The MCP initialize
+# handshake only reaches the classic JSON-RPC revisions; the newer
+# "2026-07-28" revision is a stateless per-request envelope that this stdio
+# server does not implement, so claiming it breaks every SDK client with
+# "Unsupported protocol version from server". Echo the client's own version
+# when it is supported and otherwise offer our newest supported revision.
+SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
+DEFAULT_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[-1]
+
+
+def negotiated_protocol_version(request: Mapping[str, Any]) -> str:
+    """Return the revision this server answers ``initialize`` with."""
+    params = request.get("params") if isinstance(request, Mapping) else None
+    requested = str((params or {}).get("protocolVersion") or "").strip()
+    return requested if requested in SUPPORTED_PROTOCOL_VERSIONS else DEFAULT_PROTOCOL_VERSION
+
+
 def dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Execute one JSON-RPC request and return the wire payload or no-op."""
     if os.environ.get("NOTIFY_MCP_HTTP_URL", "").strip():
@@ -968,7 +1272,7 @@ def dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             ensure_runtime_ready()
         if method == "initialize":
             payload = {
-                "protocolVersion": "2026-07-28",
+                "protocolVersion": negotiated_protocol_version(req),
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "instructions": MCP_INSTRUCTIONS,

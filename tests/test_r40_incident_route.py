@@ -39,12 +39,16 @@ class IncidentPreflightTests(unittest.TestCase):
         self.assertEqual('opencode', selected['harness'])
         self.assertEqual(MODEL, selected['model'])
         self.assertEqual(MODEL, selected['orchestrator_model'])
-        self.assertEqual(2, len(calls))
+        # One policy read only: Agent Herder owns admission and availability,
+        # so Notice Place never probes catalogs or loops over fallbacks.
+        self.assertEqual(1, len(calls))
+        self.assertIn('/api/automation/launch-policy', calls[0])
 
-    def test_missing_model_or_stale_catalog_refuses_without_fallback(self):
-        for catalog in [{'models':['omniroute/auto/minimax']},{'models':[MODEL], 'stale':True}]:
-            with self.subTest(catalog=catalog), self.assertRaisesRegex(RuntimeError, 'subscription model unavailable.*no provider fallback'):
-                self.select({'incidentExecution':PROFILE}, catalog)
+    def test_unpinned_incident_execution_still_refuses_before_any_launch(self):
+        for policy in ({'incidentExecution':dict(PROFILE, provider='omniroute')},
+                       {'incidentExecution':dict(PROFILE, runtime='codex')}):
+            with self.subTest(policy=policy), self.assertRaisesRegex(RuntimeError, 'no runtime/provider fallback'):
+                self.select(policy, {'models':[MODEL]})
 
     def test_old_or_missing_incident_choice_refuses_before_model_or_creation(self):
         for policy in [{}, {'incidentExecution':dict(PROFILE, provider='omniroute')}, {'incidentExecution':dict(PROFILE, runtime='codex')}]:

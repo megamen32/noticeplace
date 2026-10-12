@@ -192,7 +192,9 @@ class HumanRequestTests(unittest.TestCase):
         keyboard = json.loads(str(calls[0][1]["reply_markup"]))
         callbacks = [row[0]["callback_data"] for row in keyboard["inline_keyboard"]]
         self.assertEqual(3, len(callbacks))
-        self.assertTrue(all(codec.decode(value) for value in callbacks))
+        # Choice buttons use the compact signed selector: a UUID request id can
+        # never fit beside an incident id in the 64-byte Telegram budget.
+        self.assertTrue(all(codec.decode_human_choice(value, ["deploy-1"]) for value in callbacks))
 
         update = {"update_id": 30, "callback_query": {
             "id": "choice", "from": {"id": 42}, "data": callbacks[1],
@@ -364,9 +366,24 @@ class HumanRequestHttpTests(unittest.TestCase):
         status, read = self.call("GET", "/v1/human-requests/deploy-1")
         self.assertEqual(200, status)
         self.assertFalse(read["telegram_document_required"])
-        self.assertEqual(resolved, {
-            key: value for key, value in read.items() if key != "telegram_document_required"
+        # resolve additionally returns the real card outcome and, for a bound
+        # question, the native continuation receipt, separately.
+        self.assertEqual("card_is_not_bound", resolved["card"])
+        self.assertEqual("now", resolved["value"])
+        self.assertEqual({"status": "not_bound"}, resolved["native"])
+        self.assertEqual("accepted", resolved["answer_status"])
+        self.assertTrue(resolved["accepted"])
+        self.assertFalse(resolved["conflict"])
+        completion = {key: resolved[key] for key in ("request_id", "state", "value", "label", "card", "native")}
+        self.assertEqual(completion, {
+            "request_id": resolved["request_id"], "state": resolved["state"],
+            "value": resolved["response_value"], "label": resolved["label"],
+            "card": resolved["card"], "native": resolved["native"],
         })
+        self.assertEqual({key: value for key, value in read.items()
+                          if key not in completion and key != "telegram_document_required"},
+                         {key: value for key, value in resolved.items()
+                          if key not in completion and key not in {"telegram_document_required", "answer_status", "accepted", "conflict"}})
 
     def test_create_route_allows_four_choices_and_is_exactly_idempotent(self) -> None:
         """Keep HTTP retries safe without widening the public AskHuman MCP schema."""

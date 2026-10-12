@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping
 
 from .core import NotificationCenter, SEVERITIES, ValidationError
 from .http_api import telegram_create_forum_topic, telegram_edit_forum_topic
+from .incident_card import CARD_SETTINGS
 
 PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
 ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency", "log")
@@ -362,17 +363,20 @@ class AdminConfigStore:
         env = parse_environment(self.primary_env)
         env.update(self._live_delivery_defaults())
         env.setdefault("MATRIX_CALL_CRITICAL_ESCALATION_SECONDS", env.get("MATRIX_CALL_ESCALATION_SECONDS", "0"))
-        return {
+        result = {
             key: center.get_runtime_setting(key, "3600" if key == "call_repeat_min_interval_seconds" else env.get(env_key, "0")) or "0"
             for key, env_key in RUNTIME_SETTING_ENV.items()
         }
+        result.update({key: center.get_runtime_setting(key, default) or default for key, (default, _) in CARD_SETTINGS.items()})
+        return result
 
     def set_runtime_settings(self, values: Mapping[str, str], actor: str) -> None:
         """Validate and persist live timing controls without restarting Notify."""
         center = self._consumer_notification_center()
         normalized: dict[str, str] = {}
-        for key in RUNTIME_SETTING_ENV:
-            raw = str(values.get(key, center.get_runtime_setting(key, "3600") if key == "call_repeat_min_interval_seconds" else "")).strip()
+        defaults = self.runtime_settings()
+        for key in (*RUNTIME_SETTING_ENV, *CARD_SETTINGS):
+            raw = str(values.get(key, defaults[key])).strip()
             try:
                 number = float(raw)
             except (TypeError, ValueError) as error:
@@ -381,6 +385,13 @@ class AdminConfigStore:
                 raise ValidationError(f"{key} must be a non-negative number")
             if key.endswith("_hour") and number > 24:
                 raise ValidationError(f"{key} must be between 0 and 24")
+            if key in CARD_SETTINGS:
+                if key.endswith('_enabled') and number not in (0, 1):
+                    raise ValidationError(f'{key} must be 0 or 1')
+                if key == 'telegram_card_edit_interval_seconds' and not 15 <= number <= 86400:
+                    raise ValidationError('Обновление карточки допускается не чаще одного раза в 15 секунд')
+                if key == 'telegram_group_window_seconds' and number > 86400:
+                    raise ValidationError('Интервал объединения не должен превышать сутки')
             normalized[key] = str(int(number)) if number.is_integer() else str(number)
         for key, value in normalized.items():
             center.set_runtime_setting(key, value)
