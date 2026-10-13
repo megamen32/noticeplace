@@ -104,6 +104,7 @@ class Connection:
             if self.readonly and not self._readonly_applied:
                 self._readonly_applied = True
                 self._request({"op": "exec", "sql": "PRAGMA query_only=ON", "params": []})
+            self._socket.settimeout(75 if payload.get('op')=='batch' else 12)
             self._socket.sendall(data)
             raw = self._reader.readline(MAX_FRAME + 1)
             if not raw.endswith(b"\n") or len(raw) > MAX_FRAME:

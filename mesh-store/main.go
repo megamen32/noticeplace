@@ -182,7 +182,13 @@ func serve(local net.Conn, db *sql.DB, node *app.App) {
 			output.Encode(failed(e))
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		limit := 10 * time.Second
+		if req.Op == "batch" {
+			// A bounded frozen import commits at most2049 statements atomically.
+			// Full-size production transactions need a longer finite window.
+			limit = 60 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), limit)
 		var result response
 		if req.Op == "cluster" {
 			leader, e := node.FindLeader(ctx)
@@ -212,6 +218,9 @@ func serve(local net.Conn, db *sql.DB, node *app.App) {
 			if conn != nil {
 				result = execute(ctx, conn, req)
 			}
+		}
+		if ctx.Err() != nil {
+			log.Printf("SQL operation %s interrupted: %v", req.Op, ctx.Err())
 		}
 		cancel()
 		local.SetWriteDeadline(time.Now().Add(10 * time.Second))

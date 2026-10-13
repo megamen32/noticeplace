@@ -27,6 +27,6 @@ cp "$build_root/dqlite-1.17.1/LICENSE" "$build_root/lib/DQLITE-LICENSE"
     export CGO_CFLAGS="-I$build_root/prefix/include"
     export CGO_LDFLAGS="-L$build_root/prefix/lib -lsqlite3 -Wl,-rpath,\$ORIGIN/lib"
     go mod verify
-    go build -p2 -tags nosqlite3 -o "$build_root/noticeplace-mesh-store" .
+    go build -p 2 -tags nosqlite3 -o "$build_root/noticeplace-mesh-store" .
 )
 sha256sum "$build_root/noticeplace-mesh-store" "$build_root/lib/libdqlite.so.0"
