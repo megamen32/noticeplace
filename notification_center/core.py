@@ -3022,7 +3022,9 @@ class NotificationCenter:
             }
         if agent_receipt.get("observer_only") is True and not agent_receipt.get("step"):
             return {"accepted": True, "resolved": False,
-                    "awaiting_executor": agent_receipt.get("awaiting_executor") is True,
+                    # A session handle/observer exit is never the business result.
+                    # Native lifecycle/source verification still owns the outcome.
+                    "awaiting_executor": True,
                     "observer_only": True}
 
         def refs(value: Any) -> list[str]:
@@ -3124,7 +3126,15 @@ class NotificationCenter:
         if self.get_incident(incident_id) is None:
             raise ValidationError("incident not found")
         result = receipt.get("agent_receipt") if isinstance(receipt.get("agent_receipt"), Mapping) else {}
-        if job_name == HEALTH_DIAGNOSIS_AGENT_JOB and self.health_notification_review_required(incident_id):
+        pending_observer = (
+            receipt.get("status") == "completed" and result.get("path") == "repair-first"
+            and result.get("observer_only") is True and result.get("awaiting_human") is not True
+            and not result.get("receipt_rejected")
+            and bool(str(result.get("session_id") or result.get("sessionId") or "").strip())
+            and bool(str(result.get("harness") or "").strip())
+            and type(result.get("notify_user")) is not bool
+        )
+        if job_name == HEALTH_DIAGNOSIS_AGENT_JOB and self.health_notification_review_required(incident_id) and not pending_observer:
             # Only a real boolean false suppresses delivery. Missing/invalid
             # judgement fails open for operator review, never hides a failure.
             decision = {"notify_user": result.get("notify_user") is not False,

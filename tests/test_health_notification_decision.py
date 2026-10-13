@@ -61,6 +61,24 @@ class HealthNotificationDecisionTests(unittest.TestCase):
         self.assertTrue(payload['notification_decision']['notify_user'])
         self.assertEqual('native', payload['ai_session']['session_id'])
 
+    def test_accepted_executor_observer_is_not_a_failed_notification_decision(self):
+        created = self.create()
+        outcome = self.center.record_agent_job_result(created['incident_id'], created['agent_job_delivery_id'],
+            'health-diagnosis', {'status':'completed','agent_receipt':{
+                'session_id':'native','harness':'opencode','model':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview',
+                'path':'repair-first','observer_only':True,'awaiting_executor':True}})
+        self.assertIsNone(self.center.health_notification_decision(created['incident_id']))
+        self.assertEqual([], self.queued_messages(created['incident_id']))
+        self.assertTrue(outcome['awaiting_executor'])
+
+    def test_failed_observer_still_notifies_when_repair_cannot_continue(self):
+        created = self.create()
+        self.center.record_agent_job_result(created['incident_id'], created['agent_job_delivery_id'],
+            'health-diagnosis', {'status':'failed','agent_receipt':{
+                'session_id':'native','harness':'opencode','path':'repair-first','observer_only':True,'awaiting_executor':True}})
+        self.assertTrue(self.center.health_notification_decision(created['incident_id'])['notify_user'])
+        self.assertTrue(self.queued_messages(created['incident_id']))
+
     def test_phase_closure_of_quiet_warning_does_not_create_recovery_card(self):
         created = self.create()
         self.result(created, False)
