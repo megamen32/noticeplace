@@ -6,6 +6,7 @@ request reconciles the existing idempotency key/send reservation instead.
 from __future__ import annotations
 
 import json
+import re
 import socket
 import sqlite3
 import time
@@ -81,9 +82,11 @@ class Connection:
         self._socket: socket.socket | None = None
         self._reader: Any = None
         self._depth = 0
+        self._transaction_active = False
         self._transaction_failed = False
         self.readonly = readonly
         self._readonly_applied = False
+        self._last_activity = 0.0
 
     def close(self) -> None:
         with self._io_lock:
@@ -96,12 +99,19 @@ class Connection:
             self._socket.close()
         self._reader = self._socket = None
         self._readonly_applied = False
+        self._last_activity = 0.0
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._io_lock:
             return self._request_locked(payload)
 
     def _request_locked(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # The native broker reaps idle sessions after 120s. Renew before a new
+        # operation, never after sending it or inside an existing transaction.
+        # Closing a transaction here would abandon reservations and permit
+        # unsafe replay; that path still fails closed on transport loss.
+        if self._socket is not None and not self._transaction_active and self._depth == 0 and time.monotonic() - self._last_activity >= 90:
+            self._close_locked()
         data = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode() + b"\n"
         if len(data) > MAX_FRAME:
             raise sqlite3.DataError("bounded SQL request exceeded")
@@ -111,6 +121,7 @@ class Connection:
                 self._socket.settimeout(12)
                 self._socket.connect(self.socket_path)
                 self._reader = self._socket.makefile("rb")
+                self._last_activity = time.monotonic()
             if self.readonly and not self._readonly_applied:
                 self._readonly_applied = True
                 self._request({"op": "exec", "sql": "PRAGMA query_only=ON", "params": []})
@@ -122,17 +133,19 @@ class Connection:
             result = json.loads(raw)
         except (OSError, ValueError) as error:
             self.close()
-            self._transaction_failed = self._depth > 0
+            self._transaction_failed = self._depth > 0 or self._transaction_active
             raise sqlite3.OperationalError("mesh SQL outcome unavailable; request was not replayed") from error
         if not isinstance(result, dict):
             self.close()
+            self._transaction_failed = self._depth > 0 or self._transaction_active
             raise sqlite3.OperationalError("invalid mesh SQL response")
         if result.get("error"):
             if result.get("error_class") == "integrity":
                 raise sqlite3.IntegrityError(str(result["error"]))
             self.close()
-            self._transaction_failed = self._depth > 0
+            self._transaction_failed = self._depth > 0 or self._transaction_active
             raise sqlite3.OperationalError(str(result["error"]))
+        self._last_activity = time.monotonic()
         return result
 
     def execute(self, statement: str, parameters: Any = ()) -> Cursor:
@@ -140,12 +153,21 @@ class Connection:
             return self._execute_locked(statement, parameters)
 
     def _execute_locked(self, statement: str, parameters: Any = ()) -> Cursor:
-        if self._transaction_failed and self._depth:
+        if self._transaction_failed and (self._depth or self._transaction_active):
             raise sqlite3.OperationalError("mesh transaction lost; cannot continue on another connection")
-        word = statement.lstrip().split(None, 1)[0].upper()
+        sql = re.sub(r"\A(?:\s+|--[^\n]*(?:\n|$)|/\*.*?\*/)*", "", statement, flags=re.S)
+        words = re.findall(r"[A-Za-z]+", sql)[:3]
+        word = words[0].upper() if words else ""
+        if word in {"SAVEPOINT", "RELEASE"}:
+            raise sqlite3.OperationalError("mesh savepoint transactions are unsupported")
         operation = "query" if word in {"SELECT", "PRAGMA", "EXPLAIN", "WITH"} else "exec"
         try:
-            return Cursor(self._request({"op": operation, "sql": statement, "params": list(parameters)}))
+            cursor = Cursor(self._request({"op": operation, "sql": statement, "params": list(parameters)}))
+            if word == "BEGIN":
+                self._transaction_active = True
+            elif word in {"COMMIT", "END", "ROLLBACK"} and "TO" not in [item.upper() for item in words[1:]]:
+                self._transaction_active = False
+            return cursor
         except sqlite3.Error as error:
             raise type(error)(f"mesh SQL {operation}/{word}: {error}") from error
 
@@ -183,6 +205,8 @@ class Connection:
 
     def _enter_locked(self):
         if self._depth == 0:
+            if self._transaction_active:
+                raise sqlite3.OperationalError("explicit transaction cannot enter a mesh context")
             self._transaction_failed = False
             # BEGIN has no business side effect. A busy writer can be waited
             # for before admission; statements/COMMIT are never retried.
@@ -213,13 +237,16 @@ class Connection:
         if self._depth == 0:
             failed = self._transaction_failed
             self._transaction_failed = False
-            if failed:
-                # A dropped socket already rolled back the uncommitted
-                # connection; opening another connection cannot complete it.
-                if self._socket is not None:
-                    self.execute("ROLLBACK")
-            else:
-                self.execute("COMMIT")
+            try:
+                if failed:
+                    # A dropped socket already rolled back the uncommitted
+                    # connection; opening another connection cannot complete it.
+                    if self._socket is not None:
+                        self.execute("ROLLBACK")
+                else:
+                    self.execute("COMMIT")
+            finally:
+                self._transaction_active = False
         return False
 
     def commit(self) -> None:
@@ -234,7 +261,7 @@ class Connection:
             return self._batch_locked(statements)
 
     def _batch_locked(self, statements: list[tuple[str, list[Any]]]) -> Cursor:
-        if self._depth or self.readonly:
+        if self._depth or self._transaction_active or self.readonly:
             raise sqlite3.OperationalError("SQL batch requires an independent write connection")
         return Cursor(self._request({"op": "batch", "statements": [
             {"op": "exec", "sql": sql, "params": params} for sql, params in statements]}))
