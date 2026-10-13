@@ -90,9 +90,10 @@ Environment=SNAP_INSTANCE_NAME=noticeplace-mesh
 CPUQuota=200%
 # The frozen production import measured1.63GiB anonymous memory before its
 # midpoint and126892 high-limit stalls, with zero OOMs and51GiB available.
-# Keep a finite working set for the full database and its replicated VFS.
-MemoryHigh=3G
-MemoryMax=4G
+# A restart at814/approximately1300 batches measured3.06GiB; reserve the
+# measured projected full working set plus finite recovery headroom.
+MemoryHigh=5G
+MemoryMax=6G
 MemorySwapMax=0
 TasksMax=128
 IOWeight=20
