@@ -86,9 +86,13 @@ class NotificationCenter:
 
     def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]], default_quiet_hours: list[Mapping[str, Any]] | None = None) -> None:
         """Open and initialize durable state; raises sqlite errors on storage failures."""
-        path = Path(database_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path, check_same_thread=False)
+        if str(database_path).startswith("mesh:"):
+            from .mesh_store import connect
+            self._connection = connect(str(database_path))
+        else:
+            path = Path(database_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._tokens = {str(key): dict(value) for key, value in tokens.items()}
@@ -102,6 +106,11 @@ class NotificationCenter:
             self._connection.executescript(
                 """
                 PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS runtime_leases (
+                    name TEXT PRIMARY KEY,
+                    holder TEXT NOT NULL,
+                    expires_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS events (
                     idempotency_key TEXT PRIMARY KEY,
                     event_id TEXT NOT NULL,
@@ -2042,6 +2051,19 @@ class NotificationCenter:
             if incident is None or incident["state"] not in DELIVERABLE_STATES:
                 return None
             return self._schedule_delivery(incident_id, "telegram.main", f"repeat:{sequence}", due_epoch)
+
+    def claim_runtime_lease(self, name: str, holder: str, ttl_seconds: float = 45, now: float | None = None) -> bool:
+        """Elect one bounded task owner using the same durable transaction store."""
+        moment = time.time() if now is None else float(now)
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO runtime_leases(name,holder,expires_at) VALUES(?,?,?) "
+                "ON CONFLICT(name) DO UPDATE SET holder=excluded.holder,expires_at=excluded.expires_at "
+                "WHERE runtime_leases.holder=excluded.holder OR runtime_leases.expires_at<=?",
+                (str(name), str(holder), moment + max(5, min(120, ttl_seconds)), moment),
+            )
+            row = self._connection.execute("SELECT holder FROM runtime_leases WHERE name=?", (str(name),)).fetchone()
+            return row is not None and row["holder"] == holder
 
     def claim_due_deliveries(self, now_epoch: float | None = None, limit: int = 20, lease_seconds: float = 60, channel_group: str | None = None) -> list[dict[str, Any]]:
         """Claim due work and reclaim an expired worker lease after a crash.

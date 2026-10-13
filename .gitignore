@@ -10,4 +10,5 @@ dist/
 *.tgz
 **/graphify-out/
 .tmp/
+.worktrees/noticeplace-mesh-ha-20261013/
 .agents/shared-session/knowledge/code-map.lock

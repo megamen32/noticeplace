@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -32,6 +34,29 @@ def load_tokens() -> dict[str, dict[str, str]]:
     return tokens
 
 
+def worker_iteration(worker: DeliveryWorker, channel_group: str, max_workers: int, inflight: set, completion_future, archive, archive_due, progress, progress_due, executor):
+    """One iteration remains restartable after a distributed leader change."""
+    inflight.difference_update(future for future in tuple(inflight) if future.done())
+    capacity = max_workers - len(inflight)
+    if capacity > 0:
+        if (channel_group == "agent" and (completion_future is None or completion_future.done())
+                and (worker._center.due_human_completions(limit=1)
+                     or worker._center.due_human_completion_cards(limit=1))):
+            completion_future = executor.submit(worker.replay_human_completions, min(2, capacity))
+            inflight.add(completion_future)
+            capacity -= 1
+        if capacity > 0:
+            for delivery in worker.claim_due(limit=capacity, channel_group=channel_group):
+                inflight.add(executor.submit(worker.deliver, delivery))
+        if progress is not None and len(inflight) < max_workers and time.monotonic() >= progress_due:
+            inflight.add(executor.submit(progress.run_once, 2))
+            progress_due = time.monotonic() + 15
+        if archive is not None and len(inflight) < max_workers and time.monotonic() >= archive_due:
+            inflight.add(executor.submit(archive.run_once))
+            archive_due = time.monotonic() + 60
+    return inflight, completion_future, archive_due, progress_due
+
+
 def worker_loop(worker: DeliveryWorker, channel_group: str, max_workers: int) -> None:
     """Run one bounded channel pool so slow AI/calls cannot starve messages."""
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="notify-delivery") as executor:
@@ -42,26 +67,14 @@ def worker_loop(worker: DeliveryWorker, channel_group: str, max_workers: int) ->
         progress = IncidentProgressReader(worker._center) if channel_group == 'agent' else None
         progress_due = time.monotonic() + 15
         while True:
-            inflight = {future for future in inflight if not future.done()}
-            capacity = max_workers - len(inflight)
-            if capacity > 0:
-                if (channel_group == "agent" and (completion_future is None or completion_future.done())
-                        and (worker._center.due_human_completions(limit=1)
-                             or worker._center.due_human_completion_cards(limit=1))):
-                    # Owed question continuations use this existing finite pool,
-                    # not a new scheduler or a blocking dispatcher heartbeat.
-                    completion_future = executor.submit(worker.replay_human_completions, min(2, capacity))
-                    inflight.add(completion_future)
-                    capacity -= 1
-                if capacity > 0:
-                    for delivery in worker.claim_due(limit=capacity, channel_group=channel_group):
-                        inflight.add(executor.submit(worker.deliver, delivery))
-                if progress is not None and len(inflight) < max_workers and time.monotonic() >= progress_due:
-                    inflight.add(executor.submit(progress.run_once, 2))
-                    progress_due = time.monotonic() + 15
-                if archive is not None and len(inflight) < max_workers and time.monotonic() >= archive_due:
-                    inflight.add(executor.submit(archive.run_once))
-                    archive_due = time.monotonic() + 60
+            try:
+                inflight, completion_future, archive_due, progress_due = worker_iteration(
+                    worker, channel_group, max_workers, inflight, completion_future,
+                    archive, archive_due, progress, progress_due, executor)
+            except sqlite3.Error:
+                # Keep previously admitted futures; never replay their side
+                # effects. A new iteration only claims durable queued work.
+                time.sleep(2)
             time.sleep(1)
 
 
@@ -69,6 +82,11 @@ def telegram_interaction_loop(poller: object) -> None:
     """Consume Bot API callbacks inside this process without affecting delivery health."""
     while True:
         try:
+            if str(os.environ.get("NOTIFY_CENTER_DB", "")).startswith("mesh:"):
+                holder = f"{socket.gethostname()}:{os.getpid()}"
+                if not poller._center.claim_runtime_lease("telegram-poller", holder):
+                    time.sleep(2)
+                    continue
             poller.poll_once()  # type: ignore[attr-defined]
             time.sleep(1)
         except Exception:
@@ -77,6 +95,12 @@ def telegram_interaction_loop(poller: object) -> None:
 
 def main() -> None:
     """Create durable dependencies and run worker plus API in one small process."""
+    if str(os.environ.get("NOTIFY_CENTER_DB", "")).startswith("mesh:"):
+        from notification_center.mesh_core import normalize
+        hosts = json.loads(os.environ["NOTICEPLACE_MESH_HOSTS_JSON"])
+        route = normalize(os.environ["NOTICEPLACE_MESH_CORE_SOCKET"], os.environ["NOTICEPLACE_MESH_HOST_ID"], hosts)
+        if set(route["hosts"]) != set(hosts):
+            raise RuntimeError("authorized NoticePlace mesh hosts differ from the shared core route")
     center = NotificationCenter(os.environ.get("NOTIFY_CENTER_DB", "./var/notify-center.sqlite3"), load_tokens())
     callback_codec = telegram_action_codec_from_environment()
     telegram = telegram_from_environment(callback_codec, center)
