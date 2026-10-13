@@ -311,9 +311,9 @@ class HealthWorkflowTests(unittest.TestCase):
         reply_markup = json.loads(captured["reply_markup"])
         buttons = [button for row in reply_markup["inline_keyboard"] for button in row]
         plan_buttons = [button for button in buttons if self.workflow.codec.decode(button["callback_data"]) is not None]
-        self.assertEqual(5, len(buttons))
+        self.assertEqual(6, len(buttons))
         self.assertEqual({"observe", "repair", "verify"}, {self.workflow.codec.decode(button["callback_data"])[1] for button in plan_buttons})
-        self.assertEqual({"AI", "🔕 Отключить такие"}, {button["text"] for button in buttons if button not in plan_buttons})
+        self.assertEqual({"Прочитал", "Исправить через ИИ", "Отключить такие уведомления"}, {button["text"] for button in buttons if button not in plan_buttons})
         self.assertEqual("77", captured["message_thread_id"])
         self.assertEqual({"observe", "repair", "verify"}, set(receipt["health_plan_ids"]))
         self.assertEqual(3, receipt["health_button_count"])
@@ -343,10 +343,11 @@ class HealthWorkflowTests(unittest.TestCase):
                 "health_outcome": {"plan_id": "plan-003", "observed_state": "degraded", "step": "validate keywords"},
             })
 
-        self.assertIn("План plan-003 выполнен", captured["text"])
+        self.assertIn("Восстановление не подтверждено", captured["text"])
+        self.assertNotIn("plan-003", captured["text"])
         self.assertIn("всё ещё в состоянии деградации", captured["text"])
         self.assertEqual("77", captured["message_thread_id"])
-        self.assertNotIn("reply_markup", captured)
+        self.assertIn("Отключить такие уведомления", captured["reply_markup"])
 
     def test_diagnosis_link_can_be_delivered_after_voice_ack(self) -> None:
         self.center.acknowledge(self.created["incident_id"], "phone:confirmed")
@@ -417,15 +418,15 @@ class HealthWorkflowTests(unittest.TestCase):
         with patch("notification_center.http_api.urllib.request.urlopen", fake_urlopen):
             TelegramSender("bot-token", "-100123", action_codec=TelegramActionCodec("x" * 32), center=self.center).send(payload)
 
-        self.assertIn("Исправление", captured["text"])
-        self.assertIn("Агент: zcode", captured["text"])
-        self.assertIn("фактическое состояние", captured["text"])
+        self.assertIn("ИИ запущен для исправления", captured["text"])
+        self.assertNotIn('Инцидент: inc_',captured['text'])
         self.assertIn(recorded["session_url"], captured["text"])
         keyboard = json.loads(captured["reply_markup"])
-        self.assertEqual("Открыть сессию", keyboard["inline_keyboard"][0][0]["text"])
-        self.assertEqual(recorded["session_url"], keyboard["inline_keyboard"][0][0]["url"])
+        launched=next(button for row in keyboard['inline_keyboard'] for button in row if button.get('url'))
+        self.assertEqual('✅ ИИ запущен',launched['text'])
+        self.assertEqual(recorded['session_url'],launched['url'])
 
-    def test_telegram_sender_attaches_full_text_when_card_does_not_fit(self) -> None:
+    def test_telegram_sender_bounds_long_incident_to_one_card(self) -> None:
         sender = TelegramSender(
             "bot-token",
             "-100123",
@@ -455,18 +456,11 @@ class HealthWorkflowTests(unittest.TestCase):
         with patch("notification_center.http_api.urllib.request.urlopen", fake_urlopen):
             receipt = sender.send({"incident": incident, "delivery": {"delivery_key": "long-card"}})
 
-        self.assertEqual(2, len(requests))
-        self.assertTrue(getattr(requests[0], "full_url").endswith("/sendMessage"))
-        visible = urllib.parse.parse_qs(getattr(requests[0], "data").decode())["text"][0]
-        self.assertIn("Полный текст приложен файлом", visible)
+        self.assertEqual(1, len(requests))
+        self.assertTrue(getattr(requests[0], 'full_url').endswith('/sendMessage'))
+        visible = urllib.parse.parse_qs(getattr(requests[0], 'data').decode())['text'][0]
         self.assertLessEqual(len(visible), 4096)
-        document_request = requests[1]
-        self.assertTrue(getattr(document_request, "full_url").endswith("/sendDocument"))
-        multipart = getattr(document_request, "data")
-        self.assertIn(str(incident["body"]).encode(), multipart)
-        self.assertIn(b'name="reply_parameters"', multipart)
-        self.assertTrue(receipt["overflow_document_sent"])
-        self.assertEqual(102, receipt["overflow_document_message_id"])
+        self.assertNotIn('overflow_document_sent', receipt)
 
     def test_telegram_sender_fails_closed_without_health_callback_codec(self) -> None:
         sender = TelegramSender(
@@ -475,7 +469,7 @@ class HealthWorkflowTests(unittest.TestCase):
             severity_routes={"health": {"chat_id": "-100123", "message_thread_id": 77}},
             active_modes={"health"},
         )
-        with self.assertRaisesRegex(RuntimeError, "signed plan callback"):
+        with self.assertRaisesRegex(RuntimeError, "signed callback"):
             sender.send({
                 "incident": self._incident(),
                 "delivery": {"delivery_key": "dlv-no-codec"},
@@ -513,10 +507,10 @@ class HealthWorkflowTests(unittest.TestCase):
             )
         self.assertTrue(captured["url"].endswith("/editMessageText"))
         buttons = [button for row in json.loads(captured["reply_markup"])["inline_keyboard"] for button in row]
-        self.assertEqual(5, len(buttons))
+        self.assertEqual(6, len(buttons))
         self.assertEqual(3, receipt["health_signed_callback_count"])
 
-    def test_telegram_sender_replaces_old_overflow_document_after_health_edit(self) -> None:
+    def test_legacy_health_edit_preserves_historical_document_and_sends_no_new_card(self) -> None:
         sender = TelegramSender("bot-token", "-100123", action_codec=TelegramActionCodec("x" * 32), active_modes={"health"})
         requests: list[object] = []
 
@@ -550,14 +544,9 @@ class HealthWorkflowTests(unittest.TestCase):
                 overflow_document_message_id=89,
             )
 
-        self.assertEqual(
-            ["editMessageText", "sendDocument", "deleteMessage"],
-            [getattr(request, "full_url").rsplit("/", 1)[1] for request in requests],
-        )
-        delete_data = urllib.parse.parse_qs(getattr(requests[2], "data").decode())
-        self.assertEqual(["89"], delete_data["message_id"])
-        self.assertEqual(90, receipt["overflow_document_message_id"])
-        self.assertTrue(receipt["previous_overflow_document_deleted"])
+        self.assertEqual(['editMessageText'],[getattr(request, 'full_url').rsplit('/',1)[1] for request in requests])
+        self.assertEqual(88,receipt['message_id'])
+        self.assertNotIn('previous_overflow_document_deleted',receipt)
 
     def test_plan_selection_is_signed_and_idempotent(self) -> None:
         codec = TelegramActionCodec("x" * 32)
@@ -583,7 +572,7 @@ class HealthWorkflowTests(unittest.TestCase):
         edit = next(payload for method, payload in calls if method == "editMessageText")
         self.assertIn("✅ Выбран путь: Проверить", edit["text"])
         buttons = [button for row in json.loads(edit["reply_markup"])["inline_keyboard"] for button in row]
-        self.assertEqual(["Observe", "Repair", "✅ Verify", "AI", "🔕 Отключить такие"], [button["text"] for button in buttons])
+        self.assertEqual(["Observe", "Repair", "✅ Verify", "Прочитал", "Исправить через ИИ", "Отключить такие уведомления"], [button["text"] for button in buttons])
 
         duplicate = self.center.select_health_plan(self.created["incident_id"], "cb-1", "verify", "telegram:42")
         self.assertTrue(duplicate["idempotent"])
@@ -892,6 +881,186 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertNotIn("bearer-secret", row["payload_json"])
         self.assertNotIn("third-secret", row["payload_json"])
         self.assertNotIn("auth-secret", row["payload_json"])
+
+
+class HealthRecommendationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.database = Path(self.tempdir.name) / "notify.sqlite3"
+        self.center = NotificationCenter(self.database, {"producer-token": {"project": "hermes", "max_severity": "critical"}}, default_quiet_hours=[])
+        self.workflow = HealthWorkflow(self.center, callback_secret="x" * 32)
+        self.created = self.workflow.intake_signal(
+            "producer-token",
+            "health-create-recommendation",
+            {
+                "project": "hermes",
+                "recipient": "me",
+                "severity": "critical",
+                "title": "Primary source is unhealthy",
+                "body": "The source returned a stale fingerprint.",
+                "dedup_key": "health:source-a-recommendation",
+                "source_id": "source-a",
+                "host_id": "host-a",
+                "signal_type": "intake",
+            },
+        )
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def _orchestration(self) -> dict[str, object]:
+        return {
+            "diagnosis_session_id": "ses-diag-1",
+            "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "orchestrator_session_id": "ses-orch-1",
+            "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "harness": "opencode",
+            "diagnosis_elapsed_ms": 1000,
+            "orchestrator_elapsed_ms": 1000,
+            "total_elapsed_ms": 2000,
+        }
+
+    def _plans(self) -> list[dict[str, str]]:
+        return [
+            {"plan_id": "observe", "title": "Observe", "summary": "Capture a fresh snapshot", "step": "observe"},
+            {"plan_id": "repair", "title": "Repair", "summary": "Apply the reversible repair", "step": "repair"},
+            {"plan_id": "verify", "title": "Verify", "summary": "Independently confirm health", "step": "verify"},
+        ]
+
+    def test_normalize_recommendation_fails_open_to_the_human(self) -> None:
+        self.assertIsNone(health_workflow.normalize_health_recommendation(None))
+        for value in ("repair", 42, [], {"needs_human": False}, {"plan_id": "repair", "needs_human": "false"}, {"plan_id": "replace-infra", "needs_human": False}):
+            with self.subTest(value=value):
+                normalized = health_workflow.normalize_health_recommendation(value)
+                self.assertIsNotNone(normalized)
+                self.assertTrue(normalized["needs_human"])
+
+    def test_normalize_recommendation_accepts_only_confident_pinned_choice(self) -> None:
+        normalized = health_workflow.normalize_health_recommendation({"plan_id": "repair", "needs_human": False, "reason": "Ясный обратимый фикс"})
+        self.assertEqual({"plan_id": "repair", "needs_human": False, "reason": "Ясный обратимый фикс"}, normalized)
+        explicit_human = health_workflow.normalize_health_recommendation({"plan_id": "observe", "needs_human": True})
+        self.assertFalse(explicit_human["needs_human"] is False)
+
+    def test_attach_plans_persists_the_bounded_recommendation(self) -> None:
+        attached = self.workflow.attach_plans(
+            self.created["incident_id"],
+            "health-plans-recommendation-1",
+            self._plans(),
+            orchestration=self._orchestration(),
+            recommendation={"plan_id": "repair", "needs_human": False, "reason": "Безопасный перезапуск"},
+        )
+        attached_event = self.center.latest_health_event(self.created["incident_id"], "health.plans_attached")
+        self.assertEqual("repair", attached_event["payload"]["recommendation"]["plan_id"])
+        self.assertFalse(attached_event["payload"]["recommendation"]["needs_human"])
+        second = self.workflow.attach_plans(
+            self.created["incident_id"],
+            "health-plans-recommendation-1",
+            self._plans(),
+            orchestration=self._orchestration(),
+            recommendation={"plan_id": "repair", "needs_human": False, "reason": "Безопасный перезапуск"},
+        )
+        self.assertTrue(second["idempotent"])
+        replayed_event = self.center.latest_health_event(self.created["incident_id"], "health.plans_attached")
+        self.assertEqual("repair", replayed_event["payload"]["recommendation"]["plan_id"])
+
+
+class AgentJobResultSessionLinkTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.database = Path(self.tempdir.name) / "notify.sqlite3"
+        self.center = NotificationCenter(self.database, {"producer-token": {"project": "hermes", "max_severity": "critical"}}, default_quiet_hours=[])
+        self.workflow = HealthWorkflow(self.center, callback_secret="x" * 32)
+        self.created = self.workflow.intake_signal(
+            "producer-token",
+            "health-create-jobresult",
+            {
+                "project": "hermes",
+                "recipient": "me",
+                "severity": "critical",
+                "title": "Primary source is unhealthy",
+                "body": "The source returned a stale fingerprint.",
+                "dedup_key": "health:source-a-jobresult",
+                "source_id": "source-a",
+                "host_id": "host-a",
+                "signal_type": "intake",
+            },
+        )
+        incident_id = self.created["incident_id"]
+        self.workflow.attach_plans(
+            incident_id,
+            "jobresult-plans-1",
+            [
+                {"plan_id": "observe", "title": "Observe", "summary": "s", "step": "observe"},
+                {"plan_id": "repair", "title": "Repair", "summary": "s", "step": "repair"},
+                {"plan_id": "verify", "title": "Verify", "summary": "s", "step": "verify"},
+            ],
+            orchestration={
+                "diagnosis_session_id": "ses-diag-1",
+                "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "orchestrator_session_id": "ses-orch-1",
+                "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "harness": "opencode",
+                "diagnosis_elapsed_ms": 1,
+                "orchestrator_elapsed_ms": 1,
+                "total_elapsed_ms": 2,
+            },
+        )
+        self.center.record_health_plan_selection(incident_id, "observe", "telegram:42", "jobresult-select-1")
+        # The runtime session callback posted the durable link first, exactly
+        # as post_health_session_started does from inside run_profile.
+        self.center.record_health_agent_session(
+            incident_id,
+            f"{incident_id}:health-remediation_session:opencode:ses-job-1:v3",
+            "observe",
+            "opencode",
+            "ses-job-1",
+            "https://agent.bezrabotnyi.com",
+            actor="agent-herder",
+            stage="health-remediation",
+            model="minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+        )
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def test_completed_remediation_result_replays_the_session_link_idempotently(self) -> None:
+        incident_id = self.created["incident_id"]
+        receipt = {
+            "status": "completed",
+            "plan_id": "observe",
+            "agent_receipt": {
+                "status": "completed",
+                "plan_id": "observe",
+                # run_profile receipts carry the full provider route, exactly
+                # what the runtime session callback posted first.
+                "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "session_id": "ses-job-1",
+                "harness": "opencode",
+                "step": "снимок собран",
+                "observed_state": "unknown",
+                "verification_id": "",
+                "source_id": "",
+                "source_fingerprint": "",
+                "verifier_id": "",
+                "evidence_refs": ["observe:snapshot"],
+                "trace_refs": [],
+            },
+        }
+        # The health context carries the bare execution profile model
+        # ("MiniMax-M3.1-Flash-Preview"); before the fix the replayed session
+        # link used that bare model, differed from the first post's full
+        # route, raised IdempotencyConflict, and the worker retried the
+        # finished remediation job forever.
+        context = {
+            "selection": {"plan_id": "observe", "actor": "gptadmin:health-orchestrator",
+                          "execution": dict(health_workflow.HEALTH_EXECUTION_PROFILE)},
+        }
+        result = self.center.record_agent_job_result(incident_id, "dlv-job-1", "health-remediation", receipt, context)
+        self.assertTrue(result["accepted"])
+        result_again = self.center.record_agent_job_result(incident_id, "dlv-job-1", "health-remediation", receipt, context)
+        self.assertTrue(result_again["accepted"])
 
 
 if __name__ == "__main__":

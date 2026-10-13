@@ -19,8 +19,8 @@ class TelegramTopicTests(unittest.TestCase):
         self.assertEqual("11", telegram_destination("-1001", routes, {"kind": "log", "severity": "info"}, {"log", "important", "emergency"})["message_thread_id"])
         self.assertEqual("11", telegram_destination("-1001", routes, {"kind": "incident", "severity": "critical"}, {"log", "important", "emergency"})["message_thread_id"])
 
-    def test_active_modes_default_to_small_operator_set(self) -> None:
-        self.assertEqual({"emergency", "important", "log"}, telegram_active_modes(""))
+    def test_active_modes_default_include_all_operator_notifications(self) -> None:
+        self.assertEqual({"emergency", "important", "log", "health"}, telegram_active_modes(""))
         self.assertEqual({"important"}, telegram_active_modes(json.dumps(["important"])))
 
     def test_health_incidents_can_use_an_explicit_health_topic(self) -> None:

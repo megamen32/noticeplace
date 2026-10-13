@@ -9,10 +9,7 @@
       "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
       "reasoning": "default",
       "topic": "health",
-      "orchestrator_name": "health_orchestrator_100",
-      "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
-      "orchestrator_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
-      "instruction": "Диагностируй только переданную проблему в режиме чтения. Не меняй инфраструктуру и не запускай исправления. Последним сообщением верни один JSON-объект: status=diagnosis_complete, diagnosis (краткий вывод по-русски), evidence_refs и trace_refs (массивы ссылок на фактические проверки). Не составляй планы: их готовит отдельная сессия планирования.",
+      "instruction": "Repair-first: прочитай AGENTS.md/runbooks и original gsd-debug/gsd-quick; устрани первопричину и проверь реального потребителя в той же native-сессии. Конструктор использует цельный source-owned contract вместо исторического шаблона.",
       "diagnosis_timeout_seconds": 300
     },
     "health-remediation": {

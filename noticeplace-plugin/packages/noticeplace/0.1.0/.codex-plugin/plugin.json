@@ -1,0 +1,9 @@
+{
+  "name": "noticeplace",
+  "version": "0.1.0",
+  "description": "Repair-first incident work and one bound human question returning to the same native session.",
+  "author": {"name": "megamen32"},
+  "license": "MIT",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.codex.json"
+}

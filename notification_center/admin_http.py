@@ -15,6 +15,7 @@ from typing import Any
 
 from .admin import AdminConfigStore, ROUTE_SEVERITIES
 from .core import SEVERITIES, ValidationError
+from .incident_card import CARD_SETTINGS
 
 LOGGER = logging.getLogger(__name__)
 
@@ -448,6 +449,16 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         f'<label>{html.escape(label)} <input required name="{key}" type="number" min="0" step="any" value="{html.escape(str(runtime_settings.get(key, "0")))}"></label>'
         for key, label in setting_labels.items()
     )
+    for key, (default, label) in CARD_SETTINGS.items():
+        value = str(runtime_settings.get(key, default))
+        if key.endswith('_enabled'):
+            setting_inputs += (f'<label>{html.escape(label)} <select name="{key}">'
+                               + ''.join(f'<option value="{option}"{" selected" if value == option else ""}>{text}</option>'
+                                         for option, text in (('1', 'Да'), ('0', 'Нет'))) + '</select></label>')
+        else:
+            minimum = '15' if key == 'telegram_card_edit_interval_seconds' else '0'
+            setting_inputs += f'<label>{html.escape(label)} <input required type="number" min="{minimum}" max="86400" name="{key}" value="{html.escape(value)}"></label>'
+    setting_inputs += '<p>По умолчанию: все уведомления доступны; похожие объединяются за 5 минут; состояние ИИ обновляется не чаще 15 секунд. Новая критичная карточка звучит, обычные сообщения и повторы приходят тихо. Обновление существующей карточки всегда без звука. Отключение уведомлений не останавливает мониторинг и исправление.</p>'
     adapter_builder = """<div id="adapter-steps"></div>
 <button type="button" id="add-adapter-step">+ Add adapter step</button>
 <script>

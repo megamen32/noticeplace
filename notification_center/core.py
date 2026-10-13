@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -52,6 +53,7 @@ _HEALTH_REMEDIATION_ACTORS = {"agent-herder", "health-remediation"}
 _SYNTHETIC_HEALTH_CORRELATION_PREFIX = "corr:live-health-canary:"
 _CHOICE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _CHOICE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_HEALTH_REPAIR_FIRST_PLAN_IDS = frozenset({"observe", "repair", "verify"})
 
 
 class NotificationCenterError(Exception):
@@ -237,6 +239,17 @@ class NotificationCenter:
                     last_attempt_at REAL NOT NULL,
                     last_delivery_id TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS selection_receipts (
+                    request_id TEXT PRIMARY KEY,
+                    incident_id TEXT NOT NULL,
+                    choice_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    actor TEXT,
+                    chat_id TEXT,
+                    message_id INTEGER,
+                    created_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS human_requests (
                     request_id TEXT PRIMARY KEY,
                     project TEXT NOT NULL,
@@ -258,7 +271,28 @@ class NotificationCenter:
                     telegram_message_id INTEGER,
                     telegram_document_message_id INTEGER,
                     telegram_document_file_id TEXT,
-                    telegram_document_state TEXT
+                    telegram_document_state TEXT,
+                    incident_id TEXT,
+                    native_harness TEXT,
+                    native_session_id TEXT,
+                    native_cwd TEXT,
+                    kind TEXT NOT NULL DEFAULT 'user'
+                );
+                CREATE TABLE IF NOT EXISTS human_request_completions (
+                    request_id TEXT PRIMARY KEY,
+                    result_ref TEXT NOT NULL,
+                    harness TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    actor TEXT,
+                    state TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT,
+                    next_attempt_at REAL NOT NULL,
+                    card_state TEXT NOT NULL DEFAULT 'pending',
+                    card_next_attempt_at REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
                 );
                 """
             )
@@ -274,10 +308,20 @@ class NotificationCenter:
             for column in ("event_type", "producer", "plugin", "correlation_id", "parent_event_id", "parent_incident_id", "peer_ip", "source_ip", "proxy_ip", "forwarded_for"):
                 if column not in incident_columns:
                     self._connection.execute(f"ALTER TABLE incidents ADD COLUMN {column} TEXT")
+            for column, definition in (("telegram_card_owner_id", "TEXT"), ("telegram_card_updated_at", "REAL"),
+                                       ("telegram_card_projection", "TEXT"), ("native_projection_json", "TEXT"),
+                                       ("native_polled_at", "REAL")):
+                if column not in incident_columns:
+                    self._connection.execute(f"ALTER TABLE incidents ADD COLUMN {column} {definition}")
             delivery_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(deliveries)")}
             if "target_json" not in delivery_columns:
                 self._connection.execute("ALTER TABLE deliveries ADD COLUMN target_json TEXT NOT NULL DEFAULT '{}'")
             human_request_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(human_requests)")}
+            completion_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(human_request_completions)")}
+            for column, definition in (("card_state", "TEXT NOT NULL DEFAULT 'pending'"),
+                                       ("card_next_attempt_at", "REAL NOT NULL DEFAULT 0")):
+                if column not in completion_columns:
+                    self._connection.execute(f"ALTER TABLE human_request_completions ADD COLUMN {column} {definition}")
             if "telegram_chat_id" not in human_request_columns:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_chat_id TEXT")
             if "telegram_message_id" not in human_request_columns:
@@ -294,6 +338,27 @@ class NotificationCenter:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN progress_json TEXT")
             if "telegram_progress_confirmed_at" not in human_request_columns:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_progress_confirmed_at REAL")
+            if "incident_id" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN incident_id TEXT")
+            if "kind" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'")
+            for column in ("native_harness", "native_session_id", "native_cwd"):
+                if column not in human_request_columns:
+                    self._connection.execute(f"ALTER TABLE human_requests ADD COLUMN {column} TEXT")
+            if "response_result_ref" not in human_request_columns:
+                self._connection.execute("ALTER TABLE human_requests ADD COLUMN response_result_ref TEXT")
+            # Freeze historical references before changing the future UUID
+            # generator. An existing completion outbox is authoritative.
+            historical_answers = self._connection.execute(
+                "SELECT h.request_id, h.response_value, h.response_actor, c.result_ref"
+                " FROM human_requests h LEFT JOIN human_request_completions c ON c.request_id=h.request_id"
+                " WHERE h.state='resolved' AND h.response_result_ref IS NULL AND h.response_value IS NOT NULL",
+            ).fetchall()
+            for answer in historical_answers:
+                result_ref = answer["result_ref"] or self._legacy_selection_result_ref(
+                    str(answer["request_id"]), answer["response_value"], str(answer["response_actor"] or ""))
+                self._connection.execute("UPDATE human_requests SET response_result_ref=? WHERE request_id=?",
+                                         (result_ref, answer["request_id"]))
             for column, definition in (
                 ("policy_step_id", "TEXT"),
                 ("repeat_number", "INTEGER"),
@@ -357,6 +422,9 @@ class NotificationCenter:
                 "CREATE INDEX IF NOT EXISTS deliveries_incident_channel_status "
                 "ON deliveries(incident_id, channel, status)"
             )
+            self._connection.execute('CREATE INDEX IF NOT EXISTS incidents_telegram_owner ON incidents(telegram_card_owner_id)')
+            self._connection.execute('CREATE INDEX IF NOT EXISTS incidents_telegram_family ON incidents(project,recipient,collapse_key,created_at)')
+            self._connection.execute('CREATE INDEX IF NOT EXISTS incidents_native_poll ON incidents(state,native_polled_at)')
             # Archive candidate selection correlates each session with its
             # audit history while holding the shared center lock. Without
             # this index accumulated audit rows stall cards and dispatch.
@@ -376,8 +444,8 @@ class NotificationCenter:
                 (f"profile_{profile_key}", profile_key.title(), f"builtin:{profile_key}", f"builtin-{profile_key}", max_severity, now, now, quiet_hours, profile_key),
             )
 
-    def _scope(self, token: str, project: str) -> Mapping[str, Any]:
-        """Validate a token's project boundary without requiring an event severity."""
+    def _token_scope(self, token: str) -> Mapping[str, Any]:
+        """Resolve one token's stored scope without a project comparison."""
         scope = self._tokens.get(token)
         if scope is None:
             token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -387,6 +455,11 @@ class NotificationCenter:
             if row is None:
                 raise AuthorizationError("invalid bearer token")
             scope = {"project": row["project"], "max_severity": row["max_severity"], "consumer_id": row["id"]}
+        return scope
+
+    def _scope(self, token: str, project: str) -> Mapping[str, Any]:
+        """Validate a token's project boundary without requiring an event severity."""
+        scope = self._token_scope(token)
         if scope.get("project") not in ("*", project):
             raise AuthorizationError("token is not allowed for this project")
         return scope
@@ -419,6 +492,28 @@ class NotificationCenter:
         self._scope(token, project)
 
     @staticmethod
+    def _validate_execution_identity(value: Any) -> None:
+        """Optional producer display metadata, never delivery/execution authority."""
+        fields = {"harness", "session_id", "model", "cwd", "session_url"}
+        if not isinstance(value, Mapping) or set(value) - fields or not {"harness", "session_id"} <= set(value):
+            raise ValidationError("execution_identity must contain only bounded native display fields")
+        for key, limit in (("harness", 32), ("session_id", 512), ("model", 256), ("cwd", 2048), ("session_url", 2048)):
+            if key in value and (not isinstance(value[key], str) or len(value[key]) > limit
+                                 or any(ord(char) < 32 or ord(char) == 127 for char in value[key])):
+                raise ValidationError(f"execution_identity.{key} must be a bounded string without control characters")
+        if value["harness"] not in {"opencode", "codex", "hermes", "zcode", "claude", "qoder", "fast-agent", "chatgpt"}:
+            raise ValidationError("execution_identity harness is unsupported")
+        if not value["session_id"].strip() or value["session_id"] != value["session_id"].strip():
+            raise ValidationError("execution_identity requires the actual native session id")
+        if "cwd" in value and not os.path.isabs(value["cwd"]):
+            raise ValidationError("execution_identity cwd must be absolute")
+        if "session_url" in value:
+            expected = "https://agent.bezrabotnyi.com/#/session/" + urllib.parse.quote(
+                f"{value['harness']}:{value['session_id']}", safe="!'()*")  # Producer encodeURIComponent.
+            if value["session_url"] != expected:
+                raise ValidationError("execution_identity URL must match the exact native identity")
+
+    @staticmethod
     def _validate_event(event: Mapping[str, Any]) -> None:
         """Validate the intentionally small v1 event contract; raises ValidationError."""
         required = ("project", "recipient", "kind", "severity", "title", "dedup_key")
@@ -427,6 +522,8 @@ class NotificationCenter:
             raise ValidationError(f"missing required event fields: {', '.join(missing)}")
         if event.get("schema", "notify.event.v1") != "notify.event.v1":
             raise ValidationError("unsupported event schema")
+        if "execution_identity" in event:
+            NotificationCenter._validate_execution_identity(event["execution_identity"])
         if str(event["severity"]) not in SEVERITIES:
             raise ValidationError("unsupported severity")
         if str(event["kind"]) not in ("incident", "notification", "audit", "log"):
@@ -547,6 +644,10 @@ class NotificationCenter:
         result["choices"] = json.loads(str(result.pop("choices_json")))
         result["allowed_actors"] = json.loads(str(result.pop("allowed_actors_json")))
         result["progress"] = json.loads(result.pop("progress_json") or "null")
+        if result.get("kind") == "secret":
+            result["result_ref"] = result.get("response_result_ref") or NotificationCenter._selection_result_ref(
+                str(result["request_id"]), result.get("response_value"), str(result.get("response_actor") or ""))
+            result["response_value"] = None
         return result
 
     def _human_request_row(self, token: str, request_id: str) -> sqlite3.Row:
@@ -560,12 +661,32 @@ class NotificationCenter:
         return row
 
     def _expire_human_request(self, row: sqlite3.Row) -> sqlite3.Row:
-        """Persist expiry for an overdue pending request and return its current row."""
+        """Persist expiry for an overdue pending request and return its current row.
+
+        A question bound to a native session is owned by the Agent Herder
+        pending gate, so time alone never expires it here. An independently
+        closed incident explicitly withdraws its unanswered question.
+        """
+        if row['state'] == 'pending' and row['kind'] == 'user' and self._human_request_incident_closed(row):
+            self._connection.execute("UPDATE human_requests SET state='cancelled',cancelled_at=?,cancelled_by='incident-closure' "
+                                     "WHERE request_id=? AND state='pending'", (time.time(), row['request_id']))
+            self._audit(str(row['incident_id']), 'native_question_withdrawn', 'incident-closure',
+                        {'request_id': row['request_id'], 'reason': 'Связанный инцидент закрыт независимой проверкой'})
+            return self._connection.execute('SELECT * FROM human_requests WHERE request_id=?', (row['request_id'],)).fetchone()
         expires_at = row["expires_at"]
+        if "native_harness" in row.keys() and row["native_harness"]:
+            return row
         if row["state"] == "pending" and expires_at is not None and float(expires_at) <= time.time():
             self._connection.execute("UPDATE human_requests SET state = 'expired' WHERE request_id = ? AND state = 'pending'", (row["request_id"],))
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
         return row
+
+    def _human_request_incident_closed(self, row: Mapping[str, Any]) -> bool:
+        incident_id = row['incident_id']
+        if not incident_id:
+            return False
+        incident = self._connection.execute('SELECT state FROM incidents WHERE id=?', (incident_id,)).fetchone()
+        return bool(incident and incident['state'] == 'resolved')
 
     def create_human_request(self, token: str, request: Mapping[str, Any]) -> dict[str, Any]:
         """Validate and durably create one bounded AskHuman request."""
@@ -608,6 +729,46 @@ class NotificationCenter:
         expires = float(expires_at) if expires_at is not None else None
         recipient = str(request["recipient"]).strip()
         message = str(request["message"]).strip()[:4000]
+        raw_native = request.get("native_target") if isinstance(request.get("native_target"), Mapping) else {}
+        native = {
+            "harness": str(raw_native.get("harness") or "").strip()[:32],
+            "session_id": str(raw_native.get("session_id") or "").strip()[:512],
+            "cwd": str(raw_native.get("cwd") or "").strip()[:4096],
+        }
+        if any(native.values()) and not all(native.values()):
+            raise ValidationError("native_target requires harness, session_id, and cwd together")
+        if native["harness"] and native["harness"] not in {"opencode", "codex", "claude", "zcode", "hermes", "fast-agent"}:
+            raise ValidationError("native_target harness is not supported")
+        if native["cwd"] and not os.path.isabs(native["cwd"]):
+            raise ValidationError("native_target cwd must be an absolute path")
+        kind = str(request.get("kind") or "user").strip().lower()
+        if kind not in {"user", "secret"}:
+            raise ValidationError("human request kind must be user or secret")
+        if kind == "secret" and any(native.values()):
+            # A secret is delivered by AskSecret as an opaque reference only.
+            raise ValidationError("a secret request cannot bind a native session")
+        raw_incident_id = request.get("incident_id")
+        if raw_incident_id is not None and not isinstance(raw_incident_id, str):
+            raise ValidationError("human request incident_id must be a string")
+        incident_id = str(raw_incident_id or "").strip()[:128] or None
+        if incident_id is None and native['session_id'] and kind == 'user':
+            with self._lock:
+                existing_binding = self._connection.execute('SELECT incident_id FROM human_requests WHERE request_id=?', (request_id,)).fetchone()
+                matches = self._connection.execute(
+                    "SELECT DISTINCT incident_id FROM events WHERE event_type IN "
+                    "('health.diagnosis_session_started','health.orchestrator_session_started','health.remediation_session_started') "
+                    "AND json_extract(payload_json,'$.harness')=? AND json_extract(payload_json,'$.session_id')=?",
+                    (native['harness'], native['session_id']),
+                ).fetchall()
+            if existing_binding:
+                incident_id = existing_binding['incident_id']
+            elif len(matches) == 1:
+                incident_id = str(matches[0]['incident_id'])
+            elif len(matches) > 1:
+                raise ValidationError('native question matches multiple incidents; incident_id is required')
+        if incident_id is not None:
+            if self.get_incident(incident_id) is None:
+                raise ValidationError("human request incident not found")
         raw_original_text = request.get("original_text")
         if raw_original_text is not None and not isinstance(raw_original_text, str):
             raise ValidationError("human request original_text must be a string")
@@ -625,6 +786,11 @@ class NotificationCenter:
                 and json.loads(str(row["choices_json"])) == choices
                 and json.loads(str(row["allowed_actors_json"])) == actors
                 and row["expires_at"] == expires
+                and (row["incident_id"] if "incident_id" in row.keys() else None) == incident_id
+                and (row["native_harness"] if "native_harness" in row.keys() else None) == (native["harness"] or None)
+                and (row["native_session_id"] if "native_session_id" in row.keys() else None) == (native["session_id"] or None)
+                and (row["native_cwd"] if "native_cwd" in row.keys() else None) == (native["cwd"] or None)
+                and (row["kind"] if "kind" in row.keys() else "user") == kind
             )
 
         now = time.time()
@@ -640,8 +806,8 @@ class NotificationCenter:
                 return result
             try:
                 self._connection.execute(
-                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires),
+                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at, incident_id, native_harness, native_session_id, native_cwd, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
+                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires, incident_id, native["harness"] or None, native["session_id"] or None, native["cwd"] or None, kind),
                 )
             except sqlite3.IntegrityError as error:
                 existing = self._connection.execute(
@@ -657,6 +823,50 @@ class NotificationCenter:
             result["idempotent"] = False
             return result
 
+    def human_request_result_receipt(self, token: str, request_id: str) -> dict[str, Any]:
+        """Return the canonical answer reference for a resumed session.
+
+        The stored answer is returned only for an ordinary question or choice.
+        A secret request exposes its opaque reference alone, so a resumed turn
+        can never read a secret payload.
+        """
+        with self._lock:
+            request = self.human_request_producer_view(self._human_request_result(self._human_request_row(token, request_id)))
+            completion = self.human_request_completion(request_id)
+        value = request.get("response_value")
+        kind = str(request.get("kind") or "user")
+        receipt = {
+            "schema": "ask_human.result.v1",
+            "request_id": str(request["request_id"]),
+            "state": str(request["state"]),
+            "kind": kind,
+            "result_ref": (completion.get("result_ref") or request.get("response_result_ref")
+                           or request.get("result_ref") or self._selection_result_ref(
+                               str(request["request_id"]), value, str(request.get("response_actor") or ""))),
+            "native": {
+                "harness": str(request.get("native_harness") or ""),
+                "session_id": str(request.get("native_session_id") or ""),
+                "cwd": str(request.get("native_cwd") or ""),
+            },
+        }
+        if kind == "secret":
+            receipt["answer"] = None
+            receipt["answer_withheld"] = "secret requests return only an opaque reference"
+        else:
+            receipt["answer"] = value
+        return receipt
+
+    @staticmethod
+    def _selection_result_ref(request_id: str, value: Any, actor: str) -> str:
+        """A deterministic RFC UUID accepted by Herder's strict UUID gate."""
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"noticeplace:human-answer:{request_id}:{value or ''}:{actor}"))
+
+    @staticmethod
+    def _legacy_selection_result_ref(request_id: str, value: Any, actor: str) -> str:
+        """Only for freezing historical published references during migration."""
+        digest = hashlib.sha256(f"{request_id}:{value or ''}:{actor}".encode()).hexdigest()
+        return f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
+
     def get_human_request(self, token: str, request_id: str) -> dict[str, Any]:
         """Return the stable current state of one authorized human request."""
         with self._lock, self._connection:
@@ -666,9 +876,9 @@ class NotificationCenter:
     def human_request_producer_view(request: Mapping[str, Any]) -> dict[str, Any]:
         """Keep a selected analysis non-actionable until Telegram confirms acceptance."""
         result = dict(request)
-        pending = bool(result.get("progress_delivery_pending")) or (
+        pending = not result.get("native_harness") and (bool(result.get("progress_delivery_pending")) or (
             result.get("state") == "resolved" and result.get("response_value") == "deep_analysis"
-            and result.get("telegram_progress_confirmed_at") is None)
+            and result.get("telegram_progress_confirmed_at") is None))
         if pending or result.get("response_value") == "deep_analysis" or "progress_delivery_pending" in result:
             result["progress_delivery_pending"] = pending
         if pending:
@@ -689,6 +899,15 @@ class NotificationCenter:
             )
             return self._human_request_result(self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone())
 
+    def human_request_ids(self, limit: int = 200) -> list[str]:
+        """Bounded candidate list for resolving a compact Telegram callback."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT request_id FROM human_requests ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(500, int(limit))),),
+            ).fetchall()
+        return [str(row["request_id"]) for row in rows]
+
     def get_human_request_from_telegram(self, request_id: str) -> dict[str, Any]:
         """Read one request for the signed, allowlisted in-process Telegram poller."""
         with self._lock, self._connection:
@@ -696,6 +915,77 @@ class NotificationCenter:
             if row is None:
                 raise ValidationError("human request not found")
             return self._human_request_result(self._expire_human_request(row))
+
+    def list_human_requests(self, token: str, state: str = "pending", limit: int = 20) -> list[dict[str, Any]]:
+        """List the caller's open questions with bounded, human-readable content.
+
+        A phone or agent needs the question text, its options, and the exact
+        native session the answer continues. Only the caller's own project
+        scope is queried; a wildcard token sees every project it may already
+        act on.
+        """
+        safe_state = str(state or "pending").strip()[:32]
+        if safe_state not in {"pending", "resolving", "resolved", "cancelled", "expired"}:
+            raise ValidationError("unsupported human request state filter")
+        bounded_limit = max(1, min(50, int(limit)))
+        project = str(self._token_scope(token).get("project") or "")
+        if not project:
+            return []
+        with self._lock:
+            if project == "*":
+                rows = self._connection.execute(
+                    "SELECT * FROM human_requests WHERE state = ? ORDER BY created_at DESC LIMIT ?",
+                    (safe_state, bounded_limit),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT * FROM human_requests WHERE project = ? AND state = ? ORDER BY created_at DESC LIMIT ?",
+                    (project, safe_state, bounded_limit),
+                ).fetchall()
+        return [self._pending_question_view(self._expire_human_request(row)) for row in rows]
+
+    def _pending_question_view(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Bound one question to what a resolver may read and answer.
+
+        The stored answer, the attached document, and any original analysis text
+        never appear here, so a phone read cannot leak a secret payload.
+        """
+        from .health_workflow import sanitize_bounded_text
+
+        choices = json.loads(str(row["choices_json"]))
+        keys = row.keys()
+        incident_id = str(row["incident_id"] or "") if "incident_id" in keys else ""
+        native: dict[str, Any] = {}
+        stored_harness = str(row["native_harness"] or "") if "native_harness" in keys else ""
+        stored_session = str(row["native_session_id"] or "") if "native_session_id" in keys else ""
+        if stored_harness and stored_session:
+            native = {"harness": stored_harness, "session_id": stored_session,
+                      "cwd": str(row["native_cwd"] or "") if "native_cwd" in keys else "",
+                      "session_url": "", "source": "request_binding"}
+        if incident_id and not native:
+            session = self.latest_health_agent_session(incident_id)
+            if session:
+                native = {
+                    "harness": str(session.get("harness") or "")[:32],
+                    "session_id": str(session.get("session_id") or "")[:128],
+                    "session_url": str(session.get("session_url") or "")[:512],
+                    "cwd": "", "source": "incident_session",
+                }
+        return {
+            "schema": "ask_human.pending.v1",
+            "request_id": str(row["request_id"]),
+            "project": str(row["project"]),
+            "mode": str(row["mode"]),
+            "state": str(row["state"]),
+            "created_at": float(row["created_at"]),
+            "expires_at": float(row["expires_at"]) if row["expires_at"] is not None else None,
+            "incident_id": incident_id,
+            "message": sanitize_bounded_text(row["message"], 400),
+            "choices": [{"value": str(choice.get("value") or "")[:128], "label": str(choice.get("label") or "")[:80]}
+                        for choice in choices if isinstance(choice, dict)],
+            "native": native,
+            "telegram_bound": bool(row["telegram_chat_id"] and row["telegram_message_id"]),
+        }
 
     def bind_human_request_message(self, token: str, request_id: str, chat_id: str, message_id: int) -> dict[str, Any]:
         """Bind one sent Telegram message once for callbacks and delivery proof."""
@@ -804,6 +1094,8 @@ class NotificationCenter:
 
     def _resolve_human_request_row(self, row: sqlite3.Row, actor: str, value: str) -> dict[str, Any]:
         """Resolve an already selected row; caller owns the lock and transport trust."""
+        if row["kind"] != "user":
+            raise ValidationError("secret requests require AskSecret/SSS, not an ordinary answer")
         actors = json.loads(str(row["allowed_actors_json"]))
         if actor not in actors:
             raise ValidationError("human response actor is not allowed")
@@ -820,21 +1112,24 @@ class NotificationCenter:
             raise ValidationError("human response is not a valid choice")
         resolved_at = time.time()
         update = self._connection.execute(
-            "UPDATE human_requests SET state = 'resolved', response_value = ?, response_actor = ?, resolved_at = ? WHERE request_id = ? AND state = 'pending'",
-            (value, actor, resolved_at, row["request_id"]),
+            "UPDATE human_requests SET state = 'resolved', response_value = ?, response_actor = ?, resolved_at = ?,"
+            " response_result_ref = ? WHERE request_id = ? AND state = 'pending'",
+            (value, actor, resolved_at, self._selection_result_ref(str(row["request_id"]), value, actor), row["request_id"]),
         )
         current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
         if update.rowcount != 1:
             if current["state"] == "resolved" and current["response_actor"] == actor and current["response_value"] == value:
                 return self._human_request_result(current)
             raise ValidationError(f"human request is {current['state']}")
-        if value == "deep_analysis":
+        if value == "deep_analysis" and not row["native_harness"]:
             self._connection.execute(
                 "UPDATE human_requests SET progress_json = ? WHERE request_id = ?",
                 (json.dumps({"phase": "accepted", "message": "Принял, запускаю глубокий разбор…", "updated_at": resolved_at}, ensure_ascii=False), row["request_id"]),
             )
             current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
-        return self._human_request_result(current)
+        result = self._human_request_result(current)
+        self._enqueue_human_completion(result)
+        return result
 
     def update_human_request_progress(self, token: str, request_id: str, update: Mapping[str, Any]) -> dict[str, Any]:
         """Persist monotonic analysis progress for the original project/card only."""
@@ -905,10 +1200,60 @@ class NotificationCenter:
         if not actor or not value or len(value) > 4000:
             raise ValidationError("human response actor and value are required")
         with self._lock, self._connection:
+            # Take the shared SQLite writer fence before reading incident state;
+            # another center cannot resolve it between that read and admission.
+            self._connection.execute('UPDATE human_requests SET request_id=request_id WHERE request_id=?', (request_id,))
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             if row is None:
                 raise ValidationError("human request not found")
             return self._resolve_human_request_row(self._expire_human_request(row), actor, value)
+
+    def human_request_for_reply(self, chat_id: str, message_id: int, actor: str) -> dict[str, Any] | None:
+        """Find the question a Telegram reply answers, without resolving it yet."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM human_requests WHERE telegram_chat_id = ? AND telegram_message_id = ? "
+                "AND mode = 'question' ORDER BY created_at DESC LIMIT 50",
+                (str(chat_id), int(message_id)),
+            ).fetchall()
+            pending = [self._expire_human_request(row) for row in rows]
+            pending = [row for row in pending if row['state'] == 'pending']
+            if len(pending) > 1:
+                raise ValidationError('Ответ неоднозначен: в этой карточке несколько открытых вопросов')
+            row = pending[0] if pending else (rows[0] if rows else None)
+            if row is None:
+                return None
+            if str(actor) not in json.loads(str(row["allowed_actors_json"])):
+                raise ValidationError("human response actor is not allowed")
+            return self._human_request_result(self._expire_human_request(row))
+
+    def resolve_human_request_for_surface(self, request_id: str, actor: str, value: str) -> dict[str, Any]:
+        """Resolve one request from any surface, keeping the first accepted value.
+
+        Telegram buttons, free-text replies, HTTP, and voice all use this, so a
+        later conflicting answer can never replace the accepted one.
+        """
+        actor = str(actor).strip()
+        value = str(value).strip()
+        if not actor or not value or len(value) > 4000:
+            raise ValidationError("human response actor and value are required")
+        with self._lock, self._connection:
+            self._connection.execute('UPDATE human_requests SET request_id=request_id WHERE request_id=?', (request_id,))
+            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            if row is None:
+                raise ValidationError("human request not found")
+            if row["kind"] != "user":
+                raise ValidationError("secret requests require AskSecret/SSS, not an ordinary answer")
+            if actor not in json.loads(str(row["allowed_actors_json"])):
+                raise ValidationError("human response actor is not allowed")
+            row = self._expire_human_request(row)
+            closed = self._human_request_incident_closed(row)
+            if row["state"] != "pending":
+                result = self._human_request_result(row)
+                if row["state"] == "resolved" and not closed:
+                    self._enqueue_human_completion(result)
+                return {**result, "answer_accepted": False, 'incident_closed': closed}
+            return {**self._resolve_human_request_row(row, actor, value), "answer_accepted": True}
 
     def resolve_human_reply_from_telegram(self, chat_id: str, message_id: int, actor: str, value: str) -> dict[str, Any] | None:
         """Resolve only a reply correlated to the exact sent Telegram question."""
@@ -921,11 +1266,180 @@ class NotificationCenter:
                 return None
             return self._resolve_human_request_row(self._expire_human_request(row), str(actor).strip(), str(value).strip())
 
-    def cancel_human_request(self, token: str, request_id: str, actor: str) -> dict[str, Any]:
-        """Cancel one pending request without changing any existing terminal state."""
+    def _enqueue_human_completion(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Durably record the native resume owed for one answered question.
+
+        The row is written before any card rendering, so a card failure or a
+        Herder outage can never lose the native continuation. Repeats reuse the
+        same canonical result reference and never create a second row.
+        """
+        # Caller holds the answer transaction: no inner connection context may
+        # commit the answer separately from its owed continuation.
+        if request.get("kind", "user") != "user" or request.get("state") != "resolved":
+            return {}
+        request_id = str(request.get("request_id") or "")
+        if request.get('incident_id') and self._human_request_incident_closed(request):
+            return self.human_request_completion(request_id)
+        harness = str(request.get("native_harness") or "")
+        session_id = str(request.get("native_session_id") or "")
+        cwd = str(request.get("native_cwd") or "")
+        if not (request_id and harness and session_id and cwd):
+            return {}
+        actor = str(request.get("response_actor") or "")
+        result_ref = str(request.get("response_result_ref") or self._selection_result_ref(
+            request_id, request.get("response_value"), actor))
+        now = time.time()
+        with self._lock:
+            existing = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if existing is not None:
+                return {**dict(existing), "replayed": True}
+            self._connection.execute(
+                "INSERT INTO human_request_completions(request_id, result_ref, harness, session_id, cwd, actor,"
+                " state, attempts, reason, next_attempt_at, card_next_attempt_at, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, ?, ?)",
+                (request_id, result_ref, harness, session_id, cwd, actor[:128], now, now, now, now),
+            )
+            row = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            return {**dict(row), "replayed": False}
+
+    def human_request_completion(self, request_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE request_id = ?", (request_id,)).fetchone()
+            return dict(row) if row is not None else {}
+
+    def claim_human_completion(self, request_id: str) -> bool:
+        """Fence concurrent HTTP/worker attempts before crossing the network.
+
+        A process dying while sending leaves an unknown outcome, never a due
+        retry. Only a definitive non-admission makes the row retryable again.
+        """
+        with self._lock, self._connection:
+            return self._connection.execute(
+                "UPDATE human_request_completions SET state = 'sending', updated_at = ?"
+                " WHERE request_id = ? AND state IN ('pending', 'retryable') AND next_attempt_at <= ? "
+                "AND NOT EXISTS (SELECT 1 FROM human_requests h JOIN incidents i ON i.id=h.incident_id "
+                "WHERE h.request_id=human_request_completions.request_id AND i.state='resolved')",
+                (time.time(), request_id, time.time()),
+            ).rowcount == 1
+
+    def reconcile_unadmitted_human_completion(
+        self, token: str, request_id: str, result_ref: str, verified_herder_record: Mapping[str, Any],
+        evidence_ref: str, actor: str,
+    ) -> dict[str, Any]:
+        """Operator-only explicit reconciliation after proven pre-admission failure.
+
+        The operator supplies a freshly verified Herder registry receipt: the
+        same pending request and target, with no attempt or answer admission.
+        This seam is never called by the worker or by an ordinary answer. It
+        preserves the canonical reference and audits the exact evidence.
+        """
+        evidence = str(evidence_ref or "").strip()
+        actor = str(actor or "").strip()
+        if not evidence or len(evidence) > 1024 or not actor or len(actor) > 128:
+            raise ValidationError("reconciliation requires bounded operator identity and evidence")
+        proof = verified_herder_record
+        target = proof.get("target") if isinstance(proof.get("target"), Mapping) else {}
+        if (proof.get("requestId") != request_id or proof.get("status") != "pending"
+                or any(proof.get(field) for field in ("attemptId", "resultRef", "resolutionRef", "receipt", "resumeLeaseExpiresAt"))):
+            raise ValidationError("reconciliation requires verified Herder pending with no admission attempt")
+        with self._lock, self._connection:
+            request = self._human_request_row(token, request_id)
+            completion = self.human_request_completion(request_id)
+            if (request["state"] != "resolved" or request["kind"] != "user" or not completion
+                    or completion["result_ref"] != str(result_ref)
+                    or str(target.get("agent") or target.get("harness") or "") != completion["harness"]
+                    or target.get("sessionId") != completion["session_id"]
+                    or target.get("cwd") != completion["cwd"]):
+                raise ValidationError("reconciliation proof does not match the canonical question and native target")
+            if completion["state"] != "unknown":
+                raise ValidationError("only an unknown completion with proven non-admission can be reconciled")
+            self._connection.execute(
+                "UPDATE human_request_completions SET state='retryable', next_attempt_at=?, updated_at=?,"
+                " reason='operator verified Herder pending before admission' WHERE request_id=? AND state='unknown'",
+                (time.time() + 30, time.time(), request_id))
+            self._audit(request_id, "human_completion.pre_admission_reconciled", actor, {
+                "request_id": request_id, "result_ref": str(result_ref), "evidence_ref": evidence,
+                "herder_status": "pending", "previous_state": "unknown",
+            })
+            return self.human_request_completion(request_id)
+
+    def due_human_completion_cards(self, limit: int = 8) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE card_state IN ('pending', 'retryable')"
+                " AND card_next_attempt_at <= ? ORDER BY card_next_attempt_at LIMIT ?",
+                (time.time(), max(1, min(50, int(limit)))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def mark_human_completion_card(self, request_id: str, status: str) -> None:
+        state = "sent" if status in {"marked", "already_marked", "skipped"} else "retryable"
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE human_request_completions SET card_state = ?, card_next_attempt_at = ? WHERE request_id = ?",
+                (state, time.time() + 30, request_id))
+
+    def due_human_completions(self, now: float | None = None, limit: int = 8) -> list[dict[str, Any]]:
+        """Retryable native resumes waiting for the existing delivery worker."""
+        moment = float(now if now is not None else time.time())
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE state IN ('pending', 'retryable')"
+                " AND next_attempt_at <= ? AND NOT EXISTS (SELECT 1 FROM human_requests h JOIN incidents i ON i.id=h.incident_id "
+                "WHERE h.request_id=human_request_completions.request_id AND i.state='resolved') ORDER BY next_attempt_at LIMIT ?",
+                (moment, max(1, min(50, int(limit)))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_human_completion(self, request_id: str, state: str, reason: str = "", retry_in_seconds: float = 30) -> dict[str, Any]:
+        """Record one delivery outcome for a durable native resume.
+
+        ``sent`` is final, ``unknown`` is final because an unknown admission must
+        never be replayed, and ``retryable`` is reserved for a definite
+        unavailability that Herder itself reports as not accepted.
+        """
+        safe_state = str(state or "").strip()
+        if safe_state not in {"sent", "retryable", "unknown"}:
+            raise ValidationError("human completion state must be sent, retryable, or unknown")
+        now = time.time()
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE human_request_completions SET state = ?, reason = ?, attempts = attempts + 1,"
+                " next_attempt_at = ?, updated_at = ? WHERE request_id = ?",
+                (safe_state, str(reason or "")[:200], now + max(5.0, float(retry_in_seconds)), now, str(request_id)),
+            )
+            row = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE request_id = ?", (str(request_id),)
+            ).fetchone()
+        return dict(row) if row is not None else {}
+
+    def human_request_is_bound(self, request_id: str) -> bool:
+        """Whether one question is governed by the Agent Herder pending gate."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT native_harness FROM human_requests WHERE request_id = ?", (str(request_id),)
+            ).fetchone()
+        return bool(row is not None and row["native_harness"])
+
+    def cancel_human_request(self, token: str, request_id: str, actor: str, reason: str | None = None) -> dict[str, Any]:
+        """Cancel one pending request without changing any existing terminal state.
+
+        A bound question is normally closed by Agent Herder; an explicit reason
+        allows the Herder emergency exit, which is terminal and never resumes
+        the native session.
+        """
         actor = str(actor).strip() or "api"
         with self._lock, self._connection:
             row = self._expire_human_request(self._human_request_row(token, request_id))
+            if row["native_harness"]:
+                if not str(reason or "").strip():
+                    raise ValidationError("a question bound to a native session is closed by Agent Herder, not cancelled here")
+                self._audit(str(request_id), "native_question_withdrawn", actor, {"reason": str(reason)[:200]})
             if row["state"] != "pending":
                 raise ValidationError(f"human request is {row['state']}")
             update = self._connection.execute(
@@ -1252,13 +1766,84 @@ class NotificationCenter:
                 and all(str(event.get(field) or '').strip() for field in ('source_id', 'host_id', 'signal_type', 'correlation_id')))
             if review_required and not self.health_notification_decision(incident_id):
                 self._audit(incident_id, "health_notification_waiting_ai", "policy", {})
-            review_quiet = self.health_notification_review_required(incident_id) and not (self.health_notification_decision(incident_id) or {}).get("notify_user")
+            from .incident_card import setting
+            review_quiet = (not setting(self, 'telegram_all_notifications_enabled') and self.health_notification_review_required(incident_id)
+                            and not (self.health_notification_decision(incident_id) or {}).get("notify_user"))
+            self._bind_telegram_family(incident_id, event, now)
+            notifications_muted = self.get_incident(incident_id)['notifications_muted']
             delivery_id = None if notifications_muted or review_quiet else self._schedule_consumer_policy(incident_id, consumer_id, now)
+            if existing is not None and not notifications_muted and not review_quiet and self.original_telegram_card(incident_id) is not None:
+                self.queue_incident_card_refresh(incident_id, now)
             if notifications_muted:
                 self._audit(incident_id, "notification_suppressed", "policy", {"reason": "operator_mute", "dedup_key": dedup_key})
             agent_step = "incident" if agent_job == HEALTH_DIAGNOSIS_AGENT_JOB else f"event:{event_id}"
             agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", agent_step, now) if agent_job else None
             return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id, "agent_job_delivery_id": agent_delivery_id, "notifications_muted": notifications_muted}
+
+    def _bind_telegram_family(self, incident_id: str, event: Mapping[str, Any], now: float) -> None:
+        """Latch a card owner on the incident itself; records and jobs stay separate."""
+        from .incident_card import setting
+        incident = self.get_incident(incident_id)
+        if incident.get('telegram_card_owner_id'):
+            return
+        owner, family = incident_id, None
+        has_original = self.original_telegram_card(incident_id) is not None
+        if (setting(self, 'telegram_group_similar_enabled') and event.get('kind') == 'incident'
+                and all(str(event.get(key) or '').strip() for key in ('event_type', 'signal_type', 'source_id', 'host_id'))):
+            # Producer issue family is explicit. Absent one, signal_type is
+            # already a typed family, and source_id is retained to prevent two
+            # unrelated checks on the same host collapsing by guessed text.
+            issue = event.get('issue_family') or event.get('collapse_key') or event.get('source_id')
+            host, source, signal = str(event['host_id']), str(event['source_id']), str(event['signal_type'])
+            if not event.get('issue_family') and not event.get('collapse_key') and source in {'host:'+host, 'fleet:'+host} and signal in {'load','cpu','ram','disk'}:
+                issue = 'host-signal:' + signal
+            identity = [incident['project'], incident['recipient'], incident.get('consumer_id'), event['event_type'], event['signal_type'], issue]
+            family = 'telegram-family:' + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+            previous = self._connection.execute(
+                "SELECT COALESCE(telegram_card_owner_id,id) AS owner FROM incidents "
+                "WHERE project=? AND recipient=? AND collapse_key=? AND id!=? AND (state!='resolved' OR created_at>=?) "
+                "ORDER BY created_at,rowid LIMIT 1",
+                (incident['project'], incident['recipient'], family, incident_id, now-setting(self, 'telegram_group_window_seconds')),
+            ).fetchone()
+            if previous and not has_original:
+                owner = str(previous['owner'])
+        self._connection.execute("UPDATE incidents SET telegram_card_owner_id=?,collapse_key=COALESCE(?,collapse_key) WHERE id=?",
+                                 (owner, family, incident_id))
+
+    def telegram_card_owner(self, incident_id: str) -> str:
+        incident = self.get_incident(incident_id) or {}
+        return str(incident.get('telegram_card_owner_id') or incident_id)
+
+    def incident_card_payload(self, incident_id: str) -> dict[str, Any]:
+        return self.delivery_payload({'incident_id': incident_id, 'channel': 'telegram.main', 'target_json': '{}',
+                                      'id': '', 'delivery_key': ''})
+
+    def incident_human_question(self, incident_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute("SELECT * FROM human_requests WHERE incident_id=? AND kind='user' "
+                                           "ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident_id,)).fetchone()
+            return self._human_request_result(self._expire_human_request(row)) if row else None
+
+    def incident_human_choices(self, incident_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute("SELECT * FROM human_requests WHERE incident_id=? AND kind='user' AND mode='choice' "
+                                           "ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident_id,)).fetchone()
+            return self._human_request_result(self._expire_human_request(row)) if row else None
+
+    def queue_incident_card_refresh(self, incident_id: str, now: float | None = None) -> str:
+        """Latest state is read at delivery; the existing queue survives restarts."""
+        with self._lock, self._connection:
+            from .incident_card import setting
+            now = time.time() if now is None else now
+            owner = self.get_incident(self.telegram_card_owner(incident_id)) or {}
+            due = max(now, float(owner.get('telegram_card_updated_at') or 0) + setting(self, 'telegram_card_edit_interval_seconds'))
+            # Only an unadmitted refresh may be reused. Never reset sending/unknown.
+            row = self._connection.execute("SELECT id FROM deliveries WHERE incident_id=? AND channel='telegram.main' "
+                                           "AND json_extract(target_json,'$.card_refresh')=1 AND status='queued' ORDER BY created_at DESC LIMIT 1", (incident_id,)).fetchone()
+            if row:
+                return str(row['id'])
+            return self._schedule_delivery(incident_id, 'telegram.main', 'card-refresh:' + uuid.uuid4().hex, due,
+                                           {'health_outcome': {'status': 'progress'}, 'card_refresh': True})
 
     def _builtin_profile_for_event(self, event: Mapping[str, Any]) -> str:
         """Resolve a legacy event to the ordinary built-in mode profile."""
@@ -1475,7 +2060,7 @@ class NotificationCenter:
             raise ValidationError("unsupported delivery channel group")
         with self._lock, self._connection:
             rows = self._connection.execute(
-                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key = i.dedup_key AND m.unmuted_at IS NULL)) ORDER BY CASE WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
+                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key)) AND m.unmuted_at IS NULL)) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
                 (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, limit),
             ).fetchall()
             result: list[dict[str, Any]] = []
@@ -1522,6 +2107,41 @@ class NotificationCenter:
             row = self._connection.execute(
                 "SELECT d.*, i.project, i.recipient, i.dedup_key, i.collapse_key FROM deliveries d JOIN incidents i ON i.id=d.incident_id WHERE d.id=?", (delivery_id,),
             ).fetchone()
+            if row is not None and str(row["channel"]).startswith("telegram."):
+                owner_id = self.telegram_card_owner(str(row['incident_id']))
+                owner = self.get_incident(owner_id) or {}
+                from .incident_card import setting
+                next_edit = float(owner.get('telegram_card_updated_at') or 0) + setting(self, 'telegram_card_edit_interval_seconds')
+                target = json.loads(row['target_json'] or '{}')
+                recovery = (target.get('health_outcome') or {}).get('status') in {'recovered','resolved','phase_changed'}
+                competing_send = self._connection.execute(
+                    "SELECT id FROM deliveries WHERE incident_id IN (SELECT id FROM incidents WHERE id=? OR telegram_card_owner_id=?) "
+                    "AND channel LIKE 'telegram.%' AND id!=? AND status='sending' LIMIT 1",
+                    (owner_id, owner_id, delivery_id),
+                ).fetchone()
+                if competing_send:
+                    self._connection.execute("UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,updated_at=? WHERE id=?",
+                                             (now+1 if recovery else max(next_edit, now+15), now, delivery_id))
+                    return False
+                if self.original_telegram_card(str(row['incident_id'])) is not None and now < next_edit and not recovery:
+                    self._connection.execute("UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,updated_at=? WHERE id=?",
+                                             (next_edit, now, delivery_id))
+                    return False
+                # All stages share the same external creation boundary. A lost
+                # first receipt cannot authorize another message, even when the
+                # competing lease was claimed before deployment.
+                if self.original_telegram_card(str(row["incident_id"])) is None:
+                    obstruction = self._connection.execute(
+                        "SELECT id FROM deliveries WHERE incident_id IN (SELECT id FROM incidents WHERE id=? OR telegram_card_owner_id=?) AND channel LIKE 'telegram.%' "
+                        "AND id!=? AND status IN ('sending','uncertain') LIMIT 1",
+                        (owner_id, owner_id, delivery_id),
+                    ).fetchone()
+                    if obstruction:
+                        self._connection.execute(
+                            "UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,last_error=?,updated_at=? WHERE id=?",
+                            (now + 15, "Ожидается подтверждение создания исходной карточки", now, delivery_id),
+                        )
+                        return False
             if row is not None and str(row["channel"]).endswith(".call"):
                 return self._reserve_problem_call(dict(row), now)
             return True
@@ -1673,13 +2293,22 @@ class NotificationCenter:
                 return
             if attempt is not None and int(row["attempt"] or 0) != int(attempt):
                 return
-            if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES and not _is_session_notice(row):
+            if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES and not _is_session_notice(row) and not (str(row["channel"]).startswith("gptadmin.agent:") and row["state"] == "acknowledged") and not (outcome == "sent" and str(row["channel"]).startswith("telegram.") and row["status"] == "sending"):
                 outcome = "cancelled"
                 safe_error = safe_error or "incident is no longer active"
             if outcome == "retry":
                 self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), safe_error, now, delivery_id))
             else:
                 self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, result_json = COALESCE(?, result_json), updated_at = ? WHERE id = ?", (outcome, safe_error, result_json, now, delivery_id))
+            if outcome == 'sent' and str(row['channel']).startswith('telegram.') and isinstance(result, Mapping) and result.get('message_id'):
+                if not result.get('coalesced'):
+                    self._connection.execute("UPDATE incidents SET telegram_card_updated_at=?,telegram_card_projection=COALESCE(?,telegram_card_projection) WHERE id=?",
+                                             (now, result.get('card_projection'), self.telegram_card_owner(str(row['incident_id']))))
+                self._connection.execute("UPDATE human_requests SET telegram_chat_id=?,telegram_message_id=? "
+                                         "WHERE incident_id=? AND kind='user' AND telegram_message_id IS NULL",
+                                         (str(result['chat_id']), int(result['message_id']), row['incident_id']))
+                if row['state'] in {'resolved', 'acknowledged'} and not result.get('coalesced') and not _is_session_notice(row):
+                    self.queue_incident_card_refresh(str(row['incident_id']), now)
             if outcome in {"failed", "retry", "uncertain"} and str(row["state"]) in DELIVERABLE_STATES and not _is_session_notice(row):
                 self._schedule_failure_neighbours(row, now)
             if outcome == "sent" and row["policy_step_id"] is not None and str(row["state"]) in DELIVERABLE_STATES:
@@ -1725,10 +2354,10 @@ class NotificationCenter:
                 raise ValidationError("source delivery not found")
             if str(row["status"]) != "sent" or not str(row["channel"]).startswith("telegram."):
                 raise ValidationError("source delivery is not a sent Telegram delivery")
-            self._connection.execute(
-                "UPDATE deliveries SET result_json = ?, last_error = NULL, updated_at = ? WHERE id = ? AND status = 'sent'",
-                (result_json, now, source_delivery_id),
-            )
+            # The sent receipt is history and owns first-message selection.
+            # A late edit must not change its message identity or send time.
+            self._connection.execute('UPDATE incidents SET telegram_card_updated_at=?,telegram_card_projection=COALESCE(?,telegram_card_projection) WHERE id=?',
+                                     (now, receipt.get('card_projection'), self.telegram_card_owner(str(row['incident_id']))))
             self._audit(
                 str(row["incident_id"]),
                 "health.legacy_card_migrated",
@@ -1745,10 +2374,18 @@ class NotificationCenter:
             now = time.time()
             if state == "acknowledged":
                 self._connection.execute("UPDATE incidents SET state = ?, acknowledged_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
-                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
+                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND channel NOT LIKE 'gptadmin.agent:%' AND status IN ('queued', 'claimed', 'sending') AND NOT (channel LIKE 'telegram.%' AND status='sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
             elif state == "resolved":
                 self._connection.execute("UPDATE incidents SET state = ?, resolved_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
-                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
+                pending_questions = self._connection.execute("SELECT request_id FROM human_requests WHERE incident_id=? AND state='pending' AND kind='user'", (incident_id,)).fetchall()
+                self._connection.execute("UPDATE human_requests SET state='cancelled',cancelled_at=?,cancelled_by=? WHERE incident_id=? AND state='pending' AND kind='user'",
+                                         (now, 'incident-closure:'+actor[:100], incident_id))
+                for question in pending_questions:
+                    self._audit(incident_id, 'native_question_withdrawn', actor, {'request_id': question['request_id'], 'reason': 'Связанный инцидент закрыт'})
+                self._connection.execute("UPDATE human_request_completions SET state='cancelled',reason='Связанный инцидент закрыт',updated_at=? "
+                                         "WHERE request_id IN (SELECT request_id FROM human_requests WHERE incident_id=?) AND state IN ('pending','retryable')",
+                                         (now, incident_id))
+                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending') AND NOT (channel LIKE 'telegram.%' AND status='sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
                 self._connection.execute(
                     "UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? "
                     "AND status IN ('queued', 'claimed') AND json_type(target_json, '$.health_outcome') = 'object' "
@@ -1876,7 +2513,7 @@ class NotificationCenter:
             incident = self.get_incident(incident_id)
             if incident is None:
                 raise ValidationError("incident not found")
-            if incident["state"] not in DELIVERABLE_STATES:
+            if incident["state"] not in (*DELIVERABLE_STATES, 'acknowledged'):
                 return {"action": action, "state": "inactive", "idempotent": True, "agent_job_delivery_id": None}
             with self._lock, self._connection:
                 now = time.time()
@@ -1927,12 +2564,12 @@ class NotificationCenter:
         return json.loads(row["target_json"])["ai_card"] if row else None
 
     def original_telegram_card(self, incident_id: str) -> dict[str, Any] | None:
-        """Use only a confirmed original alarm receipt, never producer routing."""
+        """Use the first confirmed send from any stage, never uncertain routing."""
         with self._lock:
+            owner_id = self.telegram_card_owner(incident_id)
             rows = self._connection.execute(
-                "SELECT result_json FROM deliveries WHERE incident_id=? AND status='sent' "
-                "AND channel LIKE 'telegram.%' AND NOT " + _SESSION_NOTICE_SQL +
-                " ORDER BY created_at, rowid", (incident_id,),
+                "SELECT result_json FROM deliveries WHERE incident_id IN (SELECT id FROM incidents WHERE id=? OR telegram_card_owner_id=?) AND status='sent' "
+                "AND channel LIKE 'telegram.%' ORDER BY updated_at, rowid", (owner_id, owner_id),
             ).fetchall()
         for row in rows:
             try:
@@ -1958,6 +2595,22 @@ class NotificationCenter:
             ).fetchone()
         return json.loads(row["payload_json"]) if row else None
 
+    def latest_execution_identity(self, incident_id: str) -> dict[str, Any] | None:
+        """Read only display metadata; leave native job/session ownership untouched."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload_json FROM events WHERE incident_id=? AND json_type(payload_json,'$.execution_identity')='object' "
+                "ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident_id,),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            identity = json.loads(row["payload_json"])["execution_identity"]
+            self._validate_execution_identity(identity)
+        except (KeyError, ValueError, TypeError, ValidationError):
+            return None  # Historical unvalidated metadata is not a native receipt.
+        return dict(identity)
+
     def health_notification_decision(self, incident_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._connection.execute("SELECT payload_json FROM audit_events WHERE incident_id=? "
@@ -1965,6 +2618,9 @@ class NotificationCenter:
         return json.loads(row['payload_json']) if row else None
 
     def health_notification_review_required(self, incident_id: str) -> bool:
+        from .incident_card import setting
+        if setting(self, 'telegram_all_notifications_enabled'):
+            return False
         incident = self.get_incident(incident_id)
         if not incident or incident['severity'] in {'critical', 'emergency'} or self.manual_ai_requested(incident_id):
             return False
@@ -2108,7 +2764,10 @@ class NotificationCenter:
             selected = self.latest_health_selection(incident_id) or {}
             if safe_plan not in HEALTH_PLAN_IDS or str(selected.get("plan_id") or "") != safe_plan:
                 raise ValidationError("health remediation session plan does not match the selected plan")
-        elif safe_plan:
+        elif safe_plan and self._health_plan_candidates(incident_id):
+            # With a plan card present a plan id on the diagnosis stage would
+            # look like a selection. A repair-first executor names the plan it
+            # ran, and that is an observation, not a selection.
             raise ValidationError("diagnosis and orchestrator sessions do not select a repair plan")
         parsed = urllib.parse.urlsplit(public_base_url.strip().rstrip("/"))
         if parsed.scheme != "https" or not parsed.hostname or parsed.query or parsed.fragment:
@@ -2127,6 +2786,8 @@ class NotificationCenter:
         )
         with self._lock, self._connection:
             target = {"health_session": session}
+            if not result.get('idempotent'):
+                self._connection.execute('UPDATE incidents SET native_projection_json=NULL,native_polled_at=NULL WHERE id=?', (incident_id,))
             card = self.manual_ai_card(incident_id)
             if card is not None:
                 target["ai_card"] = card
@@ -2314,6 +2975,128 @@ class NotificationCenter:
         except ValidationError as error:
             return {"accepted": False, "resolved": False, "reason": self._health_text(error, 256), "progress": locals().get("progress")}
 
+    def _record_health_repair_first_receipt(
+        self,
+        incident_id: str,
+        delivery_id: str,
+        receipt: Mapping[str, Any],
+        health_context: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Record what a repair-first executor observed, without resolving.
+
+        The executor is the actor that repaired, never the actor that verifies.
+        Its claim keeps the original source identity and fingerprint so the
+        independent producer can check exactly that source, but it can never
+        close the incident on its own.
+        """
+        agent_receipt = receipt.get("agent_receipt")
+        if not isinstance(agent_receipt, Mapping):
+            return {"accepted": False, "resolved": False, "reason": "agent repair-first receipt is missing"}
+        if agent_receipt.get("awaiting_human") is True:
+            return {
+                "accepted": True, "resolved": False, "awaiting_human": True,
+                "question_ref": self._health_text(agent_receipt.get("question_ref") or "", 128),
+                "reason": "one operator answer is pending in the bound session",
+            }
+        if agent_receipt.get("observer_only") is True and not agent_receipt.get("step"):
+            return {"accepted": True, "resolved": False,
+                    "awaiting_executor": agent_receipt.get("awaiting_executor") is True,
+                    "observer_only": True}
+
+        def refs(value: Any) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            result: list[str] = []
+            for item in value[:16]:
+                bounded = self._health_text(item, 128)
+                if bounded and bounded not in result:
+                    result.append(bounded)
+            return result
+
+        step = self._health_text(agent_receipt.get("step") or "", 128)
+        observed_state = self._health_text(agent_receipt.get("observed_state") or "", 32)
+        if not step or observed_state not in {"healthy", "degraded", "unknown"}:
+            return {"accepted": False, "resolved": False, "reason": "repair-first receipt requires a step and a bounded observed_state"}
+        plan_id = self._health_text(agent_receipt.get("plan_id") or "repair", 64)
+        evidence_refs = refs(agent_receipt.get("evidence_refs"))
+        source_id = self._health_text(agent_receipt.get("source_id") or "", 128)
+        source_fingerprint = self._health_text(agent_receipt.get("source_fingerprint") or "", 128)
+        progress_fingerprint = self._health_text(agent_receipt.get("progress_fingerprint") or "", 128)
+        if not progress_fingerprint:
+            progress_fingerprint = hashlib.sha256(
+                json.dumps({"plan_id": plan_id, "step": step, "evidence_refs": evidence_refs}, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:64]
+        try:
+            previous_progress = self.latest_health_progress(incident_id, plan_id)
+            if previous_progress is not None and all(
+                previous_progress.get(field) == expected
+                for field, expected in (
+                    ("step", step),
+                    ("evidence_refs", evidence_refs),
+                    ("progress_fingerprint", progress_fingerprint),
+                )
+            ):
+                progress = {"idempotent": True, "payload": previous_progress}
+            else:
+                progress = self.record_health_progress(
+                    incident_id,
+                    f"{delivery_id}:health.progress:{progress_fingerprint}",
+                    plan_id, step, evidence_refs, progress_fingerprint,
+                    step.strip().lower() in {"heartbeat", "keepalive", "heartbeat-only"},
+                    "agent-herder",
+                )
+        except ValidationError as error:
+            return {"accepted": False, "resolved": False, "reason": self._health_text(error, 256)}
+        outcome: dict[str, Any] = {
+            "accepted": True, "resolved": False, "progress": progress,
+            "observed_state": observed_state,
+            "source_id": source_id, "source_fingerprint": source_fingerprint,
+            "awaiting_verification": observed_state == "healthy",
+        }
+        if observed_state == "healthy":
+            outcome["reason"] = "executor observation recorded; an independent producer verification must close this incident"
+            outcome["verification_required"] = {
+                "source_id": source_id, "source_fingerprint": source_fingerprint, "plan_id": plan_id,
+            }
+        else:
+            outcome["outcome_delivery_id"] = self.schedule_health_outcome(
+                incident_id, observed_state, f"repair-first:{progress_fingerprint}"
+            )
+        return outcome
+
+    def _resolve_after_independent_verification(self, incident_id: str, verification: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Resolve a repair-first incident once an independent producer verified it.
+
+        The executor only observed; this is the first point where the original
+        source can actually be closed, and it reuses the unchanged fail-closed
+        resolution gate.
+        """
+        if self._health_selected_plan(incident_id) is not None:
+            return None
+        payload = verification.get("payload") if isinstance(verification.get("payload"), Mapping) else verification
+        plan_ids = [
+            str(self._health_text(event.get("payload", {}).get("plan_id") or "", 64))
+            for event in self._health_events(incident_id, HEALTH_UPDATE_EVENT_TYPES["progress"])
+        ]
+        plan_id = next((value for value in plan_ids if value in _HEALTH_REPAIR_FIRST_PLAN_IDS), "")
+        if not plan_id or not self._health_useful_progress_exists(incident_id, plan_id):
+            return None
+        if not self._health_verification_is_independent(payload):
+            return None
+        source_id = self._health_text(payload.get("source_id") or "", 128)
+        verification_id = self._health_text(payload.get("verification_id") or "", 128)
+        if not source_id or not verification_id or not bool(payload.get("healthy")):
+            return None
+        if not self._healthy_verification_matches(incident_id):
+            return None
+        if self.get_incident(incident_id)["state"] == "resolved":
+            return {"resolved": True, "idempotent": True}
+        resolved = self.resolve_health_incident(
+            incident_id, source_id, verification_id, "producer:verification",
+            elapsed_ms=0, executor_plan_id=plan_id,
+        )
+        return {"resolved": True, "resolved_incident": resolved}
+
     def record_agent_job_result(self, incident_id: str, delivery_id: str, job_name: str, receipt: Mapping[str, Any], health_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Persist a bounded terminal agent-job receipt without raw command output."""
         if self.get_incident(incident_id) is None:
@@ -2368,6 +3151,12 @@ class NotificationCenter:
             event_type = "agent_job_failed" if summary["status"] == "failed" else "agent_job_completed"
             self._audit(incident_id, event_type, "worker", summary)
         if job_name in {"health-diagnosis", HEALTH_REMEDIATION_AGENT_JOB} and summary.get("session_id") and summary.get("harness"):
+            # The run-time session callback already posted this durable link
+            # with the receipt's full model route (e.g. "provider/model") and
+            # actor="agent-herder". Replay the exact same payload so the
+            # idempotent branch returns the existing event instead of raising
+            # IdempotencyConflict (which marked every completed remediation
+            # job failed and retried the whole session forever).
             self.record_health_agent_session(
                 incident_id,
                 f"{incident_id}:{job_name}_session:{summary['harness']}:{summary['session_id']}:v3",
@@ -2375,10 +3164,25 @@ class NotificationCenter:
                 str(summary.get("harness") or "zcode"),
                 str(summary["session_id"]),
                 "https://agent.bezrabotnyi.com",
-                actor="worker",
+                actor="agent-herder",
                 stage=job_name,
-                model=str(summary.get("model") or ""),
+                model=self._health_text(result.get("model") or summary.get("model") or "", 256),
             )
+        if job_name == HEALTH_DIAGNOSIS_AGENT_JOB and str(result.get("path") or "") == "repair-first" and summary["status"] == "completed":
+            # One executor session repaired the consumer itself; its outcome
+            # still has to pass the independent-verification gate.
+            repair_first_result = self._record_health_repair_first_receipt(incident_id, delivery_id, receipt, context)
+            if not repair_first_result.get("accepted") and not repair_first_result.get("awaiting_human"):
+                with self._lock, self._connection:
+                    self._audit(
+                        incident_id,
+                        "health.repair_first_receipt_rejected",
+                        "worker",
+                        {"delivery_id": delivery_id, "reason": self._health_text(repair_first_result.get("reason") or "unknown", 256)},
+                    )
+            if not repair_first_result.get("resolved") and not repair_first_result.get("outcome_delivery_id") and not repair_first_result.get("awaiting_human") and not repair_first_result.get("awaiting_executor"):
+                self.schedule_health_outcome(incident_id, "unknown", f"repair-first:{delivery_id}")
+            return {**repair_first_result, "health_workflow": True, "repair_first": True}
         if job_name == HEALTH_REMEDIATION_AGENT_JOB and summary["status"] == "completed" and isinstance(health_context, Mapping):
             workflow_result = self._record_health_remediation_receipt(incident_id, delivery_id, receipt, health_context)
             if not workflow_result.get("accepted"):
@@ -2396,6 +3200,11 @@ class NotificationCenter:
             if summary["status"] == "failed":
                 self.schedule_health_outcome(incident_id, "failed", f"agent-result:{delivery_id}")
             elif summary["status"] == "completed":
+                if str(result.get("path") or "") == "repair-first":
+                    # The executor already published its own verified outcome;
+                    # scheduling a second "plans_ready" card here would undo
+                    # the repair-first contract.
+                    return {"accepted": True, "resolved": False, "health_workflow": True, "repair_first": True}
                 status = "plans_ready" if job_name == "health-diagnosis" and len(self.latest_health_plans(incident_id)) == 3 else "unknown"
                 self.schedule_health_outcome(incident_id, status, f"agent-result:{delivery_id}")
         return {"accepted": True, "resolved": False, "health_workflow": False}
@@ -2444,10 +3253,10 @@ class NotificationCenter:
     @classmethod
     def _health_execution(cls, value: Any) -> dict[str, str]:
         """Return only the canonical, bounded remediation execution profile."""
-        from .health_workflow import normalize_health_execution
+        from .health_workflow import bounded_health_execution
 
         try:
-            execution = normalize_health_execution(value)
+            execution = bounded_health_execution(value)
         except ValidationError:
             return {}
         return {key: cls._health_text(item, 64) for key, item in execution.items()}
@@ -2549,6 +3358,42 @@ class NotificationCenter:
         """Classify synthetic health incidents from their persisted source event."""
         original = self._health_original_event(incident_id)
         return isinstance(original, Mapping) and str(original.get("correlation_id") or "").startswith(_SYNTHETIC_HEALTH_CORRELATION_PREFIX)
+
+    def latest_health_agent_session(self, incident_id: str) -> dict[str, str] | None:
+        """Latest persisted agent session for an incident, preferring the repair stage."""
+        stage_rank = {
+            "health.remediation_session_started": 0,
+            "health.orchestrator_session_started": 1,
+            "health.diagnosis_session_started": 2,
+        }
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT event_type, payload_json FROM events WHERE incident_id = ? AND event_type IN "
+                "('health.diagnosis_session_started','health.orchestrator_session_started','health.remediation_session_started') "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 9",
+                (incident_id,),
+            ).fetchall()
+        best: tuple[tuple[int, int], dict[str, str]] | None = None
+        newest_rank: dict[str, int] = {}
+        for row in rows:
+            try:
+                data = json.loads(str(row["payload_json"]))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            harness = self._health_text(data.get("harness") or "", 32)
+            session_id = self._health_text(data.get("session_id") or "", 128)
+            if not harness or not session_id:
+                continue
+            stage = str(row["event_type"])
+            newest_rank.setdefault(stage, len(newest_rank))
+            candidate = {"harness": harness, "session_id": session_id, "stage": stage.replace("_session_started", ""),
+                         "session_url": self._health_text(data.get("session_url") or "", 512)}
+            rank = (stage_rank.get(stage, 9), newest_rank[stage])
+            if best is None or rank < best[0]:
+                best = (rank, candidate)
+        return best[1] if best else None
 
     def _health_plan_candidates(self, incident_id: str) -> list[str]:
         attached = self._health_event_payload(incident_id, HEALTH_UPDATE_EVENT_TYPES["plans"])
@@ -2781,9 +3626,16 @@ class NotificationCenter:
         if not idempotency_key.strip():
             raise ValidationError("Idempotency-Key is required")
         safe_plan = self._health_text(plan_id or "", 64)
-        if safe_plan not in self._health_plan_candidates(incident_id):
-            raise ValidationError("unknown health plan")
-        if self._health_selected_plan(incident_id) != safe_plan:
+        candidates = self._health_plan_candidates(incident_id)
+        # A repair-first executor has no plan card: its own pinned plan carries
+        # the progress. A card-backed incident keeps the selection gate.
+        repair_first = not candidates and safe_plan in _HEALTH_REPAIR_FIRST_PLAN_IDS
+        if not repair_first:
+            if safe_plan not in candidates:
+                raise ValidationError("unknown health plan")
+            if self._health_selected_plan(incident_id) != safe_plan:
+                raise ValidationError("health progress requires the selected plan")
+        elif self._health_selected_plan(incident_id) not in (None, safe_plan):
             raise ValidationError("health progress requires the selected plan")
         safe_step = self._health_text(step or "", 128)
         safe_evidence = self._health_value(evidence_value or [])
@@ -2925,19 +3777,32 @@ class NotificationCenter:
         result["observed_state"] = state
         result["source_id"] = source_id
         result["verifier_id"] = verifier_id
+        # A repair-first executor only observes; this independent producer
+        # receipt is the first authority that may close such an incident.
+        resolved = self._resolve_after_independent_verification(incident_id, payload)
+        if resolved:
+            result["resolved_incident"] = resolved
         return result
 
-    def resolve_health_incident(self, incident_id: str, source_id: str, verification_id: str, actor: str, elapsed_ms: int | None = None, trace_refs: list[str] | None = None) -> dict[str, Any]:
-        """Resolve only when the original source has a matching healthy receipt."""
+    def resolve_health_incident(self, incident_id: str, source_id: str, verification_id: str, actor: str, elapsed_ms: int | None = None, trace_refs: list[str] | None = None, executor_plan_id: str | None = None) -> dict[str, Any]:
+        """Resolve only when the original source has a matching healthy receipt.
+
+        ``executor_plan_id`` names the plan a single repair-first executor ran.
+        It replaces a human plan selection for the useful-progress requirement
+        only; every other gate, including independent verification and the
+        original source fingerprint, still applies unchanged.
+        """
         current = self.get_incident(incident_id)
         if current is None:
             raise ValidationError("incident not found")
         if self._health_original_event(incident_id) is None:
             raise ValidationError("health intake receipt is required before resolution")
         selected_plan = self._health_selected_plan(incident_id)
-        if not selected_plan:
+        executor_plan = self._health_text(executor_plan_id or "", 64)
+        if not selected_plan and not executor_plan:
             raise ValidationError("health incident requires explicit plan selection before resolution")
-        if not self._health_useful_progress_exists(incident_id, selected_plan):
+        progress_plan = selected_plan or executor_plan
+        if not self._health_useful_progress_exists(incident_id, progress_plan):
             raise ValidationError("health incident requires useful progress for the selected plan before resolution")
         original = self._health_original_event(incident_id) or {}
         original_source = self._health_text(original.get("source_id") or original.get("producer") or "", 128)
@@ -2976,6 +3841,9 @@ class NotificationCenter:
             "elapsed_ms": elapsed_ms if elapsed_ms is not None else 0,
             "trace_refs": resolved_trace_refs,
         }
+        if not selected_plan and executor_plan:
+            resolved_payload["plan_id"] = executor_plan
+            resolved_payload["selection"] = "repair_first_executor"
         if correlation_id:
             resolved_payload["correlation_id"] = correlation_id
         self._record_health_event(
@@ -3050,8 +3918,8 @@ class NotificationCenter:
             incident = self._row(self._connection.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone())
             if incident is not None:
                 incident["notifications_muted"] = self._notification_scope_muted(
-                    str(incident["project"]), str(incident["recipient"]), str(incident["dedup_key"])
-                )
+                    str(incident["project"]), str(incident["recipient"]), str(incident.get("collapse_key") or incident["dedup_key"])
+                ) or self._notification_scope_muted(str(incident['project']), str(incident['recipient']), str(incident['dedup_key']))
             return incident
 
     def _notification_scope_muted(self, project: str, recipient: str, dedup_key: str) -> bool:
@@ -3065,11 +3933,11 @@ class NotificationCenter:
         """Mute or restore one exact project/recipient/dedup notification scope."""
         with self._lock, self._connection:
             incident = self._connection.execute(
-                "SELECT project, recipient, dedup_key, state, consumer_id FROM incidents WHERE id = ?", (incident_id,)
+                "SELECT project, recipient, dedup_key, collapse_key, state, consumer_id FROM incidents WHERE id = ?", (incident_id,)
             ).fetchone()
             if incident is None:
                 raise ValidationError("incident not found")
-            scope = (str(incident["project"]), str(incident["recipient"]), str(incident["dedup_key"]))
+            scope = (str(incident["project"]), str(incident["recipient"]), str(incident["collapse_key"] or incident["dedup_key"]))
             was_muted = self._notification_scope_muted(*scope)
             now = time.time()
             if muted:
@@ -3083,7 +3951,7 @@ class NotificationCenter:
                 # yet; changing its state makes the worker's lease check fail.
                 self._connection.execute(
                     "UPDATE deliveries SET status = 'cancelled', last_error = 'notifications disabled by operator', updated_at = ? "
-                    "WHERE incident_id IN (SELECT id FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ?) "
+                    "WHERE incident_id IN (SELECT id FROM incidents WHERE project = ? AND recipient = ? AND COALESCE(collapse_key,dedup_key) = ?) "
                     "AND status IN ('queued', 'claimed') AND channel NOT LIKE 'gptadmin.agent:%'",
                     (now, *scope),
                 )
@@ -3303,6 +4171,13 @@ class NotificationCenter:
                 return {"choice_request_id": request_id, "choices": normalized}
         return None
 
+    def latest_choice_request(self, incident_id: str) -> dict[str, Any] | None:
+        """Expose one incident's validated opaque choice presentation."""
+        with self._lock:
+            if self.get_incident(incident_id) is None:
+                raise ValidationError("incident not found")
+            return self._latest_choice_event(incident_id)
+
     def get_telegram_choice(self, incident_id: str, choice_id: str) -> dict[str, str]:
         """Resolve an opaque Telegram choice to its pending request identity."""
         with self._lock:
@@ -3311,6 +4186,8 @@ class NotificationCenter:
             presentation = self._latest_choice_event(incident_id)
             if presentation is None:
                 raise ValidationError("choice request not found")
+            if self.get_incident(incident_id)['state'] == 'resolved' and self.selection_receipt(presentation['choice_request_id']) is None:
+                raise ValidationError('Вопрос закрыт вместе с инцидентом; новый ответ не принимается')
             choice_ids = [str(item["choice_id"]) for item in presentation["choices"]]
             if choice_id.isdigit() and int(choice_id) < len(choice_ids):
                 choice_id = choice_ids[int(choice_id)]
@@ -3331,15 +4208,128 @@ class NotificationCenter:
                 {"choice_id": choice_id, "request_id": request_id, "status": status[:64]},
             )
 
+    def record_selection_receipt(
+        self,
+        *,
+        request_id: str,
+        incident_id: str,
+        choice_id: str,
+        label: str,
+        actor: str,
+        source: str,
+        chat_id: str = "",
+        message_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Store the single canonical answer for one question or choice request.
+
+        The first accepted result wins for its request. A later repeat keeps the
+        stored identity even when it asked for a different option, so Telegram,
+        voice, and API resolvers all mark the same accepted choice.
+        """
+        safe_request = str(request_id or "").strip()
+        safe_incident = str(incident_id or "").strip()
+        safe_choice = str(choice_id or "").strip()
+        safe_label = " ".join(str(label or "").replace("\x00", "").splitlines()).strip()[:128]
+        safe_source = str(source or "").strip()[:32]
+        safe_chat = str(chat_id or "").strip()[:64]
+        if not _CHOICE_REQUEST_ID_RE.fullmatch(safe_request) or not _CHOICE_REQUEST_ID_RE.fullmatch(safe_incident):
+            raise ValidationError("selection receipt identity is invalid")
+        if not _CHOICE_ID_RE.fullmatch(safe_choice) or not safe_label or not safe_source:
+            raise ValidationError("selection receipt requires a bounded choice and label")
+        if message_id is not None and (not isinstance(message_id, int) or message_id <= 0):
+            raise ValidationError("selection receipt message id must be a positive integer")
+        with self._lock, self._connection:
+            self._audit(safe_incident, "selection_receipt_recorded", actor, {
+                "request_id": safe_request, "choice_id": safe_choice, "source": safe_source,
+            })
+            existing = self._connection.execute(
+                "SELECT * FROM selection_receipts WHERE request_id = ?", (safe_request,)
+            ).fetchone()
+            if existing is None:
+                self._connection.execute(
+                    "INSERT INTO selection_receipts(request_id, incident_id, choice_id, label, source, actor, chat_id, message_id, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (safe_request, safe_incident, safe_choice, safe_label, safe_source, str(actor or "")[:128],
+                     safe_chat or None, message_id, time.time()),
+                )
+                stored = self._connection.execute(
+                    "SELECT * FROM selection_receipts WHERE request_id = ?", (safe_request,)
+                ).fetchone()
+                return {**self._selection_receipt(stored), "accepted": True, "conflict": False}
+        stored = self._connection.execute(
+            "SELECT * FROM selection_receipts WHERE request_id = ?", (safe_request,)
+        ).fetchone()
+        return {**self._selection_receipt(stored), "accepted": False, "conflict": stored["choice_id"] != safe_choice}
+
+    def selection_receipt(self, request_id: str) -> dict[str, Any] | None:
+        """Read the canonical accepted answer for one request."""
+        safe_request = str(request_id or "").strip()
+        if not _CHOICE_REQUEST_ID_RE.fullmatch(safe_request):
+            raise ValidationError("selection receipt identity is invalid")
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM selection_receipts WHERE request_id = ?", (safe_request,)
+            ).fetchone()
+        return self._selection_receipt(row) if row is not None else None
+
+    @staticmethod
+    def _selection_receipt(row: sqlite3.Row) -> dict[str, Any]:
+        receipt = dict(row)
+        receipt["message_id"] = receipt["message_id"] if isinstance(receipt["message_id"], int) else None
+        receipt["chat_id"] = str(receipt["chat_id"] or "")
+        return receipt
+
+    def selection_receipt_card(self, request_id: str) -> dict[str, Any] | None:
+        """Return the Telegram card that owns one canonical selection receipt."""
+        receipt = self.selection_receipt(request_id)
+        if receipt is None:
+            return None
+        chat_id, message_id = str(receipt.get("chat_id") or ""), receipt.get("message_id")
+        if not chat_id or not isinstance(message_id, int):
+            with self._lock:
+                row = self._connection.execute(
+                    "SELECT telegram_chat_id, telegram_message_id FROM human_requests WHERE request_id = ?",
+                    (str(request_id),),
+                ).fetchone()
+            if row is None:
+                return None
+            chat_id, message_id = str(row["telegram_chat_id"] or ""), row["telegram_message_id"]
+        if not chat_id or not isinstance(message_id, int):
+            return None
+        return {"chat_id": chat_id, "message_id": message_id, "receipt": receipt}
+
     def delivery_payload(self, delivery: Mapping[str, Any]) -> dict[str, Any]:
         """Build the safe adapter payload for a previously claimed delivery."""
         incident = self.get_incident(str(delivery["incident_id"]))
         if incident is None:
             raise ValidationError("delivery references missing incident")
         payload = {"delivery": dict(delivery), "incident": incident}
+        identity = self.latest_execution_identity(str(incident["id"]))
+        if identity is not None:
+            payload["execution_identity"] = identity
+        confirmed_card = self.original_telegram_card(str(incident["id"]))
         choice_presentation = self._latest_choice_event(str(incident["id"]))
         if choice_presentation is not None:
             payload.update(choice_presentation)
+            payload['choice_selection'] = self.selection_receipt(choice_presentation['choice_request_id'])
+        question = self.incident_human_question(str(incident['id']))
+        if question:
+            payload['human_question'] = question
+        from .incident_card import setting
+        if incident.get('native_projection_json') and setting(self, 'telegram_native_progress_enabled'):
+            payload['native_progress'] = json.loads(incident['native_projection_json'])
+        owner_id = self.telegram_card_owner(str(incident['id']))
+        with self._lock:
+            members = self._connection.execute('SELECT id,title,state,severity FROM incidents WHERE id=? OR telegram_card_owner_id=? ORDER BY created_at',
+                                               (owner_id, owner_id)).fetchall()
+        payload['group_members'] = [{'id': m['id'], 'title': m['title'], 'state': m['state'],
+                                    'severity': m['severity'],
+                                    'host_id': (self._health_original_event(m['id']) or {}).get('host_id'),
+                                    'session': self.latest_agent_session(m['id'])} for m in members]
+        payload['human_questions'] = [question for member in members
+                                      if (question := self.incident_human_question(member['id'])) is not None]
+        payload['human_questions'].extend(question for member in members
+                                          if (question := self.incident_human_choices(member['id'])) is not None)
         target_json = delivery.get("target_json")
         if isinstance(target_json, str):
             try:
@@ -3356,6 +4346,8 @@ class NotificationCenter:
                     payload["health_outcome"] = self._health_value(target["health_outcome"])
                 if isinstance(target.get("health_session"), dict):
                     payload["health_session"] = self._health_value(target["health_session"])
+        if confirmed_card is not None:
+            payload.setdefault("target", {})["incident_card"] = confirmed_card
         card = self.manual_ai_card(str(incident["id"]))
         if card is not None:
             payload["ai_card"] = card
@@ -3366,7 +4358,7 @@ class NotificationCenter:
             payload["ai_session"] = self.latest_agent_session(str(incident["id"]))
             if isinstance(payload.get("health_session"), dict) and isinstance(payload["ai_session"], dict):
                 payload["health_session"] = payload["ai_session"]
-            if incident["state"] == "resolved" and ("health_session" in payload or "health_outcome" in payload):
+            if incident["state"] == "resolved":
                 payload.pop("health_session", None)
                 conclusion = 'resolved' if self.latest_health_event(str(incident['id']), 'health.resolved') else 'recovered'
                 phase = self._connection.execute("SELECT payload_json FROM resolution_events WHERE incident_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident['id'],)).fetchone()
@@ -3381,6 +4373,9 @@ class NotificationCenter:
                     "signal_type": self._health_text(original.get("signal_type") or original.get("event_type") or "", 64),
                     "correlation_id": self._health_text(original.get("correlation_id") or "", 256),
                     "source_fingerprint": self._health_text(original.get("source_fingerprint") or "", 128),
+                    "evidence_refs": [self._health_text(ref, 512) for ref in
+                                      (original.get("evidence_refs") if isinstance(original.get("evidence_refs"), list) else [])[:16]
+                                      if self._health_text(ref, 512)],
                     "trace_refs": [
                         self._health_text(ref, 128)
                         for ref in (original.get("evidence_refs") if isinstance(original.get("evidence_refs"), list) else [])[:10]
@@ -3394,6 +4389,13 @@ class NotificationCenter:
             show_plans = not isinstance(outcome, dict) or outcome.get("status") == "plans_ready"
             latest_plans = self.latest_health_event(str(incident["id"]), "health.plans_attached") if show_plans and not isinstance(payload.get("health_session"), dict) else None
             if latest_plans is not None:
+                selected_plan_id = self._health_selected_plan(str(incident["id"]))
+                if selected_plan_id:
+                    selection_payload = self._health_event_payload(str(incident["id"]), HEALTH_UPDATE_EVENT_TYPES["plan_selection"]) or {}
+                    payload["health_plan_selection"] = {
+                        "plan_id": selected_plan_id,
+                        "actor": self._health_text(selection_payload.get("actor") or "", 128),
+                    }
                 plan_payload = latest_plans["payload"]
                 plans = plan_payload.get("plans")
                 if isinstance(plans, list):
@@ -3570,7 +4572,7 @@ class NotificationCenter:
     @staticmethod
     def _health_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         """Bound health workflow payloads before they are persisted."""
-        from .health_workflow import _bounded_refs, _bounded_summary, _bounded_text, normalize_health_execution
+        from .health_workflow import _bounded_refs, _bounded_summary, _bounded_text, bounded_health_execution, normalize_health_recommendation
 
         result: dict[str, Any] = {}
         for key, value in payload.items():
@@ -3584,7 +4586,7 @@ class NotificationCenter:
                 result[key] = _bounded_refs(value)
             elif key == "execution":
                 try:
-                    result[key] = normalize_health_execution(value)
+                    result[key] = bounded_health_execution(value)
                 except ValidationError:
                     result[key] = {}
             elif key == "plans" and isinstance(value, list):
@@ -3594,11 +4596,13 @@ class NotificationCenter:
                         "title": _bounded_summary(item.get("title")),
                         "summary": _bounded_summary(item.get("summary")),
                         "step": _bounded_text(item.get("step"), 64),
-                        "execution": normalize_health_execution(item.get("execution")),
+                        "execution": bounded_health_execution(item.get("execution")),
                     }
                     for item in value
                     if isinstance(item, Mapping)
                 ]
+            elif key == "recommendation" and isinstance(value, Mapping):
+                result[key] = normalize_health_recommendation(value) or {}
             elif key == "orchestration" and isinstance(value, Mapping):
                 result[key] = {
                     field: _bounded_text(value.get(field), 128)

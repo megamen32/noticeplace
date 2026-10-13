@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "noticeplace",
+  "version": "0.1.0",
+  "description": "Report incident progress to Notice Place and ask the operator a question whose answer returns to the same native session.",
+  "author": {
+    "name": "megamen32",
+    "url": "https://github.com/megamen32"
+  },
+  "repository": "https://github.com/megamen32/noticeplace",
+  "license": "MIT",
+  "keywords": ["incident", "repair-first", "human-in-the-loop", "question", "mcp"]
+}

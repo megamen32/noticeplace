@@ -28,6 +28,17 @@ class _Response:
         return json.dumps(self._payload).encode()
 
 
+def project_launch_response(session_id: str, harness: str = "opencode",
+                            model: str = "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                            outcome: str = "accepted", **extra: object) -> dict:
+    """Agent Herder's project-launch admission receipt, as the tests consume it."""
+    return {"outcome": outcome, "operation_id": "op-1", "project": "fleet-health",
+            "selected_harness": harness, "model": model, "mode": "queue",
+            "session_id": session_id, "delivery": "accepted", "routing_reason": "declared route",
+            "attempts": [{"harness": harness, "outcome": outcome, "reason": "declared route", "input_id": "in-1"}],
+            **extra}
+
+
 class AgentJobHelperTests(unittest.TestCase):
     def test_web_policy_changes_harness_without_forwarding_foreign_model(self) -> None:
         profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "codex", "model": "gpt-5.6-sol", "orchestrator_model": "gpt-5.6-sol", "orchestrator_requested_model": "gpt-5.6-sol"}
@@ -166,15 +177,14 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertEqual("session-live", callback.call_args[0][0]["session_id"])
             self.assertEqual("health-diagnosis", callback.call_args[0][0]["profile"])
 
-    def test_documented_health_diagnosis_profile_has_required_orchestrator_mapping(self) -> None:
+    def test_documented_health_diagnosis_profile_needs_no_planner_mapping(self) -> None:
         document = json.loads((Path(__file__).parents[1] / "docs" / "health-agent-jobs.example.json").read_text(encoding="utf-8"))
         profile = document["profiles"]["health-diagnosis"]
         self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", profile["model"])
-        self.assertEqual("health_orchestrator_100", profile["orchestrator_name"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", profile["orchestrator_requested_model"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", profile["orchestrator_model"])
+        self.assertIn("Repair-first", profile["instruction"])
+        self.assertFalse(any(key.startswith("orchestrator_") for key in profile))
 
-    def test_health_diagnosis_hands_off_to_orchestrator_and_attaches_three_plans(self) -> None:
+    def test_legacy_diagnosis_finishes_observer_without_a_second_planner(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir).resolve()
             config = root / "agent-jobs.json"
@@ -223,10 +233,11 @@ class AgentJobHelperTests(unittest.TestCase):
                 nonlocal session_calls
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
+                if "/api/autopilot/sessions/" in url:
+                    return _Response({"enabled": True, "sessionId": "codex-health-diagnosis-1"})
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("codex-health-diagnosis-1"))
                 if url.endswith("/api/sessions/new-or-resume"):
-                    session_calls += 1
-                    if session_calls == 1:
-                        return _Response({"ok": True, "created": True, "sessionId": "codex-health-diagnosis-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
                     body = json.loads(getattr(request, "data").decode())
                     self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", body["model"])
                     self.assertEqual("queue", body["mode"])
@@ -259,17 +270,15 @@ class AgentJobHelperTests(unittest.TestCase):
                 runner=runner,
             )
             self.assertEqual("codex-health-diagnosis-1", result["session_id"])
-            self.assertEqual("codex-health-orchestrator-1", result["orchestrator_session_id"])
-            self.assertEqual(3, result["plans_count"])
-            self.assertEqual("plans_attached", result["callback_status"])
-            self.assertIn("trace:agent-herder:codex-health-diagnosis-1", result["trace_refs"])
-            self.assertIn("trace:agent-herder:codex-health-orchestrator-1", result["trace_refs"])
-            self.assertIn("trace:opencode:codex-health-diagnosis-1", result["trace_refs"])
-            self.assertIn("trace:opencode:codex-health-orchestrator-1", result["trace_refs"])
-            self.assertGreaterEqual(result["orchestration"]["diagnosis_elapsed_ms"], 0)
-            self.assertGreaterEqual(result["orchestration"]["orchestrator_elapsed_ms"], 0)
+            self.assertNotIn("orchestrator_session_id", result)
+            self.assertTrue(result["autopilot_armed"])
+            self.assertEqual("repair-first", result["path"])
+            self.assertFalse(result["resolved"])
+            self.assertEqual("bounded synthetic diagnosis", result["diagnosis"])
+            self.assertNotIn("plans_count", result)
             self.assertNotIn("health-callback-token", json.dumps(result))
-            self.assertEqual(7, len(requests))
+            self.assertEqual(4, len(requests))
+            self.assertFalse(any(r.full_url.endswith('/api/sessions/new-or-resume') or '/health/plans' in r.full_url for r in requests))
 
     def test_health_remediation_profile_requires_selected_plan_and_routes_to_subscription(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -294,8 +303,8 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
-                if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("codex-health-1"))
                 if "/progress?" in url:
                     return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
                 if "/details?" in url:
@@ -319,7 +328,9 @@ class AgentJobHelperTests(unittest.TestCase):
             )
             self.assertEqual("codex-health-1", result["session_id"])
             self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", result["model"])
-            body = json.loads(requests[0].data)
+            self.assertEqual("accepted", result["admission"]["status"])
+            self.assertEqual("health-monitor", result["project"])
+            body = json.loads([r for r in requests if "project-launch" in str(r.full_url)][0].data)
             self.assertEqual("opencode", body["harness"])
             self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", body["model"])
             self.assertIn("selected plan repair", body["message"])
@@ -360,8 +371,10 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
-                if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"})
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("codex-health-1"))
+                if "/api/autopilot/sessions/" in url:
+                    return _Response({"harness": "opencode", "sessionId": "codex-health-1", "enabled": True, "source": "session"})
                 if "/progress?" in url:
                     return _Response({"session": {"status": "idle"}, "fingerprint": "progress:repair-1"})
                 if "/details?" in url:
@@ -386,13 +399,16 @@ class AgentJobHelperTests(unittest.TestCase):
 
             self.assertEqual("completed", result["status"])
             self.assertEqual("repair", result["plan_id"])
-            self.assertEqual("verify-health-1", result["verification_id"])
+            # The executor is an observer: it keeps the source identity and
+            # fingerprint it read, and never carries a verifying identity.
             self.assertEqual("host:vusa", result["source_id"])
             self.assertEqual("source-fingerprint-1", result["source_fingerprint"])
-            self.assertEqual("health-monitor-independent", result["verifier_id"])
+            self.assertNotIn("verifier_id", result)
+            self.assertNotIn("verification_id", result)
             self.assertTrue(result["useful_progress"])
             self.assertEqual("progress:repair-1", result["progress_fingerprint"])
-            self.assertEqual(3, len(requests))
+            self.assertTrue(result["autopilot_armed"])
+            self.assertEqual(4, len(requests))
 
     def test_health_remediation_uses_its_own_deadline_not_diagnosis_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -423,8 +439,8 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
-                if url.endswith("/api/sessions/new-or-resume"):
-                    return _Response({"ok": True, "created": True, "sessionId": "hermes-timeout-1", "delivery": "accepted"})
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("hermes-timeout-1"))
                 if "/progress?" in url:
                     progress_calls += 1
                     return _Response({"session": {"status": "running" if progress_calls == 1 else "idle"}, "fingerprint": f"progress:{progress_calls}"})
@@ -475,6 +491,8 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("codex-1" if "codex" in url else "opencode-1"))
                 if url.endswith("/api/sessions/new-or-resume"):
                     return _Response({"ok": True, "created": True, "sessionId": "codex-retry-1", "delivery": "accepted"})
                 if "/progress?" in url:
@@ -505,12 +523,17 @@ class AgentJobHelperTests(unittest.TestCase):
             self.assertEqual(2, progress_calls)
 
     def test_legacy_start_plan_is_rejected_without_creating_any_session(self) -> None:
-        runner = mock.Mock()
-        with self.assertRaisesRegex(RuntimeError, "unsupported execution profile"):
+        requests: list[object] = []
+        def runner(request, **_kwargs):
+            requests.append(request)
+            return _Response({"version": 1, "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
+                              "allowedHarnesses": ["opencode"], "preferredHarness": "opencode",
+                              "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"}})
+        with self.assertRaisesRegex(RuntimeError, "execution profile"):
             run_profile("health-remediation", {"schema":"notify.agent-job.v1", "job_id":"health-remediation", "incident":{"id":"legacy"},
                 "health":{"selection":{"plan_id":"repair", "execution":{"runtime":"zcode","provider":"account:zai-start-plan","model":"GLM-5.3-Flash","reasoning":"high","topic":"health"}}}},
                 Path("unused"), runner=runner, profile_override={"url":"http://127.0.0.1:18787/api/sessions/new-or-resume", "harness":"zcode","name":"legacy","cwd":"/tmp","instruction":"Read only."})
-        runner.assert_not_called()
+        self.assertFalse(any("new-or-resume" in str(getattr(r, "full_url", "")) for r in requests))
 
     def test_health_remediation_rejects_terminal_receipt_without_independent_proof(self) -> None:
         details = {"messages": [{"role": "assistant", "text": json.dumps({
@@ -528,7 +551,8 @@ class AgentJobHelperTests(unittest.TestCase):
 
         self.assertIsNotNone(receipt)
         self.assertEqual("unknown", receipt["observed_state"])
-        self.assertEqual("", receipt["verification_id"])
+        self.assertNotIn("verifier_id", receipt)
+        self.assertNotIn("verification_id", receipt)
         self.assertEqual(["journal:worker:last-100"], receipt["evidence_refs"])
 
     def test_health_remediation_accepts_completed_plan_with_degraded_source(self) -> None:
@@ -576,6 +600,8 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
+                if "/api/automation/project-launch" in url:
+                    return _Response(project_launch_response("codex-1" if "codex" in url else "opencode-1"))
                 if url.endswith("/api/sessions/new-or-resume"):
                     return _Response({"ok": True, "created": True, "sessionId": "opencode-legacy-1", "delivery": "accepted"})
                 if "/progress?" in url:
@@ -725,6 +751,90 @@ class AgentJobHelperTests(unittest.TestCase):
                     config,
                     runner=lambda *_args, **_kwargs: OversizedResponse({}),
                 )
+
+
+class HealthAutoselectAndAutopilotTests(unittest.TestCase):
+    def test_legacy_orchestrator_message_contains_only_repair_execution_contract(self) -> None:
+        profile = {"orchestrator_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"}
+        message = agent_job_helper._health_orchestrator_message(
+            profile,
+            {"incident": {"id": "inc-1", "project": "hermes", "title": "Disk pressure"}},
+            {"id": "inc-1", "title": "Disk pressure", "body": "b"},
+            {"status": "diagnosis_complete", "diagnosis": "Диск переполнен", "evidence_refs": [], "trace_refs": []},
+        )
+        self.assertIn("gsd-debug", message)
+        self.assertIn("Диск переполнен", message)
+        self.assertIn("repair-first", message)
+        self.assertNotIn("exactly three", message)
+        self.assertNotIn("Do not change infrastructure", message)
+        self.assertNotIn("recommended_plan_id", message)
+
+    def test_extract_health_result_parses_confident_recommendation(self) -> None:
+        payload_json = json.dumps({
+            "status": "plans_ready",
+            "diagnosis": "Перегрузка очереди",
+            "plans": [
+                {"plan_id": "observe", "title": "Наблюдать", "summary": "s", "step": "observe"},
+                {"plan_id": "repair", "title": "Исправить", "summary": "s", "step": "repair"},
+                {"plan_id": "verify", "title": "Проверить", "summary": "s", "step": "verify"},
+            ],
+            "recommended_plan_id": "repair",
+            "needs_human": False,
+            "recommendation_reason": "Ясный обратимый фикс",
+        })
+        result = agent_job_helper._extract_health_result({"messages": [{"role": "assistant", "text": payload_json}]})
+        self.assertIsNotNone(result)
+        self.assertEqual("repair", result["recommended_plan_id"])
+        self.assertFalse(result["needs_human"])
+        self.assertEqual("Ясный обратимый фикс", result["recommendation_reason"])
+
+    def test_extract_health_result_fails_open_without_confident_recommendation(self) -> None:
+        base = {
+            "status": "plans_ready",
+            "diagnosis": "Неясная причина",
+            "plans": [
+                {"plan_id": "observe", "title": "a", "summary": "s", "step": "observe"},
+                {"plan_id": "repair", "title": "b", "summary": "s", "step": "repair"},
+                {"plan_id": "verify", "title": "c", "summary": "s", "step": "verify"},
+            ],
+        }
+        for override in ({}, {"recommended_plan_id": "repair"}, {"needs_human": False}, {"recommended_plan_id": "replace-infra", "needs_human": False}, {"recommended_plan_id": "repair", "needs_human": "false"}):
+            with self.subTest(override=override):
+                result = agent_job_helper._extract_health_result({"messages": [{"role": "assistant", "text": json.dumps({**base, **override})}]})
+                self.assertIsNotNone(result)
+                self.assertTrue(result["needs_human"])
+
+    def test_arm_session_autopilot_puts_the_durable_switch(self) -> None:
+        runner = mock.Mock(return_value=_Response({"harness": "opencode", "sessionId": "ses-arm-1", "enabled": True, "source": "session"}))
+        self.assertTrue(agent_job_helper.arm_session_autopilot("opencode", "ses-arm-1", "/home/roomhacker/ServersAdministration", runner))
+        request = runner.call_args[0][0]
+        self.assertEqual("PUT", request.get_method())
+        self.assertEqual("http://127.0.0.1:18787/api/autopilot/sessions/opencode/ses-arm-1", request.full_url)
+        self.assertEqual(json.loads(request.data.decode()), {"enabled": True, "cwd": "/home/roomhacker/ServersAdministration"})
+
+    def test_arm_session_autopilot_rejects_unconfirmed_or_invalid_targets(self) -> None:
+        runner = mock.Mock(return_value=_Response({"harness": "opencode", "sessionId": "ses-arm-1", "enabled": False}))
+        self.assertFalse(agent_job_helper.arm_session_autopilot("opencode", "ses-arm-1", "/cwd", runner))
+        self.assertFalse(agent_job_helper.arm_session_autopilot("unknown-harness", "ses-arm-1", "/cwd", runner))
+        self.assertFalse(agent_job_helper.arm_session_autopilot("opencode", "", "/cwd", runner))
+        self.assertEqual(1, runner.call_count)
+
+    def test_relay_operator_reply_resumes_the_session_with_human_flag(self) -> None:
+        runner = mock.Mock(return_value=_Response({"ok": True, "sessionId": "ses-relay-1"}))
+        self.assertTrue(agent_job_helper.relay_operator_reply("opencode", "ses-relay-1", "inc-relay", "перезапусти сервис", "-100123:55", runner))
+        request = runner.call_args[0][0]
+        self.assertEqual("http://127.0.0.1:18787/api/sessions/opencode/ses-relay-1/resume", request.full_url)
+        body = json.loads(request.data.decode())
+        self.assertTrue(body["humanRequested"])
+        self.assertIn("перезапусти сервис", body["message"])
+        self.assertIn("inc-relay", body["message"])
+        self.assertTrue(body["inputId"].startswith("noticeplace:"))
+
+    def test_relay_operator_reply_rejects_bad_targets_and_unconfirmed_delivery(self) -> None:
+        runner = mock.Mock(return_value=_Response({"ok": False, "error": "session not found"}))
+        self.assertFalse(agent_job_helper.relay_operator_reply("opencode", "ses-relay-1", "inc-relay", "text", "ref", runner))
+        self.assertFalse(agent_job_helper.relay_operator_reply("codex", "", "inc", "text", "ref", lambda *_a, **_k: _Response({"ok": True})))
+        self.assertFalse(agent_job_helper.relay_operator_reply("opencode", "ses", "inc", "   ", "ref", lambda *_a, **_k: _Response({"ok": True})))
 
 
 if __name__ == "__main__":

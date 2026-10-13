@@ -55,16 +55,21 @@ class NoticeSourceGateTests(unittest.TestCase):
 
 class ProducerSourceAdmissionTests(unittest.TestCase):
     @staticmethod
-    def profile():
-        return {'url':'http://127.0.0.1:18787/api/sessions/new-or-resume', 'cwd':'/home/roomhacker/ServersAdministartion',
-                'name':'health-repair', 'harness':'codex', 'model':'gpt-5.6-sol', 'mode':'queue', 'instruction':'Только выбранный план.'}
+    def execution():
+        from notification_center.health_workflow import HEALTH_EXECUTION_PROFILE
+        return dict(HEALTH_EXECUTION_PROFILE)
 
     @staticmethod
-    def event(runtime='codex', provider='openai-codex', model='gpt-5.6-sol'):
+    def profile():
+        return {'url':'http://127.0.0.1:18787/api/sessions/new-or-resume', 'cwd':'/home/roomhacker/ServersAdministartion',
+                'name':'health-repair', 'harness':'opencode', 'model':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview', 'mode':'queue', 'instruction':'Только выбранный план.'}
+
+    @staticmethod
+    def event(runtime='opencode', provider='minimax-coding-plan', model='MiniMax-M3.1-Flash-Preview'):
         return {'schema':'notify.agent-job.v1','job_id':'health-remediation','humanRequested':True,
                 'incident':{'id':'existing-incident','project':'fleet-health'}, 'health':{
                 'source_sessions':[{'harness':'zcode','sessionId':'native-planner'}, {'harness':'codex','sessionId':'native-diagnosis'}],
-                'selection':{'plan_id':'repair','execution':{'runtime':runtime,'provider':provider,'model':model,'reasoning':'high','topic':'health'}}}}
+                'selection':{'plan_id':'repair','execution':{'runtime':runtime,'provider':provider,'model':model,'reasoning':'default','topic':'health'}}}}
 
     @staticmethod
     def response(payload):
@@ -81,19 +86,22 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from notification_center import agent_job_helper as helper
-        posts=[]
+        posts=[];reads=[]
         def runner(request,**kwargs):
-            if '/coordination/context?' in request.full_url:return self.response({'humanStopHeld':False})
-            if '/launch-policy' in request.full_url:return self.response({'version':1,'allowedHarnesses':['codex','zcode'],'preferredHarness':'codex','models':{'codex':'gpt-5.6-sol','zcode':'account:zai-individual-coding-plan/GLM-5.3-Flash$high'}})
+            if '/coordination/context?' in request.full_url:
+                reads.append(request.full_url);return self.response({'humanStopHeld':False})
+            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
+            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'],'stale':False})
             posts.append(json.loads(request.data));return self.response({'ok':True,'sessionId':'remediation-native','created':True})
         with patch.object(helper,'_run_health_remediation',return_value={'status':'completed'}):
             helper.run_profile('health-remediation',self.event(),Path('unused'),runner=runner,profile_override=self.profile())
         body=posts[0]
-        self.assertEqual('codex',body['harness'])
-        self.assertEqual('zcode',body['sourceHarness'])
-        self.assertEqual('native-planner',body['sourceSessionId'])
-        self.assertEqual(self.event()['health']['source_sessions'],body['sourceSessions'])
+        self.assertEqual('opencode',body['harness'])
+        self.assertEqual('queue',body['mode'])
+        self.assertEqual(32,len(body['operation_id']))
         self.assertNotIn('humanRequested',body)
+        self.assertTrue(all('consume=0' in url for url in reads))
+        self.assertTrue(any('sessionId=native-planner' in url for url in reads))
 
     def test_stopped_diagnosis_blocks_remediation_before_any_post(self):
         from pathlib import Path
@@ -101,7 +109,8 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
         posts=[]
         def runner(request,**kwargs):
             if '/coordination/context?' in request.full_url:return self.response({'humanStopHeld':'native-diagnosis' in request.full_url})
-            if '/launch-policy' in request.full_url:return self.response({'version':1,'allowedHarnesses':['codex'],'preferredHarness':'codex','models':{'codex':'gpt-5.6-sol'}})
+            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
+            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'],'stale':False})
             posts.append(request);self.fail('a held ancestor must not create/send')
         with self.assertRaisesRegex(HealthSourceGateBlocked,'human_stop_held'):
             helper.run_profile('health-remediation',self.event(),Path('unused'),runner=runner,profile_override=self.profile())
@@ -114,7 +123,8 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
         profile={**self.profile(),'orchestrator_name':'different-planner-name','orchestrator_model':'gpt-5.6-sol','orchestrator_requested_model':'gpt-5.6-sol'}
         def runner(request,**kwargs):
             if '/coordination/context?' in request.full_url:return self.response({'humanStopHeld':True})
-            if '/launch-policy' in request.full_url:return self.response({'version':1,'allowedHarnesses':['codex'],'preferredHarness':'codex','models':{'codex':'gpt-5.6-sol'}})
+            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
+            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'],'stale':False})
             posts.append(request);self.fail('planner launch after stop')
         with (patch.object(helper,'_load_health_callback',return_value=('http://127.0.0.1:8091','test')),
               patch.object(helper,'_session_json',return_value={'session':{'status':'completed'}}),
@@ -123,47 +133,54 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
                 helper._run_health_diagnosis(profile,{'incident':{'id':'existing','project':'fleet-health'}},'native-diagnostic-stopped',runner,0)
         self.assertEqual([],posts)
 
-    def test_quota_retry_rechecks_sources_and_cannot_bypass_a_new_stop(self):
+    def test_quota_failure_is_never_retried_into_a_second_route(self):
         import json,io,urllib.error
         from pathlib import Path
         from notification_center import agent_job_helper as helper
-        posts=[];policy_reads=0
-        event=self.event('zcode','account:zai-individual-coding-plan','GLM-5.3-Flash')
+        posts=[];reads=[]
+        event=self.event()
         def runner(request,**kwargs):
-            nonlocal policy_reads
-            if '/coordination/context?' in request.full_url:return self.response({'humanStopHeld':bool(posts)})
+            if '/coordination/context?' in request.full_url:
+                reads.append(request.full_url);return self.response({'humanStopHeld':False})
             if '/launch-policy' in request.full_url:
-                policy_reads+=1
-                route='account:zai-individual-coding-plan/GLM-5.3-Flash$high' if policy_reads==1 else 'account:zai-start-plan/GLM-5.3-Flash$high'
-                return self.response({'version':1,'allowedHarnesses':['zcode'],'preferredHarness':'zcode','models':{'zcode':route}})
+                return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
             posts.append(json.loads(request.data))
-            raise urllib.error.HTTPError(request.full_url,429,'quota',{},io.BytesIO(b'{"error":"quota exhausted"}'))
-        with self.assertRaisesRegex(HealthSourceGateBlocked,'human_stop_held'):
+            return self.response({'outcome':'pre_admission_rejected','operation_id':'op-1','routing_reason':'quota exhausted','attempts':[{'harness':'opencode','outcome':'pre_admission_rejected','reason':'quota exhausted'}]})
+        with self.assertRaisesRegex(RuntimeError, 'before admission'):
             helper.run_profile('health-remediation',event,Path('unused'),runner=runner,profile_override=self.profile())
         self.assertEqual(1,len(posts))
-        self.assertEqual(event['health']['source_sessions'],posts[0]['sourceSessions'])
+        # Agent Herder owns the fallback chain; Notice Place sends one launch
+        # with the declared preference and no second route.
+        self.assertEqual('fleet-health',posts[0]['project'])
+        self.assertEqual('minimax-coding-plan/MiniMax-M3.1-Flash-Preview',posts[0]['model'])
+        self.assertTrue(any('sessionId=native-diagnosis' in url and 'consume=0' in url for url in reads))
 
-    def test_start_plan_replacement_carries_the_accepted_original_native_id(self):
+    def test_failed_first_run_carries_sources_and_a_later_held_ancestor_blocks(self):
         import json
         from pathlib import Path
         from unittest.mock import patch
         from notification_center import agent_job_helper as helper
-        posts=[];reads=[];policy_reads=0
-        event=self.event('zcode','account:zai-start-plan','GLM-5.3-Flash')
+        posts=[];reads=[];held=[False]
+        event=self.event()
         def runner(request,**kwargs):
-            nonlocal policy_reads
             if '/coordination/context?' in request.full_url:
-                reads.append(request.full_url);return self.response({'humanStopHeld':'accepted-stopped-native' in request.full_url})
+                reads.append(request.full_url);return self.response({'humanStopHeld':held[0]})
             if '/launch-policy' in request.full_url:
-                policy_reads+=1
-                route='account:zai-start-plan/GLM-5.3-Flash$high' if policy_reads==1 else 'account:zai-individual-coding-plan/GLM-5.3-Flash$high'
-                return self.response({'version':1,'allowedHarnesses':['zcode'],'preferredHarness':'zcode','models':{'zcode':route}})
-            posts.append(json.loads(request.data));return self.response({'ok':True,'sessionId':'accepted-stopped-native','created':True})
+                return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
+            if '/project-launch' in request.full_url:
+                posts.append(json.loads(request.data))
+                return self.response({'outcome':'accepted','operation_id':'op-1','selected_harness':'opencode','model':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview','mode':'queue','session_id':'remediation-native','routing_reason':'declared route','attempts':[]})
+            if '/api/autopilot/sessions/' in request.full_url:return self.response({'enabled':True,'sessionId':'remediation-native'})
+            posts.append(json.loads(request.data));return self.response({'ok':True,'sessionId':'remediation-native','created':True})
         with patch.object(helper,'_run_health_remediation',side_effect=helper.HealthStartPlanUnavailable()):
+            with self.assertRaises(helper.HealthStartPlanUnavailable):
+                helper.run_profile('health-remediation',event,Path('unused'),runner=runner,profile_override=self.profile())
+            self.assertEqual(1,len(posts))
+            self.assertTrue(any('sessionId=native-diagnosis' in url and 'consume=0' in url for url in reads))
+            held[0]=True
             with self.assertRaisesRegex(HealthSourceGateBlocked,'human_stop_held'):
                 helper.run_profile('health-remediation',event,Path('unused'),runner=runner,profile_override=self.profile())
         self.assertEqual(1,len(posts))
-        self.assertTrue(any('sessionId=accepted-stopped-native' in url and 'harness=zcode' in url for url in reads))
 
 
 class DurableNoticeSourceTests(unittest.TestCase):

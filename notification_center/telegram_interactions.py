@@ -11,6 +11,8 @@ from typing import Any, Callable, Mapping
 
 from .core import NotificationCenter, ValidationError
 from .health_workflow import TelegramHealthPlanCodec, health_plan_keyboard
+from .incident_card import controls as incident_controls
+from .selected_card import apply_selected_card, apply_selection_receipt, canonical_choice_ref
 
 
 class TelegramActionCodec:
@@ -44,6 +46,41 @@ class TelegramActionCodec:
         if len(encoded.encode()) > 64:
             raise ValueError("Telegram callback data exceeds 64 bytes")
         return encoded
+
+    def human_choice_selector(self, request_id: str) -> str:
+        """Shorten a request identity for the 64-byte Telegram callback budget."""
+        unsigned = f"human_choice:{request_id}"
+        return hmac.new(self._secret, unsigned.encode(), hashlib.sha256).hexdigest()[:12]
+
+    def encode_human_choice(self, request_id: str, index: str) -> str:
+        """Sign a human-choice button by a fixed-width selector.
+
+        A Herder request id is a UUID, which never fits beside an incident id
+        in 64 bytes. The signature still covers the full identity, so a
+        selector cannot be forged into another request's choice.
+        """
+        selector = self.human_choice_selector(request_id)
+        signature = hmac.new(self._secret, f"{selector}:{request_id}:{index}".encode(), hashlib.sha256).hexdigest()[:12]
+        encoded = f"n:human_choice:{selector}:{index}:{signature}"
+        if len(encoded.encode()) > 64:
+            raise ValueError("Telegram callback data exceeds 64 bytes")
+        return encoded
+
+    def decode_human_choice(self, value: str, request_ids: Any) -> tuple[str, str] | None:
+        """Resolve a compact human-choice callback to its request and index."""
+        parts = value.split(":")
+        if len(parts) != 5 or parts[0] != "n" or parts[1] != "human_choice":
+            return None
+        _, _, selector, index, signature = parts
+        if not index.isdigit() or len(index) > 4:
+            return None
+        for candidate in request_ids:
+            if self.human_choice_selector(str(candidate)) != selector:
+                continue
+            expected = hmac.new(self._secret, f"{selector}:{candidate}:{index}".encode(), hashlib.sha256).hexdigest()[:12]
+            if hmac.compare_digest(signature, expected):
+                return str(candidate), index
+        return None
 
     def decode(self, value: str) -> tuple[str, str] | tuple[str, str, str] | None:
         parts = value.split(":")
@@ -128,15 +165,8 @@ class TelegramInteractionPoller:
         self._api("sendMessage", {"chat_id": chat_id, "text": text[:1200]})
 
     def _incident_control_row(self, incident: Mapping[str, Any]) -> list[dict[str, str]]:
-        incident_id = str(incident["id"])
-        muted = bool(incident.get("notifications_muted"))
-        return [
-            {"text": "AI", "callback_data": self._codec.encode("ai", incident_id)},
-            {
-                "text": "🔔 Включить обратно" if muted else "🔕 Отключить такие",
-                "callback_data": self._codec.encode("unmute" if muted else "mute", incident_id),
-            },
-        ]
+        from .incident_card import controls
+        return [button for row in controls(self._codec, incident, self._center.latest_agent_session(str(incident['id']))) for button in row]
 
     def _allowed(self, user_id: Any) -> bool:
         return str(user_id) in self._allowed_user_ids
@@ -151,43 +181,25 @@ class TelegramInteractionPoller:
         return known.get(plan_id, value or plan_id)
 
     def _dismiss_choice_message(self, callback: dict[str, Any], label: str) -> None:
-        """Remove choice buttons and leave a visible selected marker."""
+        """Remove choice buttons and leave a visible selected marker.
+
+        Thin wrapper over the shared receipt-driven updater so a voice or API
+        resolver marks exactly the same card text.
+        """
         message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
         chat_id = str(message.get("chat", {}).get("id") or "") if isinstance(message.get("chat"), dict) else ""
         message_id = message.get("message_id")
         if not chat_id or not isinstance(message_id, int) or message_id <= 0:
             return
-        current_text = str(message.get("text") or "").rstrip()
-        marker = f"✅ Выбрано: {label[:128]}"
-        budget = 4096 - len(marker.encode("utf-16-le")) // 2 - 2
-        current_text = current_text.encode("utf-16-le")[:max(0, budget) * 2].decode("utf-16-le", errors="ignore")
-        text = f"{current_text}\n\n{marker}" if current_text else marker
-        payload = {
-            "chat_id": chat_id,
-            "message_id": str(message_id),
-            "text": text[:4096],
-            "reply_markup": json.dumps({"inline_keyboard": []}, ensure_ascii=False, separators=(",", ":")),
-        }
-        # Callback text is already rendered; retain its formatting on edit.
-        if isinstance(message.get("entities"), list):
-            limit = len(current_text.encode("utf-16-le")) // 2
-            entities = [entity for entity in message["entities"]
-                        if isinstance(entity, dict)
-                        and isinstance(entity.get("offset"), int)
-                        and isinstance(entity.get("length"), int)
-                        and 0 <= entity["offset"] < entity["offset"] + entity["length"] <= limit]
-            payload["entities"] = json.dumps(entities, ensure_ascii=False)
-        try:
-            self._api("editMessageText", payload)
-        except Exception:
-            # The choice already resumed the session. If text editing is
-            # rejected (for example because Telegram has a stale message
-            # snapshot), still make a best-effort keyboard-only removal.
-            self._api("editMessageReplyMarkup", {
-                "chat_id": chat_id,
-                "message_id": str(message_id),
-                "reply_markup": payload["reply_markup"],
-            })
+        apply_selected_card(
+            self._api,
+            chat_id=chat_id,
+            message_id=message_id,
+            base_text=str(message.get("text") or ""),
+            label=label,
+            entities=message.get("entities"),
+            reply_markup=message.get('reply_markup') if isinstance(message.get('reply_markup'), dict) else None,
+        )
 
     def _mark_health_choice_message(
         self,
@@ -251,25 +263,13 @@ class TelegramInteractionPoller:
         incident = self._center.get_incident(incident_id)
         if not chat_id or not isinstance(message_id, int) or message_id <= 0 or incident is None:
             return
+        from .incident_card import render
+        _, keyboard = render(self._center.incident_card_payload(incident_id), self._codec)
         plans = self._center.latest_health_plans(incident_id)
-        if plans and self._health_plan_codec is not None and str(incident.get("event_type") or "").startswith("health."):
+        if plans and self._health_plan_codec is not None and incident.get('state') != 'resolved':
             selection = self._center.latest_health_selection(incident_id) or {}
-            keyboard = health_plan_keyboard(
-                self._health_plan_codec,
-                incident_id,
-                plans,
-                selected_plan_id=str(selection.get("plan_id") or "") or None,
-            )
-            keyboard["inline_keyboard"].append(self._incident_control_row(incident))
-        else:
-            rows = (
-                [[
-                    {"text": "ACK", "callback_data": self._codec.encode("ack", incident_id)},
-                    {"text": "Snooze 15m", "callback_data": self._codec.encode("snz", incident_id)},
-                ]] if str(incident["severity"]) == "critical" else []
-            )
-            rows.append(self._incident_control_row(incident))
-            keyboard = {"inline_keyboard": rows}
+            keyboard['inline_keyboard'] = health_plan_keyboard(self._health_plan_codec, incident_id, plans,
+                selected_plan_id=str(selection.get('plan_id') or '') or None)['inline_keyboard'] + keyboard['inline_keyboard']
         self._api("editMessageReplyMarkup", {
             "chat_id": chat_id,
             "message_id": str(message_id),
@@ -279,6 +279,43 @@ class TelegramInteractionPoller:
                 separators=(",", ":"),
             ),
         })
+
+    def _handle_human_choice(self, callback: dict[str, Any], callback_id: str, actor_id: Any,
+                             request_id: str, index: str) -> None:
+        """Resolve one choice tap through the same canonical completion."""
+        from .http_api import complete_human_request
+
+        with self._center.delivery_send_lock():
+            request = self._center.get_human_request_from_telegram(request_id)
+            if request.get("original_text") or any(choice.get("value") == "deep_analysis" for choice in request.get("choices", [])):
+                message = callback.get("message") or {}
+                if (str(message.get("chat", {}).get("id")) != str(request.get("telegram_chat_id"))
+                        or message.get("message_id") != request.get("telegram_message_id")):
+                    raise ValidationError("human request callback does not match its original card")
+            choices = request.get("choices") if isinstance(request.get("choices"), list) else []
+            try:
+                selected = choices[int(index)]
+            except (IndexError, TypeError, ValueError):
+                raise ValidationError("human request choice is invalid")
+            if request.get("original_text"):
+                from .human_request_original import render_human_request_original
+                text, _ = render_human_request_original({**request, "state": "pending"})
+                message = {**callback.get("message", {}), "text": text}
+                message.pop("entities", None)
+                callback = {**callback, "message": message}
+            message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+            chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+            completed = complete_human_request(
+                self._center, request, str(selected.get("value") or ""), f"telegram:{actor_id}", "telegram",
+                self._api, base_text=str(message.get("text") or ""), entities=message.get("entities"),
+                chat_id=str(chat.get("id") or ""), message_id=message.get("message_id"),
+                choice_codec=self._codec,
+            )
+        if completed.get("card") == "marked" or completed.get("card") == "already_marked":
+            self._answer(callback_id, f"✅ Выбрано: {completed.get('label') or selected.get('label')}")
+        else:
+            self._answer(callback_id, 'Ответ не принят: вопрос уже закрыт.' if completed.get('answer_status') == 'no_accept'
+                         else 'Ответ сохранён; обновление карточки ожидает подтверждения.')
 
     def _handle_callback(self, callback: dict[str, Any]) -> None:
         callback_id = str(callback.get("id") or "")
@@ -298,7 +335,13 @@ class TelegramInteractionPoller:
                     self._mark_health_choice_message(callback, incident_id, plan_id, label, plans)
                     self._answer(callback_id, f"✅ Выбрано: {label}")
                     return
-            parsed = self._codec.decode(str(callback.get("data") or ""))
+            data = str(callback.get("data") or "")
+            if data.startswith("n:human_choice:"):
+                # Compact selector form first; legacy cards keep the long form.
+                resolved = self._codec.decode_human_choice(data, self._center.human_request_ids())
+                if resolved is not None:
+                    return self._handle_human_choice(callback, callback_id, actor_id, resolved[0], resolved[1])
+            parsed = self._codec.decode(data)
             if parsed is not None and len(parsed) == 2:
                 action, incident_id = parsed
                 if action == "ai":
@@ -312,7 +355,8 @@ class TelegramInteractionPoller:
                     if result.get("state") == "inactive":
                         self._answer(callback_id, "Инцидент уже закрыт; запуск не требуется")
                         return
-                    self._answer(callback_id, "AI уже запущен" if result.get("idempotent") else "AI начал диагностику")
+                    session = self._center.latest_agent_session(incident_id)
+                    self._answer(callback_id, 'ИИ уже работает' if session else 'Задание на исправление принято в очередь')
                     return
                 result = self._center.apply_telegram_action(incident_id, action, f"telegram:{actor_id}")
                 if action in {"mute", "unmute"}:
@@ -326,7 +370,11 @@ class TelegramInteractionPoller:
                     chat_id = str(callback.get("message", {}).get("chat", {}).get("id") or "")
                     if chat_id:
                         self._message(chat_id, f"Reply with /ask {incident_id} followed by your question.")
-                self._answer(callback_id, f"{action}: {result['state']}")
+                if action == 'ack':
+                    self._refresh_action_keyboard(callback, incident_id)
+                    self._answer(callback_id, 'Прочитано. Проверка и исправление продолжаются.')
+                else:
+                    self._answer(callback_id, 'Состояние уведомления обновлено')
                 return
             if parsed is not None and len(parsed) == 3:
                 action, incident_id, plan_id = parsed
@@ -339,60 +387,85 @@ class TelegramInteractionPoller:
                     self._answer(callback_id, f"✅ Выбрано: {label}")
                     return
                 if action == "choice":
-                    if self._choice_callback is None:
-                        raise ValidationError("Agent Herder choice callback is not configured")
-                    selection = self._center.get_telegram_choice(incident_id, plan_id)
-                    selected_choice_id = str(selection["choice_id"])
-                    result = self._choice_callback(
-                        str(selection["request_id"]),
-                        selected_choice_id,
-                        f"telegram:{actor_id}",
-                    )
-                    self._center.record_telegram_choice(
-                        incident_id,
-                        selected_choice_id,
-                        f"telegram:{actor_id}",
-                        str(selection["request_id"]),
-                        str(result.get("status") or "accepted"),
-                    )
-                    if result.get("duplicate") is not True:
-                        self._dismiss_choice_message(callback, str(selection["label"]))
-                    self._answer(callback_id, f"choice: {str(result.get('status') or 'accepted')}")
-                    return
-                if action == "human_choice":
                     with self._center.delivery_send_lock():
-                        request = self._center.get_human_request_from_telegram(incident_id)
-                        if request.get("original_text") or any(choice.get("value") == "deep_analysis" for choice in request.get("choices", [])):
-                            message = callback.get("message") or {}
-                            if (str(message.get("chat", {}).get("id")) != str(request.get("telegram_chat_id"))
-                                    or message.get("message_id") != request.get("telegram_message_id")):
-                                raise ValidationError("human request callback does not match its original card")
-                        choices = request.get("choices") if isinstance(request.get("choices"), list) else []
-                        try:
-                            selected = choices[int(plan_id)]
-                        except (IndexError, TypeError, ValueError):
-                            raise ValidationError("human request choice is invalid")
-                        result = self._center.resolve_human_request_from_telegram(
-                            incident_id, f"telegram:{actor_id}", str(selected.get("value") or "")
+                        selection = self._center.get_telegram_choice(incident_id, plan_id)
+                        selected_choice_id = str(selection["choice_id"])
+                        existing = self._center.selection_receipt(str(selection["request_id"]))
+                        if existing:
+                            result = {"status": "already_answered", "choice_id": existing["choice_id"]}
+                        else:
+                            if self._choice_callback is None:
+                                raise ValidationError("Agent Herder choice callback is not configured")
+                            result = self._choice_callback(
+                                str(selection["request_id"]), selected_choice_id, f"telegram:{actor_id}")
+                        self._center.record_telegram_choice(
+                            incident_id,
+                            selected_choice_id,
+                            f"telegram:{actor_id}",
+                            str(selection["request_id"]),
+                            str(result.get("status") or "accepted"),
                         )
-                        if result.get("response_value") == "deep_analysis":
-                            from .human_request_progress import edit_progress_card
-                            edit_progress_card(result, self._api)
-                            self._center.confirm_human_request_progress_card(incident_id)
-                            self._answer(callback_id, "Принял, запускаю глубокий разбор…" if (result.get("progress") or {}).get("phase") == "accepted" else "Карточка разбора обновлена.")
-                            return
-                        if result.get("original_text"):
-                            from .human_request_original import render_human_request_original
-                            text, _ = render_human_request_original({**result, "state": "pending"})
-                            message = {**callback.get("message", {}), "text": text}
-                            message.pop("entities", None)
-                            callback = {**callback, "message": message}
-                        self._dismiss_choice_message(callback, str(selected.get("label") or selected.get("value") or ""))
-                    self._answer(callback_id, f"choice: {result['state']}")
+                        # Agent Herder owns the accepted option for the bound native
+                        # session. When it answers with its own choice identity, that
+                        # canonical result wins over the option tapped here, so a
+                        # voice answer followed by a tap marks one and the same card.
+                        canonical = canonical_choice_ref(str(result.get("choice_id") or selected_choice_id))
+                        if canonical not in {str(choice["choice_id"]) for choice in self._center.latest_choice_request(incident_id)["choices"]}:
+                            canonical = canonical_choice_ref(selected_choice_id)
+                        label = next(
+                            (str(choice["label"]) for choice in self._center.latest_choice_request(incident_id)["choices"]
+                             if canonical_choice_ref(str(choice["choice_id"])) == canonical),
+                            str(selection["label"]),
+                        )
+                        message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+                        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+                        from .incident_card import render
+                        current_text = render(self._center.incident_card_payload(incident_id), self._codec)[0]
+                        applied = apply_selection_receipt(
+                            self._center,
+                            self._api,
+                            request_id=str(selection["request_id"]),
+                            incident_id=incident_id,
+                            choice_id=canonical,
+                            label=label,
+                            actor=f"telegram:{actor_id}",
+                            source="telegram",
+                            base_text=current_text,
+                            chat_id=str(chat.get("id") or ""),
+                            message_id=message.get("message_id"),
+                            choice_buttons=[{"choice_id": str(choice["choice_id"]), "label": str(choice["label"]),
+                                             "callback_data": self._codec.encode("choice", incident_id, choice_id=str(index))}
+                                            for index, choice in enumerate(self._center.latest_choice_request(incident_id)["choices"])],
+                            reply_markup={'inline_keyboard': incident_controls(
+                                self._codec, self._center.get_incident(incident_id), self._center.latest_agent_session(incident_id))},
+                        )
+                        self._answer(callback_id, f"✅ Выбрано: {applied['selection']['label']}")
+                        return
+                if action == "human_choice":
+                    self._handle_human_choice(callback, callback_id, actor_id, incident_id, plan_id)
                     return
             self._answer(callback_id, "Недопустимое действие")
         except (ValidationError, ValueError) as error:
             self._answer(callback_id, str(error)[:180])
+
+    def _relay_reply_to_session(self, incident: Mapping[str, Any], text: str, chat_id: str, message_id: Any) -> bool:
+        """Best-effort operator reply forwarding into the incident's live agent session."""
+        try:
+            from .agent_job_helper import relay_operator_reply
+            session = self._center.latest_health_agent_session(str(incident.get("id") or ""))
+            if not session:
+                return False
+            return relay_operator_reply(
+                session["harness"],
+                session["session_id"],
+                str(incident.get("id") or ""),
+                text,
+                f"{chat_id}:{message_id}",
+            )
+        except Exception:
+            # The reply is already durably attached to the incident; a failed
+            # relay must never break the Telegram poll loop.
+            return False
 
     def _handle_message(self, message: dict[str, Any]) -> None:
         actor_id = message.get("from", {}).get("id")
@@ -404,16 +477,39 @@ class TelegramInteractionPoller:
         reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else {}
         reply_message_id = reply.get("message_id")
         if allowed_actor and chat_id and isinstance(reply_message_id, int) and text:
-            resolved = self._center.resolve_human_reply_from_telegram(
-                chat_id, reply_message_id, f"telegram:{actor_id}", text
-            )
-            if resolved is not None:
+            from .http_api import complete_human_request
+            try:
+                answered = self._center.human_request_for_reply(chat_id, reply_message_id, f"telegram:{actor_id}")
+            except ValidationError as error:
+                with self._center._lock, self._center._connection:
+                    self._center._audit(None, 'human_request.reply_rejected', f'telegram:{actor_id}', {'reason': str(error)})
+                return
+            if answered is not None:
+                # One canonical completion for a free-text answer too: the same
+                # card is marked and the bound native session continues once.
+                completed = complete_human_request(
+                    self._center, answered, text, f"telegram:{actor_id}", "telegram_text", self._api,
+                    chat_id=chat_id, message_id=reply_message_id,
+                )
+                native_status = (completed.get("native") or {}).get("status")
+                if completed.get("answer_status") == "no_accept":
+                    notice = "Ответ не принят: вопрос уже закрыт."
+                elif native_status in {"resuming", "resumed", "sent"}:
+                    notice = "Ответ принят и передан в сессию агента."
+                elif native_status == "retryable":
+                    notice = "Ответ сохранён. Сессия агента временно недоступна; передача будет повторена."
+                elif native_status in {"unknown", "sending"}:
+                    notice = "Ответ сохранён. Подтверждение передачи в сессию агента пока не получено."
+                else:
+                    notice = "Ответ принят."
+                if not answered.get('incident_id'):
+                    self._message(chat_id, notice)
                 return
             incident = self._center.record_telegram_reply(
                 chat_id, reply_message_id, f"telegram:{actor_id}", text
             )
             if incident is not None:
-                self._message(chat_id, "Ответ привязан к инциденту.")
+                self._relay_reply_to_session(incident, text, chat_id, message_id)
                 return
         if (
             self._inbox_sink is not None

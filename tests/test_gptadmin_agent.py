@@ -128,7 +128,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(1, rows["count"])
 
-    def test_ordinary_health_waits_for_diagnosis_but_incomplete_signal_does_not_launch(self) -> None:
+    def test_ordinary_health_is_visible_but_incomplete_signal_does_not_launch(self) -> None:
         center = NotificationCenter(
             Path(self.tempdir.name) / "health-policy.sqlite3",
             {"health-token": {"project": "health-monitor", "max_severity": "critical", "agent_jobs": ["health-diagnosis"]}},
@@ -155,7 +155,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
             {**base, "severity": "critical", "dedup_key": "health:incomplete", "correlation_id": ""},
         )
         self.assertIsNotNone(important["agent_job_delivery_id"])
-        self.assertIsNone(important["initial_delivery_id"])
+        self.assertIsNotNone(important["initial_delivery_id"])
         self.assertIsNone(incomplete["agent_job_delivery_id"])
 
     def test_crash_reopen_reclaims_same_delivery_key_and_same_hub_job(self) -> None:
@@ -780,7 +780,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         reclaimed = self.center.claim_due_deliveries(now_epoch=10**12 + 10_000)
         self.assertNotIn(delivery["id"], {item["id"] for item in reclaimed})
 
-    def test_acknowledge_wins_over_late_terminal_agent_failure(self) -> None:
+    def test_acknowledge_preserves_native_job_and_its_actual_terminal_failure(self) -> None:
         created = self.center.create_event("allowed", "late-failed-agent-job", self.event)
         due = self.center.claim_due_deliveries(now_epoch=10**12)
         delivery = next(item for item in due if item["id"] == created["agent_job_delivery_id"])
@@ -794,7 +794,8 @@ class GptAdminAgentJobTests(unittest.TestCase):
         worker.deliver(delivery)
 
         row = self.center._connection.execute("SELECT status FROM deliveries WHERE id = ?", (delivery["id"],)).fetchone()
-        self.assertEqual("cancelled", row["status"])
+        self.assertEqual("failed", row["status"])
+        self.assertEqual("acknowledged", self.center.get_incident(created["incident_id"])["state"])
 
     def test_adapter_bounds_hub_response_body(self) -> None:
         class OversizedResponse(_Response):

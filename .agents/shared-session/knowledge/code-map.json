@@ -155,6 +155,212 @@
       ],
       "summary": "Manual AI must persist the clicked card and mark selection before session delivery; ordinary incidents with a manual request need immediate session registration and terminal harness/model fallback. TelegramSender edits the original ID; plan migration retains URL.",
       "verified_at": "2026-10-06T12:19:51.767410+03:00"
+    },
+    "noticeplace.repair-first.execution": {
+      "confidence": "verified",
+      "evidence": [
+        "tests/test_repair_first_incident.py: actual persisted legacy template RED; scoped source/evidence, no planner, plain GSD, running observer and adapter/core regression"
+      ],
+      "git_head": "6a43747001fbb3c5ed982d7844081c565b85d936",
+      "key": "noticeplace.repair-first.execution",
+      "kind": "failure-shield",
+      "locations": [
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5729102e6fb1e129b7ec9f8edbd651470b7941913085b2109a24f4b47c976066",
+          "path": "notification_center/agent_job_helper.py",
+          "symbol": "_repair_first_message"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5729102e6fb1e129b7ec9f8edbd651470b7941913085b2109a24f4b47c976066",
+          "path": "notification_center/agent_job_helper.py",
+          "symbol": "_run_health_diagnosis"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5729102e6fb1e129b7ec9f8edbd651470b7941913085b2109a24f4b47c976066",
+          "path": "notification_center/agent_job_helper.py",
+          "symbol": "arm_session_autopilot"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5e82957e9b9442ed68c9980ae6f3bc00ba1a1711fa4ea1add763d59b04a68e96",
+          "path": "notification_center/gptadmin_agent.py",
+          "symbol": "_agent_job_event"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "5e82957e9b9442ed68c9980ae6f3bc00ba1a1711fa4ea1add763d59b04a68e96",
+          "path": "notification_center/gptadmin_agent.py",
+          "symbol": "_bounded_agent_receipt"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "9c98149568c1fa7789ee303366a1039abec11f2257f1f18db25fe144e34ab399",
+          "path": "notification_center/core.py",
+          "symbol": "_record_health_repair_first_receipt"
+        }
+      ],
+      "summary": "Replace persisted diagnosis/planner prose with one source-owned original-GSD repair prompt and bounded original source/evidence. Plain native terminal completes observer; running observer deadline leaves existing native autopilot working. Receipt identity and noticeIncident binding preserve original incident completion.",
+      "verified_at": "2026-10-12T00:25:52.987607+03:00"
+    },
+    "noticeplace.telegram.canonical-card": {
+      "confidence": "verified",
+      "evidence": [
+        "tests/test_incident_card_delivery.py: diagnosis-before-initial, concurrent connections, unknown creation, terminal races, partial group recovery and concrete-child ACK",
+        "tests/test_ready_mcp_binding.py: actual HTTP/button/reply closure gate and canonical linked legacy progress"
+      ],
+      "git_head": "6a43747001fbb3c5ed982d7844081c565b85d936",
+      "key": "noticeplace.telegram.canonical-card",
+      "kind": "production-path",
+      "locations": [
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "9c98149568c1fa7789ee303366a1039abec11f2257f1f18db25fe144e34ab399",
+          "path": "notification_center/core.py",
+          "symbol": "reserve_delivery_send"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "9c98149568c1fa7789ee303366a1039abec11f2257f1f18db25fe144e34ab399",
+          "path": "notification_center/core.py",
+          "symbol": "original_telegram_card"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "77e7491e5da5320cd658fe688cad6775b90a7eb3db36bee2b4ff409865633307",
+          "path": "notification_center/incident_card.py",
+          "symbol": "render"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "a65135879b22d8e821285dc2feaa79ba90a9e6fc8531d05048a3ec9b42c89608",
+          "path": "notification_center/incident_progress.py",
+          "symbol": "IncidentProgressReader.run_once"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "083ab1218182c38d77a9e2387f0e685159f2f7355e70833dd59d8835c7fcafbb",
+          "path": "bin/notify-center",
+          "symbol": "worker_loop"
+        }
+      ],
+      "summary": "All Telegram stages reuse the first confirmed card; SQLite creation fence blocks sending/uncertain replay. Separate incident records retain state, repair, audits and member-specific ACK. Existing pool reads exact native session, latest durable projection.",
+      "verified_at": "2026-10-12T00:25:52.888435+03:00"
+    },
+    "noticeplace.mcp.progress-project-scope": {
+      "key": "noticeplace.mcp.progress-project-scope",
+      "kind": "failure-shield",
+      "confidence": "verified",
+      "git_head": "127f0abf6d599337bfde205e4d25bf13da4d6016",
+      "verified_at": "2026-10-12T00:34:01.259673+03:00",
+      "summary": "Automated progress uses original project Notice API auth without unused human actors gate. Human tools retain actors; global Hermes token cannot post Autosell progress. Existing protected project-map callback is the fallback.",
+      "evidence": [
+        "tests/test_ready_mcp_binding.py::test_automated_progress_needs_only_original_project_auth_not_human_actors: meaningful RED then real MCP/HTTP/DB GREEN; wrong project denied, question actors retained"
+      ],
+      "locations": [
+        {
+          "path": "mcp/notify_mcp.py",
+          "symbol": "tool_noticeplace_incident_progress",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "aa10ef369af517be179ea51a01e51ba69884265e6791eef6acbc8e2f9d4382e7"
+        }
+      ]
+    },
+    "noticeplace.execution-display": {
+      "key": "noticeplace.execution-display",
+      "kind": "failure-shield",
+      "confidence": "verified",
+      "summary": "Generic executor identity belongs to typed event.execution_identity, independent of truncated body/project context. Display only: never assign ai_session/job/readback/native rights. Exact supplied URL, legacy honest unknown, bound receipt priority.",
+      "git_head": "2c54bd89458fccfefeedce90c5447d93b57fd976",
+      "verified_at": "2026-10-12T01:16:45.598968+03:00",
+      "evidence": [
+        "tests/test_execution_identity.py: RED then actual HTTP/DB/reopen/worker long summary one message42/edit42; auth/authority rejection, legacy/no-URL, native priority and JS encoding GREEN"
+      ],
+      "locations": [
+        {
+          "path": "notification_center/core.py",
+          "symbol": "_validate_execution_identity/latest_execution_identity/delivery_payload",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "f3b28e320a728a4381ef32b00a1827aeb3ed9c597c6982ddfcaaeec0cdeee471"
+        },
+        {
+          "path": "notification_center/incident_card.py",
+          "symbol": "render/controls/display_session_url",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "98abeb5506034f0f9725b6708862c5b0dab4fb3e323c032c6966f7c07308aa86"
+        }
+      ]
+    },
+    "noticeplace.notification-informational": {
+      "key": "noticeplace.notification-informational",
+      "kind": "failure-shield",
+      "confidence": "verified",
+      "summary": "Unbound kind=notification is informational, not health admission/running repair. No AI start callback; typed agent.done may report completion, prose/legacy never determines status. ACK/mute/choices/native display link and real admitted health controls remain.",
+      "git_head": "08ed03b91a4fbdead229e9ffe984eb413214604a",
+      "verified_at": "2026-10-12T01:28:43.730487+03:00",
+      "evidence": [
+        "tests/test_execution_identity.py: real HTTP/DB/restart/worker RED then GREEN for explanatory text/no-AI; typed vs prose and critical ACK/mute/choices/link; release82 PASS"
+      ],
+      "locations": [
+        {
+          "path": "notification_center/incident_card.py",
+          "symbol": "render/controls",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "7bb550cf106c7427f51e6ee5f6dcb95484b0334cc868dfc14819ecc8a3d7055c"
+        }
+      ]
+    },
+    "noticeplace.plugin.hermes-stdio": {
+      "key": "noticeplace.plugin.hermes-stdio",
+      "kind": "failure-shield",
+      "confidence": "verified",
+      "summary": "Portable AgentPlugins stdio command must be bare or ./package-relative. Immutable0.1.1 ships a package launcher forwarding to the existing protected runtime; native harness projections remain unchanged. Official Hermes PluginManager normalizes server names; derive ownership map for native discovery, never add a manual duplicate MCP.",
+      "git_head": "547f9e36fc7dac9e3e6665c5ea57e8e23ede52b7",
+      "verified_at": "2026-10-12T03:51:12.196418+03:00",
+      "evidence": [
+        "Actual official Hermes c573316 loader RED then4 focused GREEN; native-root spaces/projections/validator",
+        "Official pinned installer source547f9e3 and native registry one noticeplace_instructions PASS6106bytes; immutable env/config/foreign10 staged WIP guards"
+      ],
+      "locations": [
+        {
+          "path": "noticeplace-plugin/packages/noticeplace/0.1.1/mcp.json",
+          "symbol": "mcpServers.NoticePlace",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "ff8df5a34289f2e6778e22d19cc246ea1cdd32310a167c039fc2186ba9b04d96"
+        },
+        {
+          "path": "noticeplace-plugin/packages/noticeplace/0.1.1/bin/ask-human-mcp",
+          "symbol": "runtime-forwarding",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "449eb2ae9dfeebff50dfe4c259cd5479c561be0ec4844c47395013e6a850c0a9"
+        },
+        {
+          "path": "noticeplace-plugin/packages/noticeplace/0.1.1/scripts/validate_plugin.py",
+          "symbol": "validate",
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "046cdd3bdd917db8b05553377075904ede04f41f81e5bd255007e98abe91981c"
+        }
+      ]
     }
   },
   "schema_version": 1

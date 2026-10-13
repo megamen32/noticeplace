@@ -27,6 +27,8 @@ class HumanRequestProgressTests(unittest.TestCase):
         self.tokens = {"owner": {"project": "userio", "max_severity": "critical"},
                        "other": {"project": "other", "max_severity": "critical"}}
         self.center = NotificationCenter(self.path, self.tokens)
+        callback_env=mock.patch.dict(os.environ, {'TELEGRAM_CALLBACK_SECRET':'x'*32})
+        callback_env.start(); self.addCleanup(callback_env.stop)
         self.center.create_human_request("owner", {
             "schema": "ask_human.request.v1", "request_id": "r1", "project": "userio",
             "recipient": "owner", "mode": "choice", "message": "Разобрать сообщение?",
@@ -115,7 +117,7 @@ class HumanRequestProgressTests(unittest.TestCase):
         for method, payload in self.calls:
             self.assertEqual("editMessageText", method)
             self.assertEqual(("-1001", 501), (payload["chat_id"], payload["message_id"]))
-            self.assertEqual(URL, json.loads(payload["reply_markup"])["inline_keyboard"][0][0]["url"])
+            self.assertEqual(URL, json.loads(payload["reply_markup"])["inline_keyboard"][-1][0]["url"])
         self.assertIn("Ответ подготовлен", self.calls[-1][1]["text"])
         for key in ("response_actor", "response_value", "resolved_at", "telegram_chat_id", "telegram_message_id"):
             self.assertEqual(before[key], after[key])
@@ -149,7 +151,7 @@ class HumanRequestProgressTests(unittest.TestCase):
         refresh_human_request_progress(self.center, "owner", "r1", {"phase": "running", "session_url": URL}, api=self.api)
         refresh_human_request_original(self.center, "owner", "r1", "Исходное сообщение", api=self.api)
         self.assertIn(URL, self.calls[-1][1]["text"])
-        self.assertEqual(URL, json.loads(self.calls[-1][1]["reply_markup"])["inline_keyboard"][0][0]["url"])
+        self.assertEqual(URL, json.loads(self.calls[-1][1]["reply_markup"])["inline_keyboard"][-1][0]["url"])
 
     def test_callback_immediately_edits_accepted_and_replay_does_not_revert_running(self):
         codec = TelegramActionCodec("x" * 32)
@@ -159,7 +161,7 @@ class HumanRequestProgressTests(unittest.TestCase):
         poller._handle_callback(callback)
         self.assertEqual("accepted", self.center.get_human_request("owner", "r1")["progress"]["phase"])
         self.assertIn("Принял, запускаю глубокий разбор…", self.calls[0][1]["text"])
-        self.assertEqual([], json.loads(self.calls[0][1]["reply_markup"])["inline_keyboard"])
+        self.assertEqual(['✅ Глубокий разбор','Неважно'],[row[0]['text'] for row in json.loads(self.calls[0][1]['reply_markup'])['inline_keyboard']])
         refresh_human_request_progress(self.center, "owner", "r1", {"phase": "running", "session_url": URL}, api=self.api)
         poller._handle_callback(callback)
         edit = [payload for method, payload in self.calls if method == "editMessageText"][-1]
@@ -264,7 +266,7 @@ class HumanRequestProgressTests(unittest.TestCase):
         self.assertEqual("Разбор готов", result["progress"]["message"])
         self.assertEqual(URL, result["progress"]["session_url"])
         self.assertIn("Разбор готов", self.calls[-1][1]["text"])
-        self.assertEqual(URL, json.loads(self.calls[-1][1]["reply_markup"])["inline_keyboard"][0][0]["url"])
+        self.assertEqual(URL, json.loads(self.calls[-1][1]["reply_markup"])["inline_keyboard"][-1][0]["url"])
         repeated = refresh_human_request_progress(self.center, "owner", "r1", {"phase": "running", "session_url": URL}, api=self.api)
         self.assertEqual(result["progress"], repeated["progress"])
         self.assertEqual(finished["resolved_at"], result["resolved_at"])
