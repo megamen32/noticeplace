@@ -23,6 +23,9 @@ def main():
             target=Path('/etc')/name
             if target.exists():raise RuntimeError('existing operator configuration requires reconciliation')
             target.write_bytes((inputs/name).read_bytes());target.chmod(0o600)
+        admin_config=Path('/etc/notification-center-admin.env')
+        lines=[line for line in admin_config.read_text().splitlines() if not line.startswith('NOTIFY_ADMIN_PORT=')]
+        admin_config.write_text('\n'.join(lines+['NOTIFY_ADMIN_PORT='+str(admin_port)])+'\n')
         admin_unit=Path('/opt/noticeplace/deploy/notification-center-admin.service').read_text()
         admin_unit=admin_unit.replace('[Service]', '[Service]\nEnvironment=NOTIFY_ADMIN_PORT='+str(admin_port))
         (units/'notification-center-admin.service').write_text(admin_unit)

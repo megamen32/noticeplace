@@ -9,6 +9,7 @@ import json
 import socket
 import sqlite3
 import time
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -68,7 +69,7 @@ class Cursor:
 
 
 class Connection:
-    """One pinned real SQL connection; core's RLock serializes local callers."""
+    """One pinned SQL connection with serialized frames and transaction ownership."""
 
     row_factory: Any = None
 
@@ -76,6 +77,7 @@ class Connection:
         if not Path(socket_path).is_absolute():
             raise ValueError("mesh database socket must be absolute")
         self.socket_path = socket_path
+        self._io_lock = threading.RLock()
         self._socket: socket.socket | None = None
         self._reader: Any = None
         self._depth = 0
@@ -84,6 +86,10 @@ class Connection:
         self._readonly_applied = False
 
     def close(self) -> None:
+        with self._io_lock:
+            self._close_locked()
+
+    def _close_locked(self) -> None:
         if self._reader is not None:
             self._reader.close()
         if self._socket is not None:
@@ -92,6 +98,10 @@ class Connection:
         self._readonly_applied = False
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._io_lock:
+            return self._request_locked(payload)
+
+    def _request_locked(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode() + b"\n"
         if len(data) > MAX_FRAME:
             raise sqlite3.DataError("bounded SQL request exceeded")
@@ -126,6 +136,10 @@ class Connection:
         return result
 
     def execute(self, statement: str, parameters: Any = ()) -> Cursor:
+        with self._io_lock:
+            return self._execute_locked(statement, parameters)
+
+    def _execute_locked(self, statement: str, parameters: Any = ()) -> Cursor:
         if self._transaction_failed and self._depth:
             raise sqlite3.OperationalError("mesh transaction lost; cannot continue on another connection")
         word = statement.lstrip().split(None, 1)[0].upper()
@@ -160,6 +174,14 @@ class Connection:
             self.execute(current)
 
     def __enter__(self):
+        self._io_lock.acquire()
+        try:
+            return self._enter_locked()
+        except BaseException:
+            self._io_lock.release()
+            raise
+
+    def _enter_locked(self):
         if self._depth == 0:
             self._transaction_failed = False
             # BEGIN has no business side effect. A busy writer can be waited
@@ -179,6 +201,12 @@ class Connection:
         return self
 
     def __exit__(self, exc_type, exc, traceback):
+        try:
+            return self._exit_locked(exc_type, exc, traceback)
+        finally:
+            self._io_lock.release()
+
+    def _exit_locked(self, exc_type, exc, traceback):
         self._depth -= 1
         if exc_type is not None:
             self._transaction_failed = True
@@ -202,6 +230,10 @@ class Connection:
         return self._request({"op": "cluster"})
 
     def batch(self, statements: list[tuple[str, list[Any]]]) -> Cursor:
+        with self._io_lock:
+            return self._batch_locked(statements)
+
+    def _batch_locked(self, statements: list[tuple[str, list[Any]]]) -> Cursor:
         if self._depth or self.readonly:
             raise sqlite3.OperationalError("SQL batch requires an independent write connection")
         return Cursor(self._request({"op": "batch", "statements": [

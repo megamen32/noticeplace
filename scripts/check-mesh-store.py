@@ -207,6 +207,29 @@ def main() -> None:
         except ValueError:
             pass
         assert centers[1].get_runtime_setting("mesh-rollback") is None
+        # A caller sharing one IPC connection must never read another thread's
+        # uncommitted transaction or steal that thread's protocol response.
+        shared=centers[0]._connection
+        entered,reader_started=threading.Event(),threading.Event()
+        def rollback_thread():
+            try:
+                with shared:
+                    shared.execute('INSERT INTO runtime_settings(key,value,updated_at) VALUES(?,?,?)',
+                                   ('mesh-thread-rollback','uncommitted',time.time()))
+                    entered.set()
+                    assert reader_started.wait(2)
+                    time.sleep(.05)
+                    raise ValueError('intentional thread rollback')
+            except ValueError:pass
+        def concurrent_reader():
+            assert entered.wait(2)
+            reader_started.set()
+            return shared.execute('SELECT value FROM runtime_settings WHERE key=?',('mesh-thread-rollback',)).fetchone()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            writer=pool.submit(rollback_thread)
+            reader=pool.submit(concurrent_reader)
+            writer.result(timeout=5)
+            assert reader.result(timeout=5) is None, 'shared connection leaked a foreign uncommitted transaction'
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
             claims = list(pool.map(lambda center: center.claim_due_deliveries(limit=1, channel_group="message"), centers))
         claimed = [row for rows in claims for row in rows]
