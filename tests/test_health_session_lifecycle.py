@@ -139,9 +139,10 @@ class HealthSessionLifecycleTests(unittest.TestCase):
                 return Mock(done=lambda: True)
         worker = Mock(_center=self.center)
         worker.claim_due.return_value = []
+        ticks = iter([0, 0])  # initial archive/progress deadlines
         with patch.object(daemon, 'ThreadPoolExecutor', Executor), \
-             patch.object(daemon.time, 'monotonic', side_effect=[0, 61]), \
-             patch.object(daemon.time, 'sleep', side_effect=StopIteration('one bounded iteration')), \
+             patch.object(daemon.time, 'monotonic', side_effect=lambda: next(ticks,61)), \
+             patch.object(daemon.time, 'sleep', side_effect=[None,StopIteration('two bounded iterations')]), \
              patch('notification_center.health_session_lifecycle._read_json_request', side_effect=read):
             with self.assertRaises(StopIteration):
                 daemon.worker_loop(worker, 'agent', 1)

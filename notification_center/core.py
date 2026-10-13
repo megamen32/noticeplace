@@ -1839,11 +1839,19 @@ class NotificationCenter:
                                            "ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident_id,)).fetchone()
             return self._human_request_result(self._expire_human_request(row)) if row else None
 
-    def queue_incident_card_refresh(self, incident_id: str, now: float | None = None) -> str:
+    def queue_incident_card_refresh(self, incident_id: str, now: float | None = None) -> str | None:
         """Latest state is read at delivery; the existing queue survives restarts."""
         with self._lock, self._connection:
             from .incident_card import setting
             now = time.time() if now is None else now
+            if (self.health_notification_review_required(incident_id)
+                    and self.original_telegram_card(incident_id) is None
+                    and not (self.health_notification_decision(incident_id) or {}).get('notify_user')):
+                question = self.incident_human_question(incident_id)
+                if not question or question.get('state') != 'pending':
+                    # Progress updates the durable incident without a first
+                    # card. A real pending operator question must stay visible.
+                    return None
             owner = self.get_incident(self.telegram_card_owner(incident_id)) or {}
             due = max(now, float(owner.get('telegram_card_updated_at') or 0) + setting(self, 'telegram_card_edit_interval_seconds'))
             # Only an unadmitted refresh may be reused. Never reset sending/unknown.

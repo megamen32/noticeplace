@@ -10,7 +10,7 @@ from notification_center import agent_job_helper
 from notification_center.agent_job_helper import _extract_health_diagnosis
 from notification_center.gptadmin_agent import _agent_job_event
 from notification_center.gptadmin_agent import GptAdminAgentJobAdapter
-from notification_center.http_api import DeliveryWorker
+from notification_center.http_api import DeliveryWorker, send_human_request_telegram
 
 
 class HealthNotificationDecisionTests(unittest.TestCase):
@@ -78,6 +78,51 @@ class HealthNotificationDecisionTests(unittest.TestCase):
                 'session_id':'native','harness':'opencode','path':'repair-first','observer_only':True,'awaiting_executor':True}})
         self.assertTrue(self.center.health_notification_decision(created['incident_id'])['notify_user'])
         self.assertTrue(self.queued_messages(created['incident_id']))
+
+    def test_progress_refresh_cannot_create_the_first_quiet_card(self):
+        created = self.create()
+        self.center.record_health_agent_session(created['incident_id'],'session','', 'opencode', 'native',
+            'https://agent.bezrabotnyi.com',stage='health-diagnosis')
+        self.assertIsNone(self.center.queue_incident_card_refresh(created['incident_id']))
+        self.assertEqual([],self.queued_messages(created['incident_id']))
+        self.result(created, True)
+        self.assertTrue(self.center.queue_incident_card_refresh(created['incident_id']))
+
+    def test_operator_question_is_not_suppressed_as_pending_observer(self):
+        created = self.create()
+        outcome=self.center.record_agent_job_result(created['incident_id'],created['agent_job_delivery_id'],
+            'health-diagnosis',{'status':'completed','agent_receipt':{'session_id':'native','harness':'opencode',
+                'path':'repair-first','observer_only':True,'awaiting_human':True,'question_ref':'fixture-question'}})
+        self.assertTrue(outcome['awaiting_human'])
+        self.assertTrue(self.center.health_notification_decision(created['incident_id'])['notify_user'])
+        self.assertTrue(self.queued_messages(created['incident_id']))
+
+    def test_pending_incident_question_creates_card_before_executor_receipt(self):
+        created = self.create()
+        request = self.center.create_human_request('token', {
+            'schema': 'ask_human.request.v1', 'request_id': 'operator-decision',
+            'project': 'fleet', 'recipient': 'me', 'mode': 'question',
+            'message': 'Для восстановления нужен ваш выбор.',
+            'allowed_actors': ['telegram:42'], 'incident_id': created['incident_id'],
+        })
+        self.assertIsNone(self.center.health_notification_decision(created['incident_id']))
+        with patch.dict('os.environ', {'TELEGRAM_BOT_TOKEN': 'fixture', 'TELEGRAM_CHAT_ID': '42'}):
+            result = send_human_request_telegram(self.center, 'token', request)
+        self.assertEqual('queued', result['status'])
+        self.assertEqual(1, len(self.queued_messages(created['incident_id'])))
+        self.assertEqual('pending', self.center.incident_human_question(created['incident_id'])['state'])
+
+    def test_answered_incident_question_does_not_release_quiet_progress(self):
+        created = self.create()
+        self.center.create_human_request('token', {
+            'schema': 'ask_human.request.v1', 'request_id': 'answered-decision',
+            'project': 'fleet', 'recipient': 'me', 'mode': 'question',
+            'message': 'Нужен ваш выбор.', 'allowed_actors': ['telegram:42'],
+            'incident_id': created['incident_id'],
+        })
+        self.center.resolve_human_request('token', 'answered-decision', 'telegram:42', 'Продолжить')
+        self.assertIsNone(self.center.queue_incident_card_refresh(created['incident_id']))
+        self.assertEqual([], self.queued_messages(created['incident_id']))
 
     def test_phase_closure_of_quiet_warning_does_not_create_recovery_card(self):
         created = self.create()
