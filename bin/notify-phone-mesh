@@ -87,10 +87,10 @@ class PhoneControl:
         busy=lease is not None and lease['expires_at']>time.time()
         if operator:
             busy=busy or json.loads(operator)['expires_at']>time.time()
-        return {'ready':registered and active==0 and not busy and self.phone_idle()}
+        return {'ready':registered and active==0 and not busy and self.phone_idle(require_local_peer=True)}
 
     @staticmethod
-    def phone_idle():
+    def phone_idle(*,require_local_peer=False):
         """A stale PBX registration cannot prove the physical phone is idle.
 
         Use the existing native lease and reverse SSH. Unknown/busy stays
@@ -105,10 +105,21 @@ class PhoneControl:
             lease_id=json.loads(claim.stdout)['lease_id']
             result=subprocess.run(['ssh','-i','/home/roomhacker/.ssh/phone_gateway_ed25519',
                 '-p','22220','-o','BatchMode=yes','-o','ConnectTimeout=4','-o','LogLevel=ERROR',
-                'phone@127.0.0.1',"su -c dumpsys\\ telephony.registry | sed -n 's/.*mCallState=\\([0-9]\\).*/\\1/p'"],
+                'phone@127.0.0.1',
+                "su -c 'dumpsys telephony.registry' | sed -n 's/.*mCallState=\\([0-9]\\).*/\\1/p'; "
+                "su -c 'cat /data/user/0/com.callagent.gateway/shared_prefs/gateway.xml' | "
+                "sed -n 's/.*<string name=\"noticeplace_mesh_peer\">\\([^<]*\\)<.*/peer:\\1/p'"],
                 capture_output=True,text=True,timeout=8)
-            states=result.stdout.split()
-            return result.returncode==0 and bool(states) and all(value=='0' for value in states)
+            lines=result.stdout.split()
+            states=[value for value in lines if not value.startswith('peer:')]
+            peers=[value[5:] for value in lines if value.startswith('peer:')]
+            local={
+                'roomhacker-server-100':{'192.168.2.100','100.65.58.36'},
+                'server-44':{'192.168.2.5','100.109.149.33'},
+                'roomhacker-server-88':{'192.168.2.75','100.101.226.91'},
+            }.get(socket.gethostname(),set())
+            matches=not require_local_peer or (len(peers)==1 and peers[0] in local)
+            return result.returncode==0 and bool(states) and all(value=='0' for value in states) and matches
         except (OSError,ValueError,subprocess.SubprocessError):
             return False
         finally:

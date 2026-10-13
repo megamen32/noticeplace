@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_FRAME = 16 * 1024 * 1024
+ASCII_LOWER = str.maketrans('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
 
 
 class Row:
@@ -26,10 +27,12 @@ class Row:
     def __getitem__(self, key):
         if isinstance(key, (int, slice)):
             return self._values[key]
-        try:
-            return self._values[self._columns.index(key)]
-        except ValueError as error:
-            raise IndexError("No item with that key") from error
+        if isinstance(key,str):
+            folded=key.translate(ASCII_LOWER)
+            for index,column in enumerate(self._columns):
+                if column.translate(ASCII_LOWER)==folded:
+                    return self._values[index]
+        raise IndexError("No item with that key")
 
     def __iter__(self):
         return iter(self._values)
