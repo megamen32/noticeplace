@@ -88,8 +88,11 @@ Environment=GOMAXPROCS=2
 # Unix socket, preventing a bootstrap-ID collision with another local cluster.
 Environment=SNAP_INSTANCE_NAME=noticeplace-mesh
 CPUQuota=200%
-MemoryHigh=1536M
-MemoryMax=2G
+# The frozen production import measured1.63GiB anonymous memory before its
+# midpoint and126892 high-limit stalls, with zero OOMs and51GiB available.
+# Keep a finite working set for the full database and its replicated VFS.
+MemoryHigh=3G
+MemoryMax=4G
 MemorySwapMax=0
 TasksMax=128
 IOWeight=20
