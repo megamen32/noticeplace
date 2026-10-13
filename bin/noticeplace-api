@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Run the canonical HTTP API without delivery, polling or native executors."""
+import json
+import os
+from pathlib import Path
+import sys
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from notification_center.core import NotificationCenter
+from notification_center.http_api import run_http
+
+
+def main():
+    tokens=json.loads(os.environ['NOTIFY_CENTER_TOKENS_JSON'])
+    if not isinstance(tokens,dict) or not tokens:raise RuntimeError('explicit producer scopes required')
+    for name in ('NOTIFY_CENTER_HEALTH_TOKEN',):
+        if not os.environ.get(name):raise RuntimeError(name+' is required')
+    database=os.environ['NOTIFY_CENTER_DB']
+    if not database.startswith('mesh:'):raise RuntimeError('container API requires the existing mesh store')
+    if database.startswith('mesh:'):
+        from notification_center.mesh_core import normalize
+        hosts=json.loads(os.environ['NOTICEPLACE_MESH_HOSTS_JSON'])
+        route=normalize(os.environ['NOTICEPLACE_MESH_CORE_SOCKET'],os.environ['NOTICEPLACE_MESH_HOST_ID'],hosts)
+        if set(route['hosts'])!=set(hosts):raise RuntimeError('authorized mesh host set differs')
+    center=NotificationCenter(database,tokens)
+    run_http(center,os.environ.get('NOTIFY_CENTER_HOST','127.0.0.1'),int(os.environ.get('NOTIFY_CENTER_PORT','8091')),
+        producer_only=True)
+
+
+if __name__=='__main__':main()

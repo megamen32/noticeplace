@@ -2,9 +2,21 @@
 
 Owner: Codex current chat `01a1328a-6739-7df3-9514-ecac740951a8`.
 Requested: HTTP/curl requests, incident intake and processing, and telephone calls must continue when one of the service nodes (100,44,88) fails.
-Status: **in progress; HTTP/incident delivery verified; standby voice assistant remains incomplete**.
+Status: **in progress; HTTP/incident delivery verified; standby SDK replies verified; physical backup call and container/K3s pilot acceptance pending**.
 
-## Verified current state (2026-10-13, latest)
+## Latest voice and container checkpoint
+
+The standby deployment defect is corrected in published infrastructure source03a4f079d3d97d7b699b6a56e40055f7614ac78d (integrated mainab48f9c1). Real fleet Herder already existed on44/88 at18791. Protected MCP URL/env are now retained; native session MCP gets the host-local endpoint. The SDK package named mcp must precede NoticePlace's separate mcp package, so the mesh reader appends its source root rather than using a shadowing PYTHONPATH. Native session data stays on its existing symlink; frozen bridge SHA7b2c7c4ccb8271887d9e78cf6918ed2ac865d59066b7cc02c05338f01946bda9 is retained.
+
+Root-owned source-labelled correction overlays are installed on44/88. Actual SDK startup produced ready frames in4.925s/7.768s. Real stdio MCP read shared owner incidents on each node; fresh read-only SDK/provider answers completed in6.034s/12.110s. No prior conversation, phone call, SMS or native action was replayed. These checks prove the deployed SDK/MCP/data/provider path, not heard phone acceptance.
+
+The user subsequently called; the actual callbf382353-3e49-43d0-b914-a945533a3441 reached100, generated three real assistant turns and transmitted PCM, then ended. It is primary voice proof, not standby proof. Final APK SIP exclusions and an audible conversation through44/88 remain outstanding. Own lease77cb4466a0d44a7f83f7e3fd2a72ff7a was released and free was verified. Voice owner01a13118/01a12c50 received exact standby paths and now owns reviewed Google24k/atempo1.35 bridge/speed parity delivery; preserve this task's corrected SDK/MCP files and reconcile the next runtime source before HA canary.
+
+Reviewed container source inputs add a producer-only event API launcher, pinned Python OCI base, bounded Compose wiring and real HTTP/quorum readiness. The image has no delivery/poller/native executor. Source review found and corrected missing health authorization, MCP job escape, local SQLite fallthrough and immediate HumanRequest completion delivery. Only POST/v1/events is enabled for this role; native default routes remain unchanged. Candidate build and actual write/native-readback/restart/auth tests are pending; Kubernetes pilot and operational comparison remain pending. No cluster has been installed.
+
+Focused verification: fast unit native auth/MCP regressions2 checks1.605s (expected2s/max5s); executable local-DB rejection0.09s (expected1s/max3s); real loopback producer-role route denials0.86s (expected1s/max3s, local logic only). Deployed SDK/MCP/provider checks were focused integration, expected15s/max75s per node with finite CPU1/RAM768M/tasks96. Ordinary release batches remain bounded to180s; no source-only or healthy-status completion claim.
+
+## Earlier deployed checkpoint (before SDK repair)
 
 - Both preserved ZCode and reviewed mesh source inputs were integrated and pushed to main. Three immutable API/worker releases run source18ab3996ab0c643cf433bf19a02c0b6407506431 on100/44/88. Original source inputs remain in history; unrelated WIP was preserved.
 - The real three-voter TLS Dqlite mesh contains the migrated business database:15 tables,662988 rows,196069 events. The frozen original SQLite is retained. All8 original sending and1472 uncertain reservations were preserved by ID through each service exclusion. Store budgets follow measured usage: MemoryHigh5G, MemoryMax6G, swap0, CPU2, TasksMax128. Actual migration/import and shared-connection transaction regressions passed.

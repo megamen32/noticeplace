@@ -1905,12 +1905,12 @@ def refresh_human_request_progress(
         return _human_request_http_result(request)
 
 
-def build_handler(center: NotificationCenter, health_token: str, mcp_token: str | None = None) -> type[BaseHTTPRequestHandler]:
+def build_handler(center: NotificationCenter, health_token: str, mcp_token: str | None = None, *, producer_only: bool = False) -> type[BaseHTTPRequestHandler]:
     """Build an HTTP handler bound to one center and two dedicated bearer tokens."""
     if not health_token:
         raise RuntimeError("NOTIFY_CENTER_HEALTH_TOKEN must be configured")
     configured_mcp_token = mcp_token if mcp_token is not None else os.environ.get("NOTIFY_MCP_TOKEN", "")
-    if not configured_mcp_token:
+    if not producer_only and not configured_mcp_token:
         raise RuntimeError("NOTIFY_MCP_TOKEN must be configured")
     health_workflow = HealthWorkflow(center, os.environ.get("TELEGRAM_CALLBACK_SECRET", "").strip() or None)
 
@@ -2062,6 +2062,11 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
 
         def do_POST(self) -> None:
             """Accept events and explicit incident actions, returning JSON errors safely."""
+            # A producer replica persists events; native workers retain card,
+            # completion, MCP job and session delivery ownership.
+            if producer_only and self.path != "/v1/events":
+                self._reply(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                return
             try:
                 if self.path == "/mcp":
                     token = _bearer(self)
@@ -2290,11 +2295,11 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
     return ApiHandler
 
 
-def run_http(center: NotificationCenter, host: str, port: int, health_token: str | None = None, mcp_token: str | None = None) -> None:
+def run_http(center: NotificationCenter, host: str, port: int, health_token: str | None = None, mcp_token: str | None = None, *, producer_only: bool = False) -> None:
     """Run the blocking HTTP server with a mandatory dedicated health token."""
     configured_health_token = health_token if health_token is not None else os.environ.get("NOTIFY_CENTER_HEALTH_TOKEN", "")
     configured_mcp_token = mcp_token if mcp_token is not None else os.environ.get("NOTIFY_MCP_TOKEN", "")
-    ThreadingHTTPServer((host, port), build_handler(center, configured_health_token, configured_mcp_token)).serve_forever()
+    ThreadingHTTPServer((host, port), build_handler(center, configured_health_token, configured_mcp_token, producer_only=producer_only)).serve_forever()
 
 
 def telegram_action_codec_from_environment() -> TelegramActionCodec | None:

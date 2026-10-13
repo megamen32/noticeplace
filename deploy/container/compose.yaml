@@ -1,0 +1,25 @@
+services:
+  api:
+    image: ${NOTICEPLACE_API_IMAGE:?set the reviewed immutable image identity}
+    user: ${NOTICEPLACE_UID:?set the host socket owner UID}:${NOTICEPLACE_GID:?set the host socket owner GID}
+    env_file:
+      - ${NOTICEPLACE_API_ENV:?set the protected producer environment file}
+    environment:
+      NOTIFY_CENTER_HOST: 0.0.0.0
+      NOTIFY_CENTER_PORT: "8091"
+    ports:
+      - "127.0.0.1:${NOTICEPLACE_API_PORT:-18095}:8091"
+    volumes:
+      - /run/noticeplace-mesh:/run/noticeplace-mesh:ro
+      - /run/noticeplace-mesh-core:/run/noticeplace-mesh-core:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 1
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 64
+    restart: unless-stopped
+    stop_grace_period: 15s
