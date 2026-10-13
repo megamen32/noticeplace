@@ -18,6 +18,7 @@ def main():
     parser=argparse.ArgumentParser()
     for key in ('source','archive','archive-sha256','environment','host','host-id','address','receipt'):
         parser.add_argument('--'+key,required=True)
+    parser.add_argument('--nginx',default='/usr/sbin/nginx')
     args=parser.parse_args()
     if os.geteuid()!=0 or socket.gethostname()!=args.host:
         raise RuntimeError('exact owning host required')
@@ -156,7 +157,8 @@ http {{
 }}
 ''')
     edge_unit=Path('/etc/systemd/system/noticeplace-mesh-edge.service')
-    edge_unit.write_text('''[Unit]
+    if not Path(args.nginx).is_file():raise RuntimeError('verified native nginx binary is missing')
+    edge_unit.write_text(f'''[Unit]
 Description=Mutually authenticated NoticePlace private ingress
 After=network-online.target noticeplace-mesh-api.service
 [Service]
@@ -164,7 +166,7 @@ User=notification-center
 Group=notification-center
 RuntimeDirectory=noticeplace-mesh-edge
 StateDirectory=noticeplace-mesh-edge
-ExecStart=/usr/sbin/nginx -c /etc/noticeplace-mesh-edge.conf -g "daemon off;"
+ExecStart={args.nginx} -c /etc/noticeplace-mesh-edge.conf -g "daemon off;"
 Restart=on-failure
 RestartSec=2
 MemoryHigh=64M
