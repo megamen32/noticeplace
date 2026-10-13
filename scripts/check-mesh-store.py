@@ -7,6 +7,8 @@ Expected60s; maximum180s including cluster setup/cleanup. No external providers.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import concurrent.futures
 import json
 import os
@@ -33,6 +35,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
     parser.add_argument("--work", required=True)
+    parser.add_argument("--voice-reader")
     args = parser.parse_args()
     root = Path(args.work).resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -67,7 +70,8 @@ def main() -> None:
         if index:
             command += ["--join", addresses[0]]
         child = subprocess.Popen(command, stdout=log, stderr=log, start_new_session=True,
-                                 env={**os.environ, "GOMAXPROCS": "2"})
+                                 env={**os.environ, "GOMAXPROCS": "2",
+                                      "SNAP_INSTANCE_NAME": "npmh-test-"+hashlib.sha256(str(root).encode()).hexdigest()[:12]})
         children.append(child)
         return child
 
@@ -92,6 +96,8 @@ def main() -> None:
             conn = Connection(str(socket_root / f"sql-{i}.sock"))
             connections.append(conn)
         assert connections[0].execute("SELECT voice_casefold(?) AS folded", ("АвТоСеЛЛер Straße",)).fetchone()["folded"] == "автоселлер strasse"
+        aliases = connections[0].execute("SELECT 1 AS id,2 AS id").fetchone()
+        assert aliases[0] == 1 and aliases[1] == 2 and aliases['id'] == 1 and dict(aliases)['id'] == 1
         membership = until(lambda: (r if len(r.get("cluster", [])) == 3 and
                                    all(n.get("Role") == 0 for n in r["cluster"]) else None)
                            if (r := connections[0].cluster()) else None)
@@ -115,6 +121,13 @@ def main() -> None:
                    {"mesh-integration": {"project": "mesh-canary", "max_severity": "critical"}},
                    default_quiet_hours=[]) for i in range(3)]
         assert centers[2].get_incident(imported["incident_id"]) is not None
+        if args.voice_reader:
+            spec = importlib.util.spec_from_file_location('actual_mesh_voice_reader', args.voice_reader)
+            voice = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(voice)
+            reader = voice.NoticePlaceVoiceStore('mesh:'+str(socket_root/'sql-2.sock'))
+            result = reader.list_incidents('preserved')
+            assert result['total_in_scope'] == 1 and result['incidents'][0]['id'] == imported['incident_id']
         assert centers[2]._connection.execute("SELECT status FROM deliveries WHERE id=?", (source_claim["id"],)).fetchone()["status"] == "sending"
         for center in centers:
             server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(center, "health-integration", mcp_token="mesh-integration-mcp"))

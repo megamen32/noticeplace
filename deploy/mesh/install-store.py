@@ -84,6 +84,9 @@ Restart=on-failure
 RestartSec=3
 TimeoutStopSec=15
 Environment=GOMAXPROCS=2
+# go-dqlite uses this documented instance namespace for its private internal
+# Unix socket, preventing a bootstrap-ID collision with another local cluster.
+Environment=SNAP_INSTANCE_NAME=noticeplace-mesh
 CPUQuota=200%
 MemoryHigh=1536M
 MemoryMax=2G

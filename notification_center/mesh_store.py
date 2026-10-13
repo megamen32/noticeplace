@@ -15,28 +15,46 @@ from typing import Any
 MAX_FRAME = 16 * 1024 * 1024
 
 
+class Row:
+    """Preserve sqlite3.Row's integer/name access and dict(row) protocol."""
+    def __init__(self, columns, values):
+        self._columns, self._values = tuple(columns), tuple(values)
+
+    def keys(self):
+        return list(self._columns)
+
+    def __getitem__(self, key):
+        if isinstance(key, (int, slice)):
+            return self._values[key]
+        try:
+            return self._values[self._columns.index(key)]
+        except ValueError as error:
+            raise IndexError("No item with that key") from error
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+
 class Cursor:
     def __init__(self, result: dict[str, Any]) -> None:
         self.rowcount = int(result.get("rowcount", -1))
         self.lastrowid = result.get("lastrowid")
         columns = result.get("columns", [])
         self.description = [(name, None, None, None, None, None, None) for name in columns] or None
-        self._rows = []
-        for values in result.get("rows", []):
-            row = {}
-            for name, value in zip(columns, values):
-                row.setdefault(name, value)
-            self._rows.append(row)
+        self._rows = [Row(columns, values) for values in result.get("rows", [])]
         self._offset = 0
 
-    def fetchone(self) -> dict[str, Any] | None:
+    def fetchone(self) -> Row | None:
         if self._offset >= len(self._rows):
             return None
         row = self._rows[self._offset]
         self._offset += 1
         return row
 
-    def fetchall(self) -> list[dict[str, Any]]:
+    def fetchall(self) -> list[Row]:
         rows = self._rows[self._offset:]
         self._offset = len(self._rows)
         return rows
