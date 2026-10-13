@@ -135,6 +135,9 @@ http {{
   access_log off;
   client_body_temp_path /var/lib/noticeplace-mesh-edge/body;
   proxy_temp_path /var/lib/noticeplace-mesh-edge/proxy;
+  fastcgi_temp_path /var/lib/noticeplace-mesh-edge/fastcgi;
+  uwsgi_temp_path /var/lib/noticeplace-mesh-edge/uwsgi;
+  scgi_temp_path /var/lib/noticeplace-mesh-edge/scgi;
   server {{
     listen {args.address}:11492 ssl;
     listen 127.0.0.1:11492 ssl;

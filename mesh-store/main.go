@@ -272,7 +272,7 @@ func main() {
 		app.WithLogFunc(func(level client.LogLevel, format string, args ...interface{}) {
 			// Driver errors otherwise collapse to ErrBadConn. Retain the reason
 			// without logging application SQL, arguments or credentials.
-			if level >= client.LogWarn || strings.Contains(format, "connection lost") || strings.Contains(format, "leadership lost") || strings.Contains(format, "EOF detected") {
+			if level <= client.LogWarn || strings.Contains(format, "connection lost") || strings.Contains(format, "leadership lost") || strings.Contains(format, "EOF detected") {
 				log.Printf(format, args...)
 			}
 		})}

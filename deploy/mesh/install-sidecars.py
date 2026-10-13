@@ -17,12 +17,15 @@ def main():
     if Path('/opt/noticeplace/.source-revision').read_text().strip()!=args.source:raise RuntimeError('active source pointer differs')
     units=Path('/etc/systemd/system')
     inputs=Path(args.configuration)
+    admin_port=8092 if args.host=='roomhacker-server-100' else 18092
     if args.host!='roomhacker-server-100':
         for name in ['notification-center-admin.env','health-incident-fleet.json']:
             target=Path('/etc')/name
             if target.exists():raise RuntimeError('existing operator configuration requires reconciliation')
             target.write_bytes((inputs/name).read_bytes());target.chmod(0o600)
-        (units/'notification-center-admin.service').write_bytes(Path('/opt/noticeplace/deploy/notification-center-admin.service').read_bytes())
+        admin_unit=Path('/opt/noticeplace/deploy/notification-center-admin.service').read_text()
+        admin_unit=admin_unit.replace('[Service]', '[Service]\nEnvironment=NOTIFY_ADMIN_PORT='+str(admin_port))
+        (units/'notification-center-admin.service').write_text(admin_unit)
         (units/'notification-center-admin-apply@.service').write_bytes(Path('/opt/noticeplace/deploy/notification-center-admin-apply@.service').read_bytes())
     phone=units/'noticeplace-phone-mesh.service'
     if phone.exists():raise RuntimeError('existing phone shim requires reconciliation')
@@ -59,6 +62,9 @@ http {
   access_log off;
   client_body_temp_path /var/lib/noticeplace-voice-route/body;
   proxy_temp_path /var/lib/noticeplace-voice-route/proxy;
+  fastcgi_temp_path /var/lib/noticeplace-voice-route/fastcgi;
+  uwsgi_temp_path /var/lib/noticeplace-voice-route/uwsgi;
+  scgi_temp_path /var/lib/noticeplace-voice-route/scgi;
   upstream noticeplace_stt {
     server 192.168.2.75:7653 max_fails=1 fail_timeout=5s;
     server 192.168.2.5:7653 backup;
@@ -105,14 +111,15 @@ WantedBy=multi-user.target
         content=content.replace('    listen '+args.address+':11492 ssl;', '    listen '+args.address+':11492 ssl;\n    listen 127.0.0.1:11492 ssl;')
     marker='    location / {'
     if content.count(marker)!=1:raise RuntimeError('private ingress requires reconciliation')
-    content=content.replace(marker,'''    location ^~ /admin/ {
+    admin_location='''    location ^~ /admin/ {
       proxy_pass http://127.0.0.1:8092;
       proxy_http_version 1.1;
       proxy_set_header Host $host;
       proxy_set_header X-Notify-Admin $http_x_notify_admin;
       proxy_set_header X-Forwarded-Proto https;
     }
-'''+marker)
+'''.replace('127.0.0.1:8092','127.0.0.1:'+str(admin_port))
+    content=content.replace(marker,admin_location+marker)
     edge.write_text(content)
     subprocess.run(['systemd-analyze','verify',str(phone),str(route)],check=True,timeout=20)
     subprocess.run(['systemctl','daemon-reload'],check=True,timeout=20)
