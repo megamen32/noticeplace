@@ -2,9 +2,17 @@
 
 Owner: Codex current chat `01a1328a-6739-7df3-9514-ecac740951a8`.
 Requested: HTTP/curl requests, incident intake and processing, and telephone calls must continue when one of the service nodes (100,44,88) fails.
-Status: **in progress; HTTP/incident delivery verified; standby SDK replies verified; physical backup call and container/K3s pilot acceptance pending**.
+Status: **in progress; HTTP/incident delivery and container/K3s comparison verified; physical backup voice acceptance pending**.
 
 ## Latest voice and container checkpoint
+
+Container and optional K3s comparison are now consumer-verified. The c925dab SQL idle correction passed a consolidated real125s-idle/native-readback/container-restart/auth scenario in132.136s (focused integration expected140s/max155s). Its new event was admitted once after authoritative non-admission reconciliation of the first failed attempt; independent recipient readback confirmed Telegram message6814. Published0113178 adds PID1 SIGTERM handling, delivered immutable config sha256:3a34b311b67c64f99de082cfdb0b064f1a93e044424681615c890b43bc3762a8. After real consumer readiness, clean exit0 and restart readback completed in3.534s (expected15s/max45s). Earlier timeout/start-before-ready attempts are retained and not labelled GREEN.
+
+Actual K3s v1.37.1+k3s1 server+agent on44 imported the same image; imported manifest config digest matches Docker identity. Two real nodes became Ready with host-gw networking, existing xt_comment module loaded, bounded parent Docker scopes2GiB/CPU2/tasks1024/swap0 each. API Pod RAM256MiB/tasks64 was verified below those actual scopes on both logical nodes, OOM/OOM-kill0. Real new intake/native readback, deleted Pod recreation9.341s, and cordon/delete reschedule to the second node9.543s passed together19.690s (expected75s/max180s), with auth401 and forbidden producer mutations404. Independent recipient readback confirmed message6822. Both logical nodes run on one physical host; no physical-host or control-plane HA claim. After stopping both owned K3s containers, independent Compose still read both accepted events. Both canaries were canonically resolved. Private receipts retained under44 /var/lib/noticeplace-mesh/k3s-pilot-20261013; Docker variant remains running, own builder and both K3s nodes stopped. Source deployment contract and measured comparison are in deploy/k3s/.
+
+Remaining current-goal acceptance: one new incoming audible assistant answer through prepared backup88, using the installed final APK and selected Google native-rate voice. Latest88 readback still0calls processed; S21 leasefree. The earlier reported incoming reached primary100 and cannot close backup or new-voice acceptance. Human question for this already prepared incoming remains pending; Root originated no calls. Separate earlier HA scope also retains100-owned native AI investigation/session recovery as a known dependency; it is not silently recreated on standby.
+
+## Earlier intermediate checkpoint (superseded for container/K3s)
 
 Google native24k/atempo1.35/8k parity is installed by the voice owner on100/44/88 (source ae0a4a97, bridge SHA c82b77ade88bef4451f6811beb2ee99652c7c3c4818b4d9148de347fe91450fa). Existing SDK/MCP corrections were preserved. Infrastructure43d4560d repairs terminated autossh supervisors without touching the legacy100 tunnel; real protected SSH/readback through44 and88 succeeded. Installed final APK switched SIP44→88 in14.898s during owned44 PBX exclusion, then44 was restored and Root's lease released. Phone remains on88 for the requested incoming audible acceptance; no new call was observed and no call was originated. Primary call bf382 is earlier primary proof only.
 
@@ -33,10 +41,10 @@ Focused verification: fast unit native auth/MCP regressions2 checks1.605s (expec
 
 ## Remaining work
 
-1. Reconcile the real standby MCP/authentication/configuration/DB dependencies with the voice and Herder owner, correct both44/88 deployment inputs, review and publish owned source, then prove a fresh real SDK startup and harmless operation without repeating the user's conversation.
-2. Under a new S21 lease, verify the final APK through actual SIP exclusions; never interrupt an active call or automatically redial. Complete a fresh authorized, recipient-confirmed audible assistant path on a surviving node.
-3. Resolve100-only Secretary/native investigation ownership without replaying accepted or uncertain jobs. Keep full HA acceptance open until these real consumer paths pass.
-4. The user requested an architectural quorum on containers/Kubernetes with independent operation without Kubernetes. Three read-only reviewers agreed on portable OCI packaging first, common configuration/state contract, and optional Kubernetes after a measured pilot. This assessment does not authorize replacing the live stack or installing a cluster. HAOS/SSH/physical-device recovery must remain independent; automatic parallel native/Kubernetes failback risks duplicate external effects.
+1. Close the current goal with a fresh recipient-confirmed audible incoming assistant conversation through prepared88, final APK and selected Google voice. SDK/MCP/DB/provider dependencies on44/88 and actual SIP44→88 exclusion are already verified. The earlier incoming on100 is primary proof only. Await the pending human check; no automatic redial or replay. Claim a new S21 lease only if further interactive phone access is needed, and preserve active conversations.
+2. Separate remaining full-HA scope: resolve100-only Secretary/native investigation ownership without recreating accepted or uncertain jobs on standby. HTTP/incident delivery, fresh standby assistant replies and the optional container/K3s comparison do not close this native-session recovery dependency.
+
+The authorized limited container/K3s pilot is complete and stopped; portable Compose remains running independently. A permanent physical multi-host Kubernetes cluster and migration of the live stack are a separate rollout. HAOS/SSH/physical-device recovery remain independent; neither an unknown native outcome nor Kubernetes unavailability admits a second external-delivery owner.
 
 ## Historical initial observations (superseded by latest checkpoint)
 
