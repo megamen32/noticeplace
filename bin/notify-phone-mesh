@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Private mutually-authenticated bridge to the installed AgentCall socket.
+
+Keeps the stock voice implementation untouched. One shared line reservation
+is renewed while the actual local PBX has calls; crashes never redial them.
+"""
+from __future__ import annotations
+import json
+import os
+import importlib
+from pathlib import Path
+import pwd
+import re
+import socket
+import socketserver
+import sqlite3
+import struct
+import ssl
+import subprocess
+import sys
+import threading
+import time
+import uuid
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from notification_center.agentcall_phone import _unix_request
+from notification_center.core import NotificationCenter
+from notification_center.mesh_phone import read_frame
+
+
+class PhoneControl:
+    def __init__(self):
+        self.center=NotificationCenter(os.environ['NOTIFY_CENTER_DB'],{})
+        self.socket=os.environ.get('AGENTCALL_PHONE_SOCKET','/run/agentcall/control.sock')
+        self.holder=None
+        self.preparing=False
+        self.release_after=0.0
+        self.lock=threading.Lock()
+        with self.center._lock,self.center._connection:
+            self.center._connection.execute('CREATE TABLE IF NOT EXISTS gsm2sip_mesh_receipts '
+                '(id TEXT PRIMARY KEY,event TEXT NOT NULL,projected INTEGER NOT NULL DEFAULT 0,updated_at REAL NOT NULL)')
+
+    def sms_report(self,value):
+        receipt=str(uuid.UUID(value['id']))
+        event=value['event']
+        if event not in {'submitted','delivered','failed','undelivered'}:
+            raise ValueError('invalid SMS report')
+        with self.center._lock,self.center._connection:
+            existing=self.center._connection.execute('SELECT event FROM gsm2sip_mesh_receipts WHERE id=?',(receipt,)).fetchone()
+            if existing:
+                if existing['event']==event:return {'ok':True}
+                if existing['event']!='submitted':return {'ok':False}
+            self.center._connection.execute('INSERT INTO gsm2sip_mesh_receipts(id,event,updated_at) VALUES(?,?,?) '
+                'ON CONFLICT(id) DO UPDATE SET event=excluded.event,projected=0,updated_at=excluded.updated_at',
+                (receipt,event,time.time()))
+        return {'ok':True}
+
+    def project_sms_reports(self):
+        # The existing AutoFind receipt path has one owner on100. Standbys
+        # retain every report in the quorum until that consumer recovers.
+        if socket.gethostname()!='roomhacker-server-100':return
+        sys.path.insert(0,'/usr/local/lib/autosell-gsm2sip')
+        original=importlib.import_module('gsm2sip_report_agi')
+        with self.center._lock:
+            rows=self.center._connection.execute('SELECT id,event FROM gsm2sip_mesh_receipts WHERE projected=0 ORDER BY updated_at LIMIT 8').fetchall()
+        for row in rows:
+            if original.persist_report(row['id'],row['event']):
+                with self.center._lock,self.center._connection:
+                    self.center._connection.execute('UPDATE gsm2sip_mesh_receipts SET projected=1 WHERE id=? AND event=?', (row['id'],row['event']))
+
+    @staticmethod
+    def pbx_status():
+        try:
+            peer=subprocess.run(['asterisk','-rx','sip show peer gateway-s21'],capture_output=True,text=True,timeout=3,check=True).stdout
+            calls=subprocess.run(['asterisk','-rx','core show channels count'],capture_output=True,text=True,timeout=3,check=True).stdout
+            count=re.search(r'(?m)^\s*(\d+) active calls?\s*$',calls)
+            registered=bool(re.search(r'(?m)^\s*Status\s*:\s*OK\b',peer))
+            return registered, int(count[1]) if count else None
+        except (OSError,subprocess.SubprocessError):
+            return False,None
+
+    def status(self):
+        registered,active=self.pbx_status()
+        with self.center._lock:
+            lease=self.center._connection.execute('SELECT holder,expires_at FROM runtime_leases WHERE name=?',('phone-line',)).fetchone()
+            operator=self.center.get_runtime_setting('s21-operator-lease')
+        busy=lease is not None and lease['expires_at']>time.time()
+        if operator:
+            busy=busy or json.loads(operator)['expires_at']>time.time()
+        return {'ready':registered and active==0 and not busy and self.phone_idle()}
+
+    @staticmethod
+    def phone_idle():
+        """A stale PBX registration cannot prove the physical phone is idle.
+
+        Use the existing native lease and reverse SSH. Unknown/busy stays
+        unavailable, including a minority partition with an old active call.
+        """
+        lease_id=None
+        try:
+            claim=subprocess.run(['/usr/local/bin/s21-lease','acquire','--actor-type','system',
+                '--owner','system:noticeplace-phone-status','--purpose','Проверка свободной телефонной линии',
+                '--minutes','1'],capture_output=True,text=True,timeout=15)
+            if claim.returncode!=0:return False
+            lease_id=json.loads(claim.stdout)['lease_id']
+            result=subprocess.run(['ssh','-i','/home/roomhacker/.ssh/phone_gateway_ed25519',
+                '-p','22220','-o','BatchMode=yes','-o','ConnectTimeout=4','-o','LogLevel=ERROR',
+                'phone@127.0.0.1',"su -c dumpsys\\ telephony.registry | sed -n 's/.*mCallState=\\([0-9]\\).*/\\1/p'"],
+                capture_output=True,text=True,timeout=8)
+            states=result.stdout.split()
+            return result.returncode==0 and bool(states) and all(value=='0' for value in states)
+        except (OSError,ValueError,subprocess.SubprocessError):
+            return False
+        finally:
+            if lease_id:
+                subprocess.run(['/usr/local/bin/s21-lease','release',lease_id],
+                    capture_output=True,timeout=15)
+
+    def renew(self):
+        while True:
+            time.sleep(5)
+            try:self.project_sms_reports()
+            except (sqlite3.Error,OSError):pass
+            with self.lock:
+                holder=self.holder
+                preparing=self.preparing
+                release_after=self.release_after
+            if not holder:
+                continue
+            _,active=self.pbx_status()
+            try:
+                if active==0 and not preparing and time.time()>=release_after and self.phone_idle():
+                    with self.center._lock,self.center._connection:
+                        self.center._connection.execute('DELETE FROM runtime_leases WHERE name=? AND holder=?',('phone-line',holder))
+                    with self.lock:
+                        if self.holder==holder:self.holder=None
+                else:
+                    self.center.claim_runtime_lease('phone-line',holder,120)
+            except sqlite3.Error:
+                # Keep the original holder and uncertain provider outcome.
+                pass
+
+    def dial(self,body):
+        value=json.loads(body)
+        if not isinstance(value,dict) or not isinstance(value.get('message'),str) or not value['message'].strip():
+            return b'{"ok":false,"admitted":false,"error":"invalid phone request"}'
+        holder=socket.gethostname()+':'+str(uuid.uuid4())
+        with self.center._lock,self.center._connection:
+            operator=self.center.get_runtime_setting('s21-operator-lease')
+            busy=operator and json.loads(operator)['expires_at']>time.time()
+            if busy or not self.center.claim_runtime_lease('phone-line',holder,120):
+                return json.dumps({'ok':False,'admitted':False,'error':'Телефон занят; новый звонок не принят.'},ensure_ascii=False).encode()
+        # Persist the reservation before the real native control boundary.
+        with self.lock:
+            self.holder=holder
+            self.preparing=True
+            self.release_after=time.time()+120
+        try:
+            result=_unix_request(self.socket,body,float(os.environ.get('AGENTCALL_PHONE_TIMEOUT_SECONDS','30')))
+            parsed=json.loads(result)
+            with self.lock:
+                self.release_after=time.time()+(15 if parsed.get('ok') is True else 120)
+            return result
+        finally:
+            with self.lock:self.preparing=False
+
+
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.request.settimeout(40)
+        try:
+            first=read_frame(self.request)
+            if json.loads(first)=={'op':'status'}:
+                self.request.sendall(json.dumps(self.server.control.status()).encode()+b'\n')
+                first=read_frame(self.request)
+            self.request.sendall(self.server.control.dial(first)+b'\n')
+        except (OSError,ValueError,sqlite3.Error):
+            # A disconnected caller does not authorize another call or a
+            # replacement success/error receipt after the native boundary.
+            return
+
+
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address=True
+    daemon_threads=True
+
+    def get_request(self):
+        connection,address=super().get_request()
+        connection.settimeout(5)
+        try:return self.context.wrap_socket(connection,server_side=True),address
+        except BaseException:
+            connection.close()
+            raise
+
+
+class SmsHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        peer=self.request.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12)
+        _,uid,_=struct.unpack('3i',peer)
+        if uid not in {0,pwd.getpwnam('asterisk').pw_uid}:return
+        self.request.settimeout(10)
+        try:
+            result=self.server.control.sms_report(json.loads(read_frame(self.request)))
+            self.request.sendall(json.dumps(result).encode()+b'\n')
+        except (OSError,ValueError,KeyError,sqlite3.Error):return
+
+
+class SmsServer(socketserver.ThreadingUnixStreamServer):
+    daemon_threads=True
+
+
+def main():
+    control=PhoneControl()
+    context=ssl.create_default_context(ssl.Purpose.CLIENT_AUTH,cafile=os.environ['NOTICEPLACE_MESH_CA'])
+    context.load_cert_chain(os.environ['NOTICEPLACE_MESH_CERT'],os.environ['NOTICEPLACE_MESH_KEY'])
+    context.verify_mode=ssl.CERT_REQUIRED
+    server=Server((os.environ['NOTICEPLACE_PHONE_MESH_ADDRESS'],int(os.environ.get('NOTICEPLACE_PHONE_MESH_PORT','19094'))),Handler)
+    server.control=control
+    server.context=context
+    sms_path='/run/noticeplace-phone/sms.sock'
+    sms=SmsServer(sms_path,SmsHandler)
+    sms.control=control
+    os.chmod(sms_path,0o660)
+    threading.Thread(target=sms.serve_forever,daemon=True,name='sms-report-intake').start()
+    threading.Thread(target=control.renew,daemon=True,name='phone-line-owner').start()
+    server.serve_forever()
+
+
+if __name__=='__main__':main()

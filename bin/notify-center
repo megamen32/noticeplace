@@ -129,11 +129,13 @@ def main() -> None:
         call_adapters=call_adapters_from_environment(),
     )
     pool_sizes = {
-        "message": max(1, int(os.environ.get("NOTIFY_CENTER_MESSAGE_WORKERS", "2"))),
-        "agent": max(1, int(os.environ.get("NOTIFY_CENTER_AGENT_WORKERS", "2"))),
-        "call": max(1, int(os.environ.get("NOTIFY_CENTER_CALL_WORKERS", "2"))),
+        "message": max(0, int(os.environ.get("NOTIFY_CENTER_MESSAGE_WORKERS", "2"))),
+        "agent": max(0, int(os.environ.get("NOTIFY_CENTER_AGENT_WORKERS", "2"))),
+        "call": max(0, int(os.environ.get("NOTIFY_CENTER_CALL_WORKERS", "2"))),
     }
     for channel_group, max_workers in pool_sizes.items():
+        if max_workers == 0:
+            continue
         threading.Thread(target=worker_loop, args=(worker, channel_group, max_workers), daemon=True).start()
     if poller is not None:
         threading.Thread(target=telegram_interaction_loop, args=(poller,), daemon=True).start()

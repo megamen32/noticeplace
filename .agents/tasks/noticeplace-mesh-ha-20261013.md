@@ -27,4 +27,14 @@ After authorization, deliver a quorum-backed durable state adapter preserving ac
 
 Acceptance: controlled exclusion of each service node separately, new real HTTP incident intake and durable readback through a remaining node, verified notification/incident processing, and one new recipient-confirmed audible phone call through the surviving path. HTTP200, process state and unit tests alone do not complete this task. Keep ordinary release checks within180s and give each runtime finite resource limits.
 
-No product source, deployed service, public routing, database contents or phone configuration was changed in this preflight. This task is not complete.
+## Current delivery checkpoint (2026-10-13)
+
+Both the preserved ZCode input and reviewed mesh source were integrated into published main. The real three-voter TLS store is installed on100/44/88 and quorum was read back; no business database has been imported yet and the old API remains active.
+
+The actual voice and Secretary readers passed16 SQLite regressions in7.530s and real Dqlite readback. Source helpers are published in the infrastructure repository. The real root-owned lease helper, SMS receipt monotonicity, frozen-source import/resume, actual leader crash and UNKNOWN preservation passed together in3.288s. Five narrow bookkeeping/admission unit checks passed in0.533s; these do not prove a phone call. The signed APK candidate built successfully in74s, with the installed signing identity retained; no APK was installed yet.
+
+Own S21 lease is held temporarily for bootstrap inspection, ID retained privately; it must be renewed at20 active minutes and released in final cleanup. No call was originated. Native PBX had zero active calls at inspection. SMS reports currently use the AutoFind-owned file spool on100; the new receipt shim retains reports in the quorum and projects them to that existing consumer after100 recovers.
+
+Stage-only replica installer retains credentials privately, starts a separate same-user shared Rust core and writes bounded API/private mTLS edge units. It does not start delivery workers. Standbys explicitly defer native investigation jobs owned by100; unknown native sessions must not be recreated on another host. Final acceptance must state this remaining dependency honestly.
+
+Next: stage the reviewed immutable API release, standalone PBX/voice dependencies on44/88, freeze and import the business DB, switch the real readers and API, install the SIP failover APK under the lease, route public/recovery ingress, and verify actual consumer paths. No full NoticePlace HA or heard phone acceptance is claimed yet.

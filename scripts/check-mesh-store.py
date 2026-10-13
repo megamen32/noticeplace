@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import concurrent.futures
 import json
 import os
@@ -36,6 +37,7 @@ def main() -> None:
     parser.add_argument("--binary", required=True)
     parser.add_argument("--work", required=True)
     parser.add_argument("--voice-reader")
+    parser.add_argument("--lease-helper")
     args = parser.parse_args()
     root = Path(args.work).resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -120,7 +122,41 @@ def main() -> None:
         centers = [NotificationCenter("mesh:" + str(socket_root / f"sql-{i}.sock"),
                    {"mesh-integration": {"project": "mesh-canary", "max_severity": "critical"}},
                    default_quiet_hours=[]) for i in range(3)]
+        if args.lease_helper:
+            helper = subprocess.Popen(['sudo','-n',sys.executable,args.lease_helper,
+                '--source-root',str(Path(__file__).resolve().parents[1]),
+                '--socket',str(socket_root/'sql-1.sock')],stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            def lease_request(op,value=None):
+                helper.stdin.write(json.dumps({'op':op,'value':value})+'\n')
+                helper.stdin.flush()
+                result=json.loads(helper.stdout.readline())
+                assert result['ok']
+                return result['value']
+            lease_request('open')
+            assert lease_request('read') is None
+            lease_request('write',{'lease_id':'actual-lease-check','expires_at':time.time()+60})
+            assert lease_request('read')['lease_id']=='actual-lease-check'
+            lease_request('delete')
+            lease_request('commit')
+            helper.stdin.close()
+            assert helper.wait(timeout=5)==0
+            helper.stdout.close(); helper.stderr.close()
+            assert centers[2].get_runtime_setting('s21-operator-lease') is None
         assert centers[2].get_incident(imported["incident_id"]) is not None
+        # The actual phone-side receipt code writes only report state; this
+        # scenario never enters its native dial or physical-phone boundary.
+        os.environ['NOTIFY_CENTER_DB']='mesh:'+str(socket_root/'sql-0.sock')
+        loader=SourceFileLoader('actual_mesh_phone_control',str(Path(__file__).resolve().parents[1]/'bin/notify-phone-mesh'))
+        spec=importlib.util.spec_from_loader(loader.name,loader)
+        phone_module=importlib.util.module_from_spec(spec);loader.exec_module(phone_module)
+        phone=phone_module.PhoneControl()
+        receipt='67d136ca-dc71-4bb3-9369-d97e9e2a52dd'
+        assert phone.sms_report({'id':receipt,'event':'submitted'})['ok']
+        assert phone.sms_report({'id':receipt,'event':'delivered'})['ok']
+        assert not phone.sms_report({'id':receipt,'event':'submitted'})['ok']
+        assert centers[2]._connection.execute('SELECT event FROM gsm2sip_mesh_receipts WHERE id=?',(receipt,)).fetchone()['event']=='delivered'
+        phone.center._connection.close()
         if args.voice_reader:
             spec = importlib.util.spec_from_file_location('actual_mesh_voice_reader', args.voice_reader)
             voice = importlib.util.module_from_spec(spec)

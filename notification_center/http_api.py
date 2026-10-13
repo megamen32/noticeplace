@@ -2547,6 +2547,14 @@ def android_phone_from_environment() -> AndroidPhoneAdapter | GptAdminPhoneAdapt
     """Build either the direct ADB adapter or the narrow fixed GPTAdmin call path."""
     agentcall_socket = os.environ.get("AGENTCALL_PHONE_SOCKET", "").strip()
     if agentcall_socket:
+        if os.environ.get("NOTICEPLACE_PHONE_PEERS_JSON"):
+            from .mesh_phone import PhoneMeshRequester
+            requester = PhoneMeshRequester(
+                json.loads(os.environ["NOTICEPLACE_PHONE_PEERS_JSON"]),
+                os.environ["NOTICEPLACE_MESH_CORE_SOCKET"], os.environ["NOTICEPLACE_MESH_HOST_ID"],
+                os.environ["NOTICEPLACE_MESH_CA"], os.environ["NOTICEPLACE_MESH_CERT"], os.environ["NOTICEPLACE_MESH_KEY"],
+            )
+            return AgentCallPhoneAdapter(agentcall_socket, float(os.environ.get("AGENTCALL_PHONE_TIMEOUT_SECONDS", "30")), requester=requester)
         return AgentCallPhoneAdapter(agentcall_socket, float(os.environ.get("AGENTCALL_PHONE_TIMEOUT_SECONDS", "30")))
     gptadmin_url = os.environ.get("GPTADMIN_ANDROID_PHONE_CALL_URL", "").strip()
     gptadmin_token = os.environ.get("GPTADMIN_ANDROID_PHONE_CALL_TOKEN", "").strip()
