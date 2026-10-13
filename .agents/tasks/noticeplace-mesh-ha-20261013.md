@@ -2,9 +2,11 @@
 
 Owner: Codex current chat `01a1328a-6739-7df3-9514-ecac740951a8`.
 Requested: HTTP/curl requests, incident intake and processing, and telephone calls must continue when one of the service nodes (100,44,88) fails.
-Status: **in progress; HTTP/incident delivery and container/K3s comparison verified; physical backup voice acceptance pending**.
+Status: **nearest goal blocked on a new incoming audible standby conversation; HTTP/incident delivery and container/K3s comparison verified**.
 
 ## Latest voice and container checkpoint
+
+Blocked audit: the same final acceptance dependency remains across three consecutive goal turns. The latest live readback shows44/88 each0calls processed and0active calls, no new gateway conversation, primary100 still only the two earlier calls, and S21 leasefree. Actual Google synthesis receipts on44/88, Docker consolidated idle/restart/auth/native-readback receipt, K3s intake/recreation/reschedule receipt, and Compose-with-Kubernetes-stopped receipt were re-read and remain verified. The owned K3s nodes are stopped; the standalone API remains running. No owned test is in flight. All useful independent work for this nearest goal is delivered. Missing evidence is a fresh incoming standby conversation and the recipient's audible-result confirmation, not another source/health/synthesis test. The pending human timing question remains unanswered; do not originate or replay a call. Resume this goal when the operator can make the fresh incoming check or when a new call is observed. Separate full-HA native investigation dependency remains recorded below.
 
 Follow-up voice proof: the installed selected Google engine synthesized the same Russian text through actual local reverse SSH on44 and88 under real bounded native systemd jobs/S21 leases. Both produced identical non-silent PCM SHA5688b9f1053cde0241af653c43a1a77a05ebe4a96b62d0e9630a23d0f68286de, native24000Hz→atempo1.35→8000Hz,43630bytes. Real end-to-end synthesis took8.947s/9.273s (focused integration max60s), with deployed bridge c82b77ade88bef4451f6811beb2ee99652c7c3c4818b4d9148de347fe91450fa. Jobs/SSH children were closed and leases released. This proves actual standby synthesis, not a heard conversation.
 
