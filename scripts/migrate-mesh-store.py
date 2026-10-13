@@ -115,6 +115,15 @@ def main():
     with destination:
         for (schema,) in objects:
             destination.execute(if_missing(schema))
+    completion_digest=hashlib.sha256(json.dumps(counts,sort_keys=True).encode()).hexdigest()
+    completion=source_hash+':complete'
+    previous=destination.execute('SELECT digest,rows FROM mesh_import_batches WHERE identity=?',(completion,)).fetchone()
+    if previous:
+        if previous['digest']!=completion_digest or previous['rows']!=sum(counts.values()):
+            raise RuntimeError('completed migration receipt disagrees with the frozen source')
+    else:
+        with destination:
+            destination.execute('INSERT INTO mesh_import_batches(identity,digest,rows) VALUES(?,?,?)',(completion,completion_digest,sum(counts.values())))
     result = {'status':'imported','source_sha256':source_hash,'tables':counts,'seconds':round(time.monotonic()-started,3),'external_actions':0}
     output = Path(args.receipt)
     output.write_text(json.dumps(result,indent=2)+'\n')

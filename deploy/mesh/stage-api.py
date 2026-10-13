@@ -137,6 +137,7 @@ http {{
   proxy_temp_path /var/lib/noticeplace-mesh-edge/proxy;
   server {{
     listen {args.address}:11492 ssl;
+    listen 127.0.0.1:11492 ssl;
     ssl_certificate /etc/noticeplace-mesh/cert.pem;
     ssl_certificate_key /etc/noticeplace-mesh/key.pem;
     ssl_client_certificate /etc/noticeplace-mesh/ca.pem;

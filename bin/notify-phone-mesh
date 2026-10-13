@@ -68,6 +68,19 @@ class PhoneControl:
                 with self.center._lock,self.center._connection:
                     self.center._connection.execute('UPDATE gsm2sip_mesh_receipts SET projected=1 WHERE id=? AND event=?', (row['id'],row['event']))
 
+    def replay_sms_reports(self):
+        directory=Path('/var/spool/asterisk/noticeplace-mesh-reports')
+        if not directory.is_dir():return
+        for report in sorted(directory.glob('*.json'))[:8]:
+            value=json.loads(report.read_text())
+            outcome=self.sms_report(value)
+            if outcome['ok']:
+                report.unlink()
+            else:
+                # Retain contradictory terminal evidence without retrying it
+                # forever or overwriting the accepted terminal receipt.
+                report.rename(report.with_suffix('.rejected'))
+
     @staticmethod
     def pbx_status():
         try:
@@ -87,7 +100,13 @@ class PhoneControl:
         busy=lease is not None and lease['expires_at']>time.time()
         if operator:
             busy=busy or json.loads(operator)['expires_at']>time.time()
-        return {'ready':registered and active==0 and not busy and self.phone_idle(require_local_peer=True)}
+        native=False
+        try:
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as probe:
+                probe.settimeout(.5);probe.connect(self.socket);native=True
+        except OSError:pass
+        # Connect/close sends no control frame and never originates a call.
+        return {'ready':native and registered and active==0 and not busy and self.phone_idle(require_local_peer=True)}
 
     @staticmethod
     def phone_idle(*,require_local_peer=False):
@@ -114,7 +133,7 @@ class PhoneControl:
             states=[value for value in lines if not value.startswith('peer:')]
             peers=[value[5:] for value in lines if value.startswith('peer:')]
             local={
-                'roomhacker-server-100':{'192.168.2.100','100.65.58.36'},
+                'roomhacker-server-100':{'192.168.2.100','100.65.58.36','95.165.165.65','bezrabotnyi.com'},
                 'server-44':{'192.168.2.5','100.109.149.33'},
                 'roomhacker-server-88':{'192.168.2.75','100.101.226.91'},
             }.get(socket.gethostname(),set())
@@ -130,8 +149,10 @@ class PhoneControl:
     def renew(self):
         while True:
             time.sleep(5)
-            try:self.project_sms_reports()
-            except (sqlite3.Error,OSError):pass
+            try:
+                self.replay_sms_reports()
+                self.project_sms_reports()
+            except (sqlite3.Error,OSError,ValueError,KeyError):pass
             with self.lock:
                 holder=self.holder
                 preparing=self.preparing
