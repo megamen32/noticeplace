@@ -61,12 +61,12 @@ def main():
         output.write_bytes((bundle / relative).read_bytes())
         output.chmod(0o755 if relative == 'noticeplace-mesh-store' else 0o644)
     config = Path('/etc/noticeplace-mesh')
-    config.chown(owner.pw_uid, owner.pw_gid)
+    os.chown(config, owner.pw_uid, owner.pw_gid)
     for name in ['ca.pem', 'cert.pem', 'key.pem']:
         output = config / name
         output.write_bytes((Path(args.certificates) / name).read_bytes())
         output.chmod(0o400)
-        output.chown(owner.pw_uid, owner.pw_gid)
+        os.chown(output, owner.pw_uid, owner.pw_gid)
     unit = f'''[Unit]
 Description=Notice Place three-voter durable SQLite mesh
 After=network-online.target
