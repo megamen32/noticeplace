@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/canonical/go-dqlite/v2/app"
+	"github.com/canonical/go-dqlite/v2/client"
 )
 
 const maxFrame = 16 * 1024 * 1024
@@ -264,7 +265,17 @@ func main() {
 	}
 	listenTLS := &tls.Config{Certificates: []tls.Certificate{cert}, ClientCAs: ca, ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS12}
 	dialTLS := &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: ca, ServerName: "noticeplace-mesh", MinVersion: tls.VersionTLS12}
-	options := []app.Option{app.WithAddress(*address), app.WithTLS(listenTLS, dialTLS), app.WithVoters(3), app.WithNetworkLatency(10 * time.Millisecond)}
+	// Dqlite derives its election timeout as15 times this value. A10ms
+	// setting spuriously evicts a leader while a real production index blocks
+	// its SQLite thread. Keep the native three-second election window.
+	options := []app.Option{app.WithAddress(*address), app.WithTLS(listenTLS, dialTLS), app.WithVoters(3), app.WithNetworkLatency(200 * time.Millisecond),
+		app.WithLogFunc(func(level client.LogLevel, format string, args ...interface{}) {
+			// Driver errors otherwise collapse to ErrBadConn. Retain the reason
+			// without logging application SQL, arguments or credentials.
+			if level >= client.LogWarn || strings.Contains(format, "connection lost") || strings.Contains(format, "leadership lost") || strings.Contains(format, "EOF detected") {
+				log.Printf(format, args...)
+			}
+		})}
 	if *join != "" {
 		options = append(options, app.WithCluster(strings.Split(*join, ",")))
 	}

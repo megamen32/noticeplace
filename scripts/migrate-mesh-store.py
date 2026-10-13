@@ -112,9 +112,12 @@ def main():
         counts[name] = count
         print(json.dumps({'table':name,'rows':count}), flush=True)
     objects = source.execute("SELECT sql FROM sqlite_master WHERE type IN ('index','trigger') AND sql IS NOT NULL ORDER BY name").fetchall()
-    with destination:
-        for (schema,) in objects:
-            destination.execute(if_missing(schema))
+    for (schema,) in objects:
+        # Building a production index can exceed the ordinary query window.
+        # Use the bounded import transaction window for each individual DDL;
+        # a lost response still stops, and explicit resume reconciles IF NOT
+        # EXISTS against the same frozen source instead of replaying effects.
+        destination.batch([(if_missing(schema), [])])
     completion_digest=hashlib.sha256(json.dumps(counts,sort_keys=True).encode()).hexdigest()
     completion=source_hash+':complete'
     previous=destination.execute('SELECT digest,rows FROM mesh_import_batches WHERE identity=?',(completion,)).fetchone()
