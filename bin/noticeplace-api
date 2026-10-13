@@ -2,6 +2,7 @@
 """Run the canonical HTTP API without delivery, polling or native executors."""
 import json
 import os
+import signal
 from pathlib import Path
 import sys
 
@@ -11,6 +12,11 @@ from notification_center.http_api import run_http
 
 
 def main():
+    # Linux PID1 ignores the default SIGTERM disposition. Register an exit
+    # handler so Docker/Kubernetes can stop this producer within its grace.
+    def terminate(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, terminate)
     tokens=json.loads(os.environ['NOTIFY_CENTER_TOKENS_JSON'])
     if not isinstance(tokens,dict) or not tokens:raise RuntimeError('explicit producer scopes required')
     for name in ('NOTIFY_CENTER_HEALTH_TOKEN',):
