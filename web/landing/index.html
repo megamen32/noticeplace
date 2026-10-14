@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090b0c">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Notice Place собирает сигналы, связывает их с инцидентами и направляет уведомления и действия внутри вашей экосистемы.">
+  <title>Notice Place — есть куда смотреть</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23ff5235' fill-rule='evenodd' d='M0 0h32v32H0zM11 11v10h10V11z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body data-state="idle">
+  <a class="skip-link" href="#main">Перейти к содержимому</a>
+  <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true">
+    <defs>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+      <symbol id="i-up-right" viewBox="0 0 24 24"><path d="M6 18 18 6M6 6h12v12"/></symbol>
+      <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/><path d="M6 6.5h1m-1 11h1m4-11h7m-7 11h7"/></symbol>
+      <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 4 16 4 16 0V5M4 12v7c0 4 16 4 16 0v-7"/></symbol>
+      <symbol id="i-api" viewBox="0 0 24 24"><path d="m9 3-5 8 4 3-5 6h7l2-5 4 6h5l-4-9 2-4-6-5zM9 3l3 7 7-2M4 11l8-1 5 2m-5-2v5"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v5l3 2M9 2h6m-3 0v3m6-1 3 3"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="m12 3 10 18H2L12 3zm0 6v5m0 3v1"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6V4h7l3 3h8v14H3V6zM3 7h10"/></symbol>
+      <symbol id="i-disk" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><circle cx="12" cy="11" r="5"/><path d="m12 11 5-2M8 18h1m3 0h4"/></symbol>
+      <symbol id="i-network" viewBox="0 0 24 24"><path d="m12 2 9 5v10l-9 5-9-5V7l9-5zM12 7v6m0 4v.2"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 10a6 6 0 0 1 12 0c0 6 3 6 3 8H3c0-2 3-2 3-8zm3 11h6M12 2v2"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="i-crosshair" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></symbol>
+      <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8m-4-4v4M6 11h3l2-4 3 7 2-3h2"/></symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="6" height="6" rx="2"/><rect x="15" y="3" width="6" height="6" rx="2"/><rect x="3" y="15" width="6" height="6" rx="2"/><rect x="15" y="15" width="6" height="6" rx="2"/></symbol>
+      <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="1"/><path d="M15 8V3H3v13h5"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="m7 4 13 8-13 8z"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 7h18M3 16h18"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m2 10 20-8-7 20-5-8-8-4zm8 4L22 2"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="topbar">
+    <div class="nav-wrap">
+      <a class="brand" href="#" aria-label="Notice Place — в начало">
+        <span class="mark" aria-hidden="true"></span>
+        <span class="brand-text"><span class="wordmark">NOTICE PLACE</span><span class="brand-subtitle">MONITORING FOR WHAT MATTERS</span></span>
+      </a>
+      <nav class="desktop-nav" aria-label="Основная навигация">
+        <a href="#capabilities"><span>[01]</span> Возможности</a>
+        <a href="#how-it-works"><span>[02]</span> Как работает</a>
+        <a href="#ecosystem"><span>[03]</span> Интеграции</a>
+        <a href="#connect"><span>[04]</span> Документация</a>
+      </nav>
+      <a class="button console-button" href="https://notify.bezrabotnyi.com/admin/" target="_blank" rel="noopener noreferrer">Открыть консоль <svg aria-hidden="true" focusable="false" class="icon"><use href="#i-arrow"/></svg></a>
+      <button class="menu-button" id="menu-toggle" type="button" aria-label="Открыть меню" aria-expanded="false" aria-controls="mobile-menu"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-menu"/></svg></button>
+    </div>
+    <nav class="mobile-menu" id="mobile-menu" aria-label="Мобильная навигация" hidden>
+      <a href="#capabilities">[01] Возможности</a><a href="#how-it-works">[02] Как работает</a><a href="#ecosystem">[03] Интеграции</a><a href="#connect">[04] Документация</a><a href="https://notify.bezrabotnyi.com/admin/" target="_blank" rel="noopener noreferrer">Открыть консоль ↗</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <h1 id="hero-title" class="has-display-title"><span class="headline-fallback">Когда всё<br>начинает шумить<span class="underscore">_</span><br><span class="accent">есть куда смотреть</span></span><svg class="display-title" viewBox="0 0 397 98" aria-hidden="true" focusable="false"><g transform="translate(2 5)"><path d="M2 2V22M18 2L2 13M7 10L18 22" transform="translate(0 0)"/><path d="M6 2H14L18 6V18L14 22H6L2 18V6Z" transform="translate(23 0)"/><path d="M18 2H2V22" transform="translate(46 0)"/><path d="M0 26V22H20V26M3 22L6 2H16V22" transform="translate(69 0)"/><path d="M2 22V7L7 2H13L18 7V22M2 14H18" transform="translate(92 0)"/><path d="M2 22V2H14L18 6V9L14 12H2M14 12L18 16V18L14 22H2" transform="translate(128 0)"/><path d="M18 2H6L2 6V18L6 22H18" transform="translate(151 0)"/><path d="M18 2H2V22H18M2 12H15M6 -3H6.2M14 -3H14.2" transform="translate(174 0)"/></g><g transform="translate(2 39)"><path d="M2 2V22M18 2V22M2 12H18" transform="translate(0 0)"/><path d="M2 22V7L7 2H13L18 7V22M2 14H18" transform="translate(23 0)"/><path d="M2 2V10L5 13H18M18 2V22" transform="translate(46 0)"/><path d="M2 2V22L18 2V22" transform="translate(69 0)"/><path d="M2 2V22M18 2V22M2 12H18" transform="translate(92 0)"/><path d="M2 22V7L7 2H13L18 7V22M2 14H18" transform="translate(115 0)"/><path d="M18 2H2V22H18M2 12H15" transform="translate(138 0)"/><path d="M0 2H20M10 2V22" transform="translate(161 0)"/><path d="M1 2V22H19V2M10 2V22" transform="translate(197 0)"/><path d="M2 2L10 13M18 2L5 22" transform="translate(220 0)"/><path d="M2 22V2L10 13L18 2V22" transform="translate(243 0)"/><path d="M2 2V22L18 2V22" transform="translate(266 0)"/><path d="M0 2H20M10 2V22" transform="translate(289 0)"/><path d="M2 2V22H14L18 18V15L14 11H2" transform="translate(312 0)"/><path class="cursor-path" d="M336 22h13"/></g><g class="title-accent" transform="translate(2 73)"><path d="M18 2H2V22H18M2 12H15" transform="translate(0 0)"/><path d="M18 2H6L2 6V18L6 22H18" transform="translate(23 0)"/><path d="M0 2H20M10 2V22" transform="translate(46 0)"/><path d="M2 2V22H14L18 18V15L14 11H2" transform="translate(69 0)"/><path d="M2 2V22M18 2L2 13M7 10L18 22" transform="translate(105 0)"/><path d="M2 2L10 13M18 2L5 22" transform="translate(128 0)"/><path d="M0 26V22H20V26M3 22L6 2H16V22" transform="translate(151 0)"/><path d="M2 22V7L7 2H13L18 7V22M2 14H18" transform="translate(174 0)"/><path d="M18 2H6L2 6V18L6 22H18" transform="translate(210 0)"/><path d="M2 22V2L10 13L18 2V22" transform="translate(233 0)"/><path d="M6 2H14L18 6V18L14 22H6L2 18V6Z" transform="translate(256 0)"/><path d="M0 2H20M10 2V22" transform="translate(279 0)"/><path d="M2 22V2H14L18 6V10L14 14H2" transform="translate(302 0)"/><path d="M18 2H2V22H18M2 12H15" transform="translate(325 0)"/><path d="M0 2H20M10 2V22" transform="translate(348 0)"/><path d="M2 2V22H14L18 18V15L14 11H2" transform="translate(371 0)"/></g></svg></h1>
+        <p class="hero-description">Notice Place собирает сигналы из разных источников,<br class="desktop-break"> отделяет важное от шума и уведомляет нужных людей.<br class="desktop-break"> Просто мониторинг. В твоей экосистеме.</p>
+        <div class="hero-actions">
+          <button class="button button-primary" id="demo-start" type="button"><span id="demo-button-label">Попробовать</span><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-arrow"/></svg></button>
+          <a class="button" href="#connect">Читать документацию</a>
+        </div>
+      </div>
+      <aside class="system-status" aria-label="Демонстрационное состояние системы">
+        <p class="eyebrow">// SYSTEM STATUS <span class="demo-tag">DEMO</span></p>
+        <div class="system-heading"><span class="status-dot" aria-hidden="true"></span><span id="system-title">Всё под контролем<span class="underscore">_</span></span></div>
+        <dl class="status-metrics">
+          <div><dt><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-crosshair"/></svg>Сервисы</dt><dd id="metric-services">24/24</dd></div>
+          <div><dt><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-monitor"/></svg>Мониторы</dt><dd>58</dd></div>
+          <div><dt><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-clock"/></svg>Инциденты</dt><dd id="metric-incidents">0</dd></div>
+          <div><dt><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-alert"/></svg>Уведомления</dt><dd class="metric-text" id="metric-notifications">В норме</dd></div>
+        </dl>
+        <p class="quiet-quote">«Тишина —<br>тоже результат».</p>
+      </aside>
+    </section>
+
+    <section class="signal-section" id="signal-flow" aria-label="Интерактивная демонстрация: от сигналов к результату">
+      <div class="signal-scene" id="signal-scene">
+        <canvas class="signal-canvas" id="signal-canvas" aria-hidden="true"></canvas>
+        <div class="scene-coordinates" aria-hidden="true"><span>SYS.01 / INGRESS</span><span>0x00 / SIGNAL CORE</span><span>SYS.02 / OUTCOME</span></div>
+        <div class="source-column">
+          <div class="source-list" id="source-list">
+            <button class="source-row" type="button" data-source="api" aria-label="Показать демонстрацию: API недоступен"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-api"/></svg><span class="source-name">API</span><span class="source-message"><b>503</b> Service Unavailable</span><span class="source-time">2 мин назад</span></button>
+            <button class="source-row" type="button" data-source="database" aria-label="Показать демонстрацию: медленный запрос к базе данных"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-database"/></svg><span class="source-name">DATABASE</span><span class="source-message">Slow query detected</span><span class="source-time">3 мин назад</span></button>
+            <button class="source-row" type="button" data-source="server" aria-label="Показать демонстрацию: высокая нагрузка CPU"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-server"/></svg><span class="source-name">SERVER</span><span class="source-message">High CPU usage (92%)</span><span class="source-time">4 мин назад</span></button>
+            <button class="source-row" type="button" data-source="cron" aria-label="Показать демонстрацию: фоновая задача завершилась с ошибкой"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-clock"/></svg><span class="source-name">CRON</span><span class="source-message">Job failed</span><span class="source-time">5 мин назад</span></button>
+            <button class="source-row" type="button" data-source="site" aria-label="Показать демонстрацию: истекает сертификат"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-alert"/></svg><span class="source-name">SITE</span><span class="source-message">Certificate expires in 3 days</span><span class="source-time">7 мин назад</span></button>
+            <button class="source-row" type="button" data-source="backup" aria-label="Показать демонстрацию: резервная копия создана"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-folder"/></svg><span class="source-name">BACKUP</span><span class="source-message">Backup completed</span><span class="source-time">9 мин назад</span></button>
+            <button class="source-row" type="button" data-source="disk" aria-label="Показать демонстрацию: диск заполнен более чем на 90 процентов"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-disk"/></svg><span class="source-name">DISK</span><span class="source-message">Disk usage &gt; 90%</span><span class="source-time">10 мин назад</span></button>
+            <button class="source-row" type="button" data-source="application" aria-label="Показать демонстрацию: ошибка приложения"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-alert"/></svg><span class="source-name">APPLICATION</span><span class="source-message">Unhandled exception</span><span class="source-time">12 мин назад</span></button>
+            <button class="source-row" type="button" data-source="network" aria-label="Показать демонстрацию: потеря сетевых пакетов"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-network"/></svg><span class="source-name">NETWORK</span><span class="source-message">Packet loss detected</span><span class="source-time">14 мин назад</span></button>
+            <button class="source-row source-row-more" type="button" data-source="other" aria-label="Показать пример внешнего события"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-database"/></svg><span class="source-name">OTHER</span><span class="source-message">…and more</span><span class="source-time">+ события</span></button>
+          </div>
+          <div class="mobile-stage-label"><b>Множество сигналов</b><span>Выбери событие — посмотри, что будет дальше.</span></div>
+        </div>
+
+        <div class="core-column">
+          <div class="core" id="signal-core">
+            <span class="corner corner-tl" aria-hidden="true"></span><span class="corner corner-tr" aria-hidden="true"></span><span class="corner corner-bl" aria-hidden="true"></span><span class="corner corner-br" aria-hidden="true"></span>
+            <span class="core-caption" aria-hidden="true">IN: SIGNAL / OUT: CONTEXT</span>
+            <span class="core-diamond" aria-hidden="true"></span>
+            <span class="mark core-mark" aria-hidden="true"></span>
+            <span class="core-wordmark">NOTICE<br>PLACE</span>
+            <span class="core-tagline" id="core-tagline">СОБИРАЕТ · АНАЛИЗИРУЕТ · УВЕДОМЛЯЕТ</span>
+            <span class="core-meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          </div>
+          <div class="mobile-stage-label"><b>Один понятный инцидент</b><span>Контекст вместо потока одинаковых уведомлений.</span></div>
+        </div>
+
+        <div class="outcome-column">
+          <article class="outcome-panel" id="outcome-panel" tabindex="-1" aria-labelledby="outcome-title">
+            <span class="outcome-demo" title="Локальная демонстрация, не данные серверов">DEMO</span>
+            <div class="outcome-heading"><span class="outcome-symbol"><svg aria-hidden="true" focusable="false" class="icon" id="outcome-icon"><use href="#i-crosshair"/></svg></span><div><h2 id="outcome-title">Инцидентов нет</h2><p id="outcome-description">Система работает стабильно.</p></div></div>
+            <div class="signal-strip" id="signal-strip" aria-hidden="true"></div>
+            <div class="time-ruler" aria-hidden="true"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span></div>
+            <div class="demo-progress" id="demo-progress" hidden>
+              <div class="progress-label"><span id="progress-label">Сигнал принят</span><span id="progress-step">01 / 04</span></div>
+              <div class="progress-track"><span id="progress-fill"></span></div>
+              <div class="plan-actions" id="plan-actions" hidden><button type="button" data-plan="observe">Наблюдать</button><button type="button" data-plan="repair" class="plan-primary">Исправить</button><button type="button" data-plan="verify">Проверить</button></div>
+              <p class="demo-receipt" id="demo-receipt" hidden></p>
+            </div>
+            <div class="events-heading"><h3>↳ Последние события</h3><button type="button" class="text-button" id="history-open">Показать все <span aria-hidden="true">↗</span></button></div>
+            <ol class="event-list" id="event-list">
+              <li><span class="event-dot"></span><span>Site</span><span>Проверка успешна</span><time>19:24</time></li>
+              <li><span class="event-dot"></span><span>API</span><span>Восстановлен</span><time>18:03</time></li>
+              <li><span class="event-dot"></span><span>Database</span><span>Задержка в норме</span><time>17:11</time></li>
+              <li><span class="event-dot"></span><span>Backup</span><span>Копия создана</span><time>16:02</time></li>
+            </ol>
+          </article>
+          <div class="mobile-stage-label"><b>Что действительно важно</b><span>Понятный статус. Следующее действие. Результат.</span></div>
+        </div>
+      </div>
+      <div class="caption-grid">
+        <div><h3>Множество сигналов</h3><p>Логи, метрики, проверки, сервисы,<br>уведомления… Шум увеличивается.</p></div>
+        <div><h3>Одна панель</h3><p>Единая картина. Контекст. История.<br>Уведомления — туда, где на них ответят.</p></div>
+        <div><h3>Что действительно важно</h3><p>Понятные статусы. Быстрая реакция.<br>Меньше рутины — больше контроля.</p></div>
+      </div>
+      <div class="scene-toolbar"><span><span class="tiny-dot"></span>Интерактивный пример<span class="toolbar-separator"> / </span><span class="demo-explanation">Данные вымышлены. Реальных запросов к серверам нет.</span></span><button id="animation-toggle" class="animation-toggle" type="button" aria-pressed="false" aria-label="Приостановить анимацию"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-pause"/></svg><span>Пауза анимации</span></button></div>
+    </section>
+
+    <section class="capabilities" id="capabilities" aria-label="Возможности Notice Place">
+      <div class="feature-strip wrap">
+        <a class="feature" href="#how-it-works"><span class="feature-icon"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-crosshair"/></svg></span><span><h2>Сигналы системы</h2><p>Ресурсы, сервисы, логи и события.</p></span></a>
+        <a class="feature" href="#how-it-works"><span class="feature-icon"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-bell"/></svg></span><span><h2>Уведомления</h2><p>Telegram, подтверждения, эскалация.</p></span></a>
+        <a class="feature" href="#ecosystem"><span class="feature-icon"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-grid"/></svg></span><span><h2>В своей экосистеме</h2><p>GPTAdmin, Agent Herder и твои сервисы.</p></span></a>
+        <a class="feature" href="#connect"><span class="feature-icon"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-code"/></svg></span><span><h2>Понятный API</h2><p>REST, MCP, Python и Node.js.</p></span></a>
+      </div>
+    </section>
+
+    <section class="detail-section wrap" id="how-it-works" aria-labelledby="how-title">
+      <div class="section-intro"><p class="eyebrow">[02] СИГНАЛ → ДЕЙСТВИЕ → ПРОВЕРКА</p><h2 id="how-title">Заметить —<br>только начало.</h2><p>Красная точка сообщает, что что-то не так.<br>Дальше нужен контекст: что случилось,<br>кто реагирует и помогло ли это.</p><button class="text-link" id="demo-again" type="button">Посмотреть на примере <svg aria-hidden="true" focusable="false" class="icon"><use href="#i-arrow"/></svg></button></div>
+      <ol class="protocol-list">
+        <li><span class="protocol-number">01</span><div><h3>Поймать сигнал</h3><p>Ресурсы хоста, недоступный сервис, ошибка в логе или событие от твоего приложения.</p></div><span class="protocol-code">DETECT</span></li>
+        <li><span class="protocol-number">02</span><div><h3>Собрать контекст</h3><p>Повтор одного сбоя дополняет инцидент, а не создаёт ещё один независимый поток уведомлений.</p></div><span class="protocol-code">CORRELATE</span></li>
+        <li><span class="protocol-number">03</span><div><h3>Передать в работу</h3><p>Уведомить в Telegram. В настроенном агентском сценарии — предложить план и получить решение человека.</p></div><span class="protocol-code">ACT</span></li>
+        <li><span class="protocol-number">04</span><div><h3>Проверить результат</h3><p>Слова агента «готово» недостаточно. Состояние подтверждает отдельная проверка исходного сигнала.</p></div><span class="protocol-code">VERIFY</span></li>
+      </ol>
+    </section>
+
+    <section class="ecosystem-section" id="ecosystem" aria-labelledby="ecosystem-title"><div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">[03] НЕ РЯДОМ С ЭКОСИСТЕМОЙ. ВНУТРИ.</p><h2 id="ecosystem-title">Каждый знает свою работу.</h2></div><p>Notice Place связывает сигнал с реакцией.<br>Подключённые инструменты делают остальное.</p></div>
+      <div class="ecosystem-map">
+        <div class="ecosystem-node"><span class="node-label">ИСТОЧНИКИ</span><h3>Твои сервисы</h3><p>Проверки, логи,<br>внешние события</p></div><span class="map-arrow" aria-hidden="true">→</span>
+        <div class="ecosystem-node ecosystem-central"><span class="node-label">КООРДИНАЦИЯ</span><h3><span class="mark small-mark" aria-hidden="true"></span>Notice Place</h3><p>Инцидент, правила,<br>маршрут уведомления</p></div><span class="map-arrow" aria-hidden="true">→</span>
+        <div class="ecosystem-node"><span class="node-label">ИНФРАСТРУКТУРА</span><h3>GPTAdmin</h3><p>Доступ к узлам<br>и разрешённым действиям</p></div><span class="map-arrow" aria-hidden="true">→</span>
+        <div class="ecosystem-node"><span class="node-label">АГЕНТСКИЕ СЕССИИ</span><h3>Agent Herder</h3><p>Запуск, продолжение,<br>контроль прогресса</p></div>
+      </div>
+      <div class="human-loop"><span class="return-line" aria-hidden="true"></span><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-send"/></svg><p><b>Человек остаётся в контуре.</b> Вопрос, выбор плана и итог — в Telegram.</p><span class="flow-caption">HUMAN IN THE LOOP</span></div>
+      <p class="integration-note">Схема показывает настроенный сценарий. Агентам, каналам доставки и звонкам нужны отдельные подключения и права.</p>
+    </div></section>
+
+    <section class="connect-section wrap" id="connect" aria-labelledby="connect-title">
+      <div class="section-intro"><p class="eyebrow">[04] ПЕРВОЕ ПОДКЛЮЧЕНИЕ</p><h2 id="connect-title">Дай сигналу<br>адрес.</h2><p>Разверни центр, настрой канал доставки<br>и подключи первый проект.<br>Не всю инфраструктуру за один вечер.</p><a class="text-link" href="https://github.com/megamen32/noticeplace/blob/main/deploy/README.md" target="_blank" rel="noopener noreferrer">Инструкция по развёртыванию <svg aria-hidden="true" focusable="false" class="icon"><use href="#i-up-right"/></svg></a></div>
+      <div class="connect-terminal">
+        <div class="terminal-tabs" role="tablist" aria-label="Способ подключения"><button type="button" role="tab" id="tab-mcp" aria-controls="panel-mcp" aria-selected="true" tabindex="0">01 / MCP</button><button type="button" role="tab" id="tab-api" aria-controls="panel-api" aria-selected="false" tabindex="-1">02 / HTTP API</button><span class="terminal-indicator" aria-hidden="true"></span></div>
+        <div role="tabpanel" id="panel-mcp" aria-labelledby="tab-mcp"><div class="terminal-body"><span class="code-language">SHELL / CODEX</span><pre><code id="code-mcp">codex mcp add notify -- \
+  npx -y github:megamen32/noticeplace</code></pre><button class="copy-button" type="button" data-copy="code-mcp" aria-label="Скопировать команду MCP"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-copy"/></svg><span>Копировать</span></button></div><div class="terminal-note">Команда добавляет MCP, а не разворачивает систему. Адрес центра и доступ настраиваются отдельно. Начни с инструмента <code>noticeplace_instructions</code>.</div></div>
+        <div role="tabpanel" id="panel-api" aria-labelledby="tab-api" hidden><div class="terminal-body"><span class="code-language">HTTP / КОНТРАКТ</span><pre><code id="code-api">POST /v1/events
+Authorization: Bearer &lt;project-token&gt;
+Idempotency-Key: &lt;event-key&gt;</code></pre><button class="copy-button" type="button" data-copy="code-api" aria-label="Скопировать заголовки HTTP API"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-copy"/></svg><span>Копировать</span></button></div><div class="terminal-note">Отдельный токен на проект, стабильный ключ события. Схема тела запроса и разрешения — в <a href="https://github.com/megamen32/noticeplace/blob/main/docs/producer.md" target="_blank" rel="noopener noreferrer">контракте источника ↗</a>. Учётные данные каналов остаются в центре.</div></div>
+        <div class="terminal-footer"><span><span class="tiny-dot"></span> OPEN SOURCE / MIT</span><a href="https://github.com/megamen32/noticeplace" target="_blank" rel="noopener noreferrer">Исходники на GitHub <svg aria-hidden="true" focusable="false" class="icon"><use href="#i-up-right"/></svg></a></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer wrap"><a class="brand footer-brand" href="#"><span class="mark small-mark" aria-hidden="true"></span><span class="wordmark">NOTICE PLACE</span></a><p>Меньше шума. Больше понимания.</p><a href="https://github.com/megamen32/noticeplace/tree/main/docs" target="_blank" rel="noopener noreferrer">Документация <svg aria-hidden="true" focusable="false" class="icon"><use href="#i-up-right"/></svg></a><span class="footer-end">END OF SIGNAL_</span></footer>
+
+  <dialog class="history-dialog" id="history-dialog" aria-labelledby="history-title"><div class="dialog-heading"><div><p class="eyebrow">DEMO / EVENT LOG</p><h2 id="history-title">История сигналов</h2></div><button class="icon-button" id="history-close" type="button" aria-label="Закрыть историю"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-close"/></svg></button></div><p class="dialog-note">Это события локальной демонстрации, не данные твоих серверов.</p><ol class="history-list" id="history-list"></ol><div class="dialog-footer"><span id="history-total"></span><button type="button" id="demo-reset" class="text-button">Сбросить демо ↺</button></div></dialog>
+  <p class="sr-only" id="demo-announcement" role="status" aria-live="polite" aria-atomic="true"></p>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <noscript><div class="noscript-note">Демонстрации нужен JavaScript. Описание проекта и ссылки работают без него.</div></noscript>
+</body>
+</html>

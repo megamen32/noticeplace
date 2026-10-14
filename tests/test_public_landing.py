@@ -1,0 +1,118 @@
+"""Small offline tests for the approved landing and isolated nginx deployment.
+
+No real incidents, agents, notifications, root writes, or external requests.
+One process, <1 GiB address-space limit in the recorded validation command.
+"""
+import base64
+import hashlib
+import importlib.util
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+WEB = ROOT / "web" / "landing"
+spec = importlib.util.spec_from_file_location("public_landing_deploy", ROOT / "deploy" / "landing.py")
+deploy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(deploy)
+
+TLS = """upstream noticeplace_mesh_api { server 127.0.0.1:11492; }
+server {
+    listen 127.0.0.1:8444 ssl;
+    server_name notify.bezrabotnyi.com;
+    location ^~ /admin/ { auth_request /check; proxy_pass https://noticeplace_mesh_api; }
+    location / { proxy_pass https://noticeplace_mesh_api; }
+}
+server {
+    listen 80;
+    server_name notify.bezrabotnyi.com;
+    location / { return 301 https://$host$request_uri; }
+}
+"""
+
+
+def test_build_reproduces_approved_artifact(tmp_path):
+    src = tmp_path / "landing"
+    shutil.copytree(WEB, src)
+    result = subprocess.run([sys.executable, str(src / "build.py")], capture_output=True, timeout=15)
+    assert result.returncode == 0, result.stderr.decode()
+    assert (src / "dist" / "NoticePlace.html").read_bytes() == (WEB / "dist" / "NoticePlace.html").read_bytes()
+    assert (src / "index.html").read_bytes() == (WEB / "index.html").read_bytes()
+
+
+def test_preserves_all_existing_routes_and_http_redirect():
+    result = deploy.integrate_vhost(TLS)
+    include = f"    include {deploy.SNIPPET};"
+    assert result.count(include) == 1
+    assert result.replace("\n\n" + include, "") == TLS
+    assert "include" not in result.split("listen 80;")[1]
+
+
+def test_include_is_idempotent():
+    once = deploy.integrate_vhost(TLS)
+    assert deploy.integrate_vhost(once) == once
+
+
+def test_rejects_existing_exact_root():
+    with pytest.raises(ValueError, match="existing exact root"):
+        deploy.integrate_vhost(TLS.replace("location / { proxy_pass", "location = / { proxy_pass"))
+
+
+def test_rejects_ambiguous_tls_vhost():
+    with pytest.raises(ValueError, match="exactly one"):
+        deploy.integrate_vhost(TLS + TLS)
+
+
+def test_rejects_wrong_hostname():
+    with pytest.raises(ValueError, match="exactly one"):
+        deploy.integrate_vhost(TLS.replace("notify.bezrabotnyi.com", "other.example"))
+
+
+def test_script_hash_is_exact_and_csp_is_root_only():
+    html = (WEB / "dist" / "NoticePlace.html").read_bytes()
+    script = re.findall(rb"<script>(.*?)</script>", html, re.S)
+    assert len(script) == 1
+    expected = base64.b64encode(hashlib.sha256(script[0]).digest()).decode()
+    snippet = deploy.nginx_snippet(html, Path("/var/www/noticeplace-landing/releases/" + "a" * 40)).decode()
+    assert "script-src 'sha256-" + expected + "'" in snippet
+    assert "script-src 'unsafe-inline'" not in snippet
+    assert "connect-src 'none'" in snippet
+    assert snippet.count("location") == 1
+    assert "location = / {" in snippet
+    assert "auth_request" not in snippet and "proxy_pass" not in snippet
+    assert "Strict-Transport-Security" in snippet
+    assert "frame-ancestors 'none'" in snippet
+
+
+@pytest.mark.parametrize("payload", [b"<html></html>", b"<script>a</script><script>b</script>"])
+def test_refuses_unexpected_scripts(payload):
+    with pytest.raises(ValueError):
+        deploy.script_hashes(payload)
+
+
+def test_refuses_unsafe_nginx_path():
+    with pytest.raises(ValueError):
+        deploy.nginx_snippet(b"<script>x</script>", Path("/tmp/unsafe;path"))
+
+
+def test_demo_stays_offline_and_console_link_preserved():
+    html = (WEB / "index.html").read_text()
+    js = (WEB / "app.js").read_text()
+    assert 'https://notify.bezrabotnyi.com/admin/' in html
+    assert 'Данные вымышлены. Реальных запросов к серверам нет.' in html
+    assert 'data-plan="repair"' in html
+    assert not re.search(r"\b(fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(", js)
+    assert 'prefers-reduced-motion' in js
+
+
+def test_atomic_write_preserves_mode(tmp_path):
+    p = tmp_path / "config"
+    p.write_bytes(b"before")
+    p.chmod(0o640)
+    deploy.atomic_write(p, b"after")
+    assert p.read_bytes() == b"after"
+    assert p.stat().st_mode & 0o777 == 0o640

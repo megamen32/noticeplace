@@ -1,5 +1,7 @@
 # NoticePlace
 
+[Сайт](https://notify.bezrabotnyi.com/) · [Исходники лендинга](web/landing/) · [Публикация и откат](docs/public-landing.md)
+
 [English](README.md) · [中文](README.zh.md) · [Документация](docs/)
 
 ![Agent Herder и NoticePlace в production](docs/assets/agent-herder-live.png)

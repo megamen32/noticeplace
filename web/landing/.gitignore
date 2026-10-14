@@ -1,0 +1,6 @@
+# This one deterministic HTML is part of the public release contract.
+# Override the repository-wide dist/ ignore only for this landing artifact.
+!dist/
+dist/*
+!dist/NoticePlace.html
+__pycache__/
