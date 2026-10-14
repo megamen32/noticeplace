@@ -221,3 +221,11 @@ class SenderTests(unittest.TestCase):
             def run(*args,**kwargs):raise error
             with self.assertRaises(type(error)):
                 IncidentCallSender('http://bridge','test',runner=run).send(self.payload,'test-key')
+
+
+def test_telegram_http_receipt_wait_covers_extended_native_startup():
+    """Fast unit expected1s/max10s: cannot lose the receipt before UserIO535s bound."""
+    sender=IncidentCallSender('https://example.invalid/v1/calls/telegram/noticeplace','test',450)
+    assert sender.timeout > 535
+    matrix=IncidentCallSender('https://example.invalid/v1/calls/matrix/noticeplace','test',450)
+    assert matrix.timeout==450

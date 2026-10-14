@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 
@@ -91,6 +92,9 @@ def continuation(center, row, budget):
 class IncidentCallSender:
     """Use the existing UserIO account-bound NoticePlace endpoint, once."""
     def __init__(self, url, token, timeout=450, runner=urllib.request.urlopen):
+        # UserIO's extended Telegram setup/teardown can take535s. The outer
+        # HTTP wait must retain that receipt instead of timing out at450s.
+        timeout = max(timeout, 550) if urllib.parse.urlsplit(url).path.endswith('/calls/telegram/noticeplace') else timeout
         self.url, self.token, self.timeout, self.runner = url, token, timeout, runner
 
     def send(self, payload, delivery_key=None):
