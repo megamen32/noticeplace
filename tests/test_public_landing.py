@@ -109,6 +109,44 @@ def test_demo_stays_offline_and_console_link_preserved():
     assert 'prefers-reduced-motion' in js
 
 
+@pytest.mark.parametrize("source", ["index.html", "dist/NoticePlace.html"])
+def test_ecosystem_product_links_match_owner_urls(source):
+    from html.parser import HTMLParser
+
+    class ProductLinks(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.links = []
+            self.current = None
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == "a" and "ecosystem-link" in attrs.get("class", "").split():
+                self.current = {"attrs": attrs, "text": ""}
+
+        def handle_data(self, data):
+            if self.current is not None:
+                self.current["text"] += data
+
+        def handle_endtag(self, tag):
+            if tag == "a" and self.current is not None:
+                self.links.append(self.current)
+                self.current = None
+
+    parser = ProductLinks()
+    parser.feed((WEB / source).read_text())
+    expected = {
+        "GPTAdmin": "https://became.bezrabotnyi.com",
+        "Agent Herder": "https://agentherder.bezrabotnyi.com",
+        "UserIO": "https://msg.bezrabotnyi.com",
+    }
+    assert len(parser.links) == len(expected)
+    assert {link["text"].strip(): link["attrs"]["href"] for link in parser.links} == expected
+    for link in parser.links:
+        assert link["attrs"]["target"] == "_blank"
+        assert {"noopener", "noreferrer"} <= set(link["attrs"]["rel"].split())
+
+
 def test_atomic_write_preserves_mode(tmp_path):
     p = tmp_path / "config"
     p.write_bytes(b"before")
