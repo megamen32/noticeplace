@@ -6,6 +6,8 @@ import json
 import tempfile
 import unittest
 import urllib.error
+from datetime import datetime
+from unittest.mock import patch
 from pathlib import Path
 
 from notification_center.core import NotificationCenter, ValidationError
@@ -111,6 +113,33 @@ class ChainTests(unittest.TestCase):
     def test_disabled_calls_cancel_root_without_other_channels(self):
         self.start();self.center.set_runtime_setting('automatic_calls_enabled','false')
         self.step();self.assertEqual([],self.calls);self.assertEqual('cancelled',self.rows()[0]['status'])
+
+    def test_quiet_hours_stop_every_call_stage_before_external_reservation(self):
+        # Focused integration expected1s/max10s: midnight must not reach an adapter.
+        for index, channel in enumerate(ORDER):
+            with self.subTest(channel=channel):
+                incident = self.start(dict(self.event, dedup_key=channel), key=channel)
+                for stage in range(index):
+                    self.step()
+                before = list(self.calls)
+                self.center.set_runtime_setting('android_phone_quiet_start_hour', '0')
+                self.center.set_runtime_setting('android_phone_quiet_end_hour', '12')
+                with patch('notification_center.http_api.datetime') as clock:
+                    clock.now.return_value = datetime(2026, 10, 15, 0, 40)
+                    self.step()
+                self.assertEqual(before, self.calls)
+                self.assertEqual('cancelled', self.rows()[-1]['status'])
+                self.assertEqual([], self.step())
+                self.center.set_runtime_setting('android_phone_quiet_end_hour', '0')
+
+    def test_emergency_can_override_global_quiet_hours(self):
+        self.center.set_runtime_setting('android_phone_quiet_start_hour', '0')
+        self.center.set_runtime_setting('android_phone_quiet_end_hour', '12')
+        self.start(dict(self.event, severity='emergency'))
+        with patch('notification_center.http_api.datetime') as clock:
+            clock.now.return_value = datetime(2026, 10, 15, 0, 40)
+            self.step()
+        self.assertEqual(['matrix'], self.calls)
 
     def test_health_root_also_starts_matrix_not_phone(self):
         self.start(dict(self.event,event_type='health.degraded'))

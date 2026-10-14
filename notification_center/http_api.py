@@ -1051,6 +1051,17 @@ class DeliveryWorker:
             if str(delivery["channel"]).endswith(".call") and not self._automatic_calls_enabled():
                 self._center.complete_delivery(delivery["id"], "cancelled", "automatic calls disabled by operator")
                 return
+            if str(delivery["channel"]).endswith(".call") and not phone_call_allowed(
+                "emergency" if payload["incident"].get("severity") == "emergency" else "critical",
+                datetime.now(ZoneInfo(self._android_phone_quiet_timezone)),
+                self._runtime_float("android_phone_quiet_start_hour", self._android_phone_quiet_start_hour),
+                self._runtime_float("android_phone_quiet_end_hour", self._android_phone_quiet_end_hour),
+            ):
+                self._center.complete_delivery(
+                    delivery["id"], "cancelled", "Автоматический звонок отменён: тихие часы",
+                    claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                )
+                return
             if delivery["channel"] == "telegram.edit":
                 with self._center.delivery_send_lock():
                     payload = self._center.delivery_payload(delivery)
