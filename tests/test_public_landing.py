@@ -136,6 +136,7 @@ def test_ecosystem_product_links_match_owner_urls(source):
     parser = ProductLinks()
     parser.feed((WEB / source).read_text())
     expected = {
+        "ШТАТНО": "https://shtatno.bezrabotnyi.com",
         "GPTAdmin": "https://became.bezrabotnyi.com",
         "Agent Herder": "https://agentherder.bezrabotnyi.com",
         "UserIO": "https://msg.bezrabotnyi.com",
@@ -145,6 +146,18 @@ def test_ecosystem_product_links_match_owner_urls(source):
     for link in parser.links:
         assert link["attrs"]["target"] == "_blank"
         assert {"noopener", "noreferrer"} <= set(link["attrs"]["rel"].split())
+
+
+@pytest.mark.parametrize("source", ["index.html", "dist/NoticePlace.html"])
+def test_shtatno_affiliation_is_in_ecosystem_heading(source):
+    html = (WEB / source).read_text()
+    section = re.search(r'<section\b[^>]*\bid="ecosystem"[^>]*>(.*?)</section>', html, re.S)
+    assert section is not None
+    heading = re.search(r'<h2\b[^>]*\bid="ecosystem-title"[^>]*>(.*?)</h2>', section.group(1), re.S)
+    assert heading is not None
+    assert re.sub(r'<[^>]+>', '', heading.group(1)).strip() == "Notice Place — часть ШТАТНО"
+    assert 'href="https://shtatno.bezrabotnyi.com"' in heading.group(1)
+    assert section.group(1).index('id="ecosystem-title"') < section.group(1).index('class="ecosystem-map"')
 
 
 def test_atomic_write_preserves_mode(tmp_path):
