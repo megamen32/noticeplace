@@ -57,7 +57,8 @@ def nginx_snippet(html: bytes, release: Path) -> bytes:
            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
     return (f"{MARKER}\n"
             "location = / {\n"
-            f"    alias {release}/index.html;\n"
+            f"    root {release};\n"
+            "    try_files /index.html =404;\n"
             "    default_type text/html;\n"
             "    charset utf-8;\n"
             "    etag on;\n"

@@ -116,3 +116,60 @@ def test_atomic_write_preserves_mode(tmp_path):
     deploy.atomic_write(p, b"after")
     assert p.read_bytes() == b"after"
     assert p.stat().st_mode & 0o777 == 0o640
+
+
+@pytest.mark.skipif(shutil.which("nginx") is None, reason="nginx not installed")
+def test_real_nginx_root_and_query_serve_html_without_affecting_other_paths(tmp_path):
+    """One finite, rootless nginx process group on an ephemeral loopback port."""
+    import os
+    import signal
+    import socket
+    import time
+    import urllib.error
+    import urllib.request
+
+    html = (WEB / "dist" / "NoticePlace.html").read_bytes()
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "index.html").write_bytes(html)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    snippet = deploy.nginx_snippet(html, release).decode()
+    config = tmp_path / "nginx.conf"
+    temporary_paths = "\n".join(f"{kind}_temp_path {tmp_path}/{kind};" for kind in
+                                ("client_body", "proxy", "fastcgi", "uwsgi", "scgi"))
+    config.write_text(
+        f"daemon off; worker_processes 1; pid {tmp_path}/nginx.pid; error_log stderr;\n"
+        "events { worker_connections 32; }\n"
+        "http { access_log off;\n" + temporary_paths + "\n"
+        f"server {{ listen 127.0.0.1:{port};\n" + snippet +
+        "location / { return 404; }\n} }\n"
+    )
+    proc = subprocess.Popen([shutil.which("nginx"), "-c", str(config), "-p", str(tmp_path)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        for attempt in range(60):
+            if proc.poll() is not None:
+                pytest.fail(proc.stderr.read().decode())
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as response:
+                    assert response.status == 200
+                    assert response.read() == html
+                    assert "script-src 'sha256-" in response.headers["Content-Security-Policy"]
+                break
+            except urllib.error.URLError as error:
+                if isinstance(error, urllib.error.HTTPError):
+                    raise
+                time.sleep(0.05)
+        else:
+            pytest.fail("Rootless nginx did not start")
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/?campaign=acceptance", timeout=2) as response:
+            assert response.read() == html
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/admin/", timeout=2)
+        assert caught.value.code == 404
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+        proc.communicate(timeout=5)

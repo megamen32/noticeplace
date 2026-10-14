@@ -18,7 +18,7 @@ exact root locations, duplicate TLS hosts, unowned snippets and stale vhost
 checksums cause a refusal instead of overwriting other work.
 
 Nginx serves an immutable file below
-`/var/www/noticeplace-landing/releases/<commit>/index.html`. The alias pins the
+`/var/www/noticeplace-landing/releases/<commit>/index.html`. The exact-root handler pins the
 same release as the script CSP hash, so nginx reload cannot mix an old CSP with
 new JavaScript. `/var/www/noticeplace-landing/current` and the release manifest
 record the active publication; they do not select the response at request time.
