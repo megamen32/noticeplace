@@ -24,6 +24,7 @@ from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import DirectHealthRemediationAdapter, DurableHealthRemediationAdapter, GptAdminAgentJobAdapter
 from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, normalize_health_recommendation, sanitize_bounded_text, validate_health_plans
 from .instructions import noticeplace_instructions
+from .incident_call_chain import metadata as call_chain_metadata
 from .human_request_original import render_human_request_original
 from .selected_card import apply_selection_receipt, canonical_choice_ref
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
@@ -897,12 +898,17 @@ class WebhookCallSender(WebhookMessageSender):
 class DeliveryWorker:
     """Run due delivery claims through known adapters without hiding failures."""
 
-    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | AgentCallPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0, agent_jobs: dict[str, GptAdminAgentJobAdapter | Any] | None = None, message_adapters: Mapping[str, Any] | None = None, call_adapters: Mapping[str, Any] | None = None, android_phone_emergency_call_escalation_seconds: float = 0, android_phone_quiet_start_hour: float = 0, android_phone_quiet_end_hour: float = 12, android_phone_quiet_timezone: str = "Europe/Moscow") -> None:
+    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | AgentCallPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0, agent_jobs: dict[str, GptAdminAgentJobAdapter | Any] | None = None, message_adapters: Mapping[str, Any] | None = None, call_adapters: Mapping[str, Any] | None = None, android_phone_emergency_call_escalation_seconds: float = 0, android_phone_quiet_start_hour: float = 0, android_phone_quiet_end_hour: float = 12, android_phone_quiet_timezone: str = "Europe/Moscow", telegram_call: Any = None, incident_call_order: tuple[str, ...] = ()) -> None:
         """Attach durable delivery state to Telegram, Matrix, and the local S21 adapter."""
         self._center = center
         self._telegram = telegram
         self._matrix_call = matrix_call
         self._android_phone = android_phone
+        from .incident_call_chain import ORDER
+        if incident_call_order and tuple(incident_call_order) != ORDER:
+            raise ValueError('incident call order must be Matrix, Telegram, phone')
+        self._incident_call_order = tuple(incident_call_order)
+        self._telegram_call = telegram_call
         self._agent_jobs = dict(agent_jobs or {})
         self._message_adapters = dict(message_adapters or {})
         self._call_adapters = dict(call_adapters or {})
@@ -981,7 +987,15 @@ class DeliveryWorker:
             return
         incident_id = str(delivery["incident_id"])
         health_mode = telegram_mode(incident) == "health"
+        if (self._incident_call_order and str(delivery['delivery_key']).endswith(':initial')
+            and str(incident.get('kind') or '') == 'incident'
+            and str(incident['severity']) in {'critical','emergency'}
+            and self._automatic_calls_enabled()):
+            self._center.schedule_incident_call_chain_if_active(
+                incident_id, time.time() + self._phone_delay_seconds(str(incident['severity'])))
         if (
+            not self._incident_call_order
+            and
             not health_mode
             and str(delivery["delivery_key"]).endswith(":initial")
             and self._matrix_call is not None
@@ -990,6 +1004,8 @@ class DeliveryWorker:
             if delay > 0:
                 self._center.schedule_escalation_if_active(incident_id, "matrix.call", time.time() + delay)
         if (
+            not self._incident_call_order
+            and
             str(delivery["delivery_key"]).endswith(":initial")
             and str(incident["severity"]) in {"critical", "emergency"}
             and self._android_phone is not None
@@ -1024,7 +1040,13 @@ class DeliveryWorker:
 
     def deliver(self, delivery: dict[str, Any]) -> None:
         """Deliver one claimed job; callers may run this in a bounded worker pool."""
+        call_reserved = False
         try:
+            from .incident_call_chain import intended
+            if intended(delivery) and call_chain_metadata(delivery) is None:
+                self._center.complete_delivery(delivery['id'],'cancelled','Некорректная последовательность звонков',
+                    claimed_at=delivery.get('claimed_at'),attempt=delivery.get('attempt'))
+                return
             payload = self._center.delivery_payload(delivery)
             if str(delivery["channel"]).endswith(".call") and not self._automatic_calls_enabled():
                 self._center.complete_delivery(delivery["id"], "cancelled", "automatic calls disabled by operator")
@@ -1180,12 +1202,35 @@ class DeliveryWorker:
                     result=result if isinstance(result, Mapping) else None,
                 )
                 return
+            elif (str(delivery['channel']) in {'matrix.call','telegram.call'}
+                  and call_chain_metadata(delivery)):
+                from .incident_call_chain import safe_missed
+                adapter = self._matrix_call if delivery['channel']=='matrix.call' else self._telegram_call
+                if adapter is None: raise RuntimeError('incident call adapter is unavailable')
+                if not self._center.reserve_delivery_send(str(delivery['id']),float(delivery['claimed_at']),int(delivery['attempt'])):
+                    return
+                call_reserved = True
+                result = adapter.send(payload,str(delivery['delivery_key']))
+                if isinstance(result, Mapping) and result.get('answered') is True and result.get('actor'):
+                    outcome,reason='sent',None
+                elif safe_missed(result): outcome,reason='failed','Звонок завершён без ответа'
+                else: outcome,reason='uncertain','Результат звонка неизвестен; повтор и переход к другому каналу остановлены'
+                self._center.complete_delivery(delivery['id'],outcome,reason,
+                    claimed_at=delivery.get('claimed_at'),attempt=delivery.get('attempt'),result=result)
+                if outcome=='sent':
+                    self._center.acknowledge_if_active(str(delivery['incident_id']),str(result['actor']))
+                return
             elif delivery["channel"] == "matrix.call":
                 if self._matrix_call is None:
                     raise RuntimeError("Matrix call sender is not configured")
                 if not self._center.reserve_delivery_send(str(delivery["id"]), float(delivery["claimed_at"]), int(delivery["attempt"])):
                     return
+                call_reserved = True
                 result = self._matrix_call.send(payload)
+                if result.get('answered') is None or result.get('uncertain') is True:
+                    self._center.complete_delivery(delivery['id'],'uncertain','Результат звонка неизвестен',
+                        claimed_at=delivery.get('claimed_at'),attempt=delivery.get('attempt'),result=result)
+                    return
                 if result["answered"]:
                     self._center.acknowledge_if_active(str(delivery["incident_id"]), str(result["actor"]))
                 else:
@@ -1214,6 +1259,7 @@ class DeliveryWorker:
                     str(delivery["id"]), claimed_at=float(delivery["claimed_at"]), attempt=int(delivery["attempt"]),
                 ):
                     return
+                call_reserved = True
                 if delivery["channel"] == "android.phone.call":
                     self._send_critical_pre_call_context(payload)
                 try:
@@ -1301,6 +1347,13 @@ class DeliveryWorker:
                 claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
             )
         except Exception as error:
+            from .incident_call_chain import metadata
+            if intended(delivery) or call_reserved:
+                self._center.complete_delivery(delivery['id'],'uncertain' if call_reserved else 'failed',
+                    'Звонок не подтверждён; автоматическое повторение остановлено',
+                    claimed_at=delivery.get('claimed_at'),attempt=delivery.get('attempt'),
+                    result={'answered':None,'uncertain':True,'error':type(error).__name__})
+                return
             from .source_gate import HealthSourceGateBlocked
             if isinstance(error, HealthSourceGateBlocked):
                 status = "human_stopped" if error.reason == "human_stop_held" else "source_blocked"

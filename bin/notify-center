@@ -107,13 +107,26 @@ def main() -> None:
     poller = telegram_interactions_from_environment(center, callback_codec)
     agent_jobs = gptadmin_agent_jobs_from_environment()
     android_phone = android_phone_from_environment()
+    call_order = tuple(part.strip() for part in os.environ.get('INCIDENT_CALL_ORDER','').split(',') if part.strip())
+    matrix_call = matrix_call_from_environment()
+    telegram_call = None
+    if call_order:
+        from notification_center.incident_call_chain import ORDER, IncidentCallSender
+        if call_order != ORDER: raise RuntimeError('INCIDENT_CALL_ORDER must be Matrix, Telegram, phone')
+        urls = [os.environ.get('MATRIX_CALL_URL',''), os.environ.get('TELEGRAM_CALL_URL','')]
+        tokens = [os.environ.get('MATRIX_CALL_TOKEN',''), os.environ.get('TELEGRAM_CALL_TOKEN','')]
+        if not all(urls+tokens) or android_phone is None:
+            raise RuntimeError('all incident call adapters must be configured')
+        timeout = float(os.environ.get('INCIDENT_CALL_TIMEOUT_SECONDS','450'))
+        if not 440 <= timeout <= 600: raise RuntimeError('invalid incident call timeout')
+        matrix_call, telegram_call = [IncidentCallSender(url,token,timeout) for url,token in zip(urls,tokens)]
     if isinstance(android_phone, AgentCallPhoneAdapter):
         threading.Thread(target=android_phone.watch_voice_acknowledgements,
                          args=(center,), name="voice-ack", daemon=True).start()
     worker = DeliveryWorker(
         center,
         telegram,
-        matrix_call_from_environment(),
+        matrix_call,
         android_phone,
         critical_repeat_seconds=float(os.environ.get("TELEGRAM_CRITICAL_REPEAT_SECONDS", "0")),
         critical_call_escalation_seconds=float(os.environ.get("MATRIX_CALL_CRITICAL_ESCALATION_SECONDS", os.environ.get("MATRIX_CALL_ESCALATION_SECONDS", "0"))),
@@ -127,6 +140,7 @@ def main() -> None:
         agent_jobs=agent_jobs,
         message_adapters=message_adapters_from_environment(),
         call_adapters=call_adapters_from_environment(),
+        telegram_call=telegram_call, incident_call_order=call_order,
     )
     pool_sizes = {
         "message": max(0, int(os.environ.get("NOTIFY_CENTER_MESSAGE_WORKERS", "2"))),
