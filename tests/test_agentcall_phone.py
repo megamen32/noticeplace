@@ -15,6 +15,32 @@ from notification_center.http_api import DeliveryWorker, android_phone_from_envi
 
 
 class AgentCallPhoneAdapterTests(unittest.TestCase):
+    def test_native_prepare_receipt_survives_chain_projection_and_reaches_voice_ack(self) -> None:
+        from notification_center.incident_call_chain import ORDER
+        native={'ok':True,'call_id':'08700d4f-e9b2-4767-9e64-7d953ab8756b',
+                'receipt_id':'08700d4f-e9b2-4767-9e64-7d953ab8756b'}
+        phone=AgentCallPhoneAdapter('/unit/control.sock',requester=lambda *args:json.dumps(native).encode())
+        missed={'answered':False,'ended':True,'safe_to_fallback':True}
+        matrix=mock.Mock();matrix.send.return_value=missed
+        telegram=mock.Mock();telegram.send.return_value=missed
+        with tempfile.TemporaryDirectory() as directory:
+            center=NotificationCenter(Path(directory)/'notify.sqlite3',
+                {'test':{'project':'test','max_severity':'emergency'}},default_quiet_hours=[])
+            created=center.create_event('test','native-ack',{'schema':'notify.event.v1','project':'test',
+                'recipient':'me','kind':'incident','severity':'critical','title':'Связь','body':'Проверка','dedup_key':'native'})
+            center.complete_delivery(created['initial_delivery_id'],'sent')
+            center.schedule_incident_call_chain_if_active(created['incident_id'],0)
+            worker=DeliveryWorker(center,mock.Mock(active_modes=None),matrix_call=matrix,telegram_call=telegram,
+                android_phone=phone,incident_call_order=ORDER,android_phone_quiet_start_hour=0,android_phone_quiet_end_hour=0)
+            for _ in ORDER:
+                for row in center.claim_due_deliveries(now_epoch=10**12,channel_group='call'):worker.deliver(row)
+            receipt=json.loads(center._connection.execute("SELECT result_json FROM deliveries WHERE channel='android.phone.call'").fetchone()[0])
+            self.assertEqual(native['call_id'],receipt['call_id'])
+            self.assertIs(True,receipt['ok'])
+            self.assertTrue(phone.acknowledge_voice_event(center,{'event':'transcript_final','speaker':'remote',
+                'callId':native['call_id'],'text':'Да, я услышал'}))
+            self.assertEqual('acknowledged',center.get_incident(created['incident_id'])['state'])
+
     def test_operator_call_test_is_spoken_once_without_false_outage(self) -> None:
         requests: list[dict[str, object]] = []
 
