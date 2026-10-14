@@ -99,10 +99,11 @@ def test_refuses_unsafe_nginx_path():
         deploy.nginx_snippet(b"<script>x</script>", Path("/tmp/unsafe;path"))
 
 
-def test_demo_stays_offline_and_console_link_preserved():
+def test_demo_stays_offline_and_installation_link_preserved():
     html = (WEB / "index.html").read_text()
     js = (WEB / "app.js").read_text()
-    assert 'https://notify.bezrabotnyi.com/admin/' in html
+    assert 'https://github.com/megamen32/noticeplace/blob/main/deploy/README.md' in html
+    assert 'Открыть консоль' not in html
     assert 'Данные вымышлены. Реальных запросов к серверам нет.' in html
     assert 'data-plan="repair"' in html
     assert not re.search(r"\b(fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(", js)
