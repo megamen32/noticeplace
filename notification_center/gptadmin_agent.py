@@ -45,6 +45,12 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     health_context = payload.get("health_context")
     if isinstance(health_context, dict):
         bounded_health: dict[str, Any] = {
+            "incident_context": {
+                key: sanitize_bounded_text(incident[key], limit)
+                for key, limit in {"producer": 128, "plugin": 128, "event_type": 128,
+                                   "created_at": 40, "updated_at": 40, "state": 32}.items()
+                if incident.get(key) is not None
+            },
             "source_sessions": source_chain(health_context.get("source_sessions")),
             "source_id": _safe_health_ref(health_context.get("source_id")),
             "host_id": _safe_health_ref(health_context.get("host_id")),

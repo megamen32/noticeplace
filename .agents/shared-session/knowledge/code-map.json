@@ -361,6 +361,33 @@
           "observed_sha256": "046cdd3bdd917db8b05553377075904ede04f41f81e5bd255007e98abe91981c"
         }
       ]
+    },
+    "incident-card-drops-english-monitor-context": {
+      "confidence": "verified",
+      "evidence": [
+        "19 focused integration checks PASS; actual artem incident prompt retained target and render dropped it."
+      ],
+      "git_head": "452a266e94b57b21cf616d00072b647e4e844518",
+      "key": "incident-card-drops-english-monitor-context",
+      "kind": "failure-shield",
+      "locations": [
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "602c82f2ceed7d6a979c74bba1fa9b69fe4fca10b2ccbb1b1ad185b21179dd6a",
+          "path": "notification_center/incident_card.py",
+          "symbol": "render"
+        },
+        {
+          "exists_at_verification": true,
+          "observed_kind": "file",
+          "observed_sha256": "4ce04d23e8af078602db5dc6c714ee2e464382a67f0057588e8b0f6ee34b5c1c",
+          "path": "tests/test_incident_card_context.py",
+          "symbol": ""
+        }
+      ],
+      "summary": "English-only monitor title/body were replaced or omitted by incident_card.render, hiding the target although the native repair prompt retained it. Show health_context.host_id, Russian probe reason, sanitized original evidence and only confirmed native launch identity.",
+      "verified_at": "2026-10-16T00:14:10.177564+03:00"
     }
   },
   "schema_version": 1
