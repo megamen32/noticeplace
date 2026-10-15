@@ -101,3 +101,22 @@ def test_managed_deploy_upgrade_rollback_uninstall_and_purge(tmp_path: Path) -> 
     run_deploy(tmp_path, "purge", "--yes")
     assert not primary_env.exists()
     assert not state_dir.exists()
+
+
+def test_upgrade_preserves_mesh_alias_credentials_and_release_override(tmp_path: Path) -> None:
+    """Focused packaging: prevent standalone writer after mesh upgrade; <2s/max20s."""
+    root = tmp_path / 'root'
+    run_deploy(tmp_path, 'install', '--no-start')
+    units = root / 'etc/systemd/system'
+    alias = units / 'notification-center.service'
+    alias.unlink()
+    alias.symlink_to('/etc/systemd/system/noticeplace-mesh-api.service')
+    mesh = units / 'noticeplace-mesh-api.service'
+    mesh.write_text('[Service]\nEnvironmentFile=/etc/noticeplace-mesh-api.env\nExecStart=/previous/bin/notify-center\n')
+    before = mesh.read_bytes()
+    run_deploy(tmp_path, 'upgrade', '--no-start')
+    assert alias.is_symlink()
+    assert mesh.read_bytes() == before
+    override = (units / 'noticeplace-mesh-api.service.d/98-managed-release.conf').read_text()
+    assert current_release(root) + '/bin/notify-center' in override
+    assert 'ExecStart=\n' in override

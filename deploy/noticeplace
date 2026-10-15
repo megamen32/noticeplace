@@ -109,11 +109,28 @@ install_if_missing() {
 
 install_units() {
     local release=$1
-    install -D -m 0644 "$release/deploy/notification-center.service" "$SYSTEMD_ROOT/notification-center.service"
+    if mesh_api_alias; then
+        # Keep the existing quorum route, credentials and finite service budget.
+        # Replacing this symlink silently starts a second standalone writer.
+        mkdir -p "$SYSTEMD_ROOT/noticeplace-mesh-api.service.d"
+        cat >"$SYSTEMD_ROOT/noticeplace-mesh-api.service.d/98-managed-release.conf" <<EOF
+[Service]
+WorkingDirectory=$release
+ExecStart=
+ExecStart=/usr/bin/python3 $release/bin/notify-center
+EOF
+    else
+        install -D -m 0644 "$release/deploy/notification-center.service" "$SYSTEMD_ROOT/notification-center.service"
+    fi
     install -D -m 0644 "$release/deploy/notification-center-admin.service" "$SYSTEMD_ROOT/notification-center-admin.service"
     install -D -m 0644 "$release/deploy/notification-center-admin-apply@.service" "$SYSTEMD_ROOT/notification-center-admin-apply@.service"
     install -D -m 0644 "$release/deploy/notification-center-telegram-route.conf" "$SYSTEMD_ROOT/notification-center.service.d/20-noticeplace-route.conf"
     install -D -m 0644 "$release/deploy/notification-center-severity-policy.conf" "$SYSTEMD_ROOT/notification-center.service.d/30-noticeplace-severity.conf"
+}
+
+mesh_api_alias() {
+    [[ -L "$SYSTEMD_ROOT/notification-center.service" ]] &&
+        [[ $(basename -- "$(readlink -- "$SYSTEMD_ROOT/notification-center.service")") == noticeplace-mesh-api.service ]]
 }
 
 install_configuration() {
@@ -152,8 +169,10 @@ start_services() {
     fi
     configuration_ready || die "configuration contains placeholders; edit /etc/notification-center*.env, then run deploy/noticeplace start"
     /usr/bin/python3 "$APP_ROOT/scripts/sync-health-callback-tokens.py" "$ETC_ROOT/notification-center.env"
-    systemctl enable notification-center.service notification-center-admin.service
-    systemctl restart notification-center.service notification-center-admin.service
+    local api_unit=notification-center.service
+    if mesh_api_alias; then api_unit=noticeplace-mesh-api.service; fi
+    systemctl enable "$api_unit" notification-center-admin.service
+    systemctl restart "$api_unit" notification-center-admin.service
 }
 
 stop_services() {
