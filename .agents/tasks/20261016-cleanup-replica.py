@@ -1,5 +1,5 @@
 """One exact published immutable replica activation; reconcile intent, never replay."""
-import hashlib,json,os,socket,subprocess,sys,tarfile
+import hashlib,json,os,socket,subprocess,sys,tarfile,time
 from pathlib import Path
 revision,archive_name,digest,expected_host=sys.argv[1:]
 assert os.geteuid()==0 and socket.gethostname()==expected_host
@@ -31,6 +31,12 @@ temp_link=pointer.with_name('noticeplace.cleanup-candidate');temp_link.symlink_t
 admin_active=subprocess.run(['systemctl','is-active','--quiet','notification-center-admin']).returncode==0
 subprocess.run(['systemctl','daemon-reload'],check=True,timeout=20)
 subprocess.run(['systemctl','restart','noticeplace-mesh-api']+(['notification-center-admin'] if admin_active else []),check=True,timeout=30)
-pid=int(subprocess.check_output(['systemctl','show','noticeplace-mesh-api','--value','-p','MainPID'],text=True));assert pid>0 and str(new).encode() in Path('/proc',str(pid),'cmdline').read_bytes()
+for _ in range(60):
+    pid=int(subprocess.check_output(['systemctl','show','noticeplace-mesh-api','--value','-p','MainPID'],text=True))
+    try: ready=pid>0 and str(new).encode() in Path('/proc',str(pid),'cmdline').read_bytes()
+    except FileNotFoundError: ready=False
+    if ready: break
+    time.sleep(.5)
+else: raise RuntimeError('Activation accepted; readiness unconfirmed, inspect receipt instead of replay')
 r={'status':'activated','previous':str(old),'source':revision,'host':expected_host,'pid':pid,'archiveSHA256':digest,'adminRestarted':admin_active}
 receipt.write_text(json.dumps(r)+'\n');print(json.dumps(r))
