@@ -42,3 +42,7 @@ Resume file: None
 | 1 | Owner incident calls Matrix → Telegram → phone; composite live acceptance and real44 conversation | 2026-10-14 | 714dfd4 | [261014-incident-call-chain](./quick/261014-incident-call-chain/) |
 
 The ordinary Secretary phase position above remains unchanged.
+
+## Quick16Oct: recovered Telegram cards, opt-in
+
+Delivered existing admin per-project cleanup; default off, enabled only openwrt-router-health by direct owner request. Final4513abc installed100/44/88. Real11cards removed including7050/7049, others retained, history/audit durable. Current quick .planning/quick/261016-dns-cleanup-opt-in/{PLAN,SUMMARY}.md; task .agents/tasks/20261016-resolved-card-cleanup.md. NativeCSRF form saved303; authenticated browser visual not claimed (existingSSO). Tests37+post-correction8focused and5packaging pass. Original Secretary phase state above preserved.
