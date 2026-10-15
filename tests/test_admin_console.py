@@ -198,6 +198,25 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertIn(b"Adapter test accepted", result)
         test_adapter.assert_called_once_with("phone", "test call", "sso:operator")
 
+    def test_resolved_telegram_cleanup_is_explicit_project_opt_in_without_restart(self) -> None:
+        status, page = self._request('GET', '/admin/')
+        self.assertEqual(200, status)
+        self.assertIn('Удаление закрытых Telegram-карточек'.encode(), page)
+        self.assertFalse(self.store.snapshot()['projects'][0]['delete_resolved_telegram'])
+        csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
+        status, _ = self._request('POST', '/admin/telegram-cleanup',
+                                  {'project':'existing', 'enabled':'true', 'csrf':'wrong'})
+        self.assertEqual(400, status)
+        for project, enabled in [('unknown','true'), ('existing','invalid')]:
+            self.assertEqual(400, self._request('POST', '/admin/telegram-cleanup',
+                {'project':project,'enabled':enabled,'csrf':csrf})[0])
+        for enabled in ('true', 'false'):
+            status, _ = self._request('POST', '/admin/telegram-cleanup',
+                {'project':'existing','enabled':enabled,'csrf':csrf})
+            self.assertEqual(200, status)
+            self.assertEqual(enabled == 'true', self.store.snapshot()['projects'][0]['delete_resolved_telegram'])
+        self.assertEqual(0, self.restarts)
+
     def test_call_problem_interval_defaults_to_hour_and_rejects_nonfinite(self) -> None:
         values = self.store.runtime_settings()
         self.assertEqual('3600', values['call_repeat_min_interval_seconds'])

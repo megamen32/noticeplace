@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping
 from .core import NotificationCenter, SEVERITIES, ValidationError
 from .http_api import telegram_create_forum_topic, telegram_edit_forum_topic
 from .incident_card import CARD_SETTINGS
+from .telegram_cleanup import SETTING as CLEANUP_SETTING, enabled as cleanup_enabled
 
 PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
 ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency", "log")
@@ -131,12 +132,14 @@ class AdminConfigStore:
     def snapshot(self, history_query: str | None = None) -> dict[str, Any]:
         """Return display-safe configuration; raw producer tokens never leave here."""
         scopes = self._scopes()
+        center = self._consumer_notification_center()
         projects = []
         for token, scope in scopes.items():
             projects.append({
                 "project": str(scope["project"]),
                 "max_severity": str(scope["max_severity"]),
                 "fingerprint": self._fingerprint(token),
+                "delete_resolved_telegram": cleanup_enabled(center, str(scope['project'])),
             })
         return {
             "projects": sorted(projects, key=lambda item: item["project"]),
@@ -396,6 +399,32 @@ class AdminConfigStore:
         for key, value in normalized.items():
             center.set_runtime_setting(key, value)
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "runtime_settings_changed", "settings": normalized})
+
+    def set_telegram_cleanup(self, project: str, enabled: bool, actor: str) -> None:
+        """Opt in one producer project; reuse live settings and the existing queue."""
+        if project not in {str(scope['project']) for scope in self._scopes().values()}:
+            raise ValidationError('Неизвестный проект уведомлений')
+        center = self._consumer_notification_center()
+        previous = cleanup_enabled(center, project)
+        if previous == enabled:
+            return
+        center.set_runtime_setting(CLEANUP_SETTING + project, 'true' if enabled else 'false')
+        queued = 0
+        if enabled:
+            # Bound activation to recent cards Telegram can actually delete.
+            # New recoveries use the same ordinary transition/dispatcher path.
+            rows = center._connection.execute(
+                "SELECT id FROM incidents WHERE project=? AND state='resolved' AND created_at>=? "
+                "ORDER BY created_at DESC LIMIT 100", (project, time.time()-48*3600)).fetchall()
+            from .telegram_cleanup import should_delete
+            for row in rows:
+                incident_id = str(row['id'])
+                if (center.original_telegram_card(incident_id)
+                        and should_delete(center, center.incident_card_payload(incident_id))):
+                    center.queue_incident_card_refresh(incident_id)
+                    queued += 1
+        self._audit({'timestamp': int(time.time()), 'actor': actor, 'action': 'telegram_cleanup_changed',
+                     'project': project, 'enabled': enabled, 'queued': queued})
 
     def automatic_calls_enabled(self) -> bool:
         """Return whether future automatic call escalation is allowed."""

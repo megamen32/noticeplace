@@ -2351,7 +2351,10 @@ class NotificationCenter:
                 self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), safe_error, now, delivery_id))
             else:
                 self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, result_json = COALESCE(?, result_json), updated_at = ? WHERE id = ?", (outcome, safe_error, result_json, now, delivery_id))
-            if outcome == 'sent' and str(row['channel']).startswith('telegram.') and not str(row['channel']).endswith('.call') and isinstance(result, Mapping) and result.get('message_id'):
+            if outcome == 'sent' and isinstance(result, Mapping) and result.get('card_deleted'):
+                self._audit(str(row['incident_id']), 'telegram_card_deleted', 'worker',
+                            {'chat_id': result['chat_id'], 'message_id': result['message_id'], 'delivery_id': delivery_id})
+            if outcome == 'sent' and str(row['channel']).startswith('telegram.') and not str(row['channel']).endswith('.call') and isinstance(result, Mapping) and result.get('message_id') and not result.get('card_deleted'):
                 if not result.get('coalesced'):
                     self._connection.execute("UPDATE incidents SET telegram_card_updated_at=?,telegram_card_projection=COALESCE(?,telegram_card_projection) WHERE id=?",
                                              (now, result.get('card_projection'), self.telegram_card_owner(str(row['incident_id']))))
@@ -2448,6 +2451,10 @@ class NotificationCenter:
             else:
                 self._connection.execute("UPDATE incidents SET state = ?, snoozed_until = ?, updated_at = ? WHERE id = ?", (state, snoozed_until, now, incident_id))
             self._audit(incident_id, f"incident_{state}", actor, {"snoozed_until": snoozed_until})
+            if state == 'resolved':
+                from .telegram_cleanup import enabled
+                if enabled(self, incident['project']) and self.original_telegram_card(incident_id):
+                    self.queue_incident_card_refresh(incident_id, now)
             return self.get_incident(incident_id) or {}
 
     def acknowledge(self, incident_id: str, actor: str) -> dict[str, Any]:
@@ -2624,16 +2631,20 @@ class NotificationCenter:
                 "SELECT result_json FROM deliveries WHERE incident_id IN (SELECT id FROM incidents WHERE id=? OR telegram_card_owner_id=?) AND status='sent' "
                 "AND (channel LIKE 'telegram.%' AND channel NOT LIKE '%.call') ORDER BY updated_at, rowid", (owner_id, owner_id),
             ).fetchall()
+        card = None
         for row in rows:
             try:
                 receipt = json.loads(row["result_json"] or "{}")
                 message_id = receipt.get("message_id")
                 chat_id = str(receipt.get("chat_id") or "")
                 if type(message_id) is int and message_id > 0 and re.fullmatch(r"-?[0-9]+", chat_id):
-                    return {"chat_id": chat_id, "message_id": message_id}
+                    if receipt.get('card_deleted'):
+                        card = None
+                    elif card is None:
+                        card = {"chat_id": chat_id, "message_id": message_id}
             except (ValueError, TypeError, AttributeError):
                 continue
-        return None
+        return card
 
     def manual_ai_requested(self, incident_id: str) -> bool:
         with self._lock:

@@ -122,6 +122,15 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
+                if self.path == '/admin/telegram-cleanup':
+                    if form.get('enabled') not in ('true', 'false'):
+                        raise ValidationError('Выберите, удалять ли закрытые карточки')
+                    store.set_telegram_cleanup(form.get('project', ''), form['enabled'] == 'true', actor)
+                    self.send_response(HTTPStatus.SEE_OTHER)
+                    self.send_header('Location', '/admin/#telegram-cleanup')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.end_headers()
+                    return
                 if self.path in ("/health-settings", "/admin/health-settings"):
                     try:
                         health_config = json.loads(form.get("config_json", ""))
@@ -459,6 +468,15 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
             minimum = '15' if key == 'telegram_card_edit_interval_seconds' else '0'
             setting_inputs += f'<label>{html.escape(label)} <input required type="number" min="{minimum}" max="86400" name="{key}" value="{html.escape(value)}"></label>'
     setting_inputs += '<p>По умолчанию: все уведомления доступны; похожие объединяются за 5 минут; состояние ИИ обновляется не чаще 15 секунд. Новая критичная карточка звучит, обычные сообщения и повторы приходят тихо. Обновление существующей карточки всегда без звука. Отключение уведомлений не останавливает мониторинг и исправление.</p>'
+    cleanup_forms = ''.join(
+        '<form class="settings" method="post" action="/admin/telegram-cleanup">'
+        f'<input type="hidden" name="csrf" value="{html.escape(csrf)}">'
+        f'<input type="hidden" name="project" value="{html.escape(project["project"])}">'
+        f'<label>{html.escape(project["project"])}<select name="enabled">'
+        + ''.join(f'<option value="{value}"{" selected" if project.get("delete_resolved_telegram", False) == enabled else ""}>{label}</option>'
+                  for value, enabled, label in [('false', False, 'Не удалять'), ('true', True, 'Удалять после восстановления')])
+        + '</select></label><button>Сохранить</button></form>'
+        for project in snapshot.get('projects', []))
     adapter_builder = """<div id="adapter-steps"></div>
 <button type="button" id="add-adapter-step">+ Add adapter step</button>
 <script>
@@ -484,6 +502,7 @@ document.getElementById('add-adapter-step').onclick = addStep;
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NoticePlace Admin</title><style>{_ADMIN_CSS}</style></head><body><header class="topbar"><span class="brand">NoticePlace <small>admin console</small></span><span class="shield">Protected operator route</span></header><main>
 <div class="page-head"><h1>NoticePlace</h1><p>Producer scopes, delivery chains, and Telegram topics. Delivery credentials remain server-only.</p></div>
 {health_dashboard}
+<section class="card" id="telegram-cleanup"><div class="card-head"><h2>Удаление закрытых Telegram-карточек</h2><p class="hint">По умолчанию выключено для каждого проекта. После подтверждённого восстановления карточка удаляется из Telegram; история и результаты остаются в Notice Place. Общая карточка сохраняется, пока есть открытая проблема или вопрос. Включение также уберёт до 100 недавних закрытых карточек проекта. Сообщения старше 48 часов и неподтверждённые удаления сохраняются.</p></div>{cleanup_forms}</section>
 <section class="card" id="add-producer"><div class="card-head"><h2>Add producer</h2></div><form class="card-form" method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
 <section class="card"><div class="card-head"><h2>Producer projects</h2></div><div class="table-wrap"><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></div></section>
 <section class="card"><div class="card-head"><h2>Automatic call escalation</h2><p class="hint">{calls_label}. This controls future Android phone, Telegram-call, and Matrix-call escalations. Text notifications are unchanged; an already active phone call cannot be interrupted.</p></div><form class="card-form" method="post" action="/admin/calls"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="enabled" value="{calls_action}"><button>{calls_button}</button></form></section>

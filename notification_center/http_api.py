@@ -445,6 +445,14 @@ class TelegramSender:
         incident_card = (payload.get('target') or {}).get('incident_card')
         ai_card = payload.get('ai_card') if payload.get('health_session') else None
         card = incident_card if isinstance(incident_card, dict) else ai_card
+        from .telegram_cleanup import should_delete
+        if should_delete(self._center, payload):
+            if not isinstance(card, dict):
+                return {'cleanup_no_card': True, 'coalesced': True}
+            if self._delete_message_best_effort(str(card['chat_id']), int(card['message_id'])):
+                return {**card, 'card_deleted': True}
+            # The worker retains uncertainty and never replays this claim.
+            raise RuntimeError('Удаление Telegram-карточки не подтверждено')
         destination = ({'chat_id': str(card['chat_id'])} if isinstance(card, dict)
                        else telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes))
         mode = telegram_mode(incident)
@@ -1168,7 +1176,8 @@ class DeliveryWorker:
                     owner = self._center.get_incident(self._center.telegram_card_owner(str(payload['incident']['id']))) or {}
                     text, keyboard = render(payload, getattr(self._telegram, '_action_codec', None))
                     card = (payload.get('target') or {}).get('incident_card')
-                    if card and not payload.get('health_plans') and owner.get('telegram_card_projection') == projection_key(text, keyboard):
+                    from .telegram_cleanup import should_delete
+                    if card and not should_delete(self._center, payload) and not payload.get('health_plans') and owner.get('telegram_card_projection') == projection_key(text, keyboard):
                         self._center.complete_delivery(delivery['id'], 'sent', claimed_at=delivery.get('claimed_at'), attempt=delivery.get('attempt'),
                                                        result={**card, 'coalesced': True})
                         if delivery['channel'] == 'telegram.main':
