@@ -225,6 +225,23 @@ class AdminConsoleTests(unittest.TestCase):
                 self.store.set_runtime_settings({**values, 'call_repeat_min_interval_seconds': value}, 'sso:operator')
         self.assertEqual('3600', self.store.runtime_settings()['call_repeat_min_interval_seconds'])
 
+    def test_cleanup_includes_live_projects_outside_legacy_token_file(self) -> None:
+        center=NotificationCenter(self.database, {'dns-token':{'project':'dns-live','max_severity':'notice'}},
+                                  default_quiet_hours=[])
+        try:
+            center.create_event('dns-token','dns-live-source',{'schema':'notify.event.v1','kind':'incident',
+                'severity':'notice','project':'dns-live','recipient':'me','dedup_key':'dns',
+                'title':'DNS','body':'Проверка'})
+            status,page=self._request('GET','/admin/')
+            self.assertEqual(200,status)
+            self.assertIn(b'name="project" value="dns-live"',page)
+            csrf=re.search(rb'name="csrf" value="([^"]+)"',page).group(1).decode()
+            self.assertEqual(200,self._request('POST','/admin/telegram-cleanup',
+                {'project':'dns-live','enabled':'true','csrf':csrf})[0])
+            choices={p['project']:p['delete_resolved_telegram'] for p in self.store.telegram_cleanup_projects()}
+            self.assertTrue(choices['dns-live']);self.assertFalse(choices['existing'])
+        finally:center._connection.close()
+
     def test_settings_save_preserves_effective_dropin_defaults_and_database_overrides(self) -> None:
         center = self.store._consumer_notification_center()
         center.set_runtime_setting('android_phone_quiet_end_hour', '12')

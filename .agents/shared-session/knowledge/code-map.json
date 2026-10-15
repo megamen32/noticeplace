@@ -394,7 +394,7 @@
       "evidence": [
         ".agents/tasks/20261016-resolved-card-cleanup.md"
       ],
-      "git_head": "909ae06a3c1c90374931152ea399e1602a54ef8a",
+      "git_head": "83731dfe5dc3beafb1e0cb7d5e93adb7669c7d60",
       "key": "telegram-resolved-cleanup",
       "kind": "production-path",
       "locations": [
@@ -408,7 +408,7 @@
         {
           "exists_at_verification": true,
           "observed_kind": "file",
-          "observed_sha256": "4fb4785300d0bcd06e329e24e9429fd16a903fc2db22cb58637e254d173f0c2a",
+          "observed_sha256": "c438d1226bd52fa7f07e363d49f4aea5df03b1997a17ed887b630ef2ecbec7fa",
           "path": "notification_center/admin.py",
           "symbol": "set_telegram_cleanup"
         },
@@ -434,8 +434,8 @@
           "symbol": ""
         }
       ],
-      "summary": "Per-project opt-in in existing admin/runtime_settings; resolve queues native card refresh, worker deletes only resolved complete groups, provider receipt tombstones original card without removing history.",
-      "verified_at": "2026-10-16T02:46:54.791561+03:00"
+      "summary": "Per-project opt-in includes normal DB consumer projects and legacy scopes, using existing runtime_settings; resolve queues native card refresh, confirmed delete receipt tombstones card without removing history; managed deploy preserves mesh alias.",
+      "verified_at": "2026-10-16T02:55:27.736849+03:00"
     }
   },
   "schema_version": 1

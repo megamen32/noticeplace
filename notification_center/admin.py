@@ -132,17 +132,19 @@ class AdminConfigStore:
     def snapshot(self, history_query: str | None = None) -> dict[str, Any]:
         """Return display-safe configuration; raw producer tokens never leave here."""
         scopes = self._scopes()
-        center = self._consumer_notification_center()
+        cleanup_projects = self.telegram_cleanup_projects()
+        cleanup_by_project = {p['project']: p['delete_resolved_telegram'] for p in cleanup_projects}
         projects = []
         for token, scope in scopes.items():
             projects.append({
                 "project": str(scope["project"]),
                 "max_severity": str(scope["max_severity"]),
                 "fingerprint": self._fingerprint(token),
-                "delete_resolved_telegram": cleanup_enabled(center, str(scope['project'])),
+                "delete_resolved_telegram": cleanup_by_project.get(str(scope['project']), False),
             })
         return {
             "projects": sorted(projects, key=lambda item: item["project"]),
+            "telegram_cleanup_projects": cleanup_projects,
             "routes": self._topic_routes(),
             "topics": self.topics(),
             "consumers": self._consumers(),
@@ -400,9 +402,21 @@ class AdminConfigStore:
             center.set_runtime_setting(key, value)
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "runtime_settings_changed", "settings": normalized})
 
+    def telegram_cleanup_projects(self) -> list[dict[str, Any]]:
+        """Include ordinary consumer-token projects, not just legacy env tokens."""
+        center = self._consumer_notification_center()
+        projects = {str(scope['project']) for scope in self._scopes().values()}
+        projects.update(str(row['project']) for row in center._connection.execute(
+            'SELECT project FROM consumers UNION SELECT project FROM incidents'))
+        values = {str(row['key']): str(row['value']) for row in center._connection.execute(
+            'SELECT key,value FROM runtime_settings WHERE substr(key,1,?)=?',
+            (len(CLEANUP_SETTING), CLEANUP_SETTING))}
+        return [{'project': project, 'delete_resolved_telegram': values.get(CLEANUP_SETTING+project) == 'true'}
+                for project in sorted(projects) if PROJECT_PATTERN.fullmatch(project)]
+
     def set_telegram_cleanup(self, project: str, enabled: bool, actor: str) -> None:
         """Opt in one producer project; reuse live settings and the existing queue."""
-        if project not in {str(scope['project']) for scope in self._scopes().values()}:
+        if project not in {p['project'] for p in self.telegram_cleanup_projects()}:
             raise ValidationError('Неизвестный проект уведомлений')
         center = self._consumer_notification_center()
         previous = cleanup_enabled(center, project)

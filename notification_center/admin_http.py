@@ -476,7 +476,7 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         + ''.join(f'<option value="{value}"{" selected" if project.get("delete_resolved_telegram", False) == enabled else ""}>{label}</option>'
                   for value, enabled, label in [('false', False, 'Не удалять'), ('true', True, 'Удалять после восстановления')])
         + '</select></label><button>Сохранить</button></form>'
-        for project in snapshot.get('projects', []))
+        for project in snapshot.get('telegram_cleanup_projects', snapshot.get('projects', [])))
     adapter_builder = """<div id="adapter-steps"></div>
 <button type="button" id="add-adapter-step">+ Add adapter step</button>
 <script>
