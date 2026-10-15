@@ -121,7 +121,7 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
     else:
         heading = {'emergency': 'Аварийная ситуация', 'critical': 'Требуется внимание',
                    'important': 'Важное уведомление'}.get(incident.get('severity'), 'Уведомление')
-        explanation = 'Инцидент принят. Проверка и исправление выполняются по правилам проекта.'
+        explanation = 'Инцидент принят. Восстановление пока не подтверждено.'
     if len(members) > 1 and 0 < remaining < len(members):
         heading = 'Часть сервисов восстановилась'
         explanation = (f'В группе остаётся открытых инцидентов: {remaining}. '
@@ -129,13 +129,25 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
     elif len(members) > 1 and remaining == 0:
         heading = 'Все инциденты группы закрыты'
         explanation = 'Состояние каждого сервиса и история проверки доступны по отдельным ссылкам ниже.'
+    health = payload.get('health_context') or {}
+    host = sanitize_bounded_text(health.get('host_id'), 256)
+    signal = health.get('signal_type')
     title = sanitize_bounded_text(incident['title'], 500)
+    original_title = title
     if not re.search('[А-Яа-яЁё]', title):
         title = 'Сообщение о работе сессии' if informational else {'load': 'Повышена нагрузка на сервер', 'cpu': 'Повышена нагрузка на процессор',
                  'ram': 'На сервере не хватает памяти', 'disk': 'На сервере заканчивается место',
-                 'https': 'Сайт не отвечает на проверку'}.get((payload.get('health_context') or {}).get('signal_type'),
+                 'https': 'Не удалось проверить доступность сайта'}.get(signal,
                                                            'Мониторинг сообщил о проблеме сервиса')
-    text = heading + ('\n\nИсполнитель: ' + executor if executor else '\n\nИсполнитель не указан.')
+    if host and host not in title:
+        title += ': ' + host
+    text = heading
+    if executor:
+        text += '\n\nИсполнитель: ' + executor
+    elif health and not informational and state != 'resolved':
+        text += '\n\nДиагностика: запуск исполнителя ещё не подтверждён.'
+    else:
+        text += '\n\nИсполнитель не указан.'
     if executor:
         model = sanitize_bounded_text(identity.get('model'), 256)
         cwd = sanitize_bounded_text(identity.get('cwd'), 220)
@@ -145,8 +157,19 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
             text += '\nРабочий каталог: ' + cwd
     text += '\n\n' + title
     body = sanitize_bounded_text(incident.get('body'), 800)
-    if body and re.search('[А-Яа-яЁё]', body):
-        text += '\n\n' + body
+    if signal == 'https':
+        # Describe the probe failure without claiming that the origin is down.
+        reasons = []
+        if re.search(r'SSL connection timeout|TLS.*timed out', body, re.I):
+            reasons.append('истекло время ожидания защищённого соединения (TLS)')
+        if re.search(r'Resolving timed|Could not resolve', body, re.I):
+            reasons.append('не удалось получить адрес сайта через DNS')
+        if reasons:
+            text += '\n\nПричина отказа проверки: ' + '; '.join(reasons) + '.'
+    if original_title != title and not re.search('[А-Яа-яЁё]', original_title):
+        text += '\n\nИсходное сообщение: ' + original_title
+    if body:
+        text += '\n\n' + (body if re.search('[А-Яа-яЁё]', body) else 'Данные проверки: ' + body)
     text += '\n\n' + explanation
     text += '\n\nПроект уведомления: ' + sanitize_bounded_text(incident['project'], 96)
     if state == 'acknowledged':
