@@ -290,6 +290,10 @@ def _human_request_config() -> Dict[str, Any]:
     raw_actors = os.environ.get("ASK_HUMAN_ALLOWED_ACTORS", "").strip()
     if not raw_actors:
         raw_actors = os.environ.get("NOTIFY_TELEGRAM_ALLOWED_USER_IDS", "").strip()
+    if not raw_actors:
+        raw_actors = os.environ.get("TELEGRAM_CALLBACK_ALLOWED_USER_IDS", "").strip()
+        if "*" in raw_actors:
+            raise ValueError("callback actor policy must be an explicit allowlist")
     actors = []
     for raw in raw_actors.replace(";", ",").split(","):
         actor = raw.strip()
