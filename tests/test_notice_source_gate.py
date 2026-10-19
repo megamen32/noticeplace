@@ -62,10 +62,10 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
     @staticmethod
     def profile():
         return {'url':'http://127.0.0.1:18787/api/sessions/new-or-resume', 'cwd':'/home/roomhacker/ServersAdministartion',
-                'name':'health-repair', 'harness':'opencode', 'model':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview', 'mode':'queue', 'instruction':'Только выбранный план.'}
+                'name':'health-repair', 'harness':'opencode', 'model':'minimax-coding-plan/MiniMax-M3.1-Flash', 'mode':'queue', 'instruction':'Только выбранный план.'}
 
     @staticmethod
-    def event(runtime='opencode', provider='minimax-coding-plan', model='MiniMax-M3.1-Flash-Preview'):
+    def event(runtime='opencode', provider='minimax-coding-plan', model='MiniMax-M3.1-Flash'):
         return {'schema':'notify.agent-job.v1','job_id':'health-remediation','humanRequested':True,
                 'incident':{'id':'existing-incident','project':'fleet-health'}, 'health':{
                 'source_sessions':[{'harness':'zcode','sessionId':'native-planner'}, {'harness':'codex','sessionId':'native-diagnosis'}],
@@ -90,8 +90,8 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
         def runner(request,**kwargs):
             if '/coordination/context?' in request.full_url:
                 reads.append(request.full_url);return self.response({'humanStopHeld':False})
-            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
-            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'],'stale':False})
+            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash'}})
+            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash'],'stale':False})
             posts.append(json.loads(request.data));return self.response({'ok':True,'sessionId':'remediation-native','created':True})
         with patch.object(helper,'_run_health_remediation',return_value={'status':'completed'}):
             helper.run_profile('health-remediation',self.event(),Path('unused'),runner=runner,profile_override=self.profile())
@@ -109,8 +109,8 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
         posts=[]
         def runner(request,**kwargs):
             if '/coordination/context?' in request.full_url:return self.response({'humanStopHeld':'native-diagnosis' in request.full_url})
-            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
-            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'],'stale':False})
+            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash'}})
+            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash'],'stale':False})
             posts.append(request);self.fail('a held ancestor must not create/send')
         with self.assertRaisesRegex(HealthSourceGateBlocked,'human_stop_held'):
             helper.run_profile('health-remediation',self.event(),Path('unused'),runner=runner,profile_override=self.profile())
@@ -123,8 +123,8 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
         profile={**self.profile(),'orchestrator_name':'different-planner-name','orchestrator_model':'gpt-5.6-sol','orchestrator_requested_model':'gpt-5.6-sol'}
         def runner(request,**kwargs):
             if '/coordination/context?' in request.full_url:return self.response({'humanStopHeld':True})
-            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
-            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'],'stale':False})
+            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash'}})
+            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash'],'stale':False})
             posts.append(request);self.fail('planner launch after stop')
         with (patch.object(helper,'_load_health_callback',return_value=('http://127.0.0.1:8091','test')),
               patch.object(helper,'_session_json',return_value={'session':{'status':'completed'}}),
@@ -143,7 +143,7 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
             if '/coordination/context?' in request.full_url:
                 reads.append(request.full_url);return self.response({'humanStopHeld':False})
             if '/launch-policy' in request.full_url:
-                return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
+                return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash'}})
             posts.append(json.loads(request.data))
             return self.response({'outcome':'pre_admission_rejected','operation_id':'op-1','routing_reason':'quota exhausted','attempts':[{'harness':'opencode','outcome':'pre_admission_rejected','reason':'quota exhausted'}]})
         with self.assertRaisesRegex(RuntimeError, 'before admission'):
@@ -152,7 +152,7 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
         # Agent Herder owns the fallback chain; Notice Place sends one launch
         # with the declared preference and no second route.
         self.assertEqual('fleet-health',posts[0]['project'])
-        self.assertEqual('minimax-coding-plan/MiniMax-M3.1-Flash-Preview',posts[0]['model'])
+        self.assertEqual('minimax-coding-plan/MiniMax-M3.1-Flash',posts[0]['model'])
         self.assertTrue(any('sessionId=native-diagnosis' in url and 'consume=0' in url for url in reads))
 
     def test_failed_first_run_carries_sources_and_a_later_held_ancestor_blocks(self):
@@ -166,10 +166,10 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
             if '/coordination/context?' in request.full_url:
                 reads.append(request.full_url);return self.response({'humanStopHeld':held[0]})
             if '/launch-policy' in request.full_url:
-                return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
+                return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash'}})
             if '/project-launch' in request.full_url:
                 posts.append(json.loads(request.data))
-                return self.response({'outcome':'accepted','operation_id':'op-1','selected_harness':'opencode','model':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview','mode':'queue','session_id':'remediation-native','routing_reason':'declared route','attempts':[]})
+                return self.response({'outcome':'accepted','operation_id':'op-1','selected_harness':'opencode','model':'minimax-coding-plan/MiniMax-M3.1-Flash','mode':'queue','session_id':'remediation-native','routing_reason':'declared route','attempts':[]})
             if '/api/autopilot/sessions/' in request.full_url:return self.response({'enabled':True,'sessionId':'remediation-native'})
             posts.append(json.loads(request.data));return self.response({'ok':True,'sessionId':'remediation-native','created':True})
         with patch.object(helper,'_run_health_remediation',side_effect=helper.HealthStartPlanUnavailable()):

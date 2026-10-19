@@ -30,7 +30,7 @@ class ExecutionIdentityTests(unittest.TestCase):
         self.center=NotificationCenter(self.path,self.tokens,default_quiet_hours=[])
         self.addCleanup(self.center._connection.close)
         self.codec=TelegramActionCodec('x'*32)
-        self.identity={'harness':'opencode','session_id':'ses_actual_repair','model':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview',
+        self.identity={'harness':'opencode','session_id':'ses_actual_repair','model':'minimax-coding-plan/MiniMax-M3.1-Flash',
                        'cwd':'/home/roomhacker/ServersAdministartion',
                        'session_url':'https://agent.bezrabotnyi.com/#/session/opencode%3Ases_actual_repair'}
         self.event={'schema':'notify.event.v1','project':'hermes','recipient':'me','kind':'notification','severity':'important',

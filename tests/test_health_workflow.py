@@ -911,10 +911,10 @@ class HealthRecommendationTests(unittest.TestCase):
     def _orchestration(self) -> dict[str, object]:
         return {
             "diagnosis_session_id": "ses-diag-1",
-            "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
             "orchestrator_session_id": "ses-orch-1",
-            "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
-            "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
+            "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
             "harness": "opencode",
             "diagnosis_elapsed_ms": 1000,
             "orchestrator_elapsed_ms": 1000,
@@ -997,10 +997,10 @@ class AgentJobResultSessionLinkTests(unittest.TestCase):
             ],
             orchestration={
                 "diagnosis_session_id": "ses-diag-1",
-                "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
                 "orchestrator_session_id": "ses-orch-1",
-                "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
-                "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
+                "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
                 "harness": "opencode",
                 "diagnosis_elapsed_ms": 1,
                 "orchestrator_elapsed_ms": 1,
@@ -1019,7 +1019,7 @@ class AgentJobResultSessionLinkTests(unittest.TestCase):
             "https://agent.bezrabotnyi.com",
             actor="agent-herder",
             stage="health-remediation",
-            model="minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            model="minimax-coding-plan/MiniMax-M3.1-Flash",
         )
 
     def tearDown(self) -> None:
@@ -1035,7 +1035,7 @@ class AgentJobResultSessionLinkTests(unittest.TestCase):
                 "plan_id": "observe",
                 # run_profile receipts carry the full provider route, exactly
                 # what the runtime session callback posted first.
-                "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+                "model": "minimax-coding-plan/MiniMax-M3.1-Flash",
                 "session_id": "ses-job-1",
                 "harness": "opencode",
                 "step": "снимок собран",
@@ -1049,7 +1049,7 @@ class AgentJobResultSessionLinkTests(unittest.TestCase):
             },
         }
         # The health context carries the bare execution profile model
-        # ("MiniMax-M3.1-Flash-Preview"); before the fix the replayed session
+        # ("MiniMax-M3.1-Flash"); before the fix the replayed session
         # link used that bare model, differed from the first post's full
         # route, raised IdempotencyConflict, and the worker retried the
         # finished remediation job forever.

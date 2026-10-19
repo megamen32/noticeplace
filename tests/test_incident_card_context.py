@@ -41,11 +41,11 @@ class IncidentCardContextTests(unittest.TestCase):
             self.assertNotIn('исправление выполняются', text)
             center.record_health_agent_session(incident_id, 'launch-context', 'health-diagnosis',
                 'opencode', 'ses_context', 'https://agent.bezrabotnyi.com',
-                stage='health-diagnosis', model='minimax-coding-plan/MiniMax-M3.1-Flash-Preview')
+                stage='health-diagnosis', model='minimax-coding-plan/MiniMax-M3.1-Flash')
             text, _ = render(center.incident_card_payload(incident_id))
             self.assertIn('artem.bezrabotnyi.com', text)
             self.assertIn('Исполнитель: OpenCode', text)
-            self.assertIn('MiniMax-M3.1-Flash-Preview', text)
+            self.assertIn('MiniMax-M3.1-Flash', text)
             self.assertIn('opencode%3Ases_context', text)
 
     def test_english_notification_keeps_original_title_and_body(self):

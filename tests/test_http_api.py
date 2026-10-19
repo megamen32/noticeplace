@@ -396,10 +396,10 @@ class HttpApiTests(unittest.TestCase):
         ]
         orchestration = {
             "diagnosis_session_id": "ses-diag-1",
-            "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "diagnosis_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
             "orchestrator_session_id": "ses-orch-1",
-            "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
-            "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
+            "orchestrator_effective_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
             "harness": "opencode",
             "diagnosis_elapsed_ms": 100,
             "orchestrator_elapsed_ms": 100,

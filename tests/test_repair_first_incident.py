@@ -90,10 +90,10 @@ class RepairFirstExecutorTests(unittest.TestCase):
                 return _Response({
                     "version": 1, "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
                     "allowedHarnesses": ["opencode"], "preferredHarness": "opencode",
-                    "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview"},
+                    "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"},
                 })
             if "/api/models?" in url:
-                return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash-Preview"], "stale": False})
+                return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash"], "stale": False})
             requests.append(request)
             if "/api/autopilot/sessions/" in url:
                 return _Response({"enabled": True, "sessionId": "executor-native"})
@@ -123,7 +123,7 @@ class RepairFirstExecutorTests(unittest.TestCase):
         return {
             "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "name": "health",
             "harness": "opencode", "cwd": root, "mode": "queue", "instruction": "Чини до восстановления.",
-            "model": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "model": "minimax-coding-plan/MiniMax-M3.1-Flash",
             "orchestrator_name": "planner", "orchestrator_model": "configured",
             "orchestrator_requested_model": "configured",
         }
@@ -406,7 +406,7 @@ class ProjectRouteTests(unittest.TestCase):
         policy = {
             "version": 1, "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
             "allowedHarnesses": ["opencode", "zcode"], "preferredHarness": "opencode",
-            "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash-Preview",
+            "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash",
                        "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"},
         }
         if project_routes is not None:
@@ -448,9 +448,9 @@ class ProjectRouteTests(unittest.TestCase):
         self.assertEqual(1, len(calls), "one reservation attempt, never a second launch")
 
     def test_unconfigured_project_keeps_the_pinned_subscription_route(self) -> None:
-        receipt, requests = self._run("fleet-health", self._policy(), {"opencode": ["minimax-coding-plan/MiniMax-M3.1-Flash-Preview"]})
+        receipt, requests = self._run("fleet-health", self._policy(), {"opencode": ["minimax-coding-plan/MiniMax-M3.1-Flash"]})
         self.assertEqual("opencode", receipt["harness"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", receipt["model"])
+        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", receipt["model"])
 
     def test_configured_project_route_applies_and_keeps_its_declared_order(self) -> None:
         policy = self._policy({"TelegramAuto": {"harnesses": ["zcode", "opencode"]}})

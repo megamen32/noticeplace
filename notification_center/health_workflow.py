@@ -21,7 +21,7 @@ _BEARER_RE = re.compile(r"(?i)\bbearer\s+\S+")
 HEALTH_EXECUTION_PROFILE = {
     "runtime": "opencode",
     "provider": "minimax-coding-plan",
-    "model": "MiniMax-M3.1-Flash-Preview",
+    "model": "MiniMax-M3.1-Flash",
     "reasoning": "default",
     "topic": "health",
 }

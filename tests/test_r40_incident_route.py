@@ -3,8 +3,8 @@ from notification_center.core import ValidationError
 from notification_center.health_workflow import HEALTH_EXECUTION_PROFILE, normalize_health_execution
 from notification_center import agent_job_helper as helper
 
-PROFILE = dict(runtime='opencode', provider='minimax-coding-plan', model='MiniMax-M3.1-Flash-Preview', reasoning='default', topic='health')
-MODEL = 'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'
+PROFILE = dict(runtime='opencode', provider='minimax-coding-plan', model='MiniMax-M3.1-Flash', reasoning='default', topic='health')
+MODEL = 'minimax-coding-plan/MiniMax-M3.1-Flash'
 
 class IncidentRouteTests(unittest.TestCase):
     def test_new_plan_pins_subscription(self):

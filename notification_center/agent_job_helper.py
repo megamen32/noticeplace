@@ -413,7 +413,7 @@ def _incident_profile(profile: dict[str, str], runner: Any, project: str = "", p
 
     routes = health_execution_routes(policy, project)
     if len(routes) == 1 and policy.get("incidentExecution") != HEALTH_EXECUTION_PROFILE:
-        raise RuntimeError("Incident execution must be saved as OpenCode / MiniMax по подписке / MiniMax-M3.1-Flash-Preview; no runtime/provider fallback")
+        raise RuntimeError("Incident execution must be saved as OpenCode / MiniMax по подписке / MiniMax-M3.1-Flash; no runtime/provider fallback")
     execution = dict(routes[0])
     route = _health_model_route(execution)
     return {**profile, "harness": execution["runtime"], "model": route, "reasoning": execution["reasoning"],

@@ -65,7 +65,7 @@ class HealthNotificationDecisionTests(unittest.TestCase):
         created = self.create()
         outcome = self.center.record_agent_job_result(created['incident_id'], created['agent_job_delivery_id'],
             'health-diagnosis', {'status':'completed','agent_receipt':{
-                'session_id':'native','harness':'opencode','model':'minimax-coding-plan/MiniMax-M3.1-Flash-Preview',
+                'session_id':'native','harness':'opencode','model':'minimax-coding-plan/MiniMax-M3.1-Flash',
                 'path':'repair-first','observer_only':True,'awaiting_executor':True}})
         self.assertIsNone(self.center.health_notification_decision(created['incident_id']))
         self.assertEqual([], self.queued_messages(created['incident_id']))
@@ -209,16 +209,16 @@ class HealthNotificationDecisionTests(unittest.TestCase):
             if url.endswith('/api/automation/launch-policy'):
                 return Response({'version': 1, 'incidentExecution': dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
                                  'allowedHarnesses': ['opencode'], 'preferredHarness': 'opencode',
-                                 'models': {'opencode': 'minimax-coding-plan/MiniMax-M3.1-Flash-Preview'}})
+                                 'models': {'opencode': 'minimax-coding-plan/MiniMax-M3.1-Flash'}})
             if '/api/models?' in url:
-                return Response({'models': ['minimax-coding-plan/MiniMax-M3.1-Flash-Preview'], 'stale': False})
+                return Response({'models': ['minimax-coding-plan/MiniMax-M3.1-Flash'], 'stale': False})
             if '/api/autopilot/sessions/' in url:
                 return Response({'enabled': True, 'sessionId': 'real-native-id'})
             if '/api/automation/project-launch' in url:
                 requests.append(request)
                 return Response({'outcome': 'accepted', 'operation_id': 'op-quiet',
                                  'selected_harness': 'opencode',
-                                 'model': 'minimax-coding-plan/MiniMax-M3.1-Flash-Preview',
+                                 'model': 'minimax-coding-plan/MiniMax-M3.1-Flash',
                                  'mode': 'queue', 'session_id': 'real-native-id',
                                  'routing_reason': 'declared route', 'attempts': []})
             requests.append(request)

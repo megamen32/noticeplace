@@ -1,10 +1,10 @@
 # R40 — инциденты через OpenCode / MiniMax по подписке
 
-**Статус R40: завершено.** Живой Herder сохраняет отдельный подписочный incidentExecution; один synthetic diagnosis завершён на native OpenCode/MiniMax-M3.1-Flash-Preview, dedup и отсутствие пользовательских отправок подтверждены. Прежние блокеры ниже — история; итоговое доказательство в последнем разделе.
+**Статус R40: завершено.** Живой Herder сохраняет отдельный подписочный incidentExecution; один synthetic diagnosis завершён на native OpenCode/MiniMax-M3.1-Flash, dedup и отсутствие пользовательских отправок подтверждены. Прежние блокеры ниже — история; итоговое доказательство в последнем разделе.
 
 Владелец: рабочая сессия 01a11f86-283e-7831-8ee1-d97ab3389eba на server-100.
 
-Цель: новые diagnosis/repair используют OpenCode, minimax-coding-plan/MiniMax-M3.1-Flash-Preview; явный выбор в UI и сохранение. Без fallback, копирования ключа и повторной обработки старых инцидентов.
+Цель: новые diagnosis/repair используют OpenCode, minimax-coding-plan/MiniMax-M3.1-Flash; явный выбор в UI и сохранение. Без fallback, копирования ключа и повторной обработки старых инцидентов.
 
 Проверено: Admin main синхронизирован с origin; чужой WIP сохранён, ledger прочитан и не редактируется. Noticeplace main исходно чист. Herder содержит чужой delivery/runtime WIP. API моделей подтверждает точную подписочную модель, auth type=api credential_present=true без чтения значения в вывод.
 
@@ -32,7 +32,7 @@ Noticeplace: 98 targeted tests прошли (health workflow/helper/GPTAdmin/R40
 
 ## Текущий consumer результат
 
-Noticeplace release: /opt/noticeplace-releases/20261009T074113Z-b5a2bf06a067-518962. Штатный upgrade перед переключением проверил свежий remote SHA b5a2bf06a067db457a095d3bbba1993a4af46379. Оба сервиса active. Защищённые allowlist profiles обновлены на opencode/minimax-coding-plan/MiniMax-M3.1-Flash-Preview; uid/gid и 0600 сохранены, auth.json не изменялся.
+Noticeplace release: /opt/noticeplace-releases/20261009T074113Z-b5a2bf06a067-518962. Штатный upgrade перед переключением проверил свежий remote SHA b5a2bf06a067db457a095d3bbba1993a4af46379. Оба сервиса active. Защищённые allowlist profiles обновлены на opencode/minimax-coding-plan/MiniMax-M3.1-Flash; uid/gid и 0600 сохранены, auth.json не изменялся.
 
 Herder окончательные owned bytes: fb9e78e5a170069ae92c4e921599874f5ea6376c. Свежая UI-проверка пока показывает старую панель без incidentExecution; API поле пока отсутствует. Единственный combined publisher получил SHA/пути/тесты. Следующий необходимый шаг у publisher: штатный build/deploy; после этого R40 сам сохраняет настройку и проверяет один terminal diagnosis. Задача не закрыта по source или session start.
 
@@ -68,9 +68,9 @@ Authenticated readback: userio-43010 и userio-42696 вернули HTTP200/ID m
 
 Herder live source/main/origin: 00c7b9a23314b52202870dbc3f6ae4fb337b35ee, PID1116921, invocation8add6fd85c044b39b05acccaf525d9a6. Выпуск выполнил publisher; его85 tests/tsc/Vite проверены им, R40 runtime самостоятельно проверен через UI/API/native consumer.
 
-UI: в существующей панели выбран OpenCode → MiniMax-M3.1-Flash-Preview, явные «MiniMax по подписке» и provider minimax-coding-plan. Сохранение через UI подтверждено API и файлом 0600, повторным открытием UI и свежим отдельным процессом AutomationLaunchPolicyStore. Global allowedHarnesses/preferredHarness/models остались прежними Codex/ZCode. Скриншот .tmp/r40/ui-reloaded-subscription.png.
+UI: в существующей панели выбран OpenCode → MiniMax-M3.1-Flash, явные «MiniMax по подписке» и provider minimax-coding-plan. Сохранение через UI подтверждено API и файлом 0600, повторным открытием UI и свежим отдельным процессом AutomationLaunchPolicyStore. Global allowedHarnesses/preferredHarness/models остались прежними Codex/ZCode. Скриншот .tmp/r40/ui-reloaded-subscription.png.
 
-Canary: inc_77eedac22f0b4ea8b03a5221170858cc, два producer events с одним dedup, единственный delivery dlv_80176af69b374ada84a75870d8438bb8 (attempt1, sent). Диагностическая сессия ses_ee0223058ffeMZPuR6QaZb7ZVN единственная; orchestrator sessions=0, исходные продуктовые сессии не возобновлялись и не клонировались. Noticeplace audit agent_job_completed: status=completed, harness=opencode, точный подписочный model, elapsed75456ms. Нативное независимое GET OpenCode /session/.../message: assistant providerID=minimax-coding-plan, modelID=MiniMax-M3.1-Flash-Preview, finish=stop, cost=0. Connected native catalog подтверждает provider/model и endpoint api.minimax.io. Это completed inference, не только session start или queue ACK.
+Canary: inc_77eedac22f0b4ea8b03a5221170858cc, два producer events с одним dedup, единственный delivery dlv_80176af69b374ada84a75870d8438bb8 (attempt1, sent). Диагностическая сессия ses_ee0223058ffeMZPuR6QaZb7ZVN единственная; orchestrator sessions=0, исходные продуктовые сессии не возобновлялись и не клонировались. Noticeplace audit agent_job_completed: status=completed, harness=opencode, точный подписочный model, elapsed75456ms. Нативное независимое GET OpenCode /session/.../message: assistant providerID=minimax-coding-plan, modelID=MiniMax-M3.1-Flash, finish=stop, cost=0. Connected native catalog подтверждает provider/model и endpoint api.minimax.io. Это completed inference, не только session start или queue ACK.
 
 Модель вернула diagnosis_complete, распознала искусственную телеметрию, notify_user=false. Telegram delivery cancelled/attempt0; human/business sends=0. Synthetic incident оставлен muted как доказательство, реальный service recovery по нему не заявляется. Старые incidents/cards/jobs/notifications не replay. OpenCode auth.json не менялся, ключ не выводился и не копировался.
 

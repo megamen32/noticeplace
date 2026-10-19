@@ -2,7 +2,7 @@
 
 Root Codex 01a12740-96aa-7b93-9bef-679dcae60d84. Пользователь требует работающего самостоятельного восстановления и тишины во время обычной диагностики.
 
-Реальный producer TGC был разорван с current Notice Place scope; existing project token/scoped health jobs и callback теперь согласованы, max_severity important сохранён. Existing incident execution route действительно OpenCode/minimax-coding-plan/MiniMax-M3.1-Flash-Preview, без новой роли или ключа. Три mesh API прочитали изменённую existing конфигурацию. Боевые задачи/БД вручную не менялись.
+Реальный producer TGC был разорван с current Notice Place scope; existing project token/scoped health jobs и callback теперь согласованы, max_severity important сохранён. Existing incident execution route действительно OpenCode/minimax-coding-plan/MiniMax-M3.1-Flash, без новой роли или ключа. Три mesh API прочитали изменённую existing конфигурацию. Боевые задачи/БД вручную не менялись.
 
 Контролируемая FIRST native-сессия сама выполнила fixture repair/check ровно один раз. Independent producer verification закрыла incident. После включения existing quiet health-review второй NEW consumer также repaired effects1, но карточки всё равно отправились: record_agent_job_result интерпретировал observer-only как отсутствие решения и записывал notify_user=true, пока итог самого executor ещё не был подтверждён.
 
@@ -22,7 +22,7 @@ Meaningful RED progress и RED pending-question сохранены отдель�
 
 ## Итог настоящего потребителя
 
-Новый incident inc_bff215482e0a4ddfa4f32648352af2e4 создан единственным штатным POST, initial_delivery_id=null. NoticePlace сам запустил native OpenCode ses_ec9c5be11ffeHe5hABHTpi6kbq с minimax-coding-plan/MiniMax-M3.1-Flash-Preview. История содержит один исходный user; прямых Root native inputs/steer/replay нет. Native pre-check показал NOT_READY/exit1, один repair вернул REPAIRED/exit0, post-check READY/exit0. Marker effects=1, source driver SHA остался 03b2853dccc572d120c536444af41d2f9a116ae4bf36643b942ec6cdd4b66153; session завершила ход до independent verification.
+Новый incident inc_bff215482e0a4ddfa4f32648352af2e4 создан единственным штатным POST, initial_delivery_id=null. NoticePlace сам запустил native OpenCode ses_ec9c5be11ffeHe5hABHTpi6kbq с minimax-coding-plan/MiniMax-M3.1-Flash. История содержит один исходный user; прямых Root native inputs/steer/replay нет. Native pre-check показал NOT_READY/exit1, один repair вернул REPAIRED/exit0, post-check READY/exit0. Marker effects=1, source driver SHA остался 03b2853dccc572d120c536444af41d2f9a116ae4bf36643b942ec6cdd4b66153; session завершила ход до independent verification.
 
 Root независимо выполнил только readonly check и штатную health/verification200. Исходный incident автоматически resolved. Для всего нового incident Telegram sent=0, queued/claimed/sending=0; health.progress и итог сохранены в durable audit. Critical/emergency, реальные failed outcomes и pending вопросы остаются видимыми по проверенным source gates. Последующие сценарии ремонта не требуют человеческого Desktop сообщения; это приёмка цепочки на отдельном собственном fixture, не универсальное обещание исправить любую аварию флота.
 

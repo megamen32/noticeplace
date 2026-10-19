@@ -278,7 +278,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
                 "health_selection": {
                     "plan_id": "repair",
                     "actor": "telegram:42",
-                    "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health"},
+                    "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"},
                 },
             },
             "health-delivery-1",
@@ -289,7 +289,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("host:100", outbound["health"]["source_id"])
         self.assertEqual(1, len(outbound["health"]["plans"]))
         self.assertEqual("repair", outbound["health"]["selection"]["plan_id"])
-        self.assertEqual("MiniMax-M3.1-Flash-Preview", outbound["health"]["selection"]["execution"]["model"])
+        self.assertEqual("MiniMax-M3.1-Flash", outbound["health"]["selection"]["execution"]["model"])
         self.assertEqual("default", outbound["health"]["selection"]["execution"]["reasoning"])
         self.assertNotIn("must-not-leak", json.dumps(outbound))
         self.assertNotIn("route-secret", json.dumps(outbound))
@@ -904,7 +904,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
                     "health_context": {},
                     "health_selection": {
                         "plan_id": "plan-003",
-                        "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash-Preview", "reasoning": "default", "topic": "health"},
+                        "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"},
                     },
                 },
                 "delivery-direct-1",
@@ -913,7 +913,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("completed", result["status"])
         self.assertEqual("opencode", run.call_args.kwargs["profile_override"]["harness"])
         self.assertEqual("queue", run.call_args.kwargs["profile_override"]["mode"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash-Preview", run.call_args.kwargs["profile_override"]["model"])
+        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", run.call_args.kwargs["profile_override"]["model"])
         self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
         progress.assert_any_call({"agent_session": {"session_id": "ses-live-1", "harness": "opencode", "plan_id": "plan-003"}})
 
