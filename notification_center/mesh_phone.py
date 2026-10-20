@@ -31,6 +31,37 @@ class PhoneMeshRequester:
         self.tls = ssl.create_default_context(cafile=ca)
         self.tls.load_cert_chain(cert, key)
 
+    def readiness(self, timeout=15):
+        """Probe existing peers without sending any originate payload."""
+        deadline = time.monotonic() + min(30, timeout)
+        route = normalize(self.core_socket, self.local_host, list(self.peers))
+        for host in route['hosts']:
+            peer = self.peers[host]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                with socket.create_connection((peer['address'], int(peer['port'])), timeout=min(3, remaining)) as raw:
+                    with self.tls.wrap_socket(raw, server_hostname='noticeplace-mesh') as connection:
+                        connection.sendall(b'{"op":"status"}\n')
+                        status = json.loads(read_frame(connection, deadline))
+                        if status.get('ready') is True:
+                            # The installed native bridge has no dial-deadline
+                            # or question-confirmation protocol. Never advertise it.
+                            return {'ready': True, 'question_ready': False, 'host': host,
+                                    'reason': 'interactive_native_controls_unavailable'}
+            except (OSError, ValueError):
+                continue
+        return {'ready': False, 'question_ready': False, 'reason': 'phone_gateway_unavailable'}
+
+    def question_call(self, _socket, _payload, _timeout):
+        """Fail closed until the existing gateway implements verified controls.
+
+        Sending this payload to its legacy prepare endpoint would ignore the
+        deadline and could dial after quiet hours. Never attempt that fallback.
+        """
+        raise RuntimeError('Interactive native controls are unavailable')
+
     def __call__(self, _local_socket, payload, timeout):
         deadline = time.monotonic() + timeout
         readiness_deadline = min(deadline, time.monotonic() + 15)

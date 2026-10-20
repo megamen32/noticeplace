@@ -243,6 +243,17 @@ class NotificationCenter:
                     value TEXT NOT NULL,
                     updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS question_phone_calls (
+                    request_id TEXT PRIMARY KEY,
+                    attempt_id TEXT NOT NULL UNIQUE,
+                    state TEXT NOT NULL DEFAULT 'queued',
+                    created_at REAL NOT NULL,
+                    next_attempt_at REAL NOT NULL,
+                    call_id TEXT UNIQUE,
+                    deadline REAL,
+                    actor TEXT,
+                    reason TEXT NOT NULL DEFAULT ''
+                );
                 CREATE TABLE IF NOT EXISTS call_problem_budgets (
                     scope_key TEXT PRIMARY KEY,
                     last_attempt_at REAL NOT NULL,
@@ -827,6 +838,10 @@ class NotificationCenter:
                 result = self._human_request_result(self._expire_human_request(existing))
                 result["idempotent"] = True
                 return result
+            if kind == 'user' and mode in {'question', 'choice'} and native['session_id']:
+                self._connection.execute('INSERT OR IGNORE INTO question_phone_calls '
+                    '(request_id,attempt_id,created_at,next_attempt_at) VALUES (?,?,?,?)',
+                    (request_id, str(uuid.uuid4()), now, now))
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             result = self._human_request_result(self._expire_human_request(row))
             result["idempotent"] = False
@@ -879,7 +894,19 @@ class NotificationCenter:
     def get_human_request(self, token: str, request_id: str) -> dict[str, Any]:
         """Return the stable current state of one authorized human request."""
         with self._lock, self._connection:
-            return self.human_request_producer_view(self._human_request_result(self._expire_human_request(self._human_request_row(token, request_id))))
+            result = self.human_request_producer_view(self._human_request_result(
+                self._expire_human_request(self._human_request_row(token, request_id))))
+            phone_call = self.question_phone_status(request_id)
+            if phone_call is not None:
+                result['phone_call'] = phone_call
+            return result
+
+    def question_phone_status(self, request_id: str) -> dict[str, str] | None:
+        """Expose the call lifecycle without identities, transcripts, or provider data."""
+        with self._lock:
+            row = self._connection.execute('SELECT state,reason FROM question_phone_calls WHERE request_id=?',
+                                           (str(request_id),)).fetchone()
+        return {'state': str(row['state']), 'reason': str(row['reason'] or '')} if row else None
 
     @staticmethod
     def human_request_producer_view(request: Mapping[str, Any]) -> dict[str, Any]:
@@ -923,7 +950,11 @@ class NotificationCenter:
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             if row is None:
                 raise ValidationError("human request not found")
-            return self._human_request_result(self._expire_human_request(row))
+            result = self._human_request_result(self._expire_human_request(row))
+            phone_call = self.question_phone_status(request_id)
+            if phone_call is not None:
+                result['phone_call'] = phone_call
+            return result
 
     def list_human_requests(self, token: str, state: str = "pending", limit: int = 20) -> list[dict[str, Any]]:
         """List the caller's open questions with bounded, human-readable content.
@@ -980,7 +1011,7 @@ class NotificationCenter:
                     "session_url": str(session.get("session_url") or "")[:512],
                     "cwd": "", "source": "incident_session",
                 }
-        return {
+        result = {
             "schema": "ask_human.pending.v1",
             "request_id": str(row["request_id"]),
             "project": str(row["project"]),
@@ -995,6 +1026,10 @@ class NotificationCenter:
             "native": native,
             "telegram_bound": bool(row["telegram_chat_id"] and row["telegram_message_id"]),
         }
+        phone_call = self.question_phone_status(str(row["request_id"]))
+        if phone_call is not None:
+            result['phone_call'] = phone_call
+        return result
 
     def bind_human_request_message(self, token: str, request_id: str, chat_id: str, message_id: int) -> dict[str, Any]:
         """Bind one sent Telegram message once for callbacks and delivery proof."""

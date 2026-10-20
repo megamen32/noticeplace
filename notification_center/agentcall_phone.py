@@ -43,6 +43,20 @@ class AgentCallPhoneAdapter:
     def can_phone_call(self) -> bool:
         return bool(self._socket_path)
 
+    def readiness(self) -> dict[str, Any]:
+        """A configured socket alone never proves an available cellular route."""
+        probe = getattr(self._requester, 'readiness', None)
+        if probe is None:
+            return {'ready': False, 'question_ready': False, 'reason': 'route_readiness_unavailable'}
+        return probe(self._timeout_seconds)
+
+    def question_call(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Never pass an interactive request to the legacy prepare-and-dial API."""
+        send = getattr(self._requester, 'question_call', None)
+        if send is None:
+            raise RuntimeError('Interactive question transport is unavailable')
+        return json.loads(send(self._socket_path, json.dumps(payload, ensure_ascii=False).encode(), self._timeout_seconds))
+
     def phone_call(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.can_phone_call:
             raise RuntimeError("AgentCall control socket is not configured")
@@ -132,7 +146,7 @@ class AgentCallPhoneAdapter:
         call_id = str(event.get("callId") or "")
         return center.acknowledge_phone_receipt(call_id) is not None
 
-    def watch_voice_acknowledgements(self, center: Any, stop: threading.Event | None = None) -> None:
+    def watch_voice_acknowledgements(self, center: Any, stop: threading.Event | None = None, question_calls: Any = None) -> None:
         """One bounded subscriber to the gateway's existing redacted event stream."""
         stop = stop or threading.Event()
         event_path = str(Path(self._socket_path).with_name("gatewayd.sock"))
@@ -153,6 +167,13 @@ class AgentCallPhoneAdapter:
                                 raise ConnectionError("voice event stream closed")
                             event = json.loads(line).get("event")
                             if isinstance(event, dict):
+                                if question_calls is not None:
+                                    try:
+                                        question_calls.handle_event(event)
+                                    except Exception:
+                                        # STT/provider payloads may be sensitive. Keep the
+                                        # existing subscriber alive without logging them.
+                                        logging.getLogger(__name__).warning("Question answer receipt rejected")
                                 self.acknowledge_voice_event(center, event)
             except (OSError, ValueError, ConnectionError):
                 logging.getLogger(__name__).warning("Voice confirmation subscription reconnecting")

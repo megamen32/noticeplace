@@ -39,6 +39,11 @@ def worker_iteration(worker: DeliveryWorker, channel_group: str, max_workers: in
     inflight.difference_update(future for future in tuple(inflight) if future.done())
     capacity = max_workers - len(inflight)
     if capacity > 0:
+        questions = getattr(worker, 'question_calls', None)
+        if channel_group == 'call' and questions is not None and questions.has_due():
+            # Reuse this executor; a reserved request cannot be dialed twice.
+            inflight.add(executor.submit(questions.run_once))
+            capacity -= 1
         if (channel_group == "agent" and (completion_future is None or completion_future.done())
                 and (worker._center.due_human_completions(limit=1)
                      or worker._center.due_human_completion_cards(limit=1))):
@@ -107,6 +112,8 @@ def main() -> None:
     poller = telegram_interactions_from_environment(center, callback_codec)
     agent_jobs = gptadmin_agent_jobs_from_environment()
     android_phone = android_phone_from_environment()
+    from notification_center.question_phone import QuestionCalls
+    question_calls = QuestionCalls(center, android_phone)
     call_order = tuple(part.strip() for part in os.environ.get('INCIDENT_CALL_ORDER','').split(',') if part.strip())
     matrix_call = matrix_call_from_environment()
     telegram_call = None
@@ -122,7 +129,7 @@ def main() -> None:
         matrix_call, telegram_call = [IncidentCallSender(url,token,timeout) for url,token in zip(urls,tokens)]
     if isinstance(android_phone, AgentCallPhoneAdapter):
         threading.Thread(target=android_phone.watch_voice_acknowledgements,
-                         args=(center,), name="voice-ack", daemon=True).start()
+                         args=(center,), kwargs={'question_calls': question_calls}, name="voice-ack", daemon=True).start()
     worker = DeliveryWorker(
         center,
         telegram,
@@ -142,6 +149,7 @@ def main() -> None:
         call_adapters=call_adapters_from_environment(),
         telegram_call=telegram_call, incident_call_order=call_order,
     )
+    worker.question_calls = question_calls
     pool_sizes = {
         "message": max(0, int(os.environ.get("NOTIFY_CENTER_MESSAGE_WORKERS", "2"))),
         "agent": max(0, int(os.environ.get("NOTIFY_CENTER_AGENT_WORKERS", "2"))),

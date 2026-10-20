@@ -2211,6 +2211,9 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     refreshed = center.get_human_request(token, str(created["request_id"]))
                     refreshed["idempotent"] = idempotent
                     refreshed["telegram"] = telegram_receipt
+                    phone_call = center.question_phone_status(str(created["request_id"]))
+                    if phone_call is not None:
+                        refreshed["phone_call"] = phone_call
                     self._reply(HTTPStatus.CREATED, _human_request_http_result(refreshed))
                     return
                 parts = self.path.split("/")

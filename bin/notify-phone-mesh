@@ -106,7 +106,8 @@ class PhoneControl:
                 probe.settimeout(.5);probe.connect(self.socket);native=True
         except OSError:pass
         # Connect/close sends no control frame and never originates a call.
-        return {'ready':native and registered and active==0 and not busy and self.phone_idle(require_local_peer=True)}
+        return {'ready':native and registered and active==0 and not busy and self.phone_idle(require_local_peer=True),
+                'question_ready':False, 'question_reason':'interactive_native_controls_unavailable'}
 
     @staticmethod
     def phone_idle(*,require_local_peer=False):
@@ -174,6 +175,8 @@ class PhoneControl:
 
     def dial(self,body):
         value=json.loads(body)
+        if isinstance(value,dict) and value.get('protocol') == 'noticeplace.question.v1':
+            return b'{"ok":false,"admitted":false,"error":"interactive_native_controls_unavailable"}'
         if not isinstance(value,dict) or not isinstance(value.get('message'),str) or not value['message'].strip():
             return b'{"ok":false,"admitted":false,"error":"invalid phone request"}'
         holder=socket.gethostname()+':'+str(uuid.uuid4())
