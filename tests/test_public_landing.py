@@ -103,7 +103,8 @@ def test_demo_stays_offline_and_installation_link_preserved():
     html = (WEB / "index.html").read_text()
     js = (WEB / "app.js").read_text()
     assert 'https://github.com/megamen32/noticeplace/blob/main/deploy/README.md' in html
-    assert 'Открыть консоль' not in html
+    assert html.count('href="/admin/"') == 2
+    assert html.count('>Войти</a>') == 2
     assert 'Данные вымышлены. Реальных запросов к серверам нет.' in html
     assert 'data-plan="repair"' in html
     assert not re.search(r"\b(fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(", js)

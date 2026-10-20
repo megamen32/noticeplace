@@ -6,8 +6,9 @@ The page is a browser-local demonstration, not a view of production incidents.
 ## Ownership and route boundary
 
 The landing owns only the exact nginx location `= /` on the HTTPS vhost
-`notify.bezrabotnyi.com`. All other routes, including `/admin/`, `/health`,
-`/v1/`, MCP and the existing proxy/SSO configuration, remain unchanged.
+`notify.bezrabotnyi.com`. Its visible **Войти** link targets `/admin/`. That
+route, including its existing redirect to `auth.bezrabotnyi.com` SSO, remains
+unchanged, as do `/health`, `/v1/`, MCP and the existing proxy configuration.
 No API, mesh, phone, delivery worker or database restart is needed.
 The plain-HTTP redirect is preserved.
 

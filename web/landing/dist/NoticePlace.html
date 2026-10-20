@@ -67,6 +67,7 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible, summary:focus-v
 .button:active { transform: translateY(1px); }
 .button .icon { width: 17px; height: 17px; }
 .install-button { min-width: 205px; margin-left: 18px; }
+.login-button { padding-inline: 18px; }
 .button-primary { color: #100b09; background: var(--orange); border-color: #ff8057; box-shadow: inset 0 0 25px #ff8b6030, 0 0 22px #ff59330a; font-weight: 600; }
 .button-primary:hover { color: #080706; background: #ff704e; border-color: #ff9372; }
 .menu-button { display: none; padding: 10px; border: 1px solid var(--line); }
@@ -283,7 +284,7 @@ code { font-family: var(--mono); }
 }
 @media (max-width: 359px) { .wrap,.nav-wrap { width: calc(100% - 32px); }.hero-actions .button { font-size: 8px; padding-inline: 7px; }.hero-description { font-size: 12px; }.source-row { grid-template-columns: 18px 60px minmax(0,1fr); gap: 5px; padding-inline: 7px; }.source-message { font-size: 8px; }.source-name { font-size: 7px; }.source-row .icon { width: 15px; height: 15px; }.signal-scene { width: calc(100% - 32px); }.system-heading { font-size: 11px; }.feature-strip { gap: 22px 12px; }.feature { gap: 8px; }.feature h2 { font-size: 8px; }.feature p { font-size: 9px; }.feature-icon { width: 23px; height: 26px; }.protocol-list li { grid-template-columns: 22px 1fr; }.protocol-code { display: none; }.outcome-panel { padding-inline: 14px; }.event-list li { font-size: 8px; grid-template-columns: 6px 52px minmax(0,1fr) 28px; gap: 6px; }.event-list li>span:nth-child(3) { font-size: 8px; }.ecosystem-node { padding-inline: 13px; }.ecosystem-node h3 { font-size: 13px; }.terminal-tabs button { padding-inline: 17px; }.terminal-footer { gap: 7px; font-size: 6.5px; } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *,*::before,*::after { animation: none !important; transition-duration: .01ms !important; } }
-@media print { body { color: #111; background: white; }body::before,body::after,.signal-canvas,.hero-actions,.menu-button,.scene-toolbar,.install-button,.copy-button { display: none !important; }.source-row,.core,.outcome-panel,.connect-terminal { background: white; }.topbar,.hero,.signal-section,.detail-section,.ecosystem-section,.connect-section,.site-footer { break-inside: avoid; }.wrap,.nav-wrap { width: 95%; }.source-time { display: none; }.signal-scene { min-height: 500px; }.core { color: #111; }a { text-decoration: underline; } }
+@media print { body { color: #111; background: white; }body::before,body::after,.signal-canvas,.hero-actions,.menu-button,.scene-toolbar,.install-button,.login-button,.copy-button { display: none !important; }.source-row,.core,.outcome-panel,.connect-terminal { background: white; }.topbar,.hero,.signal-section,.detail-section,.ecosystem-section,.connect-section,.site-footer { break-inside: avoid; }.wrap,.nav-wrap { width: 95%; }.source-time { display: none; }.signal-scene { min-height: 500px; }.core { color: #111; }a { text-decoration: underline; } }
 
 </style>
 </head>
@@ -328,11 +329,12 @@ code { font-family: var(--mono); }
         <a href="#ecosystem"><span>[03]</span> Интеграции</a>
         <a href="#connect"><span>[04]</span> Документация</a>
       </nav>
+      <a class="button login-button" href="/admin/">Войти</a>
       <a class="button install-button" href="https://github.com/megamen32/noticeplace/blob/main/deploy/README.md" target="_blank" rel="noopener noreferrer">Установить Notice Place <svg aria-hidden="true" focusable="false" class="icon"><use href="#i-arrow"/></svg></a>
       <button class="menu-button" id="menu-toggle" type="button" aria-label="Открыть меню" aria-expanded="false" aria-controls="mobile-menu"><svg aria-hidden="true" focusable="false" class="icon"><use href="#i-menu"/></svg></button>
     </div>
     <nav class="mobile-menu" id="mobile-menu" aria-label="Мобильная навигация" hidden>
-      <a href="#capabilities">[01] Возможности</a><a href="#how-it-works">[02] Как работает</a><a href="#ecosystem">[03] Интеграции</a><a href="#connect">[04] Документация</a><a href="https://github.com/megamen32/noticeplace/blob/main/deploy/README.md" target="_blank" rel="noopener noreferrer">Установить Notice Place ↗</a>
+      <a href="/admin/">Войти</a><a href="#capabilities">[01] Возможности</a><a href="#how-it-works">[02] Как работает</a><a href="#ecosystem">[03] Интеграции</a><a href="#connect">[04] Документация</a><a href="https://github.com/megamen32/noticeplace/blob/main/deploy/README.md" target="_blank" rel="noopener noreferrer">Установить Notice Place ↗</a>
     </nav>
   </header>
 
