@@ -1,4 +1,3 @@
-import json
 import os
 import unittest
 from pathlib import Path
@@ -32,11 +31,13 @@ class _Phone:
 
 
 class _ReadyPhoneMesh:
-    def __init__(self):
+    def __init__(self, ready=True):
         self.payloads = []
+        self.ready = ready
 
     def readiness(self, _timeout=15):
-        return {"ready": True, "question_ready": False, "reason": "direct_route_ready"}
+        return {"ready": self.ready, "question_ready": False,
+                "reason": "direct_route_ready" if self.ready else "phone_gateway_unavailable"}
 
     def __call__(self, _socket_path, payload, _timeout):
         self.payloads.append(payload)
@@ -89,16 +90,16 @@ class DirectCallToolTests(unittest.TestCase):
         self.assertFalse(adapter.readiness()["ready"])
 
     def test_agentcall_readiness_failure_never_submits_a_call(self):
-        phone = _Phone()
-        phone.readiness = lambda: {"ready": False, "question_ready": False, "reason": "phone_gateway_unavailable"}
+        mesh = _ReadyPhoneMesh(ready=False)
+        phone = AgentCallPhoneAdapter("/run/agentcall/control.sock", requester=mesh)
         with mock.patch("mcp.notify_mcp._quiet_hours_suppression", return_value=None), \
              mock.patch("mcp.notify_mcp.phone_adapter_from_environment", return_value=phone):
             with self.assertRaisesRegex(RuntimeError, "not ready"):
                 notify_mcp.tool_call({"channel": "phone", "message": "служба уведомлений"})
 
-        self.assertEqual([], phone.payloads)
+        self.assertEqual([], mesh.payloads)
 
-    def test_ready_agentcall_is_selected_over_android_and_returns_safe_receipt(self):
+    def test_ready_agentcall_does_not_substitute_conversation_for_one_way_tts(self):
         with TemporaryDirectory() as tempdir:
             phone_file = Path(tempdir) / "phone.env"
             phone_file.write_text(
@@ -116,15 +117,10 @@ class DirectCallToolTests(unittest.TestCase):
             with mock.patch.dict("os.environ", {"NOTIFY_PHONE_SECRETS_FILE": str(phone_file)}, clear=True), \
                  mock.patch("notification_center.mesh_phone.PhoneMeshRequester", return_value=mesh), \
                  mock.patch("mcp.notify_mcp._quiet_hours_suppression", return_value=None):
-                result = notify_mcp.tool_call({"channel": "phone", "message": "служба уведомлений", "repeat": 1})
+                with self.assertRaisesRegex(RuntimeError, "does not support one-way TTS"):
+                    notify_mcp.tool_call({"channel": "phone", "message": "служба уведомлений", "repeat": 1})
 
-        self.assertTrue(result["ok"])
-        self.assertEqual("direct_one_way_tts", result["mode"])
-        self.assertEqual({"call_id": "synthetic-call", "ok": True}, result["receipt"])
-        self.assertEqual(1, len(mesh.payloads))
-        request = json.loads(mesh.payloads[0])
-        self.assertNotIn("recipient", request)
-        self.assertIn("служба уведомлений", request["message"])
+        self.assertEqual([], mesh.payloads)
 
     def test_matrix_call_is_direct_and_returns_bridge_receipt(self):
         matrix = _Matrix()
@@ -138,20 +134,14 @@ class DirectCallToolTests(unittest.TestCase):
         self.assertEqual("Please call me", matrix.payloads[0]["incident"]["body"])
         self.assertEqual("direct", matrix.payloads[0]["incident"]["kind"])
 
-    def test_phone_call_is_direct_and_never_creates_an_incident(self):
+    def test_direct_phone_call_rejects_android_only_adapter(self):
         phone = _Phone()
         with mock.patch("mcp.notify_mcp._quiet_hours_suppression", return_value=None), \
-             mock.patch("notification_center.http_api.android_phone_from_environment", return_value=phone):
-            result = notify_mcp.tool_call({"channel": "phone", "message": "Hermes ждёт пароль", "repeat": 2, "hangup_after": True})
+             mock.patch("mcp.notify_mcp.phone_adapter_from_environment", return_value=phone):
+            with self.assertRaisesRegex(RuntimeError, "UserIO Voice/AgentCall"):
+                notify_mcp.tool_call({"channel": "phone", "message": "служба уведомлений"})
 
-        self.assertTrue(result["ok"])
-        self.assertEqual("phone", result["channel"])
-        self.assertEqual("direct_one_way_tts", result["mode"])
-        self.assertFalse(result["interactive"])
-        self.assertIsNone(result["receipt"])
-        self.assertTrue(result["submitted"])
-        self.assertEqual("direct", phone.payloads[0]["kind"])
-        self.assertEqual({"text": "Hermes ждёт пароль", "repeat": 2, "hangup_after": True}, phone.payloads[0]["voice"])
+        self.assertEqual([], phone.payloads)
 
     def test_direct_phone_call_is_suppressed_during_quiet_hours(self):
         phone = _Phone()

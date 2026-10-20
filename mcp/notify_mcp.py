@@ -191,6 +191,14 @@ def phone_adapter_from_environment() -> Any:
                 os.environ[key] = value
 
 
+def userio_voice_adapter_from_environment() -> Any:
+    """Return only the existing internal UserIO Voice/AgentCall adapter."""
+    from notification_center.agentcall_phone import AgentCallPhoneAdapter
+
+    adapter = phone_adapter_from_environment()
+    return adapter if isinstance(adapter, AgentCallPhoneAdapter) else None
+
+
 def notify_center_config() -> Dict[str, str]:
     """Load a project-scoped producer identity, never Telegram credentials."""
     secrets_file = Path(os.environ.get("NOTIFY_SECRETS_FILE", "~/.config/secrets/notifier.env")).expanduser()
@@ -639,9 +647,9 @@ def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
             raise RuntimeError("Matrix call adapter is not configured")
         return {"ok": True, "channel": channel, "receipt": adapter.send({"incident": incident})}
 
-    adapter = phone_adapter_from_environment()
+    adapter = userio_voice_adapter_from_environment()
     if adapter is None or not getattr(adapter, "can_phone_call", False):
-        raise RuntimeError("No approved phone call adapter is configured")
+        raise RuntimeError("The approved UserIO Voice/AgentCall adapter is not configured")
     # AgentCall readiness is derived from the live authenticated NoticePlace
     # phone mesh peer, not from the host systemd wrapper (which may be a
     # container-lease shim). A local raw socket without that health probe is
@@ -655,6 +663,12 @@ def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(status, dict) or status.get("ready") is not True:
             reason = status.get("reason") if isinstance(status, dict) else None
             raise RuntimeError(f"Configured phone route is not ready: {reason or 'health check unavailable'}")
+    one_way_call = getattr(adapter, "phone_call_one_way", None)
+    if not callable(one_way_call):
+        raise RuntimeError(
+            "The configured UserIO Voice/AgentCall route does not support one-way TTS with hangup; "
+            "refusing to start an interactive voice session as a substitute"
+        )
     payload: Dict[str, Any] = {"kind": "direct", "incident": incident}
     if message:
         payload["voice"] = {
@@ -664,7 +678,7 @@ def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
         }
         if args.get("connect_wait_seconds") is not None:
             payload["voice"]["connect_wait_seconds"] = args["connect_wait_seconds"]
-    receipt = adapter.phone_call(payload)
+    receipt = one_way_call(payload)
     # The legacy direct call is one-way TTS. Keep its result distinct from the
     # interactive AskHuman call/answer/resume flow, and never invent a receipt
     # when an adapter only reports that it submitted a command.
@@ -1063,7 +1077,7 @@ TOOLS = {
         "handler": tool_send_message,
     },
     "call": {
-        "description": "Place one direct call through the configured phone or Matrix adapter. Use only on an explicit user request; this does not create an incident or wait for escalation.",
+        "description": "Place one direct one-way phone TTS call through Notice Place's authenticated UserIO Voice/AgentCall route, or a direct MatrixRTC call. The phone route fails closed unless ready. This does not create an incident, provide interactive AskHuman answer detection, or resume a session; use only on an explicit user request.",
         "inputSchema": {
             "type": "object",
             "properties": {
