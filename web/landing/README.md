@@ -37,8 +37,9 @@ animation pause. It uses no persistent storage.
 ## Production publication
 
 See [deployment and rollback](../../docs/public-landing.md).
-Nginx serves only the exact public `/` from an immutable, committed HTML release.
-The monitored services, mesh processes and API runtime are not redeployed.
+Nginx serves only the exact public `/` from an immutable, committed HTML release;
+the snippet is managed in the canonical `nginx-dev` source. The monitored
+services, mesh processes and API runtime are not redeployed.
 The old unused `notification_center/landing.py` is not this page's source.
 
 ## Bounded verification budget
