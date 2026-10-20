@@ -84,7 +84,7 @@ class NotificationCenter:
     failure, while stable delivery keys prevent routine duplicate scheduling.
     """
 
-    def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]], default_quiet_hours: list[Mapping[str, Any]] | None = None) -> None:
+    def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]], default_quiet_hours: list[Mapping[str, Any]] | None = None, *, task_decision_verifier: Any | None = None) -> None:
         """Open and initialize durable state; raises sqlite errors on storage failures."""
         if str(database_path).startswith("mesh:"):
             from .mesh_store import connect
@@ -96,9 +96,15 @@ class NotificationCenter:
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._tokens = {str(key): dict(value) for key, value in tokens.items()}
+        # No verifier is installed by default. Task-decision creation remains
+        # denied until an authenticated adapter can prove the current mandate.
+        self._task_decision_verifier = task_decision_verifier
+        self._task_decision_writer = object()
         self._default_quiet_hours = list(DEFAULT_CONSUMER_QUIET_HOURS) if default_quiet_hours is None else default_quiet_hours
         self._dispatcher_heartbeat = time.time()
         self._initialize_schema()
+        from .task_decisions import TaskDecisionStore
+        self.task_decisions = TaskDecisionStore(self)
 
     def _initialize_schema(self) -> None:
         """Create the schema used for idempotency, incident state, jobs, and audit."""
@@ -327,6 +333,37 @@ class NotificationCenter:
                 self._connection.execute("ALTER TABLE deliveries ADD COLUMN target_json TEXT NOT NULL DEFAULT '{}'")
             human_request_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(human_requests)")}
             completion_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(human_request_completions)")}
+            for column, definition in (
+                ("task_context_json", "TEXT"),
+                ("task_input_sha256", "TEXT"),
+                ("task_notification_state", "TEXT NOT NULL DEFAULT 'not_applicable'"),
+                ("task_notified_at", "REAL"),
+                ("task_deadline_at", "REAL"),
+                ("task_decision_source", "TEXT"),
+                ("task_decision_value", "TEXT"),
+                ("task_decision_actor", "TEXT"),
+                ("task_decided_at", "REAL"),
+                ("task_decision_evidence_json", "TEXT"),
+                ("task_control_state", "TEXT NOT NULL DEFAULT 'clear'"),
+                ("task_control_kind", "TEXT"),
+                ("task_control_id", "TEXT"),
+                ("task_control_epoch", "INTEGER NOT NULL DEFAULT 0"),
+                ("task_control_requested_at", "REAL"),
+                ("task_control_lease_until", "REAL"),
+                ("task_control_ack_ref", "TEXT"),
+                ("task_control_ack_epoch", "INTEGER"),
+                ("task_control_ack_at", "REAL"),
+                ("task_control_effects_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("task_resume_ref", "TEXT"),
+                ("task_resumed_at", "REAL"),
+                ("task_late_instructions_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if column not in human_request_columns:
+                    self._connection.execute(f"ALTER TABLE human_requests ADD COLUMN {column} {definition}")
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS human_requests_task_due ON human_requests(task_deadline_at) "
+                "WHERE task_context_json IS NOT NULL AND state='pending'"
+            )
             for column, definition in (("card_state", "TEXT NOT NULL DEFAULT 'pending'"),
                                        ("card_next_attempt_at", "REAL NOT NULL DEFAULT 0")):
                 if column not in completion_columns:
@@ -653,6 +690,44 @@ class NotificationCenter:
         result["choices"] = json.loads(str(result.pop("choices_json")))
         result["allowed_actors"] = json.loads(str(result.pop("allowed_actors_json")))
         result["progress"] = json.loads(result.pop("progress_json") or "null")
+        task_context = result.pop("task_context_json", None)
+        if task_context:
+            context = json.loads(str(task_context))
+            result["task_decision"] = {
+                "task_ref": context.get("task_ref"), "purpose": context.get("purpose"),
+                "version": context.get("version"),
+                "notification_state": result.pop("task_notification_state", "queued"),
+                "notified_at": result.pop("task_notified_at", None),
+                "deadline_at": result.pop("task_deadline_at", None),
+                "source": result.pop("task_decision_source", None),
+                "value": result.pop("task_decision_value", None),
+                "actor": result.pop("task_decision_actor", None),
+                "decided_at": result.pop("task_decided_at", None),
+                "evidence": json.loads(result.pop("task_decision_evidence_json", "null") or "null"),
+                "control_state": result.pop("task_control_state", "clear"),
+                "control_kind": result.pop("task_control_kind", None),
+                "control_id": result.pop("task_control_id", None),
+                "control_epoch": result.pop("task_control_epoch", 0),
+                "control_requested_at": result.pop("task_control_requested_at", None),
+                "control_lease_until": result.pop("task_control_lease_until", None),
+                "control_ack_ref": result.pop("task_control_ack_ref", None),
+                "control_ack_epoch": result.pop("task_control_ack_epoch", None),
+                "control_ack_at": result.pop("task_control_ack_at", None),
+                "control_effects": json.loads(result.pop("task_control_effects_json", "[]") or "[]"),
+                "resume_ref": result.pop("task_resume_ref", None),
+                "resumed_at": result.pop("task_resumed_at", None),
+                "late_instructions": json.loads(result.pop("task_late_instructions_json", "[]") or "[]"),
+            }
+            result.pop("task_input_sha256", None)
+        else:
+            for name in ("task_input_sha256", "task_notification_state", "task_notified_at", "task_deadline_at",
+                         "task_decision_source", "task_decision_value", "task_decision_actor", "task_decided_at",
+                         "task_decision_evidence_json", "task_control_state", "task_control_kind", "task_control_id",
+                         "task_control_epoch", "task_control_requested_at", "task_control_ack_ref",
+                         "task_control_lease_until",
+                         "task_control_ack_epoch", "task_control_ack_at", "task_control_effects_json",
+                         "task_resume_ref", "task_resumed_at", "task_late_instructions_json"):
+                result.pop(name, None)
         if result.get("kind") == "secret":
             result["result_ref"] = result.get("response_result_ref") or NotificationCenter._selection_result_ref(
                 str(result["request_id"]), result.get("response_value"), str(result.get("response_actor") or ""))
@@ -697,8 +772,20 @@ class NotificationCenter:
         incident = self._connection.execute('SELECT state FROM incidents WHERE id=?', (incident_id,)).fetchone()
         return bool(incident and incident['state'] == 'resolved')
 
-    def create_human_request(self, token: str, request: Mapping[str, Any]) -> dict[str, Any]:
+    def create_task_decision_request(self, token: str, mandate: Mapping[str, Any]) -> dict[str, Any]:
+        """Create through the private verified task-decision adapter seam."""
+        return self.task_decisions.create_request(token, mandate)
+
+    def create_human_request(
+        self, token: str, request: Mapping[str, Any], *,
+        _task_context: Mapping[str, Any] | None = None, _task_input_sha256: str | None = None,
+        _task_writer: object | None = None,
+    ) -> dict[str, Any]:
         """Validate and durably create one bounded AskHuman request."""
+        if _task_context is not None and (
+            self._task_decision_verifier is None or _task_writer is not self._task_decision_writer
+        ):
+            raise AuthorizationError("verified task mandate unavailable")
         if request.get("schema") != "ask_human.request.v1":
             raise ValidationError("unsupported human request schema")
         required = ("request_id", "project", "recipient", "mode", "message")
@@ -760,6 +847,11 @@ class NotificationCenter:
         if raw_incident_id is not None and not isinstance(raw_incident_id, str):
             raise ValidationError("human request incident_id must be a string")
         incident_id = str(raw_incident_id or "").strip()[:128] or None
+        if _task_context is not None and (
+            mode != "choice" or expires is not None or incident_id is not None or any(native.values())
+            or kind != "user" or not _task_input_sha256 or len(_task_input_sha256) != 64
+        ):
+            raise ValidationError("task decisions require an unbound, non-expiring question and verified source")
         if incident_id is None and native['session_id'] and kind == 'user':
             with self._lock:
                 existing_binding = self._connection.execute('SELECT incident_id FROM human_requests WHERE request_id=?', (request_id,)).fetchone()
@@ -800,6 +892,9 @@ class NotificationCenter:
                 and (row["native_session_id"] if "native_session_id" in row.keys() else None) == (native["session_id"] or None)
                 and (row["native_cwd"] if "native_cwd" in row.keys() else None) == (native["cwd"] or None)
                 and (row["kind"] if "kind" in row.keys() else "user") == kind
+                and (row["task_context_json"] if "task_context_json" in row.keys() else None)
+                    == (json.dumps(_task_context, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if _task_context is not None else None)
+                and (row["task_input_sha256"] if "task_input_sha256" in row.keys() else None) == _task_input_sha256
             )
 
         now = time.time()
@@ -815,8 +910,11 @@ class NotificationCenter:
                 return result
             try:
                 self._connection.execute(
-                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at, incident_id, native_harness, native_session_id, native_cwd, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
-                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires, incident_id, native["harness"] or None, native["session_id"] or None, native["cwd"] or None, kind),
+                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at, incident_id, native_harness, native_session_id, native_cwd, kind, task_context_json, task_input_sha256, task_notification_state)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires, incident_id, native["harness"] or None, native["session_id"] or None, native["cwd"] or None, kind,
+                     json.dumps(_task_context, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if _task_context is not None else None,
+                     _task_input_sha256, "queued" if _task_context is not None else "not_applicable"),
                 )
             except sqlite3.IntegrityError as error:
                 existing = self._connection.execute(
@@ -1018,6 +1116,9 @@ class NotificationCenter:
                 if str(current["telegram_chat_id"] or "") == chat_id and current["telegram_message_id"] == message_id:
                     return self._human_request_result(current)
                 raise ValidationError("human request Telegram message is already bound")
+            if current["task_context_json"]:
+                self.task_decisions.record_notification_success(request_id)
+                current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             return self._human_request_result(current)
 
     def bind_human_request_document(
@@ -1108,6 +1209,8 @@ class NotificationCenter:
         actors = json.loads(str(row["allowed_actors_json"]))
         if actor not in actors:
             raise ValidationError("human response actor is not allowed")
+        if row["task_context_json"] and not self.task_decisions.actor_allowed_now(str(row["request_id"]), actor):
+            raise AuthorizationError("current task actor policy does not allow this decision")
         if row["state"] == "resolved":
             if row["response_actor"] == actor and row["response_value"] == value:
                 return self._human_request_result(row)
@@ -1120,11 +1223,28 @@ class NotificationCenter:
         if row["mode"] == "choice" and value not in {choice["value"] for choice in choices}:
             raise ValidationError("human response is not a valid choice")
         resolved_at = time.time()
-        update = self._connection.execute(
-            "UPDATE human_requests SET state = 'resolved', response_value = ?, response_actor = ?, resolved_at = ?,"
-            " response_result_ref = ? WHERE request_id = ? AND state = 'pending'",
-            (value, actor, resolved_at, self._selection_result_ref(str(row["request_id"]), value, actor), row["request_id"]),
-        )
+        if row["task_context_json"]:
+            if row["task_notification_state"] != "sent" or not self.task_decisions.control_gate_open(row):
+                raise ValidationError("task continuation is not available before receipt and control reconciliation")
+            evidence = json.dumps({"source": "human", "actor": actor,
+                                   "answer_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest()},
+                                  sort_keys=True, separators=(",", ":"))
+            update = self._connection.execute(
+                "UPDATE human_requests SET state='resolved', response_value=?, response_actor=?, resolved_at=?, "
+                "response_result_ref=?, task_decision_source='human', task_decision_value=?, "
+                "task_decision_actor=?, task_decided_at=?, task_decision_evidence_json=? "
+                "WHERE request_id=? AND state='pending' AND task_decision_source IS NULL "
+                "AND (task_control_state='clear' OR (task_control_state='acknowledged' AND task_control_kind='hold' AND task_resume_ref IS NOT NULL)) "
+                "AND task_notification_state='sent'",
+                (value, actor, resolved_at, self._selection_result_ref(str(row["request_id"]), value, actor),
+                 value, actor, resolved_at, evidence, row["request_id"]),
+            )
+        else:
+            update = self._connection.execute(
+                "UPDATE human_requests SET state = 'resolved', response_value = ?, response_actor = ?, resolved_at = ?,"
+                " response_result_ref = ? WHERE request_id = ? AND state = 'pending'",
+                (value, actor, resolved_at, self._selection_result_ref(str(row["request_id"]), value, actor), row["request_id"]),
+            )
         current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (row["request_id"],)).fetchone()
         if update.rowcount != 1:
             if current["state"] == "resolved" and current["response_actor"] == actor and current["response_value"] == value:
@@ -1200,6 +1320,11 @@ class NotificationCenter:
             raise ValidationError("human response actor and value are required")
         with self._lock, self._connection:
             row = self._expire_human_request(self._human_request_row(token, request_id))
+            if row["task_context_json"]:
+                if value in {"stop", "hold"}:
+                    return self.task_decisions.request_control(request_id, actor, value, "authenticated task directive")
+                if row["state"] != "pending" or not self.task_decisions.control_gate_open(row):
+                    return self.task_decisions.record_late_instruction(request_id, actor, value)
             return self._resolve_human_request_row(row, actor, value)
 
     def resolve_human_request_from_telegram(self, request_id: str, actor: str, value: str) -> dict[str, Any]:
@@ -1215,6 +1340,11 @@ class NotificationCenter:
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             if row is None:
                 raise ValidationError("human request not found")
+            if row["task_context_json"]:
+                if value in {"stop", "hold"}:
+                    return self.task_decisions.request_control(request_id, actor, value, "authenticated task directive")
+                if row["state"] != "pending" or not self.task_decisions.control_gate_open(row):
+                    return self.task_decisions.record_late_instruction(request_id, actor, value)
             return self._resolve_human_request_row(self._expire_human_request(row), actor, value)
 
     def human_request_for_reply(self, chat_id: str, message_id: int, actor: str) -> dict[str, Any] | None:
@@ -1255,6 +1385,13 @@ class NotificationCenter:
                 raise ValidationError("secret requests require AskSecret/SSS, not an ordinary answer")
             if actor not in json.loads(str(row["allowed_actors_json"])):
                 raise ValidationError("human response actor is not allowed")
+            if row["task_context_json"]:
+                if value in {"stop", "hold"}:
+                    controlled = self.task_decisions.request_control(request_id, actor, value, "authenticated task directive")
+                    return {**controlled, "answer_accepted": False, "control_requested": True}
+                if row["state"] != "pending" or not self.task_decisions.control_gate_open(row):
+                    late = self.task_decisions.record_late_instruction(request_id, actor, value)
+                    return {**late, "answer_accepted": False, "late_instruction_recorded": True}
             row = self._expire_human_request(row)
             closed = self._human_request_incident_closed(row)
             if row["state"] != "pending":
@@ -1839,7 +1976,7 @@ class NotificationCenter:
                                            "ORDER BY created_at DESC,rowid DESC LIMIT 1", (incident_id,)).fetchone()
             return self._human_request_result(self._expire_human_request(row)) if row else None
 
-    def queue_incident_card_refresh(self, incident_id: str, now: float | None = None) -> str | None:
+    def queue_incident_card_refresh(self, incident_id: str, now: float | None = None, step: str | None = None) -> str | None:
         """Latest state is read at delivery; the existing queue survives restarts."""
         with self._lock, self._connection:
             from .incident_card import setting
@@ -1854,6 +1991,9 @@ class NotificationCenter:
                     return None
             owner = self.get_incident(self.telegram_card_owner(incident_id)) or {}
             due = max(now, float(owner.get('telegram_card_updated_at') or 0) + setting(self, 'telegram_card_edit_interval_seconds'))
+            if step:
+                return self._schedule_delivery(incident_id, 'telegram.main', step, due,
+                                               {'health_outcome': {'status': 'progress'}, 'card_refresh': True})
             # Only an unadmitted refresh may be reused. Never reset sending/unknown.
             row = self._connection.execute("SELECT id FROM deliveries WHERE incident_id=? AND channel='telegram.main' "
                                            "AND json_extract(target_json,'$.card_refresh')=1 AND status='queued' ORDER BY created_at DESC LIMIT 1", (incident_id,)).fetchone()
@@ -2079,7 +2219,7 @@ class NotificationCenter:
             row = self._connection.execute("SELECT holder FROM runtime_leases WHERE name=?", (str(name),)).fetchone()
             return row is not None and row["holder"] == holder
 
-    def claim_due_deliveries(self, now_epoch: float | None = None, limit: int = 20, lease_seconds: float = 60, channel_group: str | None = None) -> list[dict[str, Any]]:
+    def claim_due_deliveries(self, now_epoch: float | None = None, limit: int = 20, lease_seconds: float = 60, channel_group: str | None = None, delivery_id: str | None = None) -> list[dict[str, Any]]:
         """Claim due work and reclaim an expired worker lease after a crash.
 
         The bounded lease intentionally permits a rare duplicate after a worker
@@ -2096,8 +2236,8 @@ class NotificationCenter:
             raise ValidationError("unsupported delivery channel group")
         with self._lock, self._connection:
             rows = self._connection.execute(
-                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key)) AND m.unmuted_at IS NULL)) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
-                (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, limit),
+                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (? IS NULL OR d.id=?) AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key)) AND m.unmuted_at IS NULL)) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
+                (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, delivery_id, delivery_id, limit),
             ).fetchall()
             result: list[dict[str, Any]] = []
             for row in rows:
@@ -2159,7 +2299,8 @@ class NotificationCenter:
                     self._connection.execute("UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,updated_at=? WHERE id=?",
                                              (now+1 if recovery else max(next_edit, now+15), now, delivery_id))
                     return False
-                if self.original_telegram_card(str(row['incident_id'])) is not None and now < next_edit and not recovery:
+                if (str(row["channel"]) != "telegram.edit" and self.original_telegram_card(str(row['incident_id'])) is not None
+                        and now < next_edit and not recovery):
                     self._connection.execute("UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,updated_at=? WHERE id=?",
                                              (next_edit, now, delivery_id))
                     return False
@@ -2318,7 +2459,7 @@ class NotificationCenter:
                 json.loads(str(neighbour["target_json"] or "{}")),
             )
 
-    def complete_delivery(self, delivery_id: str, outcome: str, error: str | None = None, retry_after_seconds: float = 30, claimed_at: float | None = None, attempt: int | None = None, result: Mapping[str, Any] | None = None) -> None:
+    def complete_delivery(self, delivery_id: str, outcome: str, error: str | None = None, retry_after_seconds: float = 30, claimed_at: float | None = None, attempt: int | None = None, result: Mapping[str, Any] | None = None, schedule_failure_neighbours: bool = True) -> None:
         """Mark one claim sent, cancelled, or safely queued for a future retry."""
         if outcome not in ("sent", "failed", "cancelled", "retry", "uncertain", "superseded"):
             raise ValidationError("delivery outcome must be sent, failed, cancelled, retry, uncertain, or superseded")
@@ -2365,7 +2506,9 @@ class NotificationCenter:
                     self.queue_incident_card_refresh(str(row['incident_id']), now)
             if chain is not None:
                 advance(self, row, outcome, bounded_result, now)
-            elif outcome in {"failed", "retry", "uncertain"} and not (outcome == 'uncertain' and str(row['channel']).endswith('.call')) and str(row["state"]) in DELIVERABLE_STATES and not _is_session_notice(row):
+            elif (outcome in {"failed", "retry", "uncertain"} and schedule_failure_neighbours
+                  and not (outcome == 'uncertain' and str(row['channel']).endswith('.call'))
+                  and str(row["state"]) in DELIVERABLE_STATES and not _is_session_notice(row)):
                 self._schedule_failure_neighbours(row, now)
             if chain is None and outcome == "sent" and row["policy_step_id"] is not None and str(row["state"]) in DELIVERABLE_STATES:
                 try:

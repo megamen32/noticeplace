@@ -1028,7 +1028,11 @@ class DeliveryWorkerTests(unittest.TestCase):
         source_result = self.center._connection.execute(
             "SELECT result_json FROM deliveries WHERE id = ?", (source_id,)
         ).fetchone()["result_json"]
-        self.assertIn('"edited_in_place": true', source_result)
+        self.assertNotIn('"edited_in_place": true', source_result)
+        edit_result = self.center._connection.execute(
+            "SELECT result_json FROM deliveries WHERE id = ?", (edit["id"],)
+        ).fetchone()["result_json"]
+        self.assertIn('"edited_in_place": true', edit_result)
         self.assertEqual("superseded", self.center._connection.execute(
             "SELECT status FROM deliveries WHERE id = ?", (edit["id"],)
         ).fetchone()["status"])
@@ -1426,7 +1430,10 @@ class DeliveryWorkerTests(unittest.TestCase):
             "health_button_count": 3,
             "health_signed_callback_count": 3,
         })
-        self.center.reserve_delivery_send(sending_id, sending_claim["claimed_at"], sending_claim["attempt"])
+        with mock.patch("notification_center.core.time.time", return_value=float(sending_claim["claimed_at"]) + 60):
+            self.assertTrue(self.center.reserve_delivery_send(
+                sending_id, sending_claim["claimed_at"], sending_claim["attempt"]
+            ))
         self.center.record_health_update(
             created["incident_id"],
             "health-sent-and-sending-plans",
@@ -1885,6 +1892,41 @@ class DeliveryWorkerTests(unittest.TestCase):
             android_phone_quiet_end_hour=0,
         ).deliver(due[0])
         self.assertEqual(["telegram", "phone"], order)
+
+    def test_critical_phone_call_is_suppressed_when_context_receipt_is_unknown(self) -> None:
+        created = self.center.create_event("producer", "pre-call-unknown", self.event)
+        self.center.complete_delivery(created["initial_delivery_id"], "sent")
+        phone_id = self.center.schedule_escalation(created["incident_id"], "android.phone.call", due_epoch=0)
+        telegram_calls: list[str] = []
+        phone_calls: list[str] = []
+
+        class Telegram:
+            def send(self, _payload: dict[str, object]) -> None:
+                telegram_calls.append("attempt")
+                raise TimeoutError("Telegram receipt lost")
+
+        class Android:
+            def phone_call(self, _payload: dict[str, object]) -> None:
+                phone_calls.append("dial")
+
+        worker = DeliveryWorker(
+            self.center, Telegram(), android_phone=Android(),
+            android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=0,
+        )
+        self.assertEqual(1, worker.run_once())
+        context = self.center._connection.execute(
+            "SELECT id, status FROM deliveries WHERE incident_id=? AND delivery_key LIKE '%:pre-call:%'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertIsNotNone(context)
+        self.assertEqual("uncertain", context["status"])
+        self.assertEqual("cancelled", self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id=?", (phone_id,)
+        ).fetchone()["status"])
+        self.assertEqual(["attempt"], telegram_calls)
+        self.assertEqual([], phone_calls)
+        self.assertEqual(0, worker.run_once())
+        self.assertEqual(["attempt"], telegram_calls)
 
     def test_consumer_telegram_uses_policy_target_and_keeps_existing_phone_deadline(self) -> None:
         consumer = self.center.create_consumer(

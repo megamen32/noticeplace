@@ -906,7 +906,7 @@ class WebhookCallSender(WebhookMessageSender):
 class DeliveryWorker:
     """Run due delivery claims through known adapters without hiding failures."""
 
-    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | AgentCallPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0, agent_jobs: dict[str, GptAdminAgentJobAdapter | Any] | None = None, message_adapters: Mapping[str, Any] | None = None, call_adapters: Mapping[str, Any] | None = None, android_phone_emergency_call_escalation_seconds: float = 0, android_phone_quiet_start_hour: float = 0, android_phone_quiet_end_hour: float = 12, android_phone_quiet_timezone: str = "Europe/Moscow", telegram_call: Any = None, incident_call_order: tuple[str, ...] = ()) -> None:
+    def __init__(self, center: NotificationCenter, telegram: TelegramSender, matrix_call: MatrixCallSender | Any | None = None, android_phone: AndroidPhoneAdapter | AgentCallPhoneAdapter | Any | None = None, lease_seconds: float = 180, call_escalation_seconds: float = 0, android_telegram_call_escalation_seconds: float = 0, android_phone_call_escalation_seconds: float = 0, critical_repeat_seconds: float = 0, critical_call_escalation_seconds: float | None = None, emergency_call_escalation_seconds: float = 0, agent_jobs: dict[str, GptAdminAgentJobAdapter | Any] | None = None, message_adapters: Mapping[str, Any] | None = None, call_adapters: Mapping[str, Any] | None = None, android_phone_emergency_call_escalation_seconds: float = 0, android_phone_quiet_start_hour: float = 0, android_phone_quiet_end_hour: float = 12, android_phone_quiet_timezone: str = "Europe/Moscow", telegram_call: Any = None, incident_call_order: tuple[str, ...] = (), task_action_owner: Any = None) -> None:
         """Attach durable delivery state to Telegram, Matrix, and the local S21 adapter."""
         self._center = center
         self._telegram = telegram
@@ -917,6 +917,7 @@ class DeliveryWorker:
             raise ValueError('incident call order must be Matrix, Telegram, phone')
         self._incident_call_order = tuple(incident_call_order)
         self._telegram_call = telegram_call
+        self._task_action_owner = task_action_owner
         self._agent_jobs = dict(agent_jobs or {})
         self._message_adapters = dict(message_adapters or {})
         self._call_adapters = dict(call_adapters or {})
@@ -1033,18 +1034,40 @@ class DeliveryWorker:
         if str(incident["severity"]) == "critical" and sequence is not None and repeat_delay > 0:
             self._center.schedule_telegram_repeat_if_active(incident_id, sequence + 1, time.time() + repeat_delay)
 
-    def _send_critical_pre_call_context(self, payload: dict[str, Any]) -> None:
-        """Send the incident context immediately before a critical phone call."""
+    def _send_critical_pre_call_context(self, payload: dict[str, Any], call_delivery: Mapping[str, Any]) -> str:
+        """Send the durable incident-card refresh before a critical phone call."""
         incident = payload["incident"]
         if telegram_mode(incident) == "health":
-            return
+            return "sent"
         if str(incident["severity"]) != "critical":
-            return
+            return "sent"
         active_modes = getattr(self._telegram, "active_modes", None)
         if active_modes is not None and telegram_mode(incident) not in active_modes:
-            raise RuntimeError("Telegram mode is inactive for critical pre-call context")
-        with self._center.delivery_send_lock(), self._center._connection:
-            self._center.queue_incident_card_refresh(str(incident['id']))
+            return "blocked"
+        context_id = self._center.queue_incident_card_refresh(
+            str(incident["id"]), now=time.time(), step=f"pre-call:{call_delivery['id']}"
+        )
+        if context_id is None:
+            return "blocked"
+        with self._center._lock:
+            row = self._center._connection.execute("SELECT status FROM deliveries WHERE id=?", (context_id,)).fetchone()
+        if row is None:
+            return "blocked"
+        if str(row["status"]) == "sent":
+            return "sent"
+        if str(row["status"]) in {"uncertain", "failed", "cancelled", "superseded"}:
+            return "blocked"
+        claimed = self._center.claim_due_deliveries(
+            now_epoch=time.time(), limit=1, channel_group="message", delivery_id=context_id
+        )
+        if claimed:
+            self.deliver(claimed[0])
+        with self._center._lock:
+            row = self._center._connection.execute("SELECT status FROM deliveries WHERE id=?", (context_id,)).fetchone()
+        if row is None:
+            return "blocked"
+        state = str(row["status"])
+        return "sent" if state == "sent" else "wait" if state in {"queued", "claimed", "sending"} else "blocked"
 
     def deliver(self, delivery: dict[str, Any]) -> None:
         """Deliver one claimed job; callers may run this in a bounded worker pool."""
@@ -1281,7 +1304,20 @@ class DeliveryWorker:
                     return
                 call_reserved = True
                 if delivery["channel"] == "android.phone.call":
-                    self._send_critical_pre_call_context(payload)
+                    context_status = self._send_critical_pre_call_context(payload, delivery)
+                    if context_status != "sent":
+                        if context_status == "wait":
+                            self._center.complete_delivery(
+                                delivery["id"], "retry", "Waiting for a confirmed pre-call Telegram context receipt",
+                                retry_after_seconds=30, claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                                schedule_failure_neighbours=False,
+                            )
+                        else:
+                            self._center.complete_delivery(
+                                delivery["id"], "cancelled", "Phone call suppressed because pre-call Telegram context is not confirmed",
+                                claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                            )
+                        return
                 try:
                     result = self._android_phone.phone_call(payload)
                 except (TimeoutError, ConnectionResetError, BrokenPipeError):
@@ -1395,10 +1431,71 @@ class DeliveryWorker:
     def run_once(self) -> int:
         """Deliver a bounded batch and retry failures; returns claims processed."""
         self.replay_human_completions()
+        # The task-question clock and durable controls use this existing worker
+        # tick. Missing action-owner integration leaves revocation pending.
+        self._center.task_decisions.resolve_due()
+        self._dispatch_task_controls()
         deliveries = self.claim_due()
         for delivery in deliveries:
             self.deliver(delivery)
         return len(deliveries)
+
+    def _dispatch_task_controls(self, limit: int = 20) -> int:
+        adapter = self._task_action_owner
+        if adapter is None:
+            return 0
+        acknowledged = 0
+        for request_id in self._center.task_decisions.pending_controls(limit):
+            previous = self._center.task_decisions.control_command(request_id)
+            recovering = previous["state"] in {"sending", "unknown"}
+            control = self._center.task_decisions.claim_control(request_id)
+            if control is None:
+                continue
+            command = self._center.task_decisions.control_command(request_id)
+            if recovering:
+                query = getattr(adapter, "query_control", None)
+                if not callable(query):
+                    self._center.task_decisions.mark_control_unknown(request_id)
+                    continue
+                try:
+                    status = query(command["control_id"])
+                except Exception:
+                    self._center.task_decisions.mark_control_unknown(request_id)
+                    continue
+                if isinstance(status, Mapping) and status.get("status") == "acknowledged":
+                    receipt = status
+                elif isinstance(status, Mapping) and status.get("status") == "not_found" and status.get("retry_safe") is True:
+                    receipt = None
+                else:
+                    # A pending/unknown owner result is not authority to repeat
+                    # a potentially accepted revocation.
+                    self._center.task_decisions.mark_control_unknown(request_id)
+                    continue
+            else:
+                receipt = None
+            if receipt is None:
+                try:
+                    receipt = adapter.revoke(command, command["control_id"])
+                except Exception:
+                    self._center.task_decisions.mark_control_unknown(request_id)
+                    continue
+            if not isinstance(receipt, Mapping) or receipt.get("status") != "acknowledged":
+                self._center.task_decisions.mark_control_unknown(request_id)
+                continue
+            try:
+                self._center.task_decisions.acknowledge_control(
+                    request_id, control_id=command["control_id"],
+                    action_owner=str(getattr(adapter, "owner_id", "action-owner")),
+                    receipt_ref=str(receipt.get("receipt_ref") or ""),
+                    effective_epoch=int(receipt.get("effective_epoch") or -1),
+                    accepted_effects=receipt.get("accepted_effects") if isinstance(receipt.get("accepted_effects"), list) else [],
+                    unknown_effects=receipt.get("unknown_effects") if isinstance(receipt.get("unknown_effects"), list) else [],
+                )
+            except (TypeError, ValueError, ValidationError):
+                self._center.task_decisions.mark_control_unknown(request_id)
+                continue
+            acknowledged += 1
+        return acknowledged
 
     def replay_human_completions(self, limit: int = 8) -> int:
         """Re-send durable native resumes that Herder definitively did not accept.
@@ -1784,6 +1881,12 @@ def send_human_request_telegram(
     default_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not bot_token or not default_chat_id:
         return {"status": "not_configured"}
+    is_task_decision = isinstance(request.get("task_decision"), Mapping)
+    if is_task_decision and not center.task_decisions.reserve_notification(str(request["request_id"])):
+        state = center.task_decisions.notification_state(str(request["request_id"]))
+        if state["state"] == "sent" and request.get("telegram_chat_id") and request.get("telegram_message_id"):
+            return {"status": "sent", "chat_id": request["telegram_chat_id"], "message_id": request["telegram_message_id"]}
+        return {"status": "unknown" if state["state"] in {"sending", "unknown"} else "not_sent"}
     if request.get('incident_id') and request.get('kind', 'user') == 'user':
         # Questions share the incident's card, even if its first creation is
         # delayed or uncertain. No private-card fallback may bypass that fence.
@@ -1832,11 +1935,18 @@ def send_human_request_telegram(
         payload["reply_markup"] = json.dumps({"inline_keyboard": rows}, ensure_ascii=False, separators=(",", ":"))
     elif mode == "question":
         payload["reply_markup"] = json.dumps({"force_reply": True, "selective": True}, separators=(",", ":"))
-    response = (api or (lambda method, body: telegram_api(bot_token, method, body)))("sendMessage", payload)
+    try:
+        response = (api or (lambda method, body: telegram_api(bot_token, method, body)))("sendMessage", payload)
+    except Exception:
+        if is_task_decision:
+            center.task_decisions.mark_notification_unknown(str(request["request_id"]))
+        raise
     message = response.get("result") if isinstance(response, dict) else None
     message_id = message.get("message_id") if isinstance(message, dict) else None
     response_chat_id = str(message.get("chat", {}).get("id") or destination["chat_id"]) if isinstance(message, dict) else destination["chat_id"]
     if not isinstance(message_id, int) or message_id <= 0:
+        if is_task_decision:
+            center.task_decisions.mark_notification_unknown(str(request["request_id"]))
         raise RuntimeError("Telegram AskHuman sendMessage returned no message id")
     center.bind_human_request_message(
         producer_token, str(request["request_id"]), response_chat_id, message_id
