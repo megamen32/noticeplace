@@ -16,6 +16,21 @@ from unittest import mock
 
 from notification_center.core import NotificationCenter
 from notification_center.http_api import DeliveryWorker, build_handler
+from notification_center.task_decision_service import BoardTaskDecisionVerifier
+
+
+class _BoardResponse:
+    def __init__(self, value):
+        self.raw = json.dumps({"card": value}).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, limit):
+        return self.raw[:limit]
 
 
 class _Authority:
@@ -132,6 +147,36 @@ class TaskDecisionApiTests(unittest.TestCase):
             self.assertTrue(retry["idempotent"])
             self.assertEqual("unknown", retry["delivery_status"])
             send.assert_called_once()
+
+    def test_alternate_recipient_is_denied_before_request_row_or_send(self) -> None:
+        operation_id = "a" * 64
+        card = {
+            "id": "board/task-17", "version": 23, "project": "airlock", "owner": "nikita",
+            "assignees": [], "column": "in-progress", "needsReview": False,
+            "taskExecutionHistory": [{
+                "operationId": operation_id, "lastBoardVersion": 23, "phase": "running",
+                "startedBy": "nikita", "hostId": "test-host", "harness": "codex",
+                "nativeSessionId": "session-123", "nativeTurnId": "turn-456",
+            }],
+        }
+        self.center._task_decision_verifier = BoardTaskDecisionVerifier(
+            "https://todo.example.test", "protected-manager-token", ["telegram:42"],
+            operator_recipient="operator", opener=lambda _request, timeout: _BoardResponse(card),
+        )
+        mandate = {
+            "task_ref": "board/task-17", "purpose": "choose-next-step", "version": "23",
+            "mandate_ref": operation_id, "project": "airlock", "recipient": "alternate-recipient",
+            "message": "Choose the permitted next step.", "allowed_actors": ["telegram:spoofed"],
+            "choices": [{"label": "Continue", "value": "continue"}, {"label": "Stop", "value": "stop"}],
+            "timeout_value": "continue", "continuation": {"session_id": "caller-selected"},
+        }
+        with mock.patch("notification_center.http_api.send_human_request_telegram") as send:
+            status, failure = self.request("POST", "/v1/task-decisions", "airlock-token", {"mandate": mandate})
+
+        self.assertEqual(401, status)
+        self.assertIn("recipient", failure["error"])
+        self.assertEqual(0, self.center._connection.execute("SELECT COUNT(*) FROM human_requests").fetchone()[0])
+        send.assert_not_called()
 
     def test_project_scope_and_default_denial_are_preserved(self) -> None:
         request = self.center.create_task_decision_request("airlock-token", _mandate())

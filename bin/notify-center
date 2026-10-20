@@ -20,6 +20,7 @@ from notification_center.agentcall_phone import AgentCallPhoneAdapter
 from notification_center.health_session_lifecycle import HealthSessionArchiver
 from notification_center.incident_progress import IncidentProgressReader
 from notification_center.http_api import DeliveryWorker, android_phone_from_environment, call_adapters_from_environment, gptadmin_agent_jobs_from_environment, matrix_call_from_environment, message_adapters_from_environment, run_http, telegram_action_codec_from_environment, telegram_from_environment, telegram_interactions_from_environment
+from notification_center.task_decision_service import BoardTaskDecisionVerifier
 
 
 def load_tokens() -> dict[str, dict[str, str]]:
@@ -106,7 +107,11 @@ def main() -> None:
         route = normalize(os.environ["NOTICEPLACE_MESH_CORE_SOCKET"], os.environ["NOTICEPLACE_MESH_HOST_ID"], hosts)
         if set(route["hosts"]) != set(hosts):
             raise RuntimeError("authorized NoticePlace mesh hosts differ from the shared core route")
-    center = NotificationCenter(os.environ.get("NOTIFY_CENTER_DB", "./var/notify-center.sqlite3"), load_tokens())
+    center = NotificationCenter(
+        os.environ.get("NOTIFY_CENTER_DB", "./var/notify-center.sqlite3"),
+        load_tokens(),
+        task_decision_verifier=BoardTaskDecisionVerifier.from_environment(),
+    )
     callback_codec = telegram_action_codec_from_environment()
     telegram = telegram_from_environment(callback_codec, center)
     poller = telegram_interactions_from_environment(center, callback_codec)
