@@ -1434,12 +1434,16 @@ class DeliveryWorker:
         self.replay_human_completions()
         # The task-question clock and durable controls use this existing worker
         # tick. Missing action-owner integration leaves revocation pending.
-        self._center.task_decisions.resolve_due()
-        self._dispatch_task_controls()
+        self.run_task_decision_tick()
         deliveries = self.claim_due()
         for delivery in deliveries:
             self.deliver(delivery)
         return len(deliveries)
+
+    def run_task_decision_tick(self) -> int:
+        """Advance receipt-started deadlines and reconcile controls on a worker tick."""
+        self._center.task_decisions.resolve_due()
+        return self._dispatch_task_controls()
 
     def _dispatch_task_controls(self, limit: int = 20) -> int:
         adapter = self._task_action_owner

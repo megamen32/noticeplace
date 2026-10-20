@@ -36,6 +36,11 @@ def load_tokens() -> dict[str, dict[str, str]]:
 
 def worker_iteration(worker: DeliveryWorker, channel_group: str, max_workers: int, inflight: set, completion_future, archive, archive_due, progress, progress_due, executor):
     """One iteration remains restartable after a distributed leader change."""
+    if channel_group == "agent":
+        # The production loop intentionally does not call run_once because it
+        # owns completion replay and delivery claims separately. Keep the task
+        # question clock/control CAS on this existing worker tick.
+        worker.run_task_decision_tick()
     inflight.difference_update(future for future in tuple(inflight) if future.done())
     capacity = max_workers - len(inflight)
     if capacity > 0:
