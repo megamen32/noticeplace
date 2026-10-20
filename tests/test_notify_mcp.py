@@ -1,9 +1,11 @@
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
 from mcp import notify_mcp
+from notification_center.agentcall_phone import AgentCallPhoneAdapter
 
 
 class _Matrix:
@@ -21,6 +23,9 @@ class _Phone:
     def __init__(self):
         self.payloads = []
 
+    def readiness(self):
+        return {"ready": True, "question_ready": False}
+
     def phone_call(self, payload):
         self.payloads.append(payload)
 
@@ -37,6 +42,48 @@ class DirectCallToolTests(unittest.TestCase):
 
         self.assertIs(fake_adapter, result)
         factory.assert_called_once_with()
+
+    def test_phone_adapter_loads_explicit_agentcall_mesh_config_from_scoped_file(self):
+        with TemporaryDirectory() as tempdir:
+            phone_file = Path(tempdir) / "phone.env"
+            phone_file.write_text(
+                "AGENTCALL_PHONE_SOCKET=/run/agentcall/control.sock\n"
+                "NOTICEPLACE_PHONE_PEERS_JSON={\"peer\":{\"address\":\"127.0.0.1\",\"port\":9443}}\n"
+                "NOTICEPLACE_MESH_CORE_SOCKET=/run/noticeplace/core.sock\n"
+                "NOTICEPLACE_MESH_HOST_ID=noticeplace-test\n"
+                "NOTICEPLACE_MESH_CA=/run/keys/ca.pem\n"
+                "NOTICEPLACE_MESH_CERT=/run/keys/client.pem\n"
+                "NOTICEPLACE_MESH_KEY=/run/keys/client.key\n"
+            )
+            fake_adapter = object()
+            with mock.patch.dict("os.environ", {"NOTIFY_PHONE_SECRETS_FILE": str(phone_file)}, clear=True), \
+                 mock.patch("notification_center.http_api.android_phone_from_environment", return_value=fake_adapter) as factory:
+                result = notify_mcp.phone_adapter_from_environment()
+
+        self.assertIs(fake_adapter, result)
+        factory.assert_called_once_with()
+
+    def test_agentcall_selection_precedes_android_when_both_are_configured(self):
+        with mock.patch.dict(os.environ, {
+            "AGENTCALL_PHONE_SOCKET": "/run/agentcall/control.sock",
+            "ANDROID_ADB_SERIAL": "synthetic-device",
+            "ANDROID_TELEGRAM_TARGET": "synthetic-target",
+        }, clear=True):
+            adapter = notify_mcp.phone_adapter_from_environment()
+
+        self.assertIsInstance(adapter, AgentCallPhoneAdapter)
+        self.assertTrue(adapter.can_phone_call)
+        self.assertFalse(adapter.readiness()["ready"])
+
+    def test_agentcall_readiness_failure_never_submits_a_call(self):
+        phone = _Phone()
+        phone.readiness = lambda: {"ready": False, "question_ready": False, "reason": "phone_gateway_unavailable"}
+        with mock.patch("mcp.notify_mcp._quiet_hours_suppression", return_value=None), \
+             mock.patch("mcp.notify_mcp.phone_adapter_from_environment", return_value=phone):
+            with self.assertRaisesRegex(RuntimeError, "not ready"):
+                notify_mcp.tool_call({"channel": "phone", "message": "служба уведомлений"})
+
+        self.assertEqual([], phone.payloads)
 
     def test_matrix_call_is_direct_and_returns_bridge_receipt(self):
         matrix = _Matrix()
@@ -58,6 +105,10 @@ class DirectCallToolTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual("phone", result["channel"])
+        self.assertEqual("direct_one_way_tts", result["mode"])
+        self.assertFalse(result["interactive"])
+        self.assertIsNone(result["receipt"])
+        self.assertTrue(result["submitted"])
         self.assertEqual("direct", phone.payloads[0]["kind"])
         self.assertEqual({"text": "Hermes ждёт пароль", "repeat": 2, "hangup_after": True}, phone.payloads[0]["voice"])
 

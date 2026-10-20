@@ -36,6 +36,17 @@ MAX_TAIL_BYTES = int(os.environ.get("NOTIFY_MCP_MAX_TAIL_BYTES", "20000"))
 _RUNTIME_READY = False
 _RUNTIME_READY_LOCK = threading.Lock()
 PHONE_ENV_KEYS = (
+    # A configured AgentCall route takes precedence over local Android. The
+    # NoticePlace peer credentials stay file-backed; only their variable names
+    # are copied from the MCP-scoped env file for adapter construction.
+    "AGENTCALL_PHONE_SOCKET",
+    "AGENTCALL_PHONE_TIMEOUT_SECONDS",
+    "NOTICEPLACE_PHONE_PEERS_JSON",
+    "NOTICEPLACE_MESH_CORE_SOCKET",
+    "NOTICEPLACE_MESH_HOST_ID",
+    "NOTICEPLACE_MESH_CA",
+    "NOTICEPLACE_MESH_CERT",
+    "NOTICEPLACE_MESH_KEY",
     "ANDROID_ADB_PATH",
     "ANDROID_ADB_SERIAL",
     "ANDROID_TELEGRAM_TARGET",
@@ -630,7 +641,20 @@ def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
 
     adapter = phone_adapter_from_environment()
     if adapter is None or not getattr(adapter, "can_phone_call", False):
-        raise RuntimeError("Android phone call adapter is not configured")
+        raise RuntimeError("No approved phone call adapter is configured")
+    # AgentCall readiness is derived from the live authenticated NoticePlace
+    # phone mesh peer, not from the host systemd wrapper (which may be a
+    # container-lease shim). A local raw socket without that health probe is
+    # not enough evidence to originate a user call.
+    readiness = getattr(adapter, "readiness", None)
+    if readiness is not None:
+        try:
+            status = readiness()
+        except Exception as error:
+            raise RuntimeError("Configured phone route readiness check failed") from error
+        if not isinstance(status, dict) or status.get("ready") is not True:
+            reason = status.get("reason") if isinstance(status, dict) else None
+            raise RuntimeError(f"Configured phone route is not ready: {reason or 'health check unavailable'}")
     payload: Dict[str, Any] = {"kind": "direct", "incident": incident}
     if message:
         payload["voice"] = {
@@ -640,8 +664,21 @@ def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
         }
         if args.get("connect_wait_seconds") is not None:
             payload["voice"]["connect_wait_seconds"] = args["connect_wait_seconds"]
-    adapter.phone_call(payload)
-    return {"ok": True, "channel": channel, "receipt": {"started": True}}
+    receipt = adapter.phone_call(payload)
+    # The legacy direct call is one-way TTS. Keep its result distinct from the
+    # interactive AskHuman call/answer/resume flow, and never invent a receipt
+    # when an adapter only reports that it submitted a command.
+    safe_receipt = None
+    if isinstance(receipt, dict):
+        safe_receipt = {key: receipt[key] for key in ("call_id", "ok", "admitted") if key in receipt}
+    return {
+        "ok": True,
+        "channel": channel,
+        "mode": "direct_one_way_tts",
+        "interactive": False,
+        "receipt": safe_receipt,
+        "submitted": True,
+    }
 
 
 def notify_args_for(pid: Optional[int] = None, query: Optional[str] = None, log_mode: str = "none", log_file: Optional[str] = None, replace: bool = True, first: bool = False, hard_timeout: Any = None) -> List[str]:
