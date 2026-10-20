@@ -31,6 +31,7 @@ from .telegram_interactions import TelegramActionCodec, TelegramInteractionPolle
 from .telegram_format import telegram_html
 from .incident_card import controls as incident_controls
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
+from .task_decision_view import TaskDecisionView
 
 ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log", "health"))
 SUPPORTED_TELEGRAM_MODES = frozenset((*ACTIVE_TELEGRAM_MODES, "health"))
@@ -2221,6 +2222,26 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                 except ValidationError as error:
                     self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
+            if parsed_path.path.startswith("/v1/task-decisions/"):
+                try:
+                    request_id = parsed_path.path.removeprefix("/v1/task-decisions/")
+                    if not request_id or "/" in request_id:
+                        raise ValidationError("task decision not found")
+                    token = _bearer(self)
+
+                    def authorize_task_view(principal: str, candidate_id: str) -> bool:
+                        # Reuse the existing project-token/request authorization;
+                        # the client cannot supply a project or actor to widen it.
+                        center.get_human_request(principal, candidate_id)
+                        return True
+
+                    view = TaskDecisionView(center, authorize_task_view)
+                    self._reply(HTTPStatus.OK, view.read(token, request_id))
+                except AuthorizationError as error:
+                    self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
+                except ValidationError as error:
+                    self._reply(HTTPStatus.NOT_FOUND, {"error": str(error)})
+                return
             if parsed_path.path.startswith("/v1/human-requests/") and parsed_path.path.endswith("/result"):
                 try:
                     request_id = parsed_path.path[len("/v1/human-requests/"):-len("/result")]
@@ -2322,6 +2343,31 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     refreshed["idempotent"] = idempotent
                     refreshed["telegram"] = telegram_receipt
                     self._reply(HTTPStatus.CREATED, _human_request_http_result(refreshed))
+                    return
+                if self.path == "/v1/task-decisions":
+                    if set(body) - {"mandate"} or not isinstance(body.get("mandate"), Mapping):
+                        raise ValidationError("task decision accepts only a verified mandate")
+                    created = center.create_task_decision_request(token, body["mandate"])
+                    request_id = str(created["request_id"])
+                    try:
+                        delivery = send_human_request_telegram(center, token, created)
+                    except Exception:
+                        # Any sender failure after reservation remains uncertain;
+                        # a later idempotent request must never replay it.
+                        center.task_decisions.mark_notification_unknown(request_id)
+                        raise
+                    view = TaskDecisionView(
+                        center,
+                        lambda principal, candidate_id: bool(
+                            center.get_human_request(principal, candidate_id)
+                        ),
+                    ).read(token, request_id)
+                    view["delivery_status"] = str(delivery.get("status") or "unknown")
+                    view["idempotent"] = bool(created.get("idempotent"))
+                    self._reply(
+                        HTTPStatus.OK if created.get("idempotent") else HTTPStatus.CREATED,
+                        view,
+                    )
                     return
                 parts = self.path.split("/")
                 if len(parts) == 5 and parts[:3] == ["", "v1", "human-requests"] and parts[4] == "result":
