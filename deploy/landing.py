@@ -178,13 +178,20 @@ def publish(revision: str, site: Path, expected_site_hash: str) -> dict:
         atomic_write(site, new_site)
         run("nginx", "-t")
         run("systemctl", "reload", "nginx")
-        for attempt in range(6):
+        last_status = None
+        last_hash = None
+        for attempt in range(60):
             status, actual = local_get("/")
-            if status == 200 and sha(actual) == sha(html):
+            last_status = status
+            last_hash = sha(actual)
+            if status == 200 and last_hash == sha(html):
                 break
             time.sleep(0.5)
         else:
-            raise RuntimeError("Served root does not match the committed landing")
+            raise RuntimeError(
+                f"Served root does not match the committed landing "
+                f"after 30s (status={last_status}, sha256={last_hash})"
+            )
         after = {p: local_get(p)[0] for p in before}
         if after != before:
             raise RuntimeError(f"Protected route regression: {after}")
