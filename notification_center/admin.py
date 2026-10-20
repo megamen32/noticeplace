@@ -14,8 +14,10 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .core import NotificationCenter, SEVERITIES, ValidationError
 from .http_api import telegram_create_forum_topic, telegram_edit_forum_topic
@@ -26,6 +28,7 @@ PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
 ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency", "log")
 DEFAULT_CALLS_OVERRIDE_PATH = Path("/etc/systemd/system/notification-center.service.d/zzzz-disable-automatic-calls.conf")
 DEFAULT_HEALTH_CONFIG_PATH = Path("/etc/health-incident-fleet.json")
+QUESTION_PHONE_SETTING = "question-phone:me"
 HEALTH_THRESHOLD_KEYS = ("cpu_warn_percent", "ram_warn_percent", "disk_warn_percent")
 RUNTIME_SETTING_ENV = {
     "call_repeat_min_interval_seconds": "CALL_REPEAT_MIN_INTERVAL_SECONDS",
@@ -152,6 +155,8 @@ class AdminConfigStore:
             "event_history_query": str(history_query or ""),
             "automatic_calls_enabled": self.automatic_calls_enabled(),
             "runtime_settings": self.runtime_settings(),
+            "question_phone": self.question_phone_preferences(),
+            "question_phone_actors": self.question_phone_actor_choices(),
             "health": self.health_dashboard(),
         }
 
@@ -401,6 +406,70 @@ class AdminConfigStore:
         for key, value in normalized.items():
             center.set_runtime_setting(key, value)
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "runtime_settings_changed", "settings": normalized})
+
+    def question_phone_actor_choices(self) -> list[str]:
+        """Only return explicit existing Telegram actors; a wildcard is not consent."""
+        env = parse_environment(self.primary_env)
+        raw = env.get("ASK_HUMAN_ALLOWED_ACTORS", env.get("NOTIFY_TELEGRAM_ALLOWED_USER_IDS",
+            env.get("TELEGRAM_CALLBACK_ALLOWED_USER_IDS", env.get("TELEGRAM_CHAT_ID", ""))))
+        values = [part.strip() for part in raw.replace(';', ',').split(',') if part.strip()]
+        if not values or '*' in values:
+            return []
+        actors = [part if ':' in part else 'telegram:' + part for part in values]
+        return sorted(set(actor for actor in actors if re.fullmatch(r'telegram:[1-9][0-9]{0,19}', actor)))
+
+    def question_phone_preferences(self) -> dict[str, Any]:
+        """Read the one owner's protected schedule without exposing a phone target."""
+        raw = self._consumer_notification_center().get_runtime_setting(QUESTION_PHONE_SETTING)
+        try:
+            value = json.loads(raw) if raw else None
+        except json.JSONDecodeError:
+            value = None
+        if not isinstance(value, dict):
+            return {'enabled': False, 'timezone': 'Europe/Moscow', 'weekdays': [0, 1, 2, 3, 4],
+                    'start': '13:00', 'end': '20:00', 'actor': '',
+                    'locale': 'ru-RU', 'target_ref': 'agentcall.configured_owner', 'approval_ref': ''}
+        return {key: value.get(key) for key in ('enabled', 'timezone', 'weekdays', 'start', 'end',
+                'actor', 'locale', 'target_ref', 'approval_ref')}
+
+    def set_question_phone_preferences(self, form: Mapping[str, str], actor: str) -> None:
+        """Save a typed owner-only call schedule through the existing SSO admin UI."""
+        allowed = self.question_phone_actor_choices()
+        selected = str(form.get('actor') or '').strip()
+        enabled = form.get('enabled') == 'true'
+        if form.get('enabled') not in {'true', 'false'}:
+            raise ValidationError('Выберите, включены ли звонки с вопросами')
+        if enabled and (form.get('consent') != 'yes' or selected not in allowed):
+            raise ValidationError('Для звонков выберите свой разрешённый аккаунт и подтвердите расписание')
+        if not enabled:
+            selected = ''
+        zone_name = str(form.get('timezone') or '').strip()
+        try:
+            ZoneInfo(zone_name)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValidationError('Выберите действующий часовой пояс') from error
+        try:
+            weekdays = sorted({int(part) for part in str(form.get('weekdays') or '').split(',') if part.strip()})
+        except ValueError as error:
+            raise ValidationError('Дни недели должны быть числами от 0 до 6') from error
+        if not weekdays or any(day not in range(7) for day in weekdays):
+            raise ValidationError('Выберите хотя бы один допустимый день недели')
+        start, end = str(form.get('start') or ''), str(form.get('end') or '')
+        try:
+            start_time, end_time = (datetime.strptime(item, '%H:%M').time() for item in (start, end))
+        except ValueError as error:
+            raise ValidationError('Время задаётся в формате ЧЧ:ММ') from error
+        if start_time >= end_time:
+            raise ValidationError('Конец рабочего окна должен быть позже начала')
+        value = {'enabled': enabled, 'timezone': zone_name, 'weekdays': weekdays,
+                 'start': start, 'end': end, 'locale': 'ru-RU',
+                 'actor': selected, 'target_ref': 'agentcall.configured_owner',
+                 'approval_ref': f'admin-consent:{int(time.time())}' if enabled else ''}
+        self._consumer_notification_center().set_runtime_setting(
+            QUESTION_PHONE_SETTING, json.dumps(value, ensure_ascii=False, sort_keys=True))
+        self._audit({'timestamp': int(time.time()), 'actor': actor,
+                     'action': 'question_phone_preferences_changed',
+                     'settings': {key: value[key] for key in ('enabled', 'timezone', 'weekdays', 'start', 'end', 'actor')}})
 
     def telegram_cleanup_projects(self) -> list[dict[str, Any]]:
         """Include ordinary consumer-token projects, not just legacy env tokens."""

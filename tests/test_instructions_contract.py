@@ -43,3 +43,22 @@ def test_instructions_automatic_repair_names_wire_fields():
     assert "kind='incident'" in repair and "event_type='health.degraded'" in repair
     for field in ("source_id", "host_id", "signal_type", "correlation_id"):
         assert field in repair
+
+
+def test_instructions_name_target_transport_owners_and_capability_dependent_channels():
+    data = noticeplace_instructions()
+    boundary = data["communications_boundary"]
+    target = boundary["target"]
+    assert "Notice Place API/MCP" in target
+    assert "UserIO" in target
+    assert "Agent Herder alone resumes" in target
+    assert {row["name"] for row in boundary["channels"]} == {
+        "Telegram", "Matrix", "Telemost", "SIM/GSM2SIP"
+    }
+    assert all(row["capability_dependent"] is True for row in boundary["channels"])
+    assert "do not route through Asterisk" in boundary["routing"]
+    assert "legacy" in boundary["installed_compatibility"]
+    states = data["delivery_state_semantics"]
+    for state in ("accepted/stored", "ringing", "answered", "confirmed human answer", "resumed"):
+        assert state in states
+    assert "unknown is not success" in states

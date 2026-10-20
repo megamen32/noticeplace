@@ -101,6 +101,30 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertNotIn(token.encode(), json.dumps(snapshot).encode())
         self.assertNotIn(token, self.store.audit_path.read_text(encoding="utf-8"))
 
+    def test_question_phone_preferences_are_owner_scoped_protected_and_opt_in(self) -> None:
+        self.primary.write_text(self.primary.read_text() + 'TELEGRAM_CALLBACK_ALLOWED_USER_IDS=42\n', encoding='utf-8')
+        before = self.store.snapshot()['question_phone']
+        self.assertFalse(before['enabled'])
+        self.assertEqual('', before['approval_ref'])
+        status, page = self._request('GET', '/admin/')
+        self.assertEqual(200, status)
+        self.assertIn('Личные звонки с вопросами'.encode(), page)
+        csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
+        form = {'csrf': csrf, 'enabled': 'true', 'timezone': 'Europe/Moscow', 'weekdays': '0,1,2,3,4',
+                'start': '13:00', 'end': '20:00', 'actor': 'telegram:42', 'consent': 'yes'}
+        status, _ = self._request('POST', '/admin/question-phone', {**form, 'csrf': 'wrong'})
+        self.assertEqual(400, status)
+        self.assertFalse(self.store.question_phone_preferences()['enabled'])
+        status, _ = self._request('POST', '/admin/question-phone', form)
+        self.assertEqual(200, status)
+        saved = self.store.question_phone_preferences()
+        self.assertTrue(saved['enabled'])
+        self.assertEqual('telegram:42', saved['actor'])
+        self.assertTrue(saved['approval_ref'])
+        self.assertEqual('agentcall.configured_owner', saved['target_ref'])
+        self.assertNotIn('phone_number', json.dumps(saved))
+        self.assertIn('question_phone_preferences_changed', self.store.audit_path.read_text(encoding='utf-8'))
+
     def test_project_edit_preserves_allowlisted_agent_jobs(self) -> None:
         self.primary.write_text(
             f'NOTIFY_CENTER_DB={self.database}\n'

@@ -1,5 +1,9 @@
 # NoticePlace features
 
+See the [communications architecture](communications-architecture.md) for
+the product boundary and the difference between the target UserIO transport
+ownership and legacy adapters still present in installed Notice Place builds.
+
 ## Health incident automation
 
 - Fleet signals for CPU, RAM, disk, SSH availability and failed systemd units.
@@ -17,9 +21,12 @@
 
 - Telegram topics, inline actions, acknowledgement, snooze and questions.
 - AskHuman MCP for notifications, questions and two/three-way choices.
-- Matrix and Android escalation calls for critical incidents.
+- Capability-dependent call escalation. Legacy installed Matrix and Android
+  adapters remain during migration to UserIO-owned transport; Matrix, Telemost,
+  and SIM/GSM2SIP are distinct channels, and Asterisk is cellular/SIP only.
 - Configurable severity routing, quiet hours, repeats and escalation deadlines.
-- Extensible channel adapters for messages, chats, email and calls.
+- UserIO channel operations selected by per-account capability and authorization;
+  an available channel does not imply that every operation is enabled.
 
 ## Agent jobs
 

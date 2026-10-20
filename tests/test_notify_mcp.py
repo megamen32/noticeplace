@@ -1,9 +1,11 @@
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
 from mcp import notify_mcp
+from notification_center.agentcall_phone import AgentCallPhoneAdapter
 
 
 class _Matrix:
@@ -21,8 +23,25 @@ class _Phone:
     def __init__(self):
         self.payloads = []
 
+    def readiness(self):
+        return {"ready": True, "question_ready": False}
+
     def phone_call(self, payload):
         self.payloads.append(payload)
+
+
+class _ReadyPhoneMesh:
+    def __init__(self, ready=True):
+        self.payloads = []
+        self.ready = ready
+
+    def readiness(self, _timeout=15):
+        return {"ready": self.ready, "question_ready": False,
+                "reason": "direct_route_ready" if self.ready else "phone_gateway_unavailable"}
+
+    def __call__(self, _socket_path, payload, _timeout):
+        self.payloads.append(payload)
+        return b'{"ok":true,"call_id":"synthetic-call"}'
 
 
 class DirectCallToolTests(unittest.TestCase):
@@ -38,6 +57,71 @@ class DirectCallToolTests(unittest.TestCase):
         self.assertIs(fake_adapter, result)
         factory.assert_called_once_with()
 
+    def test_phone_adapter_loads_explicit_agentcall_mesh_config_from_scoped_file(self):
+        with TemporaryDirectory() as tempdir:
+            phone_file = Path(tempdir) / "phone.env"
+            phone_file.write_text(
+                "AGENTCALL_PHONE_SOCKET=/run/agentcall/control.sock\n"
+                "NOTICEPLACE_PHONE_PEERS_JSON={\"peer\":{\"address\":\"127.0.0.1\",\"port\":9443}}\n"
+                "NOTICEPLACE_MESH_CORE_SOCKET=/run/noticeplace/core.sock\n"
+                "NOTICEPLACE_MESH_HOST_ID=noticeplace-test\n"
+                "NOTICEPLACE_MESH_CA=/run/keys/ca.pem\n"
+                "NOTICEPLACE_MESH_CERT=/run/keys/client.pem\n"
+                "NOTICEPLACE_MESH_KEY=/run/keys/client.key\n"
+            )
+            fake_adapter = object()
+            with mock.patch.dict("os.environ", {"NOTIFY_PHONE_SECRETS_FILE": str(phone_file)}, clear=True), \
+                 mock.patch("notification_center.http_api.android_phone_from_environment", return_value=fake_adapter) as factory:
+                result = notify_mcp.phone_adapter_from_environment()
+
+        self.assertIs(fake_adapter, result)
+        factory.assert_called_once_with()
+
+    def test_agentcall_selection_precedes_android_when_both_are_configured(self):
+        with mock.patch.dict(os.environ, {
+            "AGENTCALL_PHONE_SOCKET": "/run/agentcall/control.sock",
+            "ANDROID_ADB_SERIAL": "synthetic-device",
+            "ANDROID_TELEGRAM_TARGET": "synthetic-target",
+        }, clear=True):
+            adapter = notify_mcp.phone_adapter_from_environment()
+
+        self.assertIsInstance(adapter, AgentCallPhoneAdapter)
+        self.assertTrue(adapter.can_phone_call)
+        self.assertFalse(adapter.readiness()["ready"])
+
+    def test_agentcall_readiness_failure_never_submits_a_call(self):
+        mesh = _ReadyPhoneMesh(ready=False)
+        phone = AgentCallPhoneAdapter("/run/agentcall/control.sock", requester=mesh)
+        with mock.patch("mcp.notify_mcp._quiet_hours_suppression", return_value=None), \
+             mock.patch("mcp.notify_mcp.phone_adapter_from_environment", return_value=phone):
+            with self.assertRaisesRegex(RuntimeError, "not ready"):
+                notify_mcp.tool_call({"channel": "phone", "message": "служба уведомлений"})
+
+        self.assertEqual([], mesh.payloads)
+
+    def test_ready_agentcall_does_not_substitute_conversation_for_one_way_tts(self):
+        with TemporaryDirectory() as tempdir:
+            phone_file = Path(tempdir) / "phone.env"
+            phone_file.write_text(
+                "AGENTCALL_PHONE_SOCKET=/run/agentcall/control.sock\n"
+                "NOTICEPLACE_PHONE_PEERS_JSON={\"peer\":{\"address\":\"127.0.0.1\",\"port\":9443}}\n"
+                "NOTICEPLACE_MESH_CORE_SOCKET=/run/noticeplace/core.sock\n"
+                "NOTICEPLACE_MESH_HOST_ID=noticeplace-test\n"
+                "NOTICEPLACE_MESH_CA=/run/keys/ca.pem\n"
+                "NOTICEPLACE_MESH_CERT=/run/keys/client.pem\n"
+                "NOTICEPLACE_MESH_KEY=/run/keys/client.key\n"
+                "ANDROID_ADB_SERIAL=synthetic-offline-device\n"
+                "ANDROID_TELEGRAM_TARGET=synthetic-target\n"
+            )
+            mesh = _ReadyPhoneMesh()
+            with mock.patch.dict("os.environ", {"NOTIFY_PHONE_SECRETS_FILE": str(phone_file)}, clear=True), \
+                 mock.patch("notification_center.mesh_phone.PhoneMeshRequester", return_value=mesh), \
+                 mock.patch("mcp.notify_mcp._quiet_hours_suppression", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "does not support one-way TTS"):
+                    notify_mcp.tool_call({"channel": "phone", "message": "служба уведомлений", "repeat": 1})
+
+        self.assertEqual([], mesh.payloads)
+
     def test_matrix_call_is_direct_and_returns_bridge_receipt(self):
         matrix = _Matrix()
         with mock.patch("mcp.notify_mcp._quiet_hours_suppression", return_value=None), \
@@ -50,16 +134,14 @@ class DirectCallToolTests(unittest.TestCase):
         self.assertEqual("Please call me", matrix.payloads[0]["incident"]["body"])
         self.assertEqual("direct", matrix.payloads[0]["incident"]["kind"])
 
-    def test_phone_call_is_direct_and_never_creates_an_incident(self):
+    def test_direct_phone_call_rejects_android_only_adapter(self):
         phone = _Phone()
         with mock.patch("mcp.notify_mcp._quiet_hours_suppression", return_value=None), \
-             mock.patch("notification_center.http_api.android_phone_from_environment", return_value=phone):
-            result = notify_mcp.tool_call({"channel": "phone", "message": "Hermes ждёт пароль", "repeat": 2, "hangup_after": True})
+             mock.patch("mcp.notify_mcp.phone_adapter_from_environment", return_value=phone):
+            with self.assertRaisesRegex(RuntimeError, "UserIO Voice/AgentCall"):
+                notify_mcp.tool_call({"channel": "phone", "message": "служба уведомлений"})
 
-        self.assertTrue(result["ok"])
-        self.assertEqual("phone", result["channel"])
-        self.assertEqual("direct", phone.payloads[0]["kind"])
-        self.assertEqual({"text": "Hermes ждёт пароль", "repeat": 2, "hangup_after": True}, phone.payloads[0]["voice"])
+        self.assertEqual([], phone.payloads)
 
     def test_direct_phone_call_is_suppressed_during_quiet_hours(self):
         phone = _Phone()
@@ -94,9 +176,11 @@ if __name__ == "__main__":
 
 class Mcp2ContractTests(unittest.TestCase):
     def test_initialize_negotiates_mcp2_and_ping(self):
-        init = notify_mcp.dispatch({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28"}})
-        self.assertEqual("2026-07-28", init["result"]["protocolVersion"])
+        init = notify_mcp.dispatch({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}})
+        self.assertEqual("2025-11-25", init["result"]["protocolVersion"])
         self.assertIn("noticeplace_instructions", init["result"]["instructions"])
+        self.assertIn("UserIO's authorized per-account transport", init["result"]["instructions"])
+        self.assertIn("Agent Herder alone resumes", init["result"]["instructions"])
         self.assertEqual({}, notify_mcp.dispatch({"jsonrpc":"2.0","id":2,"method":"ping","params":{}})["result"])
 
     def test_noticeplace_instructions_are_short_and_actionable(self):
@@ -114,3 +198,10 @@ class Mcp2ContractTests(unittest.TestCase):
         tools = {tool["name"] for tool in notify_mcp.tool_specs()}
         self.assertIn("noticeplace_list_mutes", tools)
         self.assertIn("noticeplace_set_notifications", tools)
+
+    def test_call_tool_description_preserves_channel_ownership_boundary(self):
+        call_tool = next(tool for tool in notify_mcp.tool_specs() if tool["name"] == "call")
+        description = call_tool["description"]
+        self.assertIn("UserIO's authorized per-account transport", description)
+        self.assertIn("MatrixRTC is a distinct Matrix channel", description)
+        self.assertIn("never uses Asterisk", description)

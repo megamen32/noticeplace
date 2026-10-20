@@ -1,10 +1,16 @@
 # Звонки при инцидентах
 
+См. [архитектуру коммуникаций](communications-architecture.md): Notice Place
+владеет политикой эскалации, UserIO — аккаунтным транспортом и lifecycle.
+Матрица, Telegram и SIM/GSM2SIP — разные каналы; Matrix/Telemost не идут через
+Asterisk. Android/S21-адаптер в старой цепочке ниже — установленный legacy
+маршрут, сохраняемый во время миграции.
+
 Для владельца NoticePlace последовательность: Matrix → Telegram → телефон. Первый звонок создаётся после исходной карточки критического или аварийного инцидента, с прежней задержкой телефонной эскалации. Задания сохраняются в существующей очереди и общей базе mesh.
 
 Следующий канал создаётся только после подтверждённого завершения предыдущего без ответа. Принятый звонок подтверждает получение уведомления и останавливает цепочку; это не означает исправление сервиса. Закрытие или подтверждение инцидента также отменяет будущие звонки. Потерянный ответ API, неизвестный исход или незавершённый teardown останавливают эскалацию без повторного набора. Отказ соединения и HTTP401/403/404 означают, что вызов не допущен, и допускают следующий канал.
 
-Настройки: `INCIDENT_CALL_ORDER=matrix.call,telegram.call,android.phone.call`, фиксированные `MATRIX_CALL_URL` и `TELEGRAM_CALL_URL` на account-bound NoticePlace endpoints UserIO, существующий защищённый токен, `INCIDENT_CALL_TIMEOUT_SECONDS=450`. URLs, токены и получатель принадлежат оператору, не producer payload. Matrix endpoint: `/v1/calls/matrix/noticeplace`; Telegram endpoint: `/v1/calls/telegram/noticeplace`.
+Текущая установленная цепочка сохраняет настройки `INCIDENT_CALL_ORDER=matrix.call,telegram.call,android.phone.call`, фиксированные `MATRIX_CALL_URL` и `TELEGRAM_CALL_URL` на account-bound NoticePlace endpoints UserIO, существующий защищённый токен и `INCIDENT_CALL_TIMEOUT_SECONDS=450`. URLs, токены и получатель принадлежат оператору, не producer payload. Matrix endpoint: `/v1/calls/matrix/noticeplace`; Telegram endpoint: `/v1/calls/telegram/noticeplace`. Это факты конкретной установленной цепочки, а не обещание доступности канала для каждого UserIO-аккаунта.
 
 Каждый delivery key задаёт устойчивую идентичность звонка. Receipt сохраняет answered, ended, safe_to_fallback и call_id. Переход проверяет точный предыдущий delivery, его закрытый исход и last_delivery_id общего бюджета; неверные метаданные отменяются. Все три попытки относятся к одному эпизоду. Новые эпизоды сохраняют общий часовой лимит, выключатель звонков, severity, quiet hours и тихое восстановление health-инцидентов. Старые задания и неизвестные исходы не переносятся и не повторяются.
 

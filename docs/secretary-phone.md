@@ -1,5 +1,11 @@
 # Ordinary Secretary phone messages
 
+The public policy and transport boundary is documented in the
+[communications architecture](communications-architecture.md). The existing
+`secretary.call` integration uses UserIO's internal AgentCall voice component;
+AgentCall is not a separate producer API. Actual delivery and call-state
+claims remain limited to UserIO receipts for the configured account.
+
 The existing AgentCall adapter recognizes `event_type=secretary.call` as an
 ordinary assistant message. It introduces itself with «Я помощник Никиты»,
 speaks the supplied body once, and discusses that message using the existing

@@ -8,7 +8,15 @@
 
 > Агенты продолжают работать. Решение и результат приходят вам в Telegram.
 
-NoticePlace превращает сбои и долгие агентские задачи в один понятный поток: обнаружить → диагностировать → предложить три плана → получить выбор человека → запустить Codex через Agent Herder → независимо проверить → сообщить результат.
+Notice Place — слой политик и приложения для уведомлений, вопросов и
+эскалации от агентов к людям. Внешний вход — один аутентифицированный API и
+MCP. Одобренная доставка проходит через UserIO — универсальный шлюз
+коммуникаций; доступные операции зависят от аккаунта и возможностей канала.
+Возобновлением сессий агентов занимается Agent Herder.
+
+NoticePlace объединяет сбои и долгие агентские задачи в понятный поток:
+обнаружить → диагностировать → предложить планы → получить выбор человека →
+запустить Codex через Agent Herder → независимо проверить → сообщить результат.
 
 ```mermaid
 flowchart LR
@@ -21,7 +29,8 @@ flowchart LR
 - Codex, OpenCode, Hermes и GPTAdmin jobs
 - Supervisor полезного прогресса, а не heartbeat
 - Закрытие только после независимой проверки
-- Telegram, Matrix-звонки, Android-звонки и расширяемые адаптеры
+- Доставка в Telegram и оставшиеся в установленных версиях legacy-адаптеры
+  Matrix/Android с переходом на транспортную границу UserIO
 - AskHuman MCP, SDK продюсера и защищённая админка
 
 ## Установка
@@ -30,6 +39,6 @@ flowchart LR
 codex mcp add notify -- npx -y github:megamen32/noticeplace
 ```
 
-[Все функции](docs/features.md) · [Production deploy](deploy/README.md) · [API](docs/producer.md) · [Agent jobs](docs/gptadmin-agent-jobs.md)
+[Архитектура коммуникаций](docs/communications-architecture.md) · [Все функции](docs/features.md) · [Production deploy](deploy/README.md) · [API](docs/producer.md) · [Agent jobs](docs/gptadmin-agent-jobs.md)
 
 MIT

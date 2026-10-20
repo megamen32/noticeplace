@@ -1,5 +1,12 @@
 # Mandatory full-cycle supertest
 
+This runbook preserves the installed GPTAdmin/S21 compatibility canary. The
+target communication ownership is in the
+[communications architecture](communications-architecture.md). The S21
+adapter steps below are legacy cellular-path evidence; they do not define
+Notice Place's target transport API or prove Matrix/Telemost delivery through
+Asterisk.
+
 This is the required business canary before a presentation, release, or
 production routing change. A green unit suite, service status, dashboard, or
 historical delivery row is not a substitute for this test.

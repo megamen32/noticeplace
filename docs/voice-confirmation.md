@@ -1,13 +1,19 @@
 # Voice confirmation of a phone incident
 
+See the [communications architecture](communications-architecture.md) for
+ownership and state semantics. AgentCall is an internal UserIO voice component;
+this document describes the existing Notice Place incident-acknowledgement
+integration, not a public AgentCall API or an AskHuman answer protocol.
+
 When the AgentCall gateway recognizes an explicit remote reply such as
 «Да, я услышал», Notice Place acknowledges that exact incident and cancels its
 pending repeats. The conversation continues through the configured voice LLM.
 Acknowledgement records that the person received the alert; it does not claim
 that a health problem was repaired or resolved.
 
-The delivery worker persists the returned `call_id`/`receipt_id`. One local
-subscriber reads the existing `gatewayd.sock` transcript events and accepts
+The delivery worker persists the returned `call_id`/`receipt_id` from the
+existing transport adapter. One local subscriber reads the existing
+`gatewayd.sock` transcript events and accepts
 only remote confirmations whose call ID matches that durable phone receipt.
 Questions, negative confirmations, agent speech, and unknown call IDs cannot
 acknowledge an incident. Repeated confirmation is idempotent, and the result

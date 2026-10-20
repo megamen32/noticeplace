@@ -34,13 +34,27 @@ class PhoneAdmissionTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):requester('',b'{"message":"unit"}',30)
             self.assertEqual(connect.call_count,1)
 
-    def test_preflight_unavailable_can_select_another_peer(self):
-        requester=self.requester();requester.tls.wrap_socket.return_value=Mock()
-        with patch('notification_center.mesh_phone.normalize',return_value={'hosts':['first','second']}), \
+    def test_preflight_selects_registered_server_88_when_100_and_44_are_unavailable(self):
+        requester=self.requester()
+        requester.peers={
+            'server-100':{'address':'peer-100.invalid','port':19094},
+            'server-44':{'address':'peer-44.invalid','port':19094},
+            'server-88':{'address':'peer-88.invalid','port':19094},
+        }
+        connections=[Mock(),Mock(),Mock()]
+        requester.tls.wrap_socket.side_effect=connections
+        with patch('notification_center.mesh_phone.normalize',return_value={'hosts':['server-100','server-44','server-88']}), \
              patch('notification_center.mesh_phone.socket.create_connection') as connect, \
-             patch('notification_center.mesh_phone.read_frame',side_effect=[b'{"ready":false}',b'{"ready":true}',b'{"ok":true,"call_id":"unit-call"}']):
+             patch('notification_center.mesh_phone.read_frame',side_effect=[b'{"ready":false}',b'{"ready":false}',b'{"ready":true}',b'{"ok":true,"call_id":"unit-call"}']):
             self.assertIn(b'unit-call',requester('',b'{"message":"unit"}',30))
-            self.assertEqual(connect.call_count,2)
+        self.assertEqual([call.args[0][0] for call in connect.call_args_list],
+                         ['peer-100.invalid','peer-44.invalid','peer-88.invalid'])
+        self.assertEqual(connections[0].sendall.call_args_list,[unittest.mock.call(b'{"op":"status"}\n')])
+        self.assertEqual(connections[1].sendall.call_args_list,[unittest.mock.call(b'{"op":"status"}\n')])
+        self.assertEqual(connections[2].sendall.call_args_list,[
+            unittest.mock.call(b'{"op":"status"}\n'),
+            unittest.mock.call(b'{"message":"unit"}\n'),
+        ])
 
     def test_preflight_retries_registration_then_sends_payload_once(self):
         requester=self.requester();connection=Mock();requester.tls.wrap_socket.return_value=connection

@@ -36,6 +36,17 @@ MAX_TAIL_BYTES = int(os.environ.get("NOTIFY_MCP_MAX_TAIL_BYTES", "20000"))
 _RUNTIME_READY = False
 _RUNTIME_READY_LOCK = threading.Lock()
 PHONE_ENV_KEYS = (
+    # A configured AgentCall route takes precedence over local Android. The
+    # NoticePlace peer credentials stay file-backed; only their variable names
+    # are copied from the MCP-scoped env file for adapter construction.
+    "AGENTCALL_PHONE_SOCKET",
+    "AGENTCALL_PHONE_TIMEOUT_SECONDS",
+    "NOTICEPLACE_PHONE_PEERS_JSON",
+    "NOTICEPLACE_MESH_CORE_SOCKET",
+    "NOTICEPLACE_MESH_HOST_ID",
+    "NOTICEPLACE_MESH_CA",
+    "NOTICEPLACE_MESH_CERT",
+    "NOTICEPLACE_MESH_KEY",
     "ANDROID_ADB_PATH",
     "ANDROID_ADB_SERIAL",
     "ANDROID_TELEGRAM_TARGET",
@@ -178,6 +189,14 @@ def phone_adapter_from_environment() -> Any:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def userio_voice_adapter_from_environment() -> Any:
+    """Return only the existing internal UserIO Voice/AgentCall adapter."""
+    from notification_center.agentcall_phone import AgentCallPhoneAdapter
+
+    adapter = phone_adapter_from_environment()
+    return adapter if isinstance(adapter, AgentCallPhoneAdapter) else None
 
 
 def notify_center_config() -> Dict[str, str]:
@@ -628,9 +647,28 @@ def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
             raise RuntimeError("Matrix call adapter is not configured")
         return {"ok": True, "channel": channel, "receipt": adapter.send({"incident": incident})}
 
-    adapter = phone_adapter_from_environment()
+    adapter = userio_voice_adapter_from_environment()
     if adapter is None or not getattr(adapter, "can_phone_call", False):
-        raise RuntimeError("Android phone call adapter is not configured")
+        raise RuntimeError("The approved UserIO Voice/AgentCall adapter is not configured")
+    # AgentCall readiness is derived from the live authenticated NoticePlace
+    # phone mesh peer, not from the host systemd wrapper (which may be a
+    # container-lease shim). A local raw socket without that health probe is
+    # not enough evidence to originate a user call.
+    readiness = getattr(adapter, "readiness", None)
+    if readiness is not None:
+        try:
+            status = readiness()
+        except Exception as error:
+            raise RuntimeError("Configured phone route readiness check failed") from error
+        if not isinstance(status, dict) or status.get("ready") is not True:
+            reason = status.get("reason") if isinstance(status, dict) else None
+            raise RuntimeError(f"Configured phone route is not ready: {reason or 'health check unavailable'}")
+    one_way_call = getattr(adapter, "phone_call_one_way", None)
+    if not callable(one_way_call):
+        raise RuntimeError(
+            "The configured UserIO Voice/AgentCall route does not support one-way TTS with hangup; "
+            "refusing to start an interactive voice session as a substitute"
+        )
     payload: Dict[str, Any] = {"kind": "direct", "incident": incident}
     if message:
         payload["voice"] = {
@@ -640,8 +678,21 @@ def tool_call(args: Dict[str, Any]) -> Dict[str, Any]:
         }
         if args.get("connect_wait_seconds") is not None:
             payload["voice"]["connect_wait_seconds"] = args["connect_wait_seconds"]
-    adapter.phone_call(payload)
-    return {"ok": True, "channel": channel, "receipt": {"started": True}}
+    receipt = one_way_call(payload)
+    # The legacy direct call is one-way TTS. Keep its result distinct from the
+    # interactive AskHuman call/answer/resume flow, and never invent a receipt
+    # when an adapter only reports that it submitted a command.
+    safe_receipt = None
+    if isinstance(receipt, dict):
+        safe_receipt = {key: receipt[key] for key in ("call_id", "ok", "admitted") if key in receipt}
+    return {
+        "ok": True,
+        "channel": channel,
+        "mode": "direct_one_way_tts",
+        "interactive": False,
+        "receipt": safe_receipt,
+        "submitted": True,
+    }
 
 
 def notify_args_for(pid: Optional[int] = None, query: Optional[str] = None, log_mode: str = "none", log_file: Optional[str] = None, replace: bool = True, first: bool = False, hard_timeout: Any = None) -> List[str]:
@@ -1026,11 +1077,11 @@ TOOLS = {
         "handler": tool_send_message,
     },
     "call": {
-        "description": "Place one direct call through the configured phone or Matrix adapter. Use only on an explicit user request; this does not create an incident or wait for escalation.",
+        "description": "Legacy compatibility call tool. The target contract is Notice Place policy/API/MCP to UserIO's authorized per-account transport. Phone one-way TTS requires a ready UserIO AgentCall capability and fails closed if unsupported. MatrixRTC is a distinct Matrix channel and never uses Asterisk; its existing direct adapter is migration-era compatibility. This is not an interactive AskHuman answer or session-resume protocol; use only on an explicit user request.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "channel": {"type": "string", "enum": ["phone", "matrix"], "default": "phone", "description": "phone places a direct cellular call; matrix starts a direct MatrixRTC call."},
+                "channel": {"type": "string", "enum": ["phone", "matrix"], "default": "phone", "description": "phone requests one-way TTS through the internal UserIO voice capability; matrix is a separate MatrixRTC compatibility channel, not an Asterisk route."},
                 "message": {"type": ["string", "null"], "description": "Optional call context. For phone, it is spoken acoustically through speakerphone."},
                 "repeat": {"type": "integer", "minimum": 1, "maximum": 3, "default": 2, "description": "Phone only: how many times to speak message."},
                 "hangup_after": {"type": "boolean", "default": True, "description": "Phone only: end the call after spoken playback."},

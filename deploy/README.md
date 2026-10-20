@@ -1,5 +1,10 @@
 # NoticePlace deployment
 
+For product and channel ownership, see the
+[communications architecture](../docs/communications-architecture.md). This
+runbook deploys the Notice Place policy/API service; it does not create or own
+UserIO channel accounts or voice/provider services.
+
 `deploy/noticeplace` is the canonical lifecycle owner for the two persistent
 NoticePlace services. Run it from a downloaded checkout or from the current
 managed release.
@@ -36,7 +41,9 @@ sudo /opt/noticeplace/deploy/noticeplace start
 The persistent services have separate jobs:
 
 - `notification-center.service`, running as `notification-center`, owns the API,
-  SQLite-backed queues, AskHuman requests, and external delivery;
+  SQLite-backed queues, AskHuman policy, and the installed delivery adapters.
+  The target design delegates each authorized transport operation to UserIO;
+  currently installed legacy adapters remain available during migration;
 - `notification-center-admin.service`, running as root, owns the protected
   operator console;
 - `notification-center-admin-apply@.service` is not a daemon. It is a root-owned
