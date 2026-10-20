@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from pathlib import Path
@@ -28,6 +29,18 @@ class _Phone:
 
     def phone_call(self, payload):
         self.payloads.append(payload)
+
+
+class _ReadyPhoneMesh:
+    def __init__(self):
+        self.payloads = []
+
+    def readiness(self, _timeout=15):
+        return {"ready": True, "question_ready": False, "reason": "direct_route_ready"}
+
+    def __call__(self, _socket_path, payload, _timeout):
+        self.payloads.append(payload)
+        return b'{"ok":true,"call_id":"synthetic-call"}'
 
 
 class DirectCallToolTests(unittest.TestCase):
@@ -84,6 +97,34 @@ class DirectCallToolTests(unittest.TestCase):
                 notify_mcp.tool_call({"channel": "phone", "message": "служба уведомлений"})
 
         self.assertEqual([], phone.payloads)
+
+    def test_ready_agentcall_is_selected_over_android_and_returns_safe_receipt(self):
+        with TemporaryDirectory() as tempdir:
+            phone_file = Path(tempdir) / "phone.env"
+            phone_file.write_text(
+                "AGENTCALL_PHONE_SOCKET=/run/agentcall/control.sock\n"
+                "NOTICEPLACE_PHONE_PEERS_JSON={\"peer\":{\"address\":\"127.0.0.1\",\"port\":9443}}\n"
+                "NOTICEPLACE_MESH_CORE_SOCKET=/run/noticeplace/core.sock\n"
+                "NOTICEPLACE_MESH_HOST_ID=noticeplace-test\n"
+                "NOTICEPLACE_MESH_CA=/run/keys/ca.pem\n"
+                "NOTICEPLACE_MESH_CERT=/run/keys/client.pem\n"
+                "NOTICEPLACE_MESH_KEY=/run/keys/client.key\n"
+                "ANDROID_ADB_SERIAL=synthetic-offline-device\n"
+                "ANDROID_TELEGRAM_TARGET=synthetic-target\n"
+            )
+            mesh = _ReadyPhoneMesh()
+            with mock.patch.dict("os.environ", {"NOTIFY_PHONE_SECRETS_FILE": str(phone_file)}, clear=True), \
+                 mock.patch("notification_center.mesh_phone.PhoneMeshRequester", return_value=mesh), \
+                 mock.patch("mcp.notify_mcp._quiet_hours_suppression", return_value=None):
+                result = notify_mcp.tool_call({"channel": "phone", "message": "служба уведомлений", "repeat": 1})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("direct_one_way_tts", result["mode"])
+        self.assertEqual({"call_id": "synthetic-call", "ok": True}, result["receipt"])
+        self.assertEqual(1, len(mesh.payloads))
+        request = json.loads(mesh.payloads[0])
+        self.assertNotIn("recipient", request)
+        self.assertIn("служба уведомлений", request["message"])
 
     def test_matrix_call_is_direct_and_returns_bridge_receipt(self):
         matrix = _Matrix()
