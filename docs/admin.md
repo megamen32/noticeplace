@@ -1,5 +1,10 @@
 # NoticePlace operator console
 
+The [communications architecture](communications-architecture.md) defines
+target transport ownership. Call controls documented here describe installed
+legacy adapters during migration; they do not make Matrix or Android a separate
+transport owner.
+
 `GET /` redirects to `/admin/`. `/admin/` is the protected operator surface,
 not a producer API. Nginx uses the existing `auth.bezrabotnyi.com` login flow,
 then overwrites `X-Notify-Admin: 1` before proxying to the loopback-only admin
@@ -20,8 +25,9 @@ grant any of those tokens. See [the producer guide](producer-sdk.md) and the
   topic from Notify routing but does not delete Telegram history. A blank
   thread ID creates a Telegram forum topic only when auto-create is enabled;
   otherwise an existing positive thread ID is required;
-- automatic call enablement and live timing values for Matrix calls, Android
-  Telegram calls, Android phone calls, and critical Telegram repeats;
+- automatic call enablement and live timing values for the installed legacy
+  Matrix, Android-Telegram, and Android-phone adapters, plus critical Telegram
+  repeats;
 - scoped consumers through a visual adapter builder;
 - built-in delivery profiles `emergency`, `important`, and `log`, shown in the
   same profile table as custom consumers;
@@ -74,16 +80,19 @@ but a worker crash after an adapter accepts a request and before Notify records
 success can cause lease reclaim and a duplicate external send. Delivery is
 therefore at-least-once, not exactly-once.
 
-Matrix, Android Telegram, and Android phone calls are optional real adapter
-paths. An unconfigured or failed adapter is a retryable delivery failure. A
-successful HTTP/GPTAdmin response proves adapter acceptance only, not that a
-phone carrier connected or a person answered.
+Matrix, Android Telegram, and Android phone calls remain optional real legacy
+adapter paths in the installed runtime. An unconfigured or failed adapter is a
+retryable delivery failure. A successful HTTP/GPTAdmin response proves
+acceptance at that adapter only, not transport send, ringing, a connected
+carrier, or a person's answer.
 
 ## What remains server-owned
 
-Telegram/Matrix/Android credentials, health tokens, phone targets, and fixed
-transport credentials stay in server-owned configuration. Producer code must
-continue to use its project-scoped token and the documented producer API.
+Producer tokens, health-probe credentials, and the remaining legacy-adapter
+configuration stay in server-owned configuration. In the target architecture,
+channel-account credentials, capabilities, and transport authorization belong
+to UserIO. Producer code continues to use only its project-scoped token and the
+documented Notice Place API.
 
 ### Повторные звонки и итог
 

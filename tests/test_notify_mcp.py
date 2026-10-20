@@ -179,6 +179,8 @@ class Mcp2ContractTests(unittest.TestCase):
         init = notify_mcp.dispatch({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}})
         self.assertEqual("2025-11-25", init["result"]["protocolVersion"])
         self.assertIn("noticeplace_instructions", init["result"]["instructions"])
+        self.assertIn("UserIO's authorized per-account transport", init["result"]["instructions"])
+        self.assertIn("Agent Herder alone resumes", init["result"]["instructions"])
         self.assertEqual({}, notify_mcp.dispatch({"jsonrpc":"2.0","id":2,"method":"ping","params":{}})["result"])
 
     def test_noticeplace_instructions_are_short_and_actionable(self):
@@ -196,3 +198,10 @@ class Mcp2ContractTests(unittest.TestCase):
         tools = {tool["name"] for tool in notify_mcp.tool_specs()}
         self.assertIn("noticeplace_list_mutes", tools)
         self.assertIn("noticeplace_set_notifications", tools)
+
+    def test_call_tool_description_preserves_channel_ownership_boundary(self):
+        call_tool = next(tool for tool in notify_mcp.tool_specs() if tool["name"] == "call")
+        description = call_tool["description"]
+        self.assertIn("UserIO's authorized per-account transport", description)
+        self.assertIn("MatrixRTC is a distinct Matrix channel", description)
+        self.assertIn("never uses Asterisk", description)

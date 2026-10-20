@@ -1,5 +1,11 @@
 # Notify MCP server
 
+Notice Place's public producer/AskHuman boundary and channel ownership are
+defined in the [communications architecture](communications-architecture.md).
+This stdio server preserves its existing shell-job tools; use Notice Place
+API/MCP for human notifications and questions, and UserIO's authorized
+account-bound transports rather than direct provider integrations.
+
 **Languages:** English | [Русский](mcp.ru.md) | [中文](mcp.zh.md)
 
 Notify MCP is a stdio MCP server for non-interactive long-running shell jobs. It starts commands detached, writes logs to disk, attaches `/usr/local/bin/notify`, and returns without keeping the agent awake.

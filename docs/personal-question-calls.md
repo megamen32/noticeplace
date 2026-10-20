@@ -1,35 +1,18 @@
 # Personal AskHuman phone questions
 
-## Ownership and call path
+## Architecture boundary
 
-Notice Place is the only external entry point for agents and services: its
-authenticated API and MCP own actor/recipient authorization, consent, quiet
-hours, deduplication, pending-question state, Telegram fallback, and
-idempotent answer delivery to the exact bound native session. Callers never
-receive direct access to UserIO, AgentCall, Asterisk, or an Android device.
+Use the [communications architecture](communications-architecture.md) as the
+authoritative component and channel contract. For this feature, Notice Place
+owns question consent, schedule, deduplication, pending state, Telegram
+fallback, and the canonical answer. UserIO owns authorized per-account
+transport and the available call lifecycle. Agent Herder alone resumes the
+exact bound native session.
 
-For voice delivery, Notice Place delegates to the existing authenticated
-UserIO Voice/AgentCall bridge. UserIO owns call preparation, TTS/STT and the
-voice lifecycle; DTMF support for the question protocol is not verified in the
-installed bridge source. Its current source originates through the existing
-Asterisk server. UserIO's phone setup describes a GSM2SIP handset as one
-possible SIP leg, so Android may be an internal carrier endpoint rather than
-a competing Notice Place adapter. The actual physical leg for an individual
-call remains unknown unless a receipt is correlated across AgentCall and
-Asterisk. The running UserIO container and its bridge are not Notice Place
-services and must not be restarted or modified by this feature.
-
-The MCP's legacy direct `call` operation is one-way TTS followed by hangup. Its
-phone route selects only the authenticated UserIO Voice/AgentCall adapter and
-requires a live readiness result; it never falls through to a direct Android
-adapter. The currently installed AgentCall request starts a spoken greeting
-and then an interactive voice session; it does not implement bounded one-way
-TTS plus hangup. Notice Place therefore rejects this direct operation before
-origination until the existing voice bridge exposes that capability. Android
-can still be a private SIP/GSM2SIP carrier leg behind the existing runtime.
-The direct call does not represent an interactive AskHuman question and cannot
-resolve a request or resume a session. Interactive questions require the
-separate `noticeplace.question.v1` call-bound confirmation contract below.
+This source-only question-call protocol is experimental; the installed UserIO
+bridge does not yet provide its call-bound confirmation and dial-deadline
+controls. The existing MCP one-way TTS call is a different capability and
+must not be treated as an AskHuman answer or session resume.
 
 Bound ordinary AskHuman `question` and `choice` requests are reserved once in
 `question_phone_calls`. Notice Place keeps the existing Telegram card as the

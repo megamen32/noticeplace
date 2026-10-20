@@ -1,5 +1,9 @@
 # Notify MCP server
 
+Notice Place API/MCP 的对外边界及渠道归属见[通信架构](communications-architecture.md)。
+此 stdio server 保留现有 shell-job 工具；人类通知和问题应通过 Notice Place
+API/MCP 与 UserIO 授权的账户级传输发送，不应直接调用渠道提供方。
+
 [English](mcp.md) | [Русский](mcp.ru.md) | **中文**
 
 Notify MCP 是一个用于长时间非交互式 shell 任务的 stdio MCP server。它会 detached 启动命令，把日志写入磁盘，连接 `/usr/local/bin/notify`，然后返回，不需要让智能体一直保持等待状态。

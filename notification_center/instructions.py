@@ -6,10 +6,17 @@ from typing import Any
 
 
 MCP_INSTRUCTIONS = (
-    "Автоматические аварии и восстановления отправляйте только через Notice Place. "
-    "Вызовите noticeplace_instructions перед первой интеграцией; обычные вопросы человеку "
-    "задавайте через ask_human. Текст уведомления должен кратко назвать сервис, поломку, "
-    "влияние, текущее состояние и требуемое действие — по-русски и без сырых машинных полей."
+    "Notice Place is the only producer API/MCP entry point for agent notifications, "
+    "human questions, and escalation policy. Follow its authorization, recipient, "
+    "consent, schedule, quiet-hours, and deduplication rules, then deliver through "
+    "UserIO's authorized per-account transport boundary. Telegram, Matrix, Telemost, "
+    "and SIM/GSM2SIP are distinct, capability-dependent channels; Matrix and Telemost "
+    "do not use Asterisk. AgentCall is an internal UserIO voice component; Asterisk "
+    "and GSM2SIP apply only to the cellular/SIP route. Agent Herder alone resumes "
+    "the exact bound native session. Existing direct Matrix/Android adapters are "
+    "legacy installed compatibility routes, not the target ownership model. Write "
+    "human-facing notices in concise Russian without raw machine fields. Call "
+    "noticeplace_instructions before the first integration for the exact API contract."
 )
 
 
@@ -18,6 +25,37 @@ def noticeplace_instructions() -> dict[str, Any]:
     return {
         "schema": "noticeplace.instructions.v1",
         "summary": "Автоматические аварии и восстановления отправляются через Notice Place, а не напрямую в Telegram, notify или AskHuman.",
+        "communications_boundary": {
+            "target": (
+                "Notice Place API/MCP owns producer authorization, recipient policy, consent, "
+                "schedules, quiet hours, deduplication, human-question state, and canonical "
+                "answer delivery. UserIO owns authorized per-account transport operations "
+                "and the channel lifecycle evidence it supports. AgentCall is internal to "
+                "UserIO. Agent Herder alone resumes the exact bound native session."
+            ),
+            "channels": [
+                {"name": "Telegram", "capability_dependent": True},
+                {"name": "Matrix", "capability_dependent": True},
+                {"name": "Telemost", "capability_dependent": True},
+                {"name": "SIM/GSM2SIP", "capability_dependent": True},
+            ],
+            "routing": (
+                "Matrix and Telemost are distinct channels and do not route through Asterisk. "
+                "Asterisk/GSM2SIP are cellular/SIP components only."
+            ),
+            "installed_compatibility": (
+                "Some installed Notice Place releases still contain direct Matrix/Android "
+                "adapters. Preserve their operational settings during migration, but treat "
+                "them as legacy compatibility paths rather than the target transport owner."
+            ),
+            "reference": "docs/communications-architecture.md",
+        },
+        "delivery_state_semantics": (
+            "Notice Place accepted/stored, UserIO/provider accepted, sent/originated, "
+            "ringing, answered, confirmed human answer, and Agent Herder session resumed "
+            "are different states. Report only states backed by correlated receipts/events; "
+            "unknown is not success."
+        ),
         "message_format": [
             "Кто сломался: понятное название сервиса.",
             "Как сломался и чем это мешает.",
@@ -71,5 +109,9 @@ def noticeplace_instructions() -> dict[str, Any]:
             "остаются только как совместимость для старых карточек."
         ),
         "identity": "dedup_key стабилен для одной поломки; Idempotency-Key повторяется только при точном повторе того же запроса.",
-        "exceptions": "Прямой аварийный канал допустим только для независимого сторожа самого Notice Place.",
+        "exceptions": (
+            "An independent watchdog may bypass Notice Place intake only when reporting "
+            "Notice Place itself as unavailable. This exception does not bypass UserIO "
+            "account authorization or turn legacy provider adapters into a public producer API."
+        ),
     }

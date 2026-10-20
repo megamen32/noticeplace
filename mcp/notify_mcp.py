@@ -1077,11 +1077,11 @@ TOOLS = {
         "handler": tool_send_message,
     },
     "call": {
-        "description": "Place one direct one-way phone TTS call through Notice Place's authenticated UserIO Voice/AgentCall route, or a direct MatrixRTC call. The phone route fails closed unless ready. This does not create an incident, provide interactive AskHuman answer detection, or resume a session; use only on an explicit user request.",
+        "description": "Legacy compatibility call tool. The target contract is Notice Place policy/API/MCP to UserIO's authorized per-account transport. Phone one-way TTS requires a ready UserIO AgentCall capability and fails closed if unsupported. MatrixRTC is a distinct Matrix channel and never uses Asterisk; its existing direct adapter is migration-era compatibility. This is not an interactive AskHuman answer or session-resume protocol; use only on an explicit user request.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "channel": {"type": "string", "enum": ["phone", "matrix"], "default": "phone", "description": "phone places a direct cellular call; matrix starts a direct MatrixRTC call."},
+                "channel": {"type": "string", "enum": ["phone", "matrix"], "default": "phone", "description": "phone requests one-way TTS through the internal UserIO voice capability; matrix is a separate MatrixRTC compatibility channel, not an Asterisk route."},
                 "message": {"type": ["string", "null"], "description": "Optional call context. For phone, it is spoken acoustically through speakerphone."},
                 "repeat": {"type": "integer", "minimum": 1, "maximum": 3, "default": 2, "description": "Phone only: how many times to speak message."},
                 "hangup_after": {"type": "boolean", "default": True, "description": "Phone only: end the call after spoken playback."},

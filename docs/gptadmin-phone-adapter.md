@@ -1,5 +1,12 @@
 # Fixed S21 phone-call adapter
 
+This is a retained legacy installed S21 cellular adapter and operational
+runbook, not a separate target transport owner. New delivery must follow the
+[Notice Place/UserIO communications boundary](communications-architecture.md)
+and an authorized UserIO account capability. Keep these commands/configuration
+for deployments that still use the adapter while they migrate; do not infer
+that Matrix or Telemost uses Asterisk.
+
 This optional fallback calls one preconfigured cellular number after Matrix
 does not answer.  It does not use ADB once provisioned.
 

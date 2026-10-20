@@ -1,5 +1,10 @@
 # NoticePlace HTTP API
 
+See the [communications architecture](communications-architecture.md) for
+target ownership and migration status. This document preserves the existing
+HTTP/API and deployment contracts; historical adapters below are not the
+target transport boundary.
+
 `NoticePlace` is the product name. The legacy `notification-center` names
 remain only in environment variables, compatibility service paths, and the
 Python package namespace so existing producers and installed deployments keep
@@ -36,12 +41,15 @@ accepts a request and before Notify records success can expire the bounded
 claim lease and cause a duplicate external send. A successful adapter response
 proves acceptance only, not that a carrier connected or a person answered.
 
-Matrix call escalation is an optional real adapter path. When configured, the
-worker schedules Matrix, Android Telegram, and Android phone calls according to
-live runtime timers and only while the incident remains deliverable. An
-unconfigured or failed adapter is a retryable delivery failure. Disabling
-automatic calls cancels queued/claimed call deliveries but cannot interrupt a
-call already in progress.
+The installed delivery worker still supports optional legacy Matrix,
+Android-Telegram, and Android-phone adapter paths according to live runtime
+timers. Preserve their settings and supported operational controls during
+migration to UserIO's authorized per-account transport boundary. Matrix,
+Telemost, and SIM/GSM2SIP are separate UserIO channels; Asterisk is only part of
+the cellular/SIP route. A successful adapter response proves acceptance at
+that layer only, not sending, ringing, answer, or a confirmed human response.
+Disabling automatic calls cancels queued/claimed call deliveries but cannot
+interrupt a call already in progress.
 
 The operator console migrates missing timing values from startup environment
 variables into SQLite as defaults. Later timer changes are read by the running

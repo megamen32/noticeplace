@@ -1,5 +1,8 @@
 # Notify in the Human Request stack
 
+See the [communications architecture](communications-architecture.md) for
+ownership across Notice Place, UserIO, AgentCall, Asterisk, and Agent Herder.
+
 This note is a boundary document, not an implementation claim. The current Notify behavior below is code-backed; the HumanRequest section is proposed architecture only.
 
 ## Current proven behavior
@@ -17,10 +20,12 @@ This note is a boundary document, not an implementation claim. The current Notif
 - Notify should receive a sanitized HumanRequest event envelope that already carries `request_id` as correlation metadata, while Notify continues to create and manage its own `event_id`, `incident_id`, and `delivery_id`.
 - The boundary should stay event-shaped, not command-shaped: HumanRequest expresses what happened and what attention is needed, while Notify decides how to route, persist, escalate, acknowledge, and cancel within its own contract.
 - HumanRequest-specific call policy, Ask User / Ask Secret lifecycle rules, and
-  future human-in-the-loop branching remain proposed here only. Notify itself
-  does implement bounded optional call escalation through configured Matrix,
-  Android Telegram, and Android phone adapters; its delivery guarantee is
-  at-least-once rather than exactly-once.
+  future human-in-the-loop branching remain proposed here only. The installed
+  Notify runtime still has bounded legacy call adapters for Matrix, Android
+  Telegram, and Android phone; these do not define target channel ownership.
+  Calls are capability-dependent UserIO channel operations in the target
+  architecture. Existing delivery is at-least-once; do not describe adapter
+  acceptance as sent, ringing, answered, or a confirmed question answer.
 
 ## What Notify must not receive
 

@@ -1,8 +1,11 @@
 # NoticePlace producer SDKs
 
+For transport ownership and channel capability limits, see the
+[communications architecture](communications-architecture.md).
+
 Use these tiny clients when a project must report an operational event to the
 central NoticePlace. They know only the producer HTTP API: they do not carry
-Telegram, Matrix, Android, or operator credentials.
+UserIO channel-account, Telegram, Matrix, Android, or operator credentials.
 
 ## What “wait for a response” means
 
@@ -138,5 +141,6 @@ result is then safe and deterministic.
 The source, issue tracker and releases are at
 [github.com/megamen32/noticeplace](https://github.com/megamen32/noticeplace).
 
-For the optional no-ADB S21 cellular fallback, see the
-[fixed GPTAdmin phone adapter](gptadmin-phone-adapter.md).
+For the legacy installed no-ADB S21 cellular fallback and its retained
+operational contract, see the [fixed GPTAdmin phone adapter](gptadmin-phone-adapter.md).
+It is a migration-era adapter, not the target communications gateway.

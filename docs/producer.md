@@ -1,5 +1,10 @@
 # Notify producer migration
 
+Граница коммуникаций описана в [едином документе архитектуры](communications-architecture.md):
+агенты входят через API/MCP Notice Place, а транспорт выполняет UserIO с
+проверкой прав и возможностей конкретного аккаунта. Оставшиеся в установленных
+версиях прямые адаптеры Matrix/Android — legacy-маршруты в процессе миграции.
+
 `bin/notify-producer` is the narrow, shell-safe client for internal operational
 sources. It sends one idempotent `notify.event.v1` request to the durable
 center; it never knows Telegram or Matrix credentials.
@@ -86,7 +91,10 @@ file until a real ban/unban drill succeeds.
 
 ## Independent paths
 
-The `vpn2` NoticePlace watchdog and the ingress recovery watchdog
-remain direct out-of-band delivery paths. They may use the same Telegram/Matrix
-identities, but they must not POST to the primary center when the primary center
-is the thing being monitored.
+The `vpn2` NoticePlace watchdog and ingress recovery watchdog remain
+out-of-band intake exceptions because they monitor the primary center. This
+exception bypasses Notice Place event intake only; it does not grant producers
+general access to channel providers or bypass UserIO account authorization.
+Existing direct provider routes for these watchdogs are legacy installed
+paths awaiting migration. They must not POST to the primary center when it is
+the service being monitored.
