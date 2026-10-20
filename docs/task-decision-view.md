@@ -12,8 +12,23 @@ Each `read` calls that callback before querying the task row. The callback must
 use the authenticated principal, resolve the request's current project scope,
 and return literal `True` only when current access is allowed. A caller-provided
 actor string is not an authority. If no callback is configured, reads fail
-closed. This source slice does not install an HTTP, MCP, or dashboard route;
-the consuming app must provide and verify its own cross-app trust boundary.
+closed. The canonical Notice HTTP API registers this projection at
+`GET /v1/task-decisions/{request_id}`. It authorizes the bearer project token
+against the existing human-request/project scope before returning the view;
+the route does not trust a client-supplied project or actor. No MCP tool or
+dashboard route is registered. The consuming Board UI must call the Notice API
+through its trusted server-side integration and must not expose a Notice token
+in the browser.
+
+`POST /v1/task-decisions` accepts only a verified `mandate` and returns this
+same projection with `delivery_status` and `idempotent`. It requires the
+protected Board verifier at startup; without the current Board URL, manager
+token, fixed `NOTIFY_CENTER_RECIPIENT`, and explicit actor allowlist, the
+verifier stays unset and task-question creation is denied. The existing
+`POST /v1/human-requests/{request_id}/resolve` remains the answer route; the
+DeliveryWorker owns timeout evaluation. The view may show stop/hold state, but
+does not imply an action-owner acknowledgment unless its receipt matches the
+current control epoch.
 
 ```python
 view = TaskDecisionView(center, trusted_project_guard)
@@ -21,6 +36,13 @@ projection = view.read(authenticated_principal, request_id)
 ```
 
 ## Projection semantics
+
+The HTTP read response uses schema `noticeplace.task_decision_view.v1` and
+includes the request ID, project-scoped question/choices/reference, notification
+attempt state/receipt/deadline, durable winner, control status/effects and late
+instructions. The request ID returned by task-decision creation should be
+retained with its owning execution record so the consumer can read the same
+canonical row after restart.
 
 - Question text, choices, project, recipient, and task/purpose/version/mandate
   references come from the task-scoped canonical request row.

@@ -278,11 +278,30 @@ class TaskDecisionStore:
         with self._center._lock:
             row = self._row(request_id)
             context = json.loads(str(row["task_context_json"]))
+            raw_execution = context.get("continuation") if isinstance(context, Mapping) else None
+            required_text = ("task_ref", "operation_id", "started_by", "host_id", "harness", "session_id", "turn_id")
+            if (not isinstance(raw_execution, Mapping)
+                    or type(raw_execution.get("board_version")) is not int
+                    or raw_execution["board_version"] < 0
+                    or any(not isinstance(raw_execution.get(key), str) or not raw_execution[key].strip()
+                           for key in required_text)):
+                from .core import ValidationError
+                raise ValidationError("task control requires a complete verified execution binding")
+            execution_fields = (
+                "task_ref", "operation_id", "started_by", "board_version",
+                "host_id", "harness", "session_id", "turn_id",
+            )
+            execution = {key: raw_execution[key] for key in execution_fields}
+            if (execution["task_ref"] != context.get("task_ref")
+                    or execution["operation_id"] != context.get("mandate_ref")
+                    or execution["harness"] != "codex"):
+                from .core import ValidationError
+                raise ValidationError("task control execution binding does not match its mandate")
             return {
                 "request_id": request_id, "task_ref": context["task_ref"],
                 "mandate_ref": context["mandate_ref"], "control_id": str(row["task_control_id"]),
                 "kind": str(row["task_control_kind"]), "epoch": int(row["task_control_epoch"]),
-                "state": str(row["task_control_state"]),
+                "state": str(row["task_control_state"]), "execution": execution,
                 "lease_until": row["task_control_lease_until"],
             }
 

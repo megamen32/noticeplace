@@ -50,7 +50,11 @@ def _mandate(version: str = "v3") -> dict[str, object]:
         "mandate_ref": f"grant:task-17:{version}", "project": "airlock", "recipient": "operator",
         "message": "Choose the permitted next step.", "allowed_actors": ["telegram:42"],
         "choices": [{"label": "Continue", "value": "continue"}, {"label": "Stop", "value": "stop"}],
-        "timeout_value": "continue", "continuation": {"kind": "bounded-follow-up", "limit": 1},
+        "timeout_value": "continue", "continuation": {
+            "task_ref": "board/task-17", "operation_id": f"grant:task-17:{version}", "board_version": 23,
+            "started_by": "nikita", "host_id": "roomhacker-server-100", "harness": "codex",
+            "session_id": "session-123", "turn_id": "turn-456",
+        },
     }
 
 
@@ -223,7 +227,8 @@ class TaskDecisionApiTests(unittest.TestCase):
             def revoke(self, command, _idempotency_key):
                 return {"status": "acknowledged", "receipt_ref": "test-revoke-receipt",
                         "effective_epoch": command["epoch"], "accepted_effects": ["send:accepted"],
-                        "unknown_effects": ["send:unknown"]}
+                        "unknown_effects": ["send:unknown"], "control_id": command["control_id"],
+                        "execution": command["execution"]}
 
         DeliveryWorker(self.center, object(), task_action_owner=ActionOwner()).run_once()
         final_status, final = self.request("GET", f"/v1/task-decisions/{request_id}", "airlock-token")

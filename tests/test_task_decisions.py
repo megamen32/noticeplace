@@ -76,11 +76,14 @@ def _reconcile_control_after_restart(database: str, request_id: str, output: Any
         owner_id = "userio"
 
         def query_control(self, control_id: str) -> dict[str, object]:
-            return {"status": "not_found", "retry_safe": True, "queried_id": control_id}
+            command = center.task_decisions.control_command(request_id)
+            return {"status": "not_found", "retry_safe": True, "control_id": control_id,
+                    "execution": command["execution"]}
 
         def revoke(self, command: dict[str, object], idempotency_key: str) -> dict[str, object]:
             return {"status": "acknowledged", "receipt_ref": "reconciled-revoke",
-                    "effective_epoch": command["epoch"], "revoke_id": idempotency_key}
+                    "effective_epoch": command["epoch"], "control_id": idempotency_key,
+                    "execution": command["execution"]}
 
     prior_id = center.task_decisions.control_command(request_id)["control_id"]
     worker = DeliveryWorker(center, object(), task_action_owner=ActionOwner())
@@ -97,9 +100,18 @@ def _mandate(**changes: object) -> dict[str, object]:
         "message": "Choose the permitted next step.",
         "allowed_actors": ["telegram:42"],
         "choices": [{"label": "Continue", "value": "continue"}, {"label": "Stop", "value": "stop"}],
-        "timeout_value": "continue", "continuation": {"kind": "bounded-follow-up", "limit": 1},
+        "timeout_value": "continue", "continuation": {
+            "task_ref": "board/task-17", "operation_id": "grant:task-17:v3", "board_version": 23,
+            "started_by": "nikita", "host_id": "roomhacker-server-100", "harness": "codex",
+            "session_id": "session-123", "turn_id": "turn-456",
+        },
     }
     value.update(changes)
+    if "continuation" not in changes:
+        continuation = dict(value["continuation"])
+        continuation["task_ref"] = value["task_ref"]
+        continuation["operation_id"] = value["mandate_ref"]
+        value["continuation"] = continuation
     return value
 
 
@@ -287,7 +299,8 @@ class TaskDecisionTests(unittest.TestCase):
             def revoke(self, received: dict[str, object], _idempotency_key: str) -> dict[str, object]:
                 return {"status": "acknowledged", "receipt_ref": "userio-revoke-1",
                         "effective_epoch": received["epoch"], "accepted_effects": ["send:accepted"],
-                        "unknown_effects": ["send:unknown"]}
+                        "unknown_effects": ["send:unknown"], "control_id": received["control_id"],
+                        "execution": received["execution"]}
 
         DeliveryWorker(self.center, object(), task_action_owner=ActionOwner()).run_once()
         acknowledged = self.center.get_human_request("token", request_id)["task_decision"]
@@ -362,6 +375,43 @@ class TaskDecisionTests(unittest.TestCase):
         self.assertEqual(1, adapter.query_calls)
         self.assertEqual("unknown", self.center.get_human_request("token", request_id)["task_decision"]["control_state"])
 
+    def test_control_command_and_ack_bind_exact_execution_operation_and_turn(self) -> None:
+        request = self.create(task_ref="board/task-execution-bound")
+        request_id = str(request["request_id"])
+        self.center.task_decisions.request_control(request_id, "telegram:42", "hold", "bind native turn")
+        command = self.center.task_decisions.control_command(request_id)
+        expected_execution = {
+            "task_ref": "board/task-execution-bound", "operation_id": "grant:task-17:v3",
+            "board_version": 23, "started_by": "nikita", "host_id": "roomhacker-server-100",
+            "harness": "codex", "session_id": "session-123", "turn_id": "turn-456",
+        }
+        self.assertEqual(expected_execution, command["execution"])
+
+        class WrongExecutionOwner:
+            owner_id = "userio"
+
+            def revoke(self, received: dict[str, object], _idempotency_key: str) -> dict[str, object]:
+                wrong_execution = dict(received["execution"])
+                wrong_execution["turn_id"] = "different-turn"
+                return {"status": "acknowledged", "receipt_ref": "wrong-turn-ack",
+                        "effective_epoch": received["epoch"], "control_id": received["control_id"],
+                        "execution": wrong_execution}
+
+        DeliveryWorker(self.center, object(), task_action_owner=WrongExecutionOwner()).run_once()
+        current = self.center.get_human_request("token", request_id)["task_decision"]
+        self.assertEqual("unknown", current["control_state"])
+        self.assertFalse(self.center.task_decisions.continuation_allowed(request_id))
+
+    def test_control_command_fails_closed_without_verified_execution_binding(self) -> None:
+        request = self.create(
+            task_ref="board/task-unbound-control",
+            continuation={"kind": "unbound-test-fixture"},
+        )
+        request_id = str(request["request_id"])
+        self.center.task_decisions.request_control(request_id, "telegram:42", "stop", "unbound fixture")
+        with self.assertRaisesRegex(ValidationError, "complete verified execution binding"):
+            self.center.task_decisions.control_command(request_id)
+
     def test_acknowledged_hold_requires_explicit_resume_before_a_new_answer(self) -> None:
         request = self.create(task_ref="board/task-21")
         self.sent(request, at=100.0)
@@ -373,7 +423,8 @@ class TaskDecisionTests(unittest.TestCase):
 
             def revoke(self, command: dict[str, object], _idempotency_key: str) -> dict[str, object]:
                 return {"status": "acknowledged", "receipt_ref": "userio-revoke-21",
-                        "effective_epoch": command["epoch"]}
+                        "effective_epoch": command["epoch"], "control_id": command["control_id"],
+                        "execution": command["execution"]}
 
         with mock.patch("notification_center.task_decisions.time.time", return_value=101.0):
             DeliveryWorker(self.center, object(), task_action_owner=ActionOwner()).run_once()

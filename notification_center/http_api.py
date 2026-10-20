@@ -1467,9 +1467,14 @@ class DeliveryWorker:
                 except Exception:
                     self._center.task_decisions.mark_control_unknown(request_id)
                     continue
-                if isinstance(status, Mapping) and status.get("status") == "acknowledged":
+                if (isinstance(status, Mapping) and status.get("status") == "acknowledged"
+                        and status.get("control_id") == command["control_id"]
+                        and status.get("execution") == command["execution"]):
                     receipt = status
-                elif isinstance(status, Mapping) and status.get("status") == "not_found" and status.get("retry_safe") is True:
+                elif (isinstance(status, Mapping) and status.get("status") == "not_found"
+                      and status.get("retry_safe") is True
+                      and status.get("control_id") == command["control_id"]
+                      and status.get("execution") == command["execution"]):
                     receipt = None
                 else:
                     # A pending/unknown owner result is not authority to repeat
@@ -1485,6 +1490,12 @@ class DeliveryWorker:
                     self._center.task_decisions.mark_control_unknown(request_id)
                     continue
             if not isinstance(receipt, Mapping) or receipt.get("status") != "acknowledged":
+                self._center.task_decisions.mark_control_unknown(request_id)
+                continue
+            if (receipt.get("control_id") != command["control_id"]
+                    or receipt.get("execution") != command["execution"]
+                    or type(receipt.get("effective_epoch")) is not int
+                    or receipt.get("effective_epoch") != command["epoch"]):
                 self._center.task_decisions.mark_control_unknown(request_id)
                 continue
             try:
