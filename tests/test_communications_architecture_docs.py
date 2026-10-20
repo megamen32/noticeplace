@@ -38,6 +38,10 @@ def test_one_canonical_boundary_document_names_component_ownership():
         "durably stored",
         "confirmed human answer",
         "legacy direct",
+        "phone-mesh peers as server-100",
+        "can select a ready remote",
+        "gsm2sip is the",
+        "effective peer list",
     ):
         assert phrase in text
 

@@ -96,6 +96,33 @@ and the authorized UserIO transport boundary. Migration is not complete until
 the deployed Notice Place runtime uses that boundary for the relevant
 operation.
 
+The Notice Place source configures the known phone-mesh peers as server-100,
+server-44 and server-88. The shared mesh normalizer supplies the host order;
+`PhoneMeshRequester` probes each peer's readiness and can select a ready remote
+peer when earlier peers are unavailable. It sends an operation to only the
+first peer whose readiness check succeeds and does not fail over after a
+payload may have crossed the transport boundary. This is peer discovery, not a
+claim that a particular host currently owns a usable call route.
+
+At 2026-10-20 11:34 UTC, read-only runtime evidence from server-88 showed the
+dynamic `gateway-s21` SIP peer registered with a GSM2SIP v1.2.0 p3s user agent
+and status OK. The configured outbound dialplan targets that peer with
+`Dial(SIP/gateway-s21,60)`. For this observed cellular route, GSM2SIP is the
+registered SIP endpoint/client and Asterisk is the PBX/server; they are
+cooperating components of one route. At the same sample, server-100 had no
+chan_sip command/context and server-44's peer was not registered. The Asterisk
+CDR contained an answered call represented by two Local-leg rows; it was not
+correlated to the user's reported call and must not be counted as two calls.
+
+The installed release `a15de07` shares the source `activate-api.py` peer map
+and `mesh_core.py` normalizer. Its `mesh_phone.py` has the same peer-iteration
+and pre-send readiness fallback, but does not include this branch's explicit
+readiness endpoint or interactive-question rejection. The protected live
+Notice Place peer configuration could not be read in this inspection, so the
+current runtime's effective peer list and a live server-100-to-server-88
+selection are not independently verified. Do not hardcode server-88 or infer
+delivery from a registered SIP peer.
+
 For this worktree, the installed Notice Place release link still points to
 `a15de07`; the PR changes are not deployed. The `userio-voice` container and
 AgentCall bridge were observed running, and the user confirms that a call
