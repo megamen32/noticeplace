@@ -1311,7 +1311,14 @@ class DeliveryWorker:
                     return
                 call_reserved = True
                 if delivery["channel"] == "android.phone.call":
-                    context_status = self._send_critical_pre_call_context(payload, delivery)
+                    chain = call_chain_metadata(delivery)
+                    # A chain's exact completed predecessors already prove
+                    # Matrix and Telegram did not deliver. The spoken incident
+                    # goes in the phone call itself; don't make cellular
+                    # fallback depend on Telegram being available for another
+                    # context message.
+                    context_status = ("sent" if chain and chain.get("index") == 2
+                                      else self._send_critical_pre_call_context(payload, delivery))
                     if context_status != "sent":
                         if context_status == "wait":
                             self._center.complete_delivery(

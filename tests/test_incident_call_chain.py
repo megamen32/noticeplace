@@ -64,8 +64,24 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(0,len(self.step()))
         self.assertEqual('fake-call',json.loads(self.rows()[-1]['result_json'])['callId'])
 
+    def test_answered_matrix_call_stops_chain_even_without_spoken_ack(self):
+        self.matrix.result={'ok':True,'answered':True,'acknowledged':False,'ended':False,
+            'safe_to_fallback':False,'status':'active','target':'owner','channel':'matrix','actor':'matrix:owner'}
+        self.start();self.step()
+        self.assertEqual('sent',self.rows()[0]['status'])
+        self.assertEqual(['matrix'],self.calls)
+        self.assertEqual(1,len(self.rows()))
+
+    def test_answered_matrix_call_with_explicit_ack_stops_fallback(self):
+        self.matrix.result={'ok':True,'answered':True,'acknowledged':True,'ended':False,
+            'safe_to_fallback':False,'status':'active','target':'owner','channel':'matrix','actor':'matrix:owner'}
+        self.start();self.step()
+        self.assertEqual(['matrix'],self.calls)
+        self.assertEqual('sent',self.rows()[0]['status'])
+        self.assertEqual(1,len(self.rows()))
+
     def test_matrix_answer_stops_and_is_not_replaced_by_late_failure(self):
-        self.matrix.result={'answered':True,'actor':'matrix:owner'}
+        self.matrix.result={'answered':True,'acknowledged':True,'actor':'matrix:owner'}
         incident=self.start();first=self.step()[0]
         self.assertEqual('acknowledged',self.center.get_incident(incident)['state'])
         self.center.complete_delivery(first['id'],'failed',result=MISSED)
@@ -74,7 +90,7 @@ class ChainTests(unittest.TestCase):
         self.assertIs(True,json.loads(self.rows()[0]['result_json'])['answered'])
 
     def test_telegram_answer_stops_before_phone(self):
-        self.telegram.result={'answered':True,'actor':'telegram:owner'}
+        self.telegram.result={'answered':True,'acknowledged':True,'actor':'telegram:owner'}
         self.start();self.step();self.step();self.step()
         self.assertEqual(['matrix','telegram'],self.calls)
 
@@ -221,6 +237,17 @@ class SenderTests(unittest.TestCase):
             def run(*args,**kwargs):raise error
             with self.assertRaises(type(error)):
                 IncidentCallSender('http://bridge','test',runner=run).send(self.payload,'test-key')
+
+    def test_answered_call_without_spoken_ack_is_still_a_successful_answer(self):
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def read(self,limit):return json.dumps({'ok':True,'answered':True,'acknowledged':False,
+                'ended':False,'safe_to_fallback':False,'status':'active','target':'owner','channel':'matrix'}).encode()
+        result=IncidentCallSender('http://bridge','test',runner=lambda *a,**k:Response()).send(self.payload,'chain-key')
+        self.assertTrue(result['answered'])
+        self.assertFalse(result['acknowledged'])
+        self.assertFalse(result['safe_to_fallback'])
 
 
 def test_telegram_http_receipt_wait_covers_extended_native_startup():

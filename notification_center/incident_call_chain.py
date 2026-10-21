@@ -49,7 +49,7 @@ def safe_missed(receipt):
 def receipt_projection(value):
     """Bound strings without truncating the serialized proof into invalid JSON."""
     if not isinstance(value, Mapping): return {}
-    result = {k: value[k] for k in ('ok','answered','safe_to_fallback','ended','uncertain')
+    result = {k: value[k] for k in ('ok','answered','acknowledged','safe_to_fallback','ended','uncertain')
               if k in value and (type(value[k]) is bool or value[k] is None)}
     for key in ('actor','status','call_id','callId','channel','target','error'):
         if isinstance(value.get(key), str): result[key] = value[key][:256]
