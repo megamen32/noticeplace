@@ -126,3 +126,14 @@ def test_upgrade_preserves_mesh_alias_credentials_and_release_override(tmp_path:
     assert 'KillMode=mixed' in override
     assert 'KillSignal=SIGINT' in override
     assert 'TimeoutStopSec=infinity' in override
+
+
+def test_mesh_rollback_restart_does_not_restart_local_admin_service() -> None:
+    script = DEPLOY.read_text()
+    rollback_restart = script.split("restart_services_after_rollback() {", 1)[1].split("\n}", 1)[0]
+    assert "if mesh_api_alias; then" in rollback_restart
+    assert "systemctl restart noticeplace-mesh-api.service || true" in rollback_restart
+    assert "else" in rollback_restart
+    assert "systemctl restart notification-center.service notification-center-admin.service || true" in rollback_restart
+    failure_path = script.split("if ! start_services; then", 1)[1].split("\n        fi", 1)[0]
+    assert "restart_services_after_rollback" in failure_path

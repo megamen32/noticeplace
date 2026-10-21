@@ -185,6 +185,15 @@ start_services() {
     fi
 }
 
+restart_services_after_rollback() {
+    if mesh_api_alias; then
+        # A mesh replica rollback must not restart the node-local admin UI.
+        systemctl restart noticeplace-mesh-api.service || true
+    else
+        systemctl restart notification-center.service notification-center-admin.service || true
+    fi
+}
+
 stop_services() {
     [[ -n "$DESTDIR" ]] || systemctl stop notification-center-admin.service notification-center.service
 }
@@ -246,7 +255,7 @@ install_release() {
                 atomic_link "$previous" "$APP_ROOT"
                 install_units "$previous"
                 daemon_reload
-                [[ -n "$DESTDIR" ]] || systemctl restart notification-center.service notification-center-admin.service || true
+                [[ -n "$DESTDIR" ]] || restart_services_after_rollback
             fi
             die "new release failed to start; previous release restored"
         fi
