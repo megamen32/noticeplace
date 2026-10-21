@@ -16,6 +16,7 @@ from unittest import mock
 
 from notification_center.core import NotificationCenter
 from notification_center.http_api import DeliveryWorker, build_handler
+from notification_center.exmanager_notice_transport import ExManagerNoticeTransportError
 from notification_center.task_decision_service import BoardTaskDecisionVerifier
 
 
@@ -44,6 +45,41 @@ class _Authority:
         return True
 
 
+class _FakeExManagerTransport:
+    instances = []
+    submit_results = []
+    query_results = []
+
+    def __init__(self, base_url, bearer):
+        self.base_url = base_url
+        self.bearer = bearer
+        self.readiness_calls = 0
+        self.submit_calls = []
+        self.query_calls = []
+        self.submit_result = type(self).submit_results.pop(0) if type(self).submit_results else {
+            "outcome": "accepted", "sender_id": "8810909089",
+            "chat_id": "-1004352022764", "message_id": 601, "accepted_at": 1000.0,
+        }
+        self.query_result = {"outcome": "not_found"}
+        type(self).instances.append(self)
+
+    def readiness(self):
+        self.readiness_calls += 1
+        return {"ok": True}
+
+    def submit_question(self, request_id, operation_id, text):
+        self.submit_calls.append((request_id, operation_id, text))
+        if isinstance(self.submit_result, Exception):
+            raise self.submit_result
+        return self.submit_result
+
+    def query_question(self, request_id, operation_id):
+        self.query_calls.append((request_id, operation_id))
+        if type(self).query_results:
+            return type(self).query_results.pop(0)
+        return self.query_result
+
+
 def _mandate(version: str = "v3") -> dict[str, object]:
     return {
         "task_ref": "board/task-17", "purpose": "choose-next-step", "version": version,
@@ -60,6 +96,9 @@ def _mandate(version: str = "v3") -> dict[str, object]:
 
 class TaskDecisionApiTests(unittest.TestCase):
     def setUp(self) -> None:
+        _FakeExManagerTransport.instances.clear()
+        _FakeExManagerTransport.submit_results.clear()
+        _FakeExManagerTransport.query_results.clear()
         self.tempdir = tempfile.TemporaryDirectory()
         self.center = NotificationCenter(
             Path(self.tempdir.name) / "notice.sqlite3",
@@ -93,11 +132,9 @@ class TaskDecisionApiTests(unittest.TestCase):
             return error.code, json.loads(error.read())
 
     def test_create_read_answer_and_retry_reuse_one_receipt_started_deadline(self) -> None:
-        telegram_response = {"ok": True, "result": {"message_id": 91, "chat": {"id": 42}}}
-        with mock.patch.dict(os.environ, {
-            "TELEGRAM_BOT_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "42",
-            "TELEGRAM_CALLBACK_SECRET": "c" * 32,
-        }), mock.patch("notification_center.http_api.telegram_api", return_value=telegram_response) as send, \
+        with mock.patch.dict(os.environ, {"EXMANAGER_NOTICE_QUESTION_BASE_URL": "https://notify.bezrabotnyi.com/_exmanager"}), \
+             mock.patch("notification_center.http_api.ExManagerNoticeTransport", _FakeExManagerTransport), \
+             mock.patch("notification_center.http_api.telegram_api") as send, \
              mock.patch("notification_center.task_decisions.time.time", return_value=1000.0):
             status, created = self.request("POST", "/v1/task-decisions", "airlock-token", {"mandate": _mandate()})
             self.assertEqual(201, status)
@@ -109,8 +146,8 @@ class TaskDecisionApiTests(unittest.TestCase):
             read_status, read = self.request("GET", f"/v1/task-decisions/{request_id}", "airlock-token")
             self.assertEqual(200, read_status)
             self.assertEqual("board/task-17", read["question"]["reference"]["task_ref"])
-            self.assertEqual(("42", 91), (read["notification"]["receipt"]["chat_id"],
-                                           read["notification"]["receipt"]["message_id"]))
+            self.assertEqual(("-1004352022764", 601), (read["notification"]["receipt"]["chat_id"],
+                                                        read["notification"]["receipt"]["message_id"]))
 
             answer_status, answer = self.request(
                 "POST", f"/v1/human-requests/{request_id}/resolve", "airlock-token",
@@ -127,16 +164,17 @@ class TaskDecisionApiTests(unittest.TestCase):
             self.assertEqual(200, retry_status)
             self.assertTrue(retry["idempotent"])
             self.assertEqual("sent", retry["delivery_status"])
-            self.assertEqual(1, sum(call.args[1] == "sendMessage" for call in send.call_args_list))
+            send.assert_not_called()
+            self.assertEqual(1, len(_FakeExManagerTransport.instances[0].submit_calls))
 
     def test_unknown_send_is_visible_and_idempotent_create_never_replays(self) -> None:
-        with mock.patch.dict(os.environ, {
-            "TELEGRAM_BOT_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "42",
-            "TELEGRAM_CALLBACK_SECRET": "c" * 32,
-        }), mock.patch("notification_center.http_api.telegram_api", side_effect=TimeoutError("uncertain")) as send:
+        _FakeExManagerTransport.submit_results[:] = [{"outcome": "unknown"}]
+        with mock.patch.dict(os.environ, {"EXMANAGER_NOTICE_QUESTION_BASE_URL": "https://notify.bezrabotnyi.com/_exmanager"}), \
+             mock.patch("notification_center.http_api.ExManagerNoticeTransport", _FakeExManagerTransport), \
+             mock.patch("notification_center.http_api.telegram_api") as send:
             first_status, first = self.request("POST", "/v1/task-decisions", "airlock-token", {"mandate": _mandate()})
-            self.assertEqual(500, first_status)
-            self.assertEqual("TimeoutError", first["type"])
+            self.assertEqual(201, first_status)
+            self.assertEqual("unknown", first["delivery_status"])
             request_id = "td-" + hashlib.sha256(
                 json.dumps(["board/task-17", "choose-next-step", "v3"], separators=(",", ":")).encode()
             ).hexdigest()[:40]
@@ -150,7 +188,89 @@ class TaskDecisionApiTests(unittest.TestCase):
             self.assertEqual(200, retry_status)
             self.assertTrue(retry["idempotent"])
             self.assertEqual("unknown", retry["delivery_status"])
-            send.assert_called_once()
+            self.assertEqual(1, len(_FakeExManagerTransport.instances[0].submit_calls))
+            self.assertEqual(1, len(_FakeExManagerTransport.instances[1].query_calls))
+            send.assert_not_called()
+
+    def test_airlock_uses_fixed_exmanager_transport_and_binds_receipt(self) -> None:
+        _FakeExManagerTransport.instances.clear()
+        with mock.patch.dict(os.environ, {"EXMANAGER_NOTICE_QUESTION_BASE_URL": "https://notify.bezrabotnyi.com/_exmanager"}), \
+             mock.patch("notification_center.http_api.ExManagerNoticeTransport", _FakeExManagerTransport), \
+             mock.patch("notification_center.http_api.telegram_api") as telegram_send, \
+             mock.patch("notification_center.task_decisions.time.time", return_value=1000.0):
+            status, created = self.request("POST", "/v1/task-decisions", "airlock-token", {"mandate": _mandate()})
+
+        self.assertEqual(201, status)
+        self.assertEqual("sent", created["delivery_status"])
+        self.assertEqual("sent", created["notification"]["attempt_state"])
+        self.assertEqual({"kind": "successful_sender_response", "confirmed_at": 1000.0,
+                          "chat_id": "-1004352022764", "message_id": 601},
+                         created["notification"]["receipt"])
+        self.assertEqual(2800.0, created["notification"]["deadline_at"])
+        telegram_send.assert_not_called()
+        transport = _FakeExManagerTransport.instances[-1]
+        self.assertEqual("https://notify.bezrabotnyi.com/_exmanager", transport.base_url)
+        self.assertEqual("airlock-token", transport.bearer)
+        self.assertEqual(1, transport.readiness_calls)
+        self.assertEqual(1, len(transport.submit_calls))
+        request_id, operation_id, text = transport.submit_calls[0]
+        self.assertEqual(created["request_id"], request_id)
+        self.assertEqual("notice-question:" + request_id, operation_id)
+        self.assertIn("continue — Continue", text)
+        self.assertIn("stop — Stop", text)
+
+    def test_airlock_unknown_reconciles_by_get_and_never_posts_again(self) -> None:
+        _FakeExManagerTransport.instances.clear()
+        _FakeExManagerTransport.submit_results[:] = [{"outcome": "unknown"}]
+        with mock.patch.dict(os.environ, {"EXMANAGER_NOTICE_QUESTION_BASE_URL": "https://notify.bezrabotnyi.com/_exmanager"}), \
+             mock.patch("notification_center.http_api.ExManagerNoticeTransport", _FakeExManagerTransport):
+            first_status, first = self.request("POST", "/v1/task-decisions", "airlock-token", {"mandate": _mandate()})
+            second_status, second = self.request("POST", "/v1/task-decisions", "airlock-token", {"mandate": _mandate()})
+        self.assertEqual(201, first_status)
+        self.assertEqual("unknown", first["delivery_status"])
+        self.assertEqual(200, second_status)
+        self.assertEqual("unknown", second["delivery_status"])
+        uncertain_transport = _FakeExManagerTransport.instances[0]
+        self.assertEqual(1, len(uncertain_transport.submit_calls))
+        self.assertEqual([], uncertain_transport.query_calls)
+        reconciliation = _FakeExManagerTransport.instances[1]
+        self.assertEqual([], reconciliation.submit_calls)
+        self.assertEqual([(first["request_id"], "notice-question:" + first["request_id"])],
+                         reconciliation.query_calls)
+
+    def test_airlock_query_recovers_accepted_receipt_after_unknown_without_resubmit(self) -> None:
+        _FakeExManagerTransport.submit_results[:] = [ExManagerNoticeTransportError("response lost after accept")]
+        _FakeExManagerTransport.query_results[:] = [{
+            "outcome": "accepted", "sender_id": "8810909089",
+            "chat_id": "-1004352022764", "message_id": 777, "accepted_at": 1000.0,
+        }]
+        with mock.patch.dict(os.environ, {"EXMANAGER_NOTICE_QUESTION_BASE_URL": "https://notify.bezrabotnyi.com/_exmanager"}), \
+             mock.patch("notification_center.http_api.ExManagerNoticeTransport", _FakeExManagerTransport), \
+             mock.patch("notification_center.task_decisions.time.time", return_value=1200.0):
+            first_status, first = self.request("POST", "/v1/task-decisions", "airlock-token", {"mandate": _mandate()})
+            recovered_status, recovered = self.request("POST", "/v1/task-decisions", "airlock-token", {"mandate": _mandate()})
+
+        self.assertEqual(201, first_status)
+        self.assertEqual("unknown", first["delivery_status"])
+        self.assertEqual(200, recovered_status)
+        self.assertEqual("sent", recovered["delivery_status"])
+        self.assertEqual({"kind": "successful_sender_response", "confirmed_at": mock.ANY,
+                          "chat_id": "-1004352022764", "message_id": 777},
+                         recovered["notification"]["receipt"])
+        self.assertEqual(2800.0, recovered["notification"]["deadline_at"])
+        self.assertEqual(1, len(_FakeExManagerTransport.instances[0].submit_calls))
+        self.assertEqual([], _FakeExManagerTransport.instances[1].submit_calls)
+        self.assertEqual(1, len(_FakeExManagerTransport.instances[1].query_calls))
+
+    def test_airlock_missing_transport_does_not_fall_back_or_reserve(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch("notification_center.http_api.telegram_api") as telegram_send:
+            status, result = self.request("POST", "/v1/task-decisions", "airlock-token", {"mandate": _mandate()})
+        self.assertEqual(201, status)
+        self.assertEqual("not_configured", result["delivery_status"])
+        self.assertEqual("queued", result["notification"]["attempt_state"])
+        self.assertIsNone(result["notification"]["receipt"])
+        telegram_send.assert_not_called()
 
     def test_alternate_recipient_is_denied_before_request_row_or_send(self) -> None:
         operation_id = "a" * 64

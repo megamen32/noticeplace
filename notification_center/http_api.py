@@ -32,6 +32,12 @@ from .telegram_format import telegram_html
 from .incident_card import controls as incident_controls
 from mcp.notify_mcp import dispatch as notify_mcp_dispatch
 from .task_decision_view import TaskDecisionView
+from .exmanager_notice_transport import (
+    CHAT_ID as EXMANAGER_NOTICE_CHAT_ID,
+    ExManagerNoticeTransport,
+    ExManagerNoticeTransportError,
+    render_task_question,
+)
 
 ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log", "health"))
 SUPPORTED_TELEGRAM_MODES = frozenset((*ACTIVE_TELEGRAM_MODES, "health"))
@@ -1893,11 +1899,13 @@ def send_human_request_telegram(
     api: Any | None = None,
 ) -> dict[str, Any]:
     """Send one AskHuman request through the service's existing Telegram bot."""
+    is_task_decision = isinstance(request.get("task_decision"), Mapping)
+    if is_task_decision and str(request.get("project") or "") == "airlock":
+        return _send_airlock_task_question(center, producer_token, request)
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     default_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not bot_token or not default_chat_id:
         return {"status": "not_configured"}
-    is_task_decision = isinstance(request.get("task_decision"), Mapping)
     if is_task_decision and not center.task_decisions.reserve_notification(str(request["request_id"])):
         state = center.task_decisions.notification_state(str(request["request_id"]))
         if state["state"] == "sent" and request.get("telegram_chat_id") and request.get("telegram_message_id"):
@@ -1994,6 +2002,106 @@ def send_human_request_telegram(
         if isinstance(document_file_id, str) and document_file_id:
             receipt["document_file_id"] = document_file_id
     return receipt
+
+
+def _send_airlock_task_question(
+    center: NotificationCenter,
+    producer_token: str,
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Use the one configured ExManager transport for the fixed Airlock route.
+
+    A queued request is submitted once only after read-only readiness succeeds.
+    Any already-reserved/unknown attempt is reconciled by GET and is never POSTed
+    again. The Notice Airlock project token is also the narrow Node capability.
+    """
+    request_id = str(request.get("request_id") or "")
+    if not request_id:
+        return {"status": "not_configured"}
+    state = center.task_decisions.notification_state(request_id)
+    if state["state"] == "sent":
+        if request.get("telegram_chat_id") and request.get("telegram_message_id"):
+            return {"status": "sent", "chat_id": str(request["telegram_chat_id"]),
+                    "message_id": int(request["telegram_message_id"])}
+        return {"status": "unknown"}
+    if state["state"] == "failed":
+        return {"status": "not_sent"}
+
+    base_url = os.environ.get("EXMANAGER_NOTICE_QUESTION_BASE_URL", "").strip()
+    if not base_url:
+        return {"status": "not_configured"}
+    try:
+        text = render_task_question(request)
+        transport = ExManagerNoticeTransport(base_url, producer_token)
+    except ExManagerNoticeTransportError:
+        return {"status": "not_configured"}
+
+    current = state["state"]
+    if current == "queued":
+        try:
+            transport.readiness()
+        except ExManagerNoticeTransportError:
+            # No question POST has occurred; the durable row stays queued.
+            return {"status": "not_ready"}
+        if not center.task_decisions.reserve_notification(request_id):
+            current = center.task_decisions.notification_state(request_id)["state"]
+            if current == "sent":
+                refreshed = center.get_human_request(producer_token, request_id)
+                return _send_airlock_task_question(center, producer_token, refreshed)
+            if current not in {"sending", "unknown"}:
+                return {"status": "not_sent"}
+        else:
+            operation_id = "notice-question:" + request_id
+            try:
+                outcome = transport.submit_question(request_id, operation_id, text)
+            except ExManagerNoticeTransportError:
+                center.task_decisions.mark_notification_unknown(request_id)
+                return {"status": "unknown"}
+            return _apply_airlock_question_outcome(
+                center, producer_token, request_id, outcome, EXMANAGER_NOTICE_CHAT_ID,
+            )
+
+    if current in {"sending", "unknown"}:
+        operation_id = "notice-question:" + request_id
+        try:
+            outcome = transport.query_question(request_id, operation_id)
+        except ExManagerNoticeTransportError:
+            center.task_decisions.mark_notification_unknown(request_id)
+            return {"status": "unknown"}
+        return _apply_airlock_question_outcome(
+            center, producer_token, request_id, outcome, EXMANAGER_NOTICE_CHAT_ID,
+        )
+    return {"status": "not_sent"}
+
+
+def _apply_airlock_question_outcome(
+    center: NotificationCenter,
+    producer_token: str,
+    request_id: str,
+    outcome: Mapping[str, Any],
+    expected_chat_id: str,
+) -> dict[str, Any]:
+    status = str(outcome.get("outcome") or "")
+    if status == "accepted":
+        if str(outcome.get("chat_id") or "") != expected_chat_id:
+            center.task_decisions.mark_notification_unknown(request_id)
+            return {"status": "unknown"}
+        try:
+            result = center.bind_human_request_message(
+                producer_token, request_id, expected_chat_id, int(outcome["message_id"]),
+                observed_at=float(outcome["accepted_at"]),
+            )
+        except (KeyError, TypeError, ValueError, NotificationCenterError):
+            center.task_decisions.mark_notification_unknown(request_id)
+            return {"status": "unknown"}
+        return {"status": "sent", "chat_id": expected_chat_id,
+                "message_id": int(result["telegram_message_id"]),
+                "sender_id": str(outcome.get("sender_id") or "")}
+    if status == "definitive_failure":
+        center.task_decisions.mark_notification_failed(request_id, str(outcome.get("error_code") or "provider_failure"))
+        return {"status": "not_sent"}
+    center.task_decisions.mark_notification_unknown(request_id)
+    return {"status": "unknown"}
 
 
 def refresh_human_request_original(

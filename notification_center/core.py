@@ -1094,13 +1094,22 @@ class NotificationCenter:
             "telegram_bound": bool(row["telegram_chat_id"] and row["telegram_message_id"]),
         }
 
-    def bind_human_request_message(self, token: str, request_id: str, chat_id: str, message_id: int) -> dict[str, Any]:
+    def bind_human_request_message(
+        self, token: str, request_id: str, chat_id: str, message_id: int,
+        *, observed_at: float | None = None,
+    ) -> dict[str, Any]:
         """Bind one sent Telegram message once for callbacks and delivery proof."""
         chat_id = str(chat_id).strip()
         if not chat_id or not isinstance(message_id, int) or message_id <= 0:
             raise ValidationError("valid Telegram chat and message ids are required")
+        if (observed_at is not None and
+                (isinstance(observed_at, bool) or not isinstance(observed_at, (int, float))
+                 or not math.isfinite(float(observed_at)) or float(observed_at) <= 0)):
+            raise ValidationError("valid notification receipt timestamp is required")
         with self._lock, self._connection:
             row = self._expire_human_request(self._human_request_row(token, request_id))
+            if observed_at is not None and not row["task_context_json"]:
+                raise ValidationError("receipt timestamp is only valid for task decisions")
             existing_chat_id = str(row["telegram_chat_id"] or "")
             existing_message_id = row["telegram_message_id"]
             if existing_chat_id or existing_message_id is not None:
@@ -1117,7 +1126,7 @@ class NotificationCenter:
                     return self._human_request_result(current)
                 raise ValidationError("human request Telegram message is already bound")
             if current["task_context_json"]:
-                self.task_decisions.record_notification_success(request_id)
+                self.task_decisions.record_notification_success(request_id, observed_at=observed_at)
                 current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             return self._human_request_result(current)
 

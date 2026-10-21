@@ -99,3 +99,43 @@ not synthesize a human answer or resume a native session.
 - Exercise a real task through the consumer path, including restart and late
   answer/control reconciliation. No live task, provider call, runtime change,
   or 30-minute business canary was performed by this source slice.
+
+## ExManager same-client question transport addendum (2026-10-21)
+
+For the fixed `airlock` project, Notice can use the existing ExManager Node
+capability instead of its separate Bot API. The adapter accepts only the
+dedicated TLS base URL `https://notify.bezrabotnyi.com/_exmanager`, uses the already
+authorized Airlock project Bearer, and pins readiness/receipts to the existing
+`@deus_excode` account and selected peer `-1004352022764`. It does not own a
+Telegram client or fall back to Notice Bot delivery. Each immutable Notice
+request uses `requestId=td-…` and stable `operationId=notice-question:<requestId>`.
+The POST contains only `requestId`, `operationId`, fixed `chatId`, and rendered
+text with every exact allowed value. A successful receipt binds the exact
+provider message and starts the existing 30-minute deadline.
+
+If a prior attempt is `sending` or `unknown`, Notice only calls the Node query
+route. An accepted query receipt can finish the existing Notice row; `unknown`,
+`not_found`, transport failure, or malformed receipt never triggers another
+POST. A provider-declared definitive failure is stored as `failed` and is not
+replayed. The read-only readiness check proves the Node account and peer are
+addressable; it does not prove group membership, task authority, or an answer.
+
+The accepted receipt contract includes integer `acceptedAt` epoch seconds,
+derived by Node from the first persisted accepted operation. Notice rejects
+missing, boolean, or fractional timestamps and uses this persisted time when
+recovering an accepted query result, so a late readback does not restart the
+30-minute window. A query result of `sending` is normalized to `unknown` and
+remains query-only.
+
+The Node bridge itself is bound to the server-100 host bridge and direct
+read-only checks from server-44 and server-88 timed out. The canonical
+infrastructure source contains the narrow TLS vhost route for the three
+authenticated readiness/question/query paths and was published on `main` in
+commit `cfef8e0838ec87dc55e33c08f54093eef577edd1`. Its site-scoped apply was
+refused because the live managed Nginx tree differs from its applied manifest;
+the read-only diff also shows unrelated VPN and `conf.d` drift. No live file
+was adopted or edited, so the public base URL is not yet verified from all
+replicas. Task admission also remains closed until the Board verifier,
+selected recipient and current task-operation authority are loaded and
+independently read back. No live question, send, provider action, or Notice
+configuration reload was performed by this source addendum.

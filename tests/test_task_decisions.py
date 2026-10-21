@@ -192,26 +192,51 @@ class TaskDecisionTests(unittest.TestCase):
     def test_existing_telegram_sender_receipt_arms_clock_and_unknown_never_replays(self) -> None:
         request = self.create()
         request_id = str(request["request_id"])
-        response = {"ok": True, "result": {"message_id": 93, "chat": {"id": 42}}}
-        with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "fake", "TELEGRAM_CHAT_ID": "42",
-                                         "TELEGRAM_CALLBACK_SECRET": "x" * 32}), \
+        class FakeTransport:
+            submit_result: dict[str, object] = {"outcome": "accepted", "sender_id": "8810909089",
+                                                 "chat_id": "-1004352022764", "message_id": 93,
+                                                 "accepted_at": 1000.0}
+            query_result: dict[str, object] = {"outcome": "not_found"}
+            submits = 0
+            queries = 0
+
+            def __init__(self, _base_url, _bearer):
+                pass
+
+            def readiness(self):
+                return {"ok": True}
+
+            def submit_question(self, _request_id, _operation_id, _text):
+                type(self).submits += 1
+                if isinstance(type(self).submit_result, Exception):
+                    raise type(self).submit_result
+                return type(self).submit_result
+
+            def query_question(self, _request_id, _operation_id):
+                type(self).queries += 1
+                return type(self).query_result
+
+        FakeTransport.submits = 0
+        FakeTransport.queries = 0
+        with mock.patch.dict(os.environ, {"EXMANAGER_NOTICE_QUESTION_BASE_URL": "https://notify.bezrabotnyi.com/_exmanager"}), \
+             mock.patch("notification_center.http_api.ExManagerNoticeTransport", FakeTransport), \
              mock.patch("notification_center.task_decisions.time.time", return_value=1000.0):
-            sent = send_human_request_telegram(self.center, "token", request,
-                                               api=lambda method, _body: response if method == "sendMessage" else {})
+            sent = send_human_request_telegram(self.center, "token", request)
         self.assertEqual("sent", sent["status"])
         self.assertEqual(2800.0, self.center.task_decisions.notification_state(request_id)["deadline_at"])
 
         uncertain = self.create(task_ref="board/task-20")
         uncertain_id = str(uncertain["request_id"])
-        with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "fake", "TELEGRAM_CHAT_ID": "42",
-                                         "TELEGRAM_CALLBACK_SECRET": "x" * 32}):
-            with self.assertRaises(TimeoutError):
-                send_human_request_telegram(self.center, "token", uncertain,
-                                            api=lambda _method, _body: (_ for _ in ()).throw(TimeoutError("unknown")))
-            replay = send_human_request_telegram(self.center, "token", uncertain,
-                                                 api=lambda _method, _body: self.fail("unknown send must not replay"))
+        FakeTransport.submit_result = {"outcome": "unknown"}
+        with mock.patch.dict(os.environ, {"EXMANAGER_NOTICE_QUESTION_BASE_URL": "https://notify.bezrabotnyi.com/_exmanager"}), \
+             mock.patch("notification_center.http_api.ExManagerNoticeTransport", FakeTransport):
+            initial = send_human_request_telegram(self.center, "token", uncertain)
+            replay = send_human_request_telegram(self.center, "token", uncertain)
+        self.assertEqual("unknown", initial["status"])
         self.assertEqual("unknown", replay["status"])
         self.assertIsNone(self.center.task_decisions.notification_state(uncertain_id)["deadline_at"])
+        self.assertEqual(2, FakeTransport.submits)
+        self.assertEqual(1, FakeTransport.queries)
 
     def test_exact_deadline_worker_timeout_is_not_a_fabricated_human_answer(self) -> None:
         request = self.create()

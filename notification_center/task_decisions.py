@@ -131,6 +131,22 @@ class TaskDecisionStore:
                 (request_id,),
             )
 
+    def mark_notification_failed(self, request_id: str, error_code: str) -> None:
+        """Persist a provider-confirmed no-send result without enabling replay."""
+        safe_code = str(error_code or "")[:64]
+        with self._center._lock, self._center._connection:
+            changed = self._center._connection.execute(
+                "UPDATE human_requests SET task_notification_state='failed' "
+                "WHERE request_id=? AND task_context_json IS NOT NULL "
+                "AND task_notification_state IN ('sending','unknown') "
+                "AND task_notified_at IS NULL AND state='pending'",
+                (request_id,),
+            ).rowcount
+            if changed:
+                self._center._audit(None, "task_decision.notification_failed", "notice", {
+                    "request_id": request_id, "error_code": safe_code,
+                })
+
     def record_notification_success(self, request_id: str, observed_at: float | None = None) -> dict[str, Any]:
         """Arm the one deadline only when the existing sender has a success receipt."""
         now = time.time() if observed_at is None else float(observed_at)
@@ -138,12 +154,12 @@ class TaskDecisionStore:
             row = self._row(request_id)
             if row["task_notified_at"] is not None:
                 return self._center._human_request_result(row)
-            if row["task_notification_state"] != "sending":
+            if row["task_notification_state"] not in {"sending", "unknown"}:
                 from .core import ValidationError
-                raise ValidationError("task question has no reserved notification attempt")
+                raise ValidationError("task question has no unresolved notification attempt")
             self._center._connection.execute(
                 "UPDATE human_requests SET task_notification_state='sent', task_notified_at=?, task_deadline_at=? "
-                "WHERE request_id=? AND task_context_json IS NOT NULL AND task_notification_state='sending' "
+                "WHERE request_id=? AND task_context_json IS NOT NULL AND task_notification_state IN ('sending','unknown') "
                 "AND task_notified_at IS NULL AND state='pending'",
                 (now, now + self.DEADLINE_SECONDS, request_id),
             )
