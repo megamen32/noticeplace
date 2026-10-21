@@ -118,6 +118,9 @@ install_units() {
 WorkingDirectory=$release
 ExecStart=
 ExecStart=/usr/bin/python3 $release/bin/notify-center
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=infinity
 EOF
     else
         install -D -m 0644 "$release/deploy/notification-center.service" "$SYSTEMD_ROOT/notification-center.service"
@@ -170,9 +173,16 @@ start_services() {
     configuration_ready || die "configuration contains placeholders; edit /etc/notification-center*.env, then run deploy/noticeplace start"
     /usr/bin/python3 "$APP_ROOT/scripts/sync-health-callback-tokens.py" "$ETC_ROOT/notification-center.env"
     local api_unit=notification-center.service
-    if mesh_api_alias; then api_unit=noticeplace-mesh-api.service; fi
-    systemctl enable "$api_unit" notification-center-admin.service
-    systemctl restart "$api_unit" notification-center-admin.service
+    if mesh_api_alias; then
+        # A mesh source rollout is deliberately one replica at a time. Keep
+        # the local operator console untouched while replacing this API node.
+        api_unit=noticeplace-mesh-api.service
+        systemctl enable "$api_unit"
+        systemctl restart "$api_unit"
+    else
+        systemctl enable "$api_unit" notification-center-admin.service
+        systemctl restart "$api_unit" notification-center-admin.service
+    fi
 }
 
 stop_services() {

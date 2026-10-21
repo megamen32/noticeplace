@@ -63,8 +63,12 @@ def worker_iteration(worker: DeliveryWorker, channel_group: str, max_workers: in
     return inflight, completion_future, archive_due, progress_due
 
 
-def worker_loop(worker: DeliveryWorker, channel_group: str, max_workers: int) -> None:
+def worker_loop(worker: DeliveryWorker, channel_group: str, max_workers: int,
+                shutdown_event: threading.Event | None = None,
+                admission_lock: threading.Lock | None = None) -> None:
     """Run one bounded channel pool so slow AI/calls cannot starve messages."""
+    shutdown_event = shutdown_event or threading.Event()
+    admission_lock = admission_lock or threading.Lock()
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="notify-delivery") as executor:
         inflight = set()
         archive = HealthSessionArchiver(worker._center) if channel_group == "agent" else None
@@ -72,35 +76,58 @@ def worker_loop(worker: DeliveryWorker, channel_group: str, max_workers: int) ->
         completion_future = None
         progress = IncidentProgressReader(worker._center) if channel_group == 'agent' else None
         progress_due = time.monotonic() + 15
-        while True:
+        while not shutdown_event.is_set():
             try:
-                inflight, completion_future, archive_due, progress_due = worker_iteration(
-                    worker, channel_group, max_workers, inflight, completion_future,
-                    archive, archive_due, progress, progress_due, executor)
+                # The lock makes the stop boundary precise across all channel
+                # loops: once main has observed shutdown under this lock, no
+                # later iteration can admit new claims or replay work.
+                with admission_lock:
+                    if shutdown_event.is_set():
+                        break
+                    inflight, completion_future, archive_due, progress_due = worker_iteration(
+                        worker, channel_group, max_workers, inflight, completion_future,
+                        archive, archive_due, progress, progress_due, executor)
             except sqlite3.Error:
                 # Keep previously admitted futures; never replay their side
                 # effects. A new iteration only claims durable queued work.
-                time.sleep(2)
-            time.sleep(1)
+                shutdown_event.wait(2)
+            else:
+                shutdown_event.wait(1)
+        # ThreadPoolExecutor waits for every already-submitted delivery and
+        # completion future. Do not cancel them: a provider call may be UNKNOWN
+        # if interrupted, and restart recovery is query-only.
+        pending = sum(not future.done() for future in inflight)
+        if pending:
+            print(f"draining {pending} admitted {channel_group} worker operations", flush=True)
 
 
-def telegram_interaction_loop(poller: object) -> None:
+def telegram_interaction_loop(poller: object, shutdown_event: threading.Event | None = None) -> None:
     """Consume Bot API callbacks inside this process without affecting delivery health."""
-    while True:
+    shutdown_event = shutdown_event or threading.Event()
+    while not shutdown_event.is_set():
         try:
             if str(os.environ.get("NOTIFY_CENTER_DB", "")).startswith("mesh:"):
                 holder = f"{socket.gethostname()}:{os.getpid()}"
                 if not poller._center.claim_runtime_lease("telegram-poller", holder):
-                    time.sleep(2)
+                    shutdown_event.wait(2)
                     continue
             poller.poll_once()  # type: ignore[attr-defined]
-            time.sleep(1)
+            shutdown_event.wait(1)
         except Exception:
-            time.sleep(5)
+            shutdown_event.wait(5)
 
 
 def main() -> None:
     """Create durable dependencies and run worker plus API in one small process."""
+    shutdown_event = threading.Event()
+    admission_lock = threading.Lock()
+
+    def request_shutdown(_signum: int, _frame: object) -> None:
+        shutdown_event.set()
+
+    import signal
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
     if str(os.environ.get("NOTIFY_CENTER_DB", "")).startswith("mesh:"):
         from notification_center.mesh_core import normalize
         hosts = json.loads(os.environ["NOTICEPLACE_MESH_HOSTS_JSON"])
@@ -157,18 +184,44 @@ def main() -> None:
         "agent": max(0, int(os.environ.get("NOTIFY_CENTER_AGENT_WORKERS", "2"))),
         "call": max(0, int(os.environ.get("NOTIFY_CENTER_CALL_WORKERS", "2"))),
     }
+    worker_threads = []
     for channel_group, max_workers in pool_sizes.items():
         if max_workers == 0:
             continue
-        threading.Thread(target=worker_loop, args=(worker, channel_group, max_workers), daemon=True).start()
+        thread = threading.Thread(
+            target=worker_loop,
+            args=(worker, channel_group, max_workers, shutdown_event, admission_lock),
+            name=f"notify-{channel_group}-workers",
+            daemon=False,
+        )
+        thread.start()
+        worker_threads.append(thread)
+    poller_thread = None
     if poller is not None:
-        threading.Thread(target=telegram_interaction_loop, args=(poller,), daemon=True).start()
-    run_http(
-        center,
-        os.environ.get("NOTIFY_CENTER_HOST", "127.0.0.1"),
-        int(os.environ.get("NOTIFY_CENTER_PORT", "8091")),
-        mcp_token=os.environ.get("NOTIFY_MCP_TOKEN", ""),
-    )
+        poller_thread = threading.Thread(
+            target=telegram_interaction_loop,
+            args=(poller, shutdown_event),
+            name="telegram-interaction-poller",
+            daemon=False,
+        )
+        poller_thread.start()
+    try:
+        run_http(
+            center,
+            os.environ.get("NOTIFY_CENTER_HOST", "127.0.0.1"),
+            int(os.environ.get("NOTIFY_CENTER_PORT", "8091")),
+            mcp_token=os.environ.get("NOTIFY_MCP_TOKEN", ""),
+            shutdown_event=shutdown_event,
+        )
+    finally:
+        shutdown_event.set()
+        # Wait until any iteration already inside the admission gate exits.
+        with admission_lock:
+            pass
+        for thread in worker_threads:
+            thread.join()
+        if poller_thread is not None:
+            poller_thread.join()
 
 
 if __name__ == "__main__":

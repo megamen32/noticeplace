@@ -39,6 +39,9 @@ def test_persistent_units_have_explicit_resource_budgets() -> None:
     for unit in (main, admin):
         for directive in ("MemoryHigh=", "MemoryMax=", "MemorySwapMax=", "CPUQuota=", "TasksMax=", "IOWeight="):
             assert directive in unit
+    assert "KillMode=mixed" in main
+    assert "KillSignal=SIGINT" in main
+    assert "TimeoutStopSec=infinity" in main
 
 
 def test_health_callback_map_receives_every_configured_project_token(tmp_path: Path) -> None:
@@ -120,3 +123,6 @@ def test_upgrade_preserves_mesh_alias_credentials_and_release_override(tmp_path:
     override = (units / 'noticeplace-mesh-api.service.d/98-managed-release.conf').read_text()
     assert current_release(root) + '/bin/notify-center' in override
     assert 'ExecStart=\n' in override
+    assert 'KillMode=mixed' in override
+    assert 'KillSignal=SIGINT' in override
+    assert 'TimeoutStopSec=infinity' in override

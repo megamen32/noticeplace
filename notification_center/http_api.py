@@ -2647,11 +2647,23 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
     return ApiHandler
 
 
-def run_http(center: NotificationCenter, host: str, port: int, health_token: str | None = None, mcp_token: str | None = None, *, producer_only: bool = False) -> None:
+def run_http(center: NotificationCenter, host: str, port: int, health_token: str | None = None, mcp_token: str | None = None, *, producer_only: bool = False, shutdown_event: Any = None) -> None:
     """Run the blocking HTTP server with a mandatory dedicated health token."""
     configured_health_token = health_token if health_token is not None else os.environ.get("NOTIFY_CENTER_HEALTH_TOKEN", "")
     configured_mcp_token = mcp_token if mcp_token is not None else os.environ.get("NOTIFY_MCP_TOKEN", "")
-    ThreadingHTTPServer((host, port), build_handler(center, configured_health_token, configured_mcp_token, producer_only=producer_only)).serve_forever()
+    server = ThreadingHTTPServer((host, port), build_handler(center, configured_health_token, configured_mcp_token, producer_only=producer_only))
+    # Close the listener and let already-accepted request handlers finish before
+    # main joins the delivery pools and exits.
+    server.daemon_threads = False
+    if shutdown_event is None:
+        server.serve_forever()
+        return
+    server.timeout = 1
+    try:
+        while not shutdown_event.is_set():
+            server.handle_request()
+    finally:
+        server.server_close()
 
 
 def telegram_action_codec_from_environment() -> TelegramActionCodec | None:

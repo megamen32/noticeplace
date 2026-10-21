@@ -12,6 +12,9 @@ WorkingDirectory=/opt/noticeplace
 ExecStart=/usr/bin/python3 /opt/noticeplace/bin/notify-center
 Restart=on-failure
 RestartSec=3
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=infinity
 # Measured steady state is about 76 MiB. Keep enough headroom for bounded
 # Telegram/AI callbacks while preserving server-100 capacity for other tenants.
 MemoryHigh=512M
