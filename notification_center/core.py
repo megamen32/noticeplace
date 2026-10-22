@@ -1945,10 +1945,12 @@ class NotificationCenter:
         has_original = self.original_telegram_card(incident_id) is not None
         if (setting(self, 'telegram_group_similar_enabled') and event.get('kind') == 'incident'
                 and all(str(event.get(key) or '').strip() for key in ('event_type', 'signal_type', 'source_id', 'host_id'))):
-            # Producer issue family is explicit. Absent one, signal_type is
-            # already a typed family, and source_id is retained to prevent two
-            # unrelated checks on the same host collapsing by guessed text.
-            issue = event.get('issue_family') or event.get('collapse_key') or event.get('source_id')
+            # Producer issue family is explicit. Absent one, the producer's
+            # dedup_key is the reason key and is shared by every node that
+            # reports the same cause, so the family stays one card. source_id
+            # is unique per node and must not be the fallback: it split one
+            # fleet-wide cause into a card per node.
+            issue = event.get('issue_family') or event.get('collapse_key') or str(event.get('dedup_key') or '').strip() or event.get('source_id')
             host, source, signal = str(event['host_id']), str(event['source_id']), str(event['signal_type'])
             if not event.get('issue_family') and not event.get('collapse_key') and source in {'host:'+host, 'fleet:'+host} and signal in {'load','cpu','ram','disk'}:
                 issue = 'host-signal:' + signal
