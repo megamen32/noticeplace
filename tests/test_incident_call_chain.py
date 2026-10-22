@@ -2,6 +2,8 @@
 
 No network/device/provider. Expected3s/emergency30s, CPU1/RAM512MiB/tasks128.
 """
+import hashlib
+import io
 import json
 import tempfile
 import unittest
@@ -12,7 +14,12 @@ from pathlib import Path
 
 from notification_center.core import NotificationCenter, ValidationError
 from notification_center.http_api import DeliveryWorker
-from notification_center.incident_call_chain import ORDER, IncidentCallSender, receipt_projection
+from notification_center.incident_call_chain import (
+    HTTP_ERROR_BODY_LIMIT,
+    ORDER,
+    IncidentCallSender,
+    receipt_projection,
+)
 
 MISSED={'answered':False,'ended':True,'safe_to_fallback':True,'status':'unanswered'}
 
@@ -101,6 +108,71 @@ class ChainTests(unittest.TestCase):
                 self.start(dict(self.event,dedup_key=str(len(self.calls))),key=str(len(self.calls)))
                 self.step();self.assertEqual('uncertain',self.rows()[-1]['status'])
                 self.assertEqual([],self.step())
+
+    def test_http_error_receipt_is_diagnostic_but_stays_uncertain_without_successor(self):
+        body=json.dumps({
+            'error':'provider_unavailable',
+            'code':'UPSTREAM_BUSY',
+            'message':'Bearer secret-token; caller +1 (202) 555-0147; token=private-token; opaque AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            'access_token':'private-token',
+            'phone_number':'+1 (202) 555-0147',
+        }).encode()
+        error=urllib.error.HTTPError('http://bridge',502,'bad gateway',{},io.BytesIO(body))
+        def run(*args,**kwargs): raise error
+        self.worker._matrix_call=IncidentCallSender('http://bridge','test',runner=run)
+
+        incident=self.start()
+        self.step()
+
+        matrix=self.rows()
+        self.assertEqual(1,len(matrix))
+        self.assertEqual('matrix.call',matrix[0]['channel'])
+        self.assertEqual('uncertain',matrix[0]['status'])
+        receipt=json.loads(matrix[0]['result_json'])
+        self.assertEqual(502,receipt['http_status'])
+        self.assertTrue(receipt['uncertain'])
+        self.assertIsNone(receipt['answered'])
+        self.assertEqual({'code':'UPSTREAM_BUSY','error':'provider_unavailable',
+                          'message':'Bearer [redacted]; caller [number redacted]; [secret redacted]; opaque [token redacted]'},
+                         receipt['response_metadata'])
+        serialized=json.dumps(receipt)
+        for private in (body.decode(),'secret-token','private-token','202','555-0147','A'*40):
+            self.assertNotIn(private,serialized)
+        self.assertEqual([],self.step())
+        self.assertEqual([],self.calls)
+        self.assertEqual('open',self.center.get_incident(incident)['state'])
+
+    def test_http_error_unparseable_body_stores_only_bounded_length_and_digest(self):
+        body=b'<html>Bearer private-token; caller +1 202 555 0147</html>'
+        error=urllib.error.HTTPError('http://bridge',503,'unavailable',{},io.BytesIO(body))
+        def run(*args,**kwargs): raise error
+        result=IncidentCallSender('http://bridge','test',runner=run).send(
+            {'incident':{'id':'incident-test','title':'Проверка','body':'Связь','project':'test','severity':'critical'}},
+            'test-key')
+
+        self.assertEqual(503,result['http_status'])
+        self.assertTrue(result['uncertain'])
+        self.assertIsNone(result['answered'])
+        self.assertEqual(len(body),result['body_length'])
+        self.assertEqual(hashlib.sha256(body).hexdigest(),result['body_sha256'])
+        self.assertFalse(result['body_truncated'])
+        self.assertNotIn('body',result)
+        serialized=json.dumps(result)
+        for private in (body.decode(),'private-token','202 555 0147'):
+            self.assertNotIn(private,serialized)
+
+    def test_http_error_large_body_is_hashed_with_explicit_truncation(self):
+        body=b'x'*(HTTP_ERROR_BODY_LIMIT+50)
+        error=urllib.error.HTTPError('http://bridge',504,'gateway timeout',{},io.BytesIO(body))
+        def run(*args,**kwargs): raise error
+        result=IncidentCallSender('http://bridge','test',runner=run).send(
+            {'incident':{'id':'incident-test','title':'Проверка','body':'Связь','project':'test','severity':'critical'}},
+            'test-key')
+
+        self.assertEqual(HTTP_ERROR_BODY_LIMIT,result['body_length'])
+        self.assertEqual(hashlib.sha256(body[:HTTP_ERROR_BODY_LIMIT]).hexdigest(),result['body_sha256'])
+        self.assertTrue(result['body_truncated'])
+        self.assertNotIn(body.decode(),json.dumps(result))
 
     def test_false_without_teardown_proof_does_not_fallback(self):
         self.matrix.result={'answered':False}
@@ -233,10 +305,18 @@ class SenderTests(unittest.TestCase):
             def run(*args,**kwargs):raise error
             result=IncidentCallSender('http://bridge','test',runner=run).send(self.payload,'test-key')
             self.assertIs(result['safe_to_fallback'],True)
-        for error in (TimeoutError('lost ACK'),urllib.error.HTTPError('http://bridge',500,'failed',{},None)):
-            def run(*args,**kwargs):raise error
-            with self.assertRaises(type(error)):
-                IncidentCallSender('http://bridge','test',runner=run).send(self.payload,'test-key')
+        error=TimeoutError('lost ACK')
+        def run(*args,**kwargs):raise error
+        with self.assertRaises(TimeoutError):
+            IncidentCallSender('http://bridge','test',runner=run).send(self.payload,'test-key')
+
+        http_error=urllib.error.HTTPError('http://bridge',500,'failed',{},io.BytesIO(b''))
+        def run_http_error(*args,**kwargs):raise http_error
+        result=IncidentCallSender('http://bridge','test',runner=run_http_error).send(self.payload,'test-key')
+        self.assertIsNone(result['answered'])
+        self.assertIs(result['uncertain'],True)
+        self.assertEqual(500,result['http_status'])
+        self.assertNotIn('safe_to_fallback',result)
 
     def test_answered_call_without_spoken_ack_is_still_a_successful_answer(self):
         class Response:
