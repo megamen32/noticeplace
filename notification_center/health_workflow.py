@@ -9,6 +9,12 @@ import re
 from typing import Any, Mapping
 
 from .core import NotificationCenter, ValidationError
+from .incident_model_policy import (
+    DEFAULT_INCIDENT_MODEL,
+    INCIDENT_MODEL_SETTING_KEY,
+    incident_model_options,
+    normalize_incident_model,
+)
 
 _PLAN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _TEXT_LIMIT = 128
@@ -25,6 +31,51 @@ HEALTH_EXECUTION_PROFILE = {
     "reasoning": "default",
     "topic": "health",
 }
+
+# The operator chooses the route that analyses a health incident by hand. The
+# route contract lives in one module: incident_model_policy owns the setting
+# key, the default, the known-route suggestions, the forbidden paid routes
+# and the normalizer. Agent Herder keeps the admission decision and accepts
+# every "omniroute/..." route.
+HEALTH_LAUNCH_MODELS: tuple[str, ...] = tuple(
+    str(option["value"]) for option in incident_model_options()
+)
+HEALTH_LAUNCH_DEFAULT = DEFAULT_INCIDENT_MODEL
+HEALTH_LAUNCH_HARNESS = "opencode"
+HEALTH_LAUNCH_PURPOSE = "noticeplace.health-analysis"
+
+def health_launch_execution(route: str) -> dict[str, str]:
+    """Return the execution profile of one approved incident route.
+
+    The route keeps its exact provider/model text, so the launch request and
+    the execution profile describe the same model without any rewriting.
+    """
+    safe_route = str(route or "").strip()
+    provider, _, rest = safe_route.partition("/")
+    return {
+        "runtime": HEALTH_LAUNCH_HARNESS,
+        "provider": provider,
+        "model": rest or safe_route,
+        "reasoning": HEALTH_EXECUTION_PROFILE["reasoning"],
+        "topic": HEALTH_EXECUTION_PROFILE["topic"],
+    }
+
+
+def selected_incident_model(center: Any) -> str:
+    """Return the operator-selected route for a new health delivery.
+
+    The stored route is used exactly as the operator saved it. An invalid
+    stored value fails closed with the operator reason instead of silently
+    launching another model behind the operator's back.
+    """
+    stored = center.get_runtime_setting(INCIDENT_MODEL_SETTING_KEY)
+    if stored is None or not str(stored).strip():
+        return HEALTH_LAUNCH_DEFAULT
+    try:
+        return normalize_incident_model(stored)
+    except ValueError as error:
+        raise ValidationError(str(error)) from error
+
 
 def sanitize_bounded_text(value: Any, limit: int = _TEXT_LIMIT) -> str:
     """Bound operator receipts and redact assignment/prefix secret forms."""

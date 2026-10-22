@@ -139,6 +139,13 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                     store.save_health_config(health_config, actor, run_monitor=form.get("run_monitor") == "true")
                     self._reply(HTTPStatus.OK, _page("Health monitor updated", "The bounded fleet config was saved atomically."))
                     return
+                if self.path in ("/health-model", "/admin/health-model"):
+                    store.set_incident_model(form.get("model", ""), actor)
+                    self.send_response(HTTPStatus.SEE_OTHER)
+                    self.send_header("Location", "/admin/#health-model")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
                 if self.path in ("/topics/save", "/admin/topics/save"):
                     store.save_topic(
                         form.get("topic_id", ""), form.get("name", ""), form.get("chat_id", ""),
@@ -272,8 +279,16 @@ form.consumer-form{display:flex;flex-direction:column;align-items:stretch;gap:10
 .page-center h1{font-size:19px}
 .health-plans{margin-top:6px;font-size:12.5px;color:var(--muted)}
 .health-plans span{display:inline-block}
+.model-choice{margin:16px 0 4px;padding:14px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2)}
+.model-choice h3{margin-top:0}
+.model-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin:0 0 12px}
+.model-cell{padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.model-form{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:0}
+.model-form label{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--muted)}
+.model-form input[name=model]{min-width:340px;font-family:var(--mono)}
+.model-error{margin:0 0 12px;padding:8px 12px;border:1px solid var(--red);border-radius:8px;background:rgba(248,81,73,.12);color:#ffb4ab}
 @media(max-width:1280px){main{padding:20px 16px 70px}.topbar{padding:11px 16px}}
-@media(max-width:860px){.health-heading{display:block}.status-card{margin-top:12px;min-width:0}.topic-forms{grid-template-columns:1fr}form.settings{grid-template-columns:1fr}}"""
+@media(max-width:860px){.health-heading{display:block}.status-card{margin-top:12px;min-width:0}.topic-forms{grid-template-columns:1fr}form.settings{grid-template-columns:1fr}.model-grid{grid-template-columns:1fr}}"""
 
 _SEVERITY_BADGE_CLASSES = {
     "emergency": "sev-emergency",
@@ -393,6 +408,82 @@ def _health_value(value: Any, *keys: str) -> str:
     return "—"
 
 
+def _incident_model_block(model: dict[str, Any], csrf: str) -> str:
+    """Render the saved route, the effective route and the last proven model.
+
+    The saved route is the string the operator typed; the effective route is
+    the one the next health analysis would really launch. Both are shown side
+    by side, so a stored value that is not usable stays visible with its
+    reason instead of being replaced behind the operator's back. The last used
+    model is shown only when a terminal job receipt names one, so an unproven
+    selection is never presented as a real run.
+    """
+    state = model if isinstance(model, dict) else {}
+    stored = str(state.get("stored") or "").strip()
+    effective = str(state.get("effective") or state.get("value") or "").strip()
+    default = str(state.get("default") or "").strip()
+    error = str(state.get("stored_error") or "").strip()
+    suggestions: list[str] = []
+    options = state.get("options") if isinstance(state.get("options"), list) else []
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        value = str(option.get("value") or "").strip()
+        if value and value not in suggestions:
+            suggestions.append(value)
+    if stored and stored not in suggestions:
+        suggestions.append(stored)
+    datalist = "".join(f'<option value="{html.escape(value)}"></option>' for value in suggestions)
+    if error:
+        saved_value = stored or "не выбрана"
+        effective_value = "Нет — запуск новых разборов заблокирован"
+        banner = (
+            '<p class="model-error" role="alert">Сохранённый маршрут недопустим: '
+            f'{html.escape(error)}. Новые разборы инцидентов не запустятся, пока маршрут '
+            'не будет исправлен и сохранён заново.</p>'
+        )
+    else:
+        saved_value = stored or effective or default or "не выбрана"
+        effective_value = effective or default or "не выбрана"
+        banner = ""
+    last_used = state.get("last_used") if isinstance(state.get("last_used"), dict) else None
+    if last_used and str(last_used.get("model") or "").strip():
+        used_label = html.escape(str(last_used.get("label") or last_used.get("model") or ""))
+        used_route = f'<br><code>{html.escape(str(last_used.get("model") or ""))}</code>'
+    else:
+        used_label = "Ещё не подтверждено запуском"
+        used_route = ""
+    return (
+        '<div id="health-model" class="model-choice">'
+        '<h3>Модель анализа инцидентов</h3>'
+        f'{banner}'
+        '<div class="model-grid">'
+        '<div class="model-cell"><span class="hint">Сохранённый выбор — для новых разборов</span><br>'
+        f'<strong>{html.escape(saved_value)}</strong></div>'
+        '<div class="model-cell"><span class="hint">Фактически используемый маршрут — следующий запуск</span><br>'
+        f'<strong>{html.escape(effective_value)}</strong></div>'
+        '<div class="model-cell"><span class="hint">Фактически использована в последнем запуске</span><br>'
+        f'<strong>{used_label}</strong>{used_route}</div>'
+        '</div>'
+        f'<form class="model-form" method="post" action="/admin/health-model">'
+        f'<input type="hidden" name="csrf" value="{html.escape(csrf)}">'
+        '<label>Маршрут модели для новых разборов инцидентов'
+        f'<input type="text" name="model" list="incident-model-routes"'
+        f' value="{html.escape(stored or effective or default)}"'
+        ' placeholder="omniroute/minimax-combo-m3.1" autocomplete="off" spellcheck="false"></label>'
+        f'<datalist id="incident-model-routes">{datalist}</datalist>'
+        '<button>Сохранить модель</button></form>'
+        '<p class="hint">Маршрут вводится руками: <code>omniroute/&lt;model&gt;</code> или '
+        '<code>omniroute/&lt;provider&gt;/&lt;model&gt;</code>, до 128 символов. Платные маршруты '
+        'MiniMax по подписке (<code>minimax-coding-plan/*</code> и '
+        '<code>minimax/MiniMax-M3.1-Flash</code>) запрещены. Выбор применяется только к новым '
+        'разборам инцидентов. Уже созданные задачи не переигрываются и не перезапускаются, '
+        'сервис не перезапускается. Сохранённый выбор считается использованным только после '
+        'квитанции реального запуска.</p>'
+        '</div>'
+    )
+
+
 def _health_dashboard(health: dict[str, Any], csrf: str) -> str:
     config = health.get("config", {}) if isinstance(health, dict) else {}
     targets = []
@@ -410,7 +501,8 @@ def _health_dashboard(health: dict[str, Any], csrf: str) -> str:
         plan_titles = ", ".join(str(plan.get("title") or plan.get("plan_id") or "") for plan in plans[:3] if isinstance(plan, dict))
         incidents.append(f'<tr><td>{_history_incident_link(incident.get("id"))}<br><strong>{html.escape(str(incident.get("title") or "Health incident"))}</strong><br>{_badge(incident.get("state"), _STATE_BADGE_CLASSES)}</td><td>{html.escape(plan_titles or "—")}</td><td>{html.escape(_health_value(item.get("selection"), "plan_id"))}</td><td>{html.escape(_health_value(item.get("progress"), "step", "observed_state", "status"))}<br><span class="hint">{html.escape(_health_value(item.get("progress"), "evidence_refs", "evidence"))}</span></td><td>{html.escape(_health_value(item.get("verification"), "observed_state", "status", "healthy"))}<br><span class="hint">{html.escape(_health_value(item.get("verification"), "verification_id", "evidence"))}</span></td></tr>')
     integration = health.get("integration", {}) if isinstance(health, dict) else {}
-    return f'''<section id="health-dashboard" class="card health-hero"><div class="health-heading"><div class="card-head"><span class="eyebrow">Fleet operations</span><h2>Health dashboard</h2><p class="hint">Targets, active incidents, remediation receipts, and independent verification from the live NoticePlace store.</p></div><div class="status-card"><span class="pulse"></span>{html.escape(str(health.get("config_status") or "Monitor config unavailable"))}<br><small>NoticePlace {html.escape(str(integration.get("noticeplace") or "unknown"))} · monitor {html.escape(str(integration.get("fleet_monitor") or "unknown"))} · {html.escape(str(integration.get("targets") or 0))} targets</small></div></div><h3>Fleet targets</h3><div class="table-wrap"><table><tr><th>Target</th><th>CPU %</th><th>RAM %</th><th>Disk %</th><th>Log keywords</th></tr>{''.join(targets) or '<tr><td colspan="5">No fleet targets configured.</td></tr>'}</table></div><h3>Open health incidents</h3><div class="table-wrap"><table><tr><th>Incident</th><th>Latest plans</th><th>Selected</th><th>Progress</th><th>Verification</th></tr>{''.join(incidents) or '<tr><td colspan="5">No open health incidents.</td></tr>'}</table></div><details><summary>Edit monitor thresholds and log keywords</summary><p class="hint">Operator-owned file: <code>{html.escape(str(health.get("config_path") or ""))}</code>. Only bounded fleet targets, thresholds, and explicit log rules are accepted.</p><form class="health-config" method="post" action="/admin/health-settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><textarea name="config_json" rows="18" spellcheck="false">{html.escape(str(health.get("config_json") or '{"targets": []}'))}</textarea><label><input type="checkbox" name="run_monitor" value="true"> Run health monitor once after save</label><button>Save health settings</button></form></details></section>'''
+    model_block = _incident_model_block(health.get("incident_model", {}) if isinstance(health, dict) else {}, csrf)
+    return f'''<section id="health-dashboard" class="card health-hero"><div class="health-heading"><div class="card-head"><span class="eyebrow">Fleet operations</span><h2>Health dashboard</h2><p class="hint">Targets, active incidents, remediation receipts, and independent verification from the live NoticePlace store.</p></div><div class="status-card"><span class="pulse"></span>{html.escape(str(health.get("config_status") or "Monitor config unavailable"))}<br><small>NoticePlace {html.escape(str(integration.get("noticeplace") or "unknown"))} · monitor {html.escape(str(integration.get("fleet_monitor") or "unknown"))} · {html.escape(str(integration.get("targets") or 0))} targets</small></div></div>{model_block}<h3>Fleet targets</h3><div class="table-wrap"><table><tr><th>Target</th><th>CPU %</th><th>RAM %</th><th>Disk %</th><th>Log keywords</th></tr>{''.join(targets) or '<tr><td colspan="5">No fleet targets configured.</td></tr>'}</table></div><h3>Open health incidents</h3><div class="table-wrap"><table><tr><th>Incident</th><th>Latest plans</th><th>Selected</th><th>Progress</th><th>Verification</th></tr>{''.join(incidents) or '<tr><td colspan="5">No open health incidents.</td></tr>'}</table></div><details><summary>Edit monitor thresholds and log keywords</summary><p class="hint">Operator-owned file: <code>{html.escape(str(health.get("config_path") or ""))}</code>. Only bounded fleet targets, thresholds, and explicit log rules are accepted.</p><form class="health-config" method="post" action="/admin/health-settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><textarea name="config_json" rows="18" spellcheck="false">{html.escape(str(health.get("config_json") or '{"targets": []}'))}</textarea><label><input type="checkbox" name="run_monitor" value="true"> Run health monitor once after save</label><button>Save health settings</button></form></details></section>'''
 
 
 def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:

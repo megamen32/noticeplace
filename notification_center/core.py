@@ -1932,7 +1932,7 @@ class NotificationCenter:
             if notifications_muted:
                 self._audit(incident_id, "notification_suppressed", "policy", {"reason": "operator_mute", "dedup_key": dedup_key})
             agent_step = "incident" if agent_job == HEALTH_DIAGNOSIS_AGENT_JOB else f"event:{event_id}"
-            agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", agent_step, now) if agent_job else None
+            agent_delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{agent_job}", agent_step, now, self._health_agent_delivery_target()) if agent_job else None
             return {"event_id": event_id, "incident_id": incident_id, "state": self.get_incident(incident_id)["state"], "deduplicated": deduplicated, "idempotent": False, "initial_delivery_id": delivery_id, "agent_job_delivery_id": agent_delivery_id, "notifications_muted": notifications_muted}
 
     def _bind_telegram_family(self, incident_id: str, event: Mapping[str, Any], now: float) -> None:
@@ -2096,6 +2096,61 @@ class NotificationCenter:
                 "state": "resolved" if incident_id is not None else "not_found",
                 "idempotent": False,
             }
+
+    def _health_agent_delivery_target(self) -> dict[str, Any]:
+        """Snapshot the operator-selected incident route into a new delivery.
+
+        The snapshot is durable and taken at scheduling time. A delivery that
+        was scheduled before the operator saved a route keeps its empty target
+        and therefore the legacy pinned behaviour: an existing job is never
+        rerouted and never replayed under a different model.
+
+        A saved route that is not usable is never replaced by another model:
+        the snapshot keeps the reason, so the launch fails closed and the
+        operator sees the reason in the console.
+        """
+        from .health_workflow import selected_incident_model
+        try:
+            route = selected_incident_model(self)
+        except ValidationError as error:
+            return {"incident_model_error": str(error)}
+        return {"incident_model": route} if route else {}
+
+    def _delivery_incident_model(self, target: Mapping[str, Any]) -> str:
+        """Return the exact incident route stored in a delivery target.
+
+        The write path and this read path accept the same routes: every
+        OmniRoute route the operator may type by hand. A route that is not
+        usable fails closed here instead of silently launching another model.
+        """
+        from .incident_model_policy import incident_model_error, is_incident_model
+        blocked = str(target.get("incident_model_error") or "").strip()
+        if blocked:
+            raise ValidationError(f"Модель анализа инцидентов не настроена: {blocked}")
+        route = str(target.get("incident_model") or "").strip()
+        if not route:
+            return ""
+        if not is_incident_model(route):
+            raise ValidationError(
+                "Маршрут модели анализа инцидентов в доставке недопустим: "
+                f"{incident_model_error(route)}"
+            )
+        return route
+
+    def _merge_delivery_target(self, delivery_id: str, values: Mapping[str, Any]) -> None:
+        """Merge values into one delivery target without dropping its snapshot."""
+        row = self._connection.execute("SELECT target_json FROM deliveries WHERE id = ?", (delivery_id,)).fetchone()
+        try:
+            target = json.loads(row["target_json"]) if row is not None and row["target_json"] else {}
+        except (TypeError, json.JSONDecodeError):
+            target = {}
+        if not isinstance(target, dict):
+            target = {}
+        target.update({str(key): value for key, value in values.items()})
+        self._connection.execute(
+            "UPDATE deliveries SET target_json=? WHERE id=?",
+            (json.dumps(target, ensure_ascii=False), delivery_id),
+        )
 
     def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float, target: Mapping[str, Any] | None = None, policy_step_id: str | None = None, repeat_number: int | None = None) -> str:
         """Create a stable scheduled delivery and return its identity."""
@@ -2746,9 +2801,10 @@ class NotificationCenter:
                         f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}",
                         f"incident:manual:{generation}",
                         now,
+                        self._health_agent_delivery_target(),
                     )
                 else:
-                    delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}", "incident", now)
+                    delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}", "incident", now, self._health_agent_delivery_target())
                 if isinstance(telegram_message, Mapping) and (previous is None or restarted):
                     chat = telegram_message.get("chat")
                     message_id = telegram_message.get("message_id")
@@ -2756,8 +2812,7 @@ class NotificationCenter:
                         card = {"chat_id": str(chat["id"]), "message_id": message_id,
                                 "text": str(telegram_message.get("text") or "")[:4096],
                                 "entities": telegram_message.get("entities") if isinstance(telegram_message.get("entities"), list) else []}
-                        self._connection.execute("UPDATE deliveries SET target_json=? WHERE id=?",
-                            (json.dumps({"ai_card": card}, ensure_ascii=False), delivery_id))
+                        self._merge_delivery_target(str(delivery_id), {"ai_card": card})
                 self._audit(
                     incident_id,
                     "telegram_ai_requested",
@@ -3792,6 +3847,7 @@ class NotificationCenter:
                         f"gptadmin.agent:{HEALTH_REMEDIATION_AGENT_JOB}",
                         f"plan:{safe_plan}",
                         time.time(),
+                        self._health_agent_delivery_target(),
                     )
                     self._connection.execute(
                         "UPDATE health_plan_selections SET event_id = ? WHERE incident_id = ?",
@@ -4559,6 +4615,7 @@ class NotificationCenter:
         payload['human_questions'].extend(question for member in members
                                           if (question := self.incident_human_choices(member['id'])) is not None)
         target_json = delivery.get("target_json")
+        incident_model = ""
         if isinstance(target_json, str):
             try:
                 target = json.loads(target_json)
@@ -4566,6 +4623,7 @@ class NotificationCenter:
                 target = None
             if isinstance(target, dict):
                 payload["target"] = target
+                incident_model = self._delivery_incident_model(target)
                 if isinstance(target.get("health_session"), dict) or isinstance(target.get("health_outcome"), dict):
                     confirmed_card = self.original_telegram_card(str(incident["id"]))
                     if confirmed_card is not None:
@@ -4665,6 +4723,10 @@ class NotificationCenter:
                 }
                 if isinstance(payload.get("health_context"), dict):
                     payload["health_context"]["selection"] = payload["health_selection"]
+        if incident_model and str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
+            # The snapshot rides only in the health context of a health agent
+            # delivery, which the adapter signs before it crosses the boundary.
+            payload.setdefault("health_context", {})["incident_model"] = incident_model
         return payload
 
     def mark_dispatcher_healthy(self) -> None:

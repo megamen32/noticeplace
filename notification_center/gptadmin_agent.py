@@ -62,6 +62,11 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         }
         if isinstance(health_context.get('notification_review_required'), bool):
             bounded_health['notification_review_required'] = health_context['notification_review_required']
+        incident_model = str(health_context.get("incident_model") or "").strip()
+        if incident_model:
+            # The operator's selected route travels only inside the signed
+            # health context; the launch path validates it again.
+            bounded_health["incident_model"] = incident_model[:128]
         plans = payload.get("health_plans")
         if isinstance(plans, list):
             bounded_health["plans"] = [
@@ -105,8 +110,10 @@ class DirectHealthRemediationAdapter:
     ) -> dict[str, Any]:
         if not idempotency_key.strip() or len(idempotency_key) > 512:
             raise RuntimeError("direct health remediation requires a bounded idempotency key")
-        from .agent_job_helper import default_profile_path, post_health_session_started, run_profile
+        from .agent_job_helper import (default_profile_path, post_health_session_started, protected_launch_token,
+                                       run_profile)
         started_at = time.monotonic()
+        config_path = self._config_path or default_profile_path()
         direct_profile = {
             "url": os.environ.get("NOTIFY_HEALTH_REMEDIATION_URL", "http://127.0.0.1:18787/api/sessions/new-or-resume"),
             "harness": HEALTH_EXECUTION_PROFILE["runtime"],
@@ -121,11 +128,15 @@ class DirectHealthRemediationAdapter:
             "topic": "health",
             "poll_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_POLL_SECONDS", "1"),
             "remediation_timeout_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_TIMEOUT_SECONDS", "1200"),
+            # The direct route reuses the same protected field as the Hub
+            # route. The value stays inside the launch request and never
+            # reaches a receipt, a log line or an error message.
+            "health_launch_token": protected_launch_token(self.job_id, config_path),
         }
         receipt = run_profile(
             self.job_id,
             _agent_job_event(self.job_id, payload),
-            self._config_path or default_profile_path(),
+            config_path,
             runner=self._runner,
             profile_override=direct_profile,
             session_callback=(

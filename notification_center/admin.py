@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -20,6 +21,12 @@ from typing import Any, Callable, Mapping
 from .core import NotificationCenter, SEVERITIES, ValidationError
 from .http_api import telegram_create_forum_topic, telegram_edit_forum_topic
 from .incident_card import CARD_SETTINGS
+from .incident_model_policy import (
+    incident_model_label,
+    incident_model_state,
+    normalize_incident_model,
+    write_incident_model,
+)
 from .telegram_cleanup import SETTING as CLEANUP_SETTING, enabled as cleanup_enabled
 
 PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
@@ -27,6 +34,7 @@ ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency", "log")
 DEFAULT_CALLS_OVERRIDE_PATH = Path("/etc/systemd/system/notification-center.service.d/zzzz-disable-automatic-calls.conf")
 DEFAULT_HEALTH_CONFIG_PATH = Path("/etc/health-incident-fleet.json")
 HEALTH_THRESHOLD_KEYS = ("cpu_warn_percent", "ram_warn_percent", "disk_warn_percent")
+MODEL_LOOKUP_INCIDENT_LIMIT = 200
 RUNTIME_SETTING_ENV = {
     "call_repeat_min_interval_seconds": "CALL_REPEAT_MIN_INTERVAL_SECONDS",
     "matrix_call_critical_escalation_seconds": "MATRIX_CALL_CRITICAL_ESCALATION_SECONDS",
@@ -142,6 +150,7 @@ class AdminConfigStore:
                 "fingerprint": self._fingerprint(token),
                 "delete_resolved_telegram": cleanup_by_project.get(str(scope['project']), False),
             })
+        health = self.health_dashboard()
         return {
             "projects": sorted(projects, key=lambda item: item["project"]),
             "telegram_cleanup_projects": cleanup_projects,
@@ -152,7 +161,8 @@ class AdminConfigStore:
             "event_history_query": str(history_query or ""),
             "automatic_calls_enabled": self.automatic_calls_enabled(),
             "runtime_settings": self.runtime_settings(),
-            "health": self.health_dashboard(),
+            "incident_model": health.get("incident_model", {}),
+            "health": health,
         }
 
     def health_dashboard(self) -> dict[str, Any]:
@@ -166,8 +176,9 @@ class AdminConfigStore:
         except (OSError, json.JSONDecodeError, ValidationError) as error:
             config_status = f"Monitor config unavailable: {str(error)[:160]}"
         center = self._consumer_notification_center()
+        all_incidents = center.list_incidents()
         incidents = []
-        for incident in center.list_incidents():
+        for incident in all_incidents:
             if str(incident.get("state") or "") == "resolved":
                 continue
             incident_id = str(incident["id"])
@@ -184,12 +195,15 @@ class AdminConfigStore:
                 "progress": progress,
                 "verification": verification,
             })
+        model_state = incident_model_state(center)
+        model_state["last_used"] = self.last_used_incident_model(all_incidents)
         return {
             "config": config,
             "config_json": json.dumps(config, ensure_ascii=False, indent=2),
             "config_path": str(self.health_config_path),
             "config_status": config_status,
             "incidents": incidents,
+            "incident_model": model_state,
             "integration": {
                 "noticeplace": "connected",
                 "fleet_monitor": "configured" if config.get("targets") else "not configured",
@@ -401,6 +415,87 @@ class AdminConfigStore:
         for key, value in normalized.items():
             center.set_runtime_setting(key, value)
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "runtime_settings_changed", "settings": normalized})
+
+    def incident_model_setting(self, incidents: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Return the saved health-analysis model choice and its last real usage."""
+        center = self._consumer_notification_center()
+        state = incident_model_state(center)
+        if incidents is None:
+            incidents = center.list_incidents()
+        state["last_used"] = self.last_used_incident_model(incidents)
+        return state
+
+    def set_incident_model(self, value: str, actor: str) -> str:
+        """Persist one bounded model choice for future health analyses only."""
+        try:
+            normalized = normalize_incident_model(value)
+        except ValueError as error:
+            raise ValidationError(str(error)) from error
+        write_incident_model(self._consumer_notification_center(), normalized)
+        self._audit({
+            "timestamp": int(time.time()),
+            "actor": actor,
+            "action": "incident_model_changed",
+            "model": normalized,
+            "label": incident_model_label(normalized),
+        })
+        return normalized
+
+    def last_used_incident_model(self, incidents: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Return the newest per-incident health session receipt with a model.
+
+        The lookup stays on the bounded per-incident health session events the
+        dashboard already reads, one indexed lookup per health incident, so no
+        global audit table scan is needed. Only an accepted session receipt
+        counts as proof of a real run: a saved choice without such a receipt
+        stays an unproven selection.
+        """
+        center = self._consumer_notification_center()
+        best: tuple[float, dict[str, Any]] | None = None
+        for incident in incidents[:MODEL_LOOKUP_INCIDENT_LIMIT]:
+            if not isinstance(incident, Mapping):
+                continue
+            incident_id = str(incident.get("id") or "").strip()
+            if not incident_id:
+                continue
+            if not self._is_health_incident(incident):
+                continue
+            try:
+                rows = center._connection.execute(
+                    "SELECT payload_json, created_at FROM events WHERE incident_id = ? AND event_type IN "
+                    "('health.diagnosis_session_started','health.orchestrator_session_started',"
+                    "'health.remediation_session_started') ORDER BY created_at DESC, rowid DESC LIMIT 9",
+                    (incident_id,),
+                ).fetchall()
+            except sqlite3.Error:
+                continue
+            for row in rows:
+                try:
+                    payload = json.loads(str(row["payload_json"] or "{}"))
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                model = str(payload.get("model") or "").strip()
+                if not model:
+                    continue
+                created_at = float(row["created_at"] or 0)
+                if best is None or created_at > best[0]:
+                    best = (created_at, {
+                        "model": model,
+                        "label": incident_model_label(model),
+                        "stage": str(payload.get("stage") or ""),
+                        "harness": str(payload.get("harness") or ""),
+                        "incident_id": incident_id,
+                        "created_at": created_at,
+                    })
+                break
+        return best[1] if best else None
+
+    @staticmethod
+    def _is_health_incident(incident: Mapping[str, Any]) -> bool:
+        """Recognize a health incident without reading its receipts."""
+        return str(incident.get("event_type") or "").startswith("health.") or "health:" in str(incident.get("dedup_key") or "")
 
     def telegram_cleanup_projects(self) -> list[dict[str, Any]]:
         """Include ordinary consumer-token projects, not just legacy env tokens."""

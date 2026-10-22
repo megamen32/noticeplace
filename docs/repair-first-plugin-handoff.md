@@ -87,6 +87,41 @@ matches and never guesses a route from a similar component name; an undeclared
 project keeps the pinned OpenCode/minimax route. AutoSellBot-style names that
 nobody declared stay on that default.
 
+### 2a. The operator's incident model
+
+The operator picks the model that analyses a health incident in the admin
+dashboard. Notice Place owns that preference; Agent Herder still owns admission
+and execution. The choice is a closed list of two exact routes:
+
+| route | role |
+| --- | --- |
+| `omniroute/minimax/MiniMax-M3.1-Flash` | the default; used when nothing is saved |
+| `minimax-coding-plan/MiniMax-M3.1-Flash` | manual only; never selected automatically |
+
+The saved value lives in the `health_incident_model` runtime setting. An unset
+value and an unrecognized persisted value both resolve to the approved default
+route above; they never fall back to the legacy subscription route.
+
+**The snapshot is durable and taken at scheduling time.** Every new
+`gptadmin.agent:health-diagnosis` and `gptadmin.agent:health-remediation`
+delivery stores `target_json.incident_model`. A delivery scheduled before the
+operator saved a route keeps its empty target and therefore the legacy pinned
+behaviour: an existing job is never rerouted and never replayed under another
+model. The snapshot travels only inside the signed agent-job health context.
+
+**A selected-route launch is a protected, purpose-bound call.** It keeps
+harness `opencode`, sends `purpose=noticeplace.health-analysis`, and carries a
+dedicated `Authorization: Bearer <health_launch_token>` read from the
+`health_launch_token` field of the protected 0600 agent-jobs profile. The direct
+remediation route reuses that same protected field. The value appears only in
+the launch request; it never reaches a receipt, an audit row or an error
+message.
+
+**It fails closed before the launch.** A missing token, a model outside the
+closed list, or a project whose Agent Herder policy does not allow OpenCode
+stops the launch with a named error. There is no provider fallback, no harness
+fallback, and no write to the Agent Herder launch policy.
+
 ## 3. One question, one card, one native resume
 
 1. Agent Herder `human_request_create` (or `POST /internal/human-requests`)

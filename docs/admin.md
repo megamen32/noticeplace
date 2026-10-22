@@ -22,6 +22,8 @@ grant any of those tokens. See [the producer guide](producer-sdk.md) and the
   otherwise an existing positive thread ID is required;
 - automatic call enablement and live timing values for Matrix calls, Android
   Telegram calls, Android phone calls, and critical Telegram repeats;
+- the model that analyzes health incidents, chosen from a closed list of exact
+  routes;
 - scoped consumers through a visual adapter builder;
 - built-in delivery profiles `emergency`, `important`, and `log`, shown in the
   same profile table as custom consumers;
@@ -65,6 +67,34 @@ an in-flight call. Producer-scope and legacy environment route changes are a
 different boundary: they are applied atomically and restart the main Center,
 with rollback if that restart fails. Every accepted mutation appends a root-only
 audit record without a raw producer token.
+
+## Модель анализа инцидентов
+
+В блоке «Модель анализа инцидентов» на панели здоровья оператор выбирает
+ровно одну модель из закрытого списка:
+
+- `omniroute/minimax/MiniMax-M3.1-Flash` — «OpenCode · OmniRoute · MiniMax
+  M3.1 Flash», значение по умолчанию;
+- `minimax-coding-plan/MiniMax-M3.1-Flash` — «OpenCode · MiniMax по подписке»,
+  только ручной выбор.
+
+Выбор сохраняется в существующей таблице `runtime_settings` под ключом
+`health_incident_model` отдельным геттером и сеттером, а не через числовые
+живые таймеры. Значение проверяется по точному списку: неизвестный маршрут
+отклоняется без изменения состояния. Сохранение идёт только через
+SSO/CSRF-форму оператора; сервис не перезапускается, таймеры, адресаты
+уведомлений и учётные данные проекта не меняются. Каждое принятое сохранение
+пишет в аудит оператора актора, действие и выбранный маршрут без секретов.
+
+Выбор применяется к новым разборам инцидентов. Уже созданные задачи не
+переигрываются и не перезапускаются. Вариант «MiniMax по подписке» никогда
+не выбирается автоматически: при пустом или неизвестном значении действует
+модель по умолчанию через OmniRoute.
+
+Панель показывает сохранённый выбор и фактически использованную модель
+отдельно. Вторая строка заполняется только из квитанции реального завершённого
+запуска (`agent_job_completed` / `agent_job_failed` по разбору или ремонту
+здоровья); без такой квитанции сохранённый выбор не выдаётся за выполненный.
 
 ## Delivery and escalation semantics
 
