@@ -3,10 +3,10 @@
   "title": "Task",
   "goal": "довести до проверенного выпуска надёжный русский голосовой помощник и корректную эскалацию Matrix → Telegram → телефон; использовать существующие Matrix fixtures для воспроизводимых проверок и сохранить хорошие версии.",
   "business_result": "владелец ведёт связный разговор без перебиваний и слышит русские названия; входящий звонок включает секретаря. Ответ в Matrix/Telegram прекращает цепочку, телефон звонит после подтверждённых пропусков; версии можно повторить и откатить.",
-  "current_progress": "Existing QA fixtures were reused; no new Matrix accounts or BotFather issuance. Owner Matrix connector-ref loaded only in-process and `/whoami` matched the owner identity. Generic `messenger_capabilities` provider_status=unconfigured is the read-only messaging adapter; dedicated MatrixCalls RTC sender is separate, owner user-level `capability_enabled('send')` defaults true, and no capability was changed. UserIO commits 5bbf883 and 1d845c7 are on main; backend image b54328f… is installed with rollback snapshot, API/supervisor healthy and accounts unchanged. A private unfederated room contains only owner+B. Final call 6fd4f021-df46-55c7-8e0b-69274c0fc9f9 completed/answered with incoming audio 894542 bytes; recording manifest complete at 9.32s and transcription COMPLETE. Owner transcript preserved the name in Russian: `Сайт гпт админ — панель управления гпт`. The installed AgentCall wrapper then logged `NativeTurnUnsettled: Secretary voice outcome is unknown`; terminal SDK receipt and secretary mode are unproven. The original utterance-boundary call and escalation canaries remain open.",
-  "external_waits": "The current owner of the server-100 AgentCall voice runtime must install the already-reviewed SDK wrapper/bridge fix and confirm installed hashes; the live wrapper remains SHA c44c620b… while the reported target starts b6c2a590…. This lane will not duplicate voice-runtime edits. After that live readback, run one owner↔QA B Secretary SDK canary. Separate guest outbound acceptance, the original utterance-boundary recording, Matrix→Telegram→phone escalation, and final release/archive remain pending; no human/cellular call is authorized or needed for these checks.",
+  "current_progress": "Latest verified snapshot (2026-10-23): UserIO backend main=origin/main 925a47a; focused checks 20 passed. Owner MatrixRTC history proves two-way Russian audio and Russian product-name pronunciation, but the SDK failed before terminal receipt because effective URL pointed to Airlock Platform. /etc/agentcall-secretary-voice.json now targets SDK app 192.168.128.7:8080; only userio-voice was restarted, no Airlock change. Stable tunnel 127.0.0.1:18086 is absent. Request owner-matrix-secretary-after-sdk-route-20261023-01 returned transport error; no row was found in durable Matrix call store, UserIO DB or backend/voice logs for Oct 23, but dispatcher log is unavailable and both MCP endpoints return transport send error. Its state remains UNKNOWN; do not replay. Escalation contract/runtime match and a confirmed answer stops the chain; Notice Place phone-consumer review is still in progress. BotFather fix db1eeff is on main, head fae2743, focused tests 4/4; existing QA A/B registry is present, no accounts created. Archive audit: Voice image f199406 lacks full release receipt; backend rollback archives b54328f/baa2764 exist; Notice Place runtime revisions differ; BotFather image has no digest/rollback receipt.",
+  "external_waits": "Authoritative reconciliation of request_id owner-matrix-secretary-after-sdk-route-20261023-01 is pending because dispatcher log is unavailable and both MCP endpoints return transport send error; UNKNOWN must not be replayed. Stable tunnel 127.0.0.1:18086 to SDK app 192.168.128.7:8080 is absent. After those prerequisites, run a separate fresh canary using only existing Matrix fixtures. Notice Place phone-consumer source review is in progress. Real-person/cellular calls are prohibited for testing.",
   "slots": 2,
-  "updated_at": "2026-10-23T05:10:57",
+  "updated_at": "2026-10-23T06:37:19",
   "tasks": [
     {
       "id": "L01",
@@ -144,7 +144,7 @@
     },
     {
       "id": "L06",
-      "label": "завершить раздельную приемку MatrixRTC guest и Secretary SDK",
+      "label": "завершить раздельную приёмку MatrixRTC guest и Secretary SDK",
       "status": "running",
       "depends_on": [],
       "estimate_minutes": {
@@ -155,7 +155,7 @@
       "role": "Lead research",
       "acceptance": "Two test accounts establish the call; both-side speech/audio records are present and the per-user model is used.",
       "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
-      "blocker": "UserIO stop/finalization fix 5bbf883 is installed and an owner↔B call completed with durable audio/transcription; the owner SDK turn remained unsettled, and a separate non-owner outbound guest call/receipt is still unverified.",
+      "blocker": "Guest outbound acceptance is still incomplete; the owner MatrixRTC history proves two-way Russian/product-name audio, but the SDK ended before terminal receipt because effective URL pointed to Airlock Platform. Current config points to SDK app 192.168.128.7:8080; only userio-voice restarted. Stable tunnel and a terminal SDK receipt remain unproven.",
       "read_paths": [
         "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/voice",
         "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/matrix_call_worker.py",
@@ -169,113 +169,112 @@
     },
     {
       "id": "L07",
-      "label": "провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity",
+      "label": "проверить phone consumer Notice Place относительно контракта и подготовить безопасную приёмку",
+      "status": "running",
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "role": "Lead review",
+      "acceptance": "Complete the Notice Place phone-consumer source review and confirm the reviewed runtime behavior matches the escalation contract; no live phone canary is implied.",
+      "note": "Review is in progress; start time and active effort were not measured.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/noticeplace"
+      ]
+    },
+    {
+      "id": "L08",
+      "label": "получить terminal SDK turn через исправленный Secretary SDK маршрут",
       "status": "blocked",
       "depends_on": [],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "blocker": "owner credential, user-level send capability, owner `/whoami`, приватная owner↔B комната и MatrixRTC audio подтверждены; установленный AgentCall wrapper SHA `c44c620b5758e7e45a7226552c577369bd1379469e6e642fac5f1a968c6a670c` завершил ход ошибкой `NativeTurnUnsettled`. Нужна установка ранее проверенного AgentCall SDK fix владельцем voice runtime, без дублирования его правок.",
-      "role": "Worker bugfix",
-      "acceptance": "The specified owner recording conversation passes the unchanged utterance-boundary canary.",
+      "blocker": "прежний effective URL указывал на Airlock Platform, затем `/etc/agentcall-secretary-voice.json` переведён на SDK app `192.168.128.7:8080` и перезапущен только `userio-voice`; стабильного tunnel `127.0.0.1:18086` нет, новый terminal receipt не получен. Airlock не меняли.",
+      "role": "Lead runtime acceptance",
+      "acceptance": "A single non-replayed owner↔QA B MatrixRTC Secretary SDK call produces a terminal SDK receipt, two-way Russian audio and correct product-name pronunciation.",
       "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
       "read_paths": [
-        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip/ai-bridge/agentcall_realtime_bridge.py",
-        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip/ai-bridge/agentcall_fast_agent_worker.py",
-        "/home/roomhacker/ServersAdministartion/tests/test_agentcall_turn_timing_regression.py"
+        "/etc/agentcall-secretary-voice.json",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion"
       ],
       "write_paths": [],
       "paths": [
-        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip/ai-bridge"
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion"
       ]
     },
     {
-      "id": "L08",
-      "label": "после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик",
+      "id": "L09",
+      "label": "reconcile исход запроса `owner-matrix-secretary-after-sdk-route-20261023-01` без повтора",
+      "status": "blocked",
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "blocker": "запроса нет в Matrix call store/backend DB/voice logs, dispatcher log недоступен, обе MCP endpoints возвращают transport send error; неизвестно, был ли запрос передан. Оставить UNKNOWN и не replay.",
+      "role": "Lead receipt reconciliation",
+      "acceptance": "Reconcile the exact request_id from an authoritative dispatcher/transport receipt; preserve UNKNOWN and never replay if the receipt cannot prove a terminal outcome.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/agents-projects/noticeplace"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/agents-projects/noticeplace"
+      ]
+    },
+    {
+      "id": "L10",
+      "label": "после reconciliation UNKNOWN и проверки стабильного SDK tunnel провести один Secretary SDK разговор owner↔QA B",
       "status": "queued",
       "depends_on": [
+        "L09",
+        "L14"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "role": "Lead test",
+      "acceptance": "One fresh owner↔QA B SDK canary after exact UNKNOWN reconciliation and stable target route; terminal receipt and expected Secretary behavior are observed.",
+      "note": "Never replay request_id owner-matrix-secretary-after-sdk-route-20261023-01; a permitted fresh request is a separate canary.",
+      "read_paths": [
+        "/etc/agentcall-secretary-voice.json",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion"
+      ]
+    },
+    {
+      "id": "L11",
+      "label": "на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова",
+      "status": "queued",
+      "depends_on": [
+        "L06",
         "L07"
       ],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "role": "Lead test",
-      "acceptance": "A confirmed Matrix or Telegram answer creates no later phone delivery.",
-      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
-      "read_paths": [
-        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip",
-        "/home/roomhacker/agents-projects/universal-userio"
-      ],
-      "write_paths": [],
-      "paths": [
-        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip",
-        "/home/roomhacker/agents-projects/universal-userio"
-      ]
-    },
-    {
-      "id": "L09",
-      "label": "на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова",
-      "status": "queued",
-      "depends_on": [
-        "L06"
-      ],
-      "estimate_minutes": {
-        "minimum": 10.0,
-        "maximum": 15.0
-      },
-      "role": "Lead test",
-      "acceptance": "A fresh chain with definitive missed Matrix and Telegram legs starts exactly one phone call; no old delivery is replayed.",
-      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
-      "read_paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio"
-      ],
-      "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio"
-      ]
-    },
-    {
-      "id": "L10",
-      "label": "на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов",
-      "status": "queued",
-      "depends_on": [
-        "L09"
-      ],
-      "estimate_minutes": {
-        "minimum": 10.0,
-        "maximum": 15.0
-      },
-      "role": "Lead test",
-      "acceptance": "Each changed repository has a pinned good release, archive reference and rollback path.",
-      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
-      "read_paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip"
-      ],
-      "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip"
-      ]
-    },
-    {
-      "id": "L11",
-      "label": "сохранить проверенные версии и архив с воспроизводимым откатом",
-      "status": "queued",
-      "depends_on": [
-        "L10"
-      ],
-      "estimate_minutes": {
-        "minimum": 10.0,
-        "maximum": 15.0
-      },
       "role": "Lead release",
+      "acceptance": "A fresh chain with a definitive Matrix or Telegram answer creates no later phone delivery.",
+      "note": "The Notice Place source review is still in progress; contract/runtime alignment alone is not live canary proof.",
       "read_paths": [
         "/home/roomhacker/agents-projects/noticeplace",
         "/home/roomhacker/agents-projects/universal-userio",
@@ -289,7 +288,83 @@
         "/home/roomhacker/agents-projects/universal-userio",
         "/home/roomhacker/ServersAdministartion"
       ]
+    },
+    {
+      "id": "L12",
+      "label": "на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов",
+      "status": "queued",
+      "depends_on": [
+        "L11"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "role": "Lead test",
+      "acceptance": "A fresh independent chain with definitive missed Matrix and Telegram legs starts exactly one phone call; no old delivery is replayed.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip"
+      ]
+    },
+    {
+      "id": "L13",
+      "label": "сохранить проверенные версии и архив с воспроизводимым откатом",
+      "status": "queued",
+      "depends_on": [
+        "L10",
+        "L12"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "role": "Lead release",
+      "acceptance": "Record immutable source/image revisions, complete release receipts and verified rollback archives; reconcile Voice f199406, backend archives b54328f/baa2764, Notice Place runtime drift and missing BotFather image digest/rollback receipt.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion"
+      ],
+      "write_paths": [
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/release-manifest.json"
+      ],
+      "paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion"
+      ]
+    },
+    {
+      "id": "L14",
+      "label": "проверить или восстановить стабильный tunnel `127.0.0.1:18086` к SDK app `192.168.128.7:8080`",
+      "status": "queued",
+      "depends_on": [
+        "L09"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "role": "Lead infrastructure verification",
+      "acceptance": "Verify or restore a stable local tunnel from 127.0.0.1:18086 to SDK app 192.168.128.7:8080 without changing Airlock; verify the target before the next canary.",
+      "read_paths": [
+        "/etc/agentcall-secretary-voice.json",
+        "/home/roomhacker/ServersAdministartion"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/ServersAdministartion"
+      ]
     }
   ],
-  "leaf_count": 11
+  "leaf_count": 14
 }
