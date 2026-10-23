@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task · LHC</title>
+<style>
+  :root, :root[data-theme="dark"] { --bg: #0d1117; --panel: #151b26; --panel-2: #1b2331; --line: #26303f; --text: #e6edf6; --muted: #9fb0c6; --accent: #6ea8fe; --ok: #2ecc71; --warn: #f0a742; --bad: #f25f74; --st-done: #2ecc71; --st-running: #4f9cf9; --st-blocked: #f25f74; --st-waiting: #f0a742; --st-deferred: #b08ce8; --st-queued: #8fa0b8; }
+  :root[data-theme="light"] { --bg: #f4f6f9; --panel: #ffffff; --panel-2: #eaeef4; --line: #d3dae3; --text: #15202c; --muted: #58677a; --accent: #1a62cc; --ok: #1a7f37; --warn: #8a6100; --bad: #c02b38; --st-done: #1a7f37; --st-running: #1a62cc; --st-blocked: #c02b38; --st-waiting: #8a6100; --st-deferred: #6b4fa8; --st-queued: #5a6b7f; }
+  * { box-sizing: border-box; }
+  /* The page background lives on the canvas itself. No overlay element is
+     painted over the content, so nothing can ever hide a block of the
+     dashboard behind an opaque layer. */
+  html { background: var(--bg); }
+  body {
+    margin: 0; background: var(--bg);
+    background-image: radial-gradient(1500px 760px at 12% -12%, #1b2b45 0%, rgba(13,17,23,0) 62%);
+    background-repeat: no-repeat;
+    color: var(--text);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif;
+    padding: 22px clamp(12px, 3vw, 40px) 56px;
+    min-height: 100%;
+    overflow-x: hidden;
+  }
+  a { color: var(--accent); }
+  .page { max-width: 2200px; margin: 0 auto; }
+
+  /* ---- header ---- */
+  header { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between;
+    margin-bottom: 16px; }
+  h1 { font-size: 23px; margin: 0; letter-spacing: -0.3px; overflow-wrap: anywhere; }
+  header > div { min-width: 0; max-width: 100%; }
+  .sub { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+  .head-count { display: flex; align-items: baseline; gap: 8px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; padding: 8px 14px; }
+  .head-count b { font-size: 22px; font-weight: 650; letter-spacing: -0.4px; }
+  .head-count span { color: var(--muted); font-size: 12px; }
+  .theme-toggle { background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+    border-radius: 10px; padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+    min-height: 44px; min-width: 44px; }
+  .theme-toggle:hover { color: var(--text); }
+  .head-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  /* The progress stays in sight while the page scrolls. */
+  /* A number you can click: the tasks behind it. */
+  .kpi-tile { cursor: pointer; }
+  .kpi-tile:hover { border-color: var(--accent); }
+  .kpi-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .progress-strip { cursor: pointer; }
+  .tile-card { margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--panel-2); }
+  .tile-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    margin-bottom: 8px; }
+  .tile-card-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .tile-card-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+    padding: 6px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .tile-card-item:hover .row-name { color: var(--accent); }
+  .tile-card-close, .tile-card-back { min-height: 44px; padding: 4px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+  .journal-fold summary { cursor: pointer; list-style: none; }
+  .journal-fold summary::-webkit-details-marker { display: none; }
+  .journal-fold summary h2 { margin: 0; font-size: 12px; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); }
+  .journal-fold[open] summary h2 { color: var(--text); }
+  .evidence-fold { margin: 0 0 14px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--panel); }
+  .evidence-fold > summary { cursor: pointer; padding: 10px 12px; color: var(--muted);
+    font-size: 12.5px; }
+  .evidence-fold[open] > summary { color: var(--text); border-bottom: 1px solid var(--line); }
+  .evidence-fold > *:not(summary) { margin-left: 12px; margin-right: 12px; }
+  .blocking-group { display: grid; gap: 8px; }
+  .blocking-group h3 { margin: 0 0 2px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); }
+  .blocker-owner { border-left-color: var(--warn); }
+  /* The progress strip sticks to the top, so an anchor jump must not land
+     a section under it. */
+  section, .panel, .kpis, [id^="lhc-"] { scroll-margin-top: 76px; }
+  .progress-strip { position: sticky; top: 0; z-index: 40; margin: 0 0 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+  .progress-strip-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+  .progress-strip-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); }
+  .progress-strip-value { font-size: 15px; font-weight: 700; color: var(--text); }
+  .progress-strip-percent { font-size: 13px; font-weight: 600; color: var(--accent); }
+  .progress-strip-hint { font-size: 12px; color: var(--muted); }
+  .progress-strip-bar { display: flex; height: 6px; margin-top: 7px; border-radius: 999px;
+    overflow: hidden; background: var(--panel-2); }
+  .progress-strip-bar .seg { height: 100%; }
+  .snapshot-note { color: var(--muted); font-size: 12.5px; margin: 0 0 14px; padding: 8px 12px;
+    border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px;
+    background: var(--panel); overflow-wrap: anywhere; }
+
+  /* ---- panels ---- */
+  .panel { background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+    border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin-bottom: 16px; min-width: 0; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted);
+    margin: 0 0 12px; font-weight: 600; }
+  .panel-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+  .panel-head h2 { margin: 0; }
+
+  /* ---- brief: goal and business result ---- */
+  .brief { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 16px; }
+  /* The technical wording is a confirmation, not the first thing to read. */
+  .brief-details { margin-bottom: 16px; }
+  .brief-details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px;
+    min-height: 44px; display: flex; align-items: center; }
+  .brief-details[open] > summary { margin-bottom: 12px; color: var(--text); }
+  .brief-card { background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+    border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 12px; padding: 14px 16px;
+    min-width: 0; }
+  .brief-card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+    margin: 0 0 6px; font-weight: 600; }
+  .brief-card p { margin: 0; overflow-wrap: anywhere; }
+  .brief-goal { border-left-color: var(--accent); }
+  .brief-result { border-left-color: var(--ok); }
+  .brief-wait { border-left-color: var(--warn); }
+  /* The why-panel is open on the first screen; it may be folded by the owner. */
+  .brief-why-details { margin-bottom: 16px; }
+  .brief-why-details > summary { color: var(--text); }
+  .brief-why { margin-bottom: 0; }
+
+  /* ---- KPI strip ---- */
+  .kpis { display: grid; gap: 10px; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 14px; }
+  .kpi { background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+    border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 12px; padding: 11px 13px;
+    min-width: 0; }
+  .kpi-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi-value { font-size: 25px; font-weight: 650; margin: 3px 0 2px; letter-spacing: -0.6px; line-height: 1.15;
+    overflow-wrap: anywhere; }
+  .kpi-hint { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+
+  /* ---- progress and legend ---- */
+  .progress { display: flex; height: 12px; border-radius: 999px; overflow: hidden; background: #0b1018;
+    border: 1px solid var(--line); }
+  .seg { height: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+  .legend-item i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; }
+
+  /* ---- what to do now ---- */
+  .slots-badge { font-size: 12.5px; color: var(--muted); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; }
+  .slots-badge b { color: var(--text); font-size: 14px; }
+  .now-grid { display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 14px;
+    align-items: start; }
+  .now-col { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+    min-width: 0; }
+  .now-col h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+    margin: 0 0 10px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .now-count { margin-left: auto; background: #0e141d; border: 1px solid var(--line); border-radius: 999px;
+    padding: 0 8px; color: var(--text); font-size: 11.5px; }
+  .now-subtitle { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
+    margin: 12px 0 6px; }
+  .now-list { list-style: none; margin: 0; padding: 0; }
+  .now-item { padding: 8px 0; border-bottom: 1px solid #232c3a; }
+  .now-item:last-child { border-bottom: 0; }
+  .now-head { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+  .now-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
+    color: var(--accent); flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .now-name { min-width: 0; overflow-wrap: anywhere; }
+  .now-meta { color: var(--muted); font-size: 11.5px; margin-top: 2px; overflow-wrap: anywhere; }
+  .now-item.deferred { opacity: .75; }
+  .now-item.blocked .now-id { color: var(--bad); }
+  .now-empty { color: var(--muted); font-style: italic; font-size: 12.5px; }
+  .wait-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .wait-chip { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
+    color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+    padding: 2px 7px; white-space: nowrap; }
+  .wait-more { color: var(--muted); font-size: 11.5px; align-self: center; }
+
+  /* ---- gantt ---- */
+  .gantt { overflow-x: auto; max-width: 100%; }
+  .gantt-inner { min-width: 760px; }
+  .gantt-axis-row, .gantt-row { display: grid; grid-template-columns: minmax(240px, 320px) minmax(360px, 1fr);
+    gap: 10px; min-width: 680px; }
+  .gantt-axis-spacer { min-width: 0; }
+  .gantt-axis { position: relative; height: 22px; min-width: 0; border-bottom: 1px solid var(--line); }
+  .tick { position: absolute; top: 2px; transform: translateX(-50%); font-size: 11px; color: var(--muted);
+    white-space: nowrap; }
+  .tick-0 { transform: none; }
+  .tick-6 { transform: translateX(-100%); }
+  .gantt-row { align-items: center; border-bottom: 1px solid #1e2632; }
+  .gantt-row:hover { background: #18202d; }
+  .gantt-label { display: flex; flex-direction: column; gap: 1px; padding: 5px 0; min-width: 0; overflow: hidden; }
+  .gantt-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .gantt-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px;
+    color: var(--muted); flex: none; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gantt-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gantt-meta { gap: 8px; }
+  .gantt-status { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+  .crit { color: #f0a742; font-size: 10.5px; white-space: nowrap; }
+  .gantt-track { position: relative; height: 26px; min-width: 0; }
+  .bar { position: absolute; top: 6px; height: 15px; border-radius: 5px; min-width: 3px;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.25) inset; }
+  .wave-row { display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    margin-top: 14px; padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--line);
+    border-left: 3px solid var(--accent); border-radius: 10px; color: var(--muted);
+    font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .wave-count { text-transform: none; letter-spacing: 0; }
+
+  /* ---- two column work area ---- */
+  .grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.35fr) minmax(0, .65fr);
+    align-items: start; }
+  .grid > * { min-width: 0; }
+  @media (max-width: 1000px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  @media (min-width: 1700px) {
+    .gantt-axis-row, .gantt-row { grid-template-columns: minmax(340px, 460px) minmax(360px, 1fr); }
+  }
+  @media (max-width: 1800px) { .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  @media (max-width: 1200px) { .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 1100px) {
+    .now-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 900px) {
+    .brief { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 700px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .blocker { background: var(--panel-2); border: 1px solid #3a2530; border-left: 3px solid var(--bad);
+    border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+  .blocker-head { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+  .blocker-reason { color: #d7e0ec; }
+  .blocker-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .badge { font-size: 11px; font-weight: 700; color: #0d1117; border-radius: 5px; padding: 1px 6px; }
+  .facts { margin: 0; padding-left: 18px; color: var(--muted); }
+  .facts li { margin-bottom: 6px; }
+  .facts b { color: var(--text); }
+  .live { list-style: none; margin: 0; padding: 0; }
+  .live li { display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid #1e2632; align-items: baseline; }
+  .live-text { flex: 1; }
+  .live-at { color: #8aa0b8; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .live-result { color: var(--text); font-size: 12.5px; }
+  .live-evidence { color: #8aa0b8; font-size: 12px; white-space: nowrap; }
+  .leaf-tag { color: var(--muted); font-size: 11px; border: 1px solid var(--line); border-radius: 5px;
+    padding: 0 5px; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .cell-sub { display: block; color: var(--muted); font-size: 11px; }
+  .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .05em; padding: 6px 8px; border-bottom: 1px solid var(--line);
+    background: var(--panel); }
+  .table td { padding: 6px 8px; border-bottom: 1px solid #1c2431; vertical-align: top; }
+  /* The leaves are read as a table, so the panel takes the whole width
+     of the page instead of one column of a two-column grid. */
+  .panel-leaves { grid-column: 1 / -1; }
+  .table-leaves { min-width: 920px; width: 100%; table-layout: fixed; }
+  .table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+  .table-leaves th:nth-child(1) { width: 42%; }
+  .table-leaves th:nth-child(2) { width: 120px; }
+  .table-leaves th:nth-child(3), .table-leaves th:nth-child(4) { width: 86px; }
+  .table-leaves th:nth-child(5) { width: 120px; }
+  .task-title { font-weight: 550; overflow-wrap: anywhere; }
+  .row-id { display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px; color: var(--muted); margin-right: 7px; vertical-align: 1px; }
+  .table-leaves .status { white-space: nowrap; }
+  .task-details-trigger, .task-details-close { color: var(--accent); background: transparent; border: 1px solid var(--line);
+    border-radius: 6px; cursor: pointer; font: inherit; padding: 3px 7px; }
+  .task-details-host { position: static; width: 100%; margin-top: 12px; }
+  /* The leaf row is the control: the owner taps the task, and the task opens
+     right under itself, where the finger already is. */
+  .leaf-row { cursor: pointer; }
+  .leaf-row:hover .row-name { color: var(--accent); }
+  .leaf-row:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .task-details-row > td { padding: 0; border: none; background: transparent; }
+  .task-details-row .task-details-card { margin: 0 0 10px; }
+  .row-meta { display: block; margin-top: 2px; color: var(--muted); font-size: 12px;
+    overflow-wrap: anywhere; }
+  .details-cell { text-align: right; }
+  .task-details-card { width: 100%; min-width: 0; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px; }
+  .task-details-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .task-details-head h3 { min-width: 0; margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+  .task-details { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 3px 12px; margin: 8px 0 2px; }
+  .task-details dt { color: var(--muted); }
+  .task-details dd { margin: 0; min-width: 0; width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+  details > summary { color: var(--accent); cursor: pointer; }
+  .technical { font-size: 12px; }
+  .status { color: var(--c); font-weight: 600; white-space: nowrap; }
+  .over { color: #f0a742; }
+  .empty { color: var(--muted); font-style: italic; }
+  .notes { color: var(--muted); margin: 0; padding-left: 18px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .toolbar input { background: #0e141d; border: 1px solid var(--line); color: var(--text); border-radius: 8px;
+    padding: 6px 10px; min-width: 200px; font: inherit; }
+  .chip { background: #0e141d; border: 1px solid var(--line); color: var(--muted); border-radius: 999px;
+    padding: 4px 11px; cursor: pointer; font: inherit; font-size: 12px; }
+  .chip.active { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 600; }
+  footer { color: var(--muted); font-size: 11.5px; margin-top: 22px; border-top: 1px solid var(--line);
+    padding-top: 12px; }
+  /* The phone layout comes last, so it wins over every base rule above. */
+  @media (max-width: 640px) {
+    /* The state and the action come first; the Gantt opens on its own,
+       below the table that carries the same leaves. */
+    .page { display: flex; flex-direction: column; }
+    /* A flex item keeps its content width by default, so the wide Gantt
+       would push the whole page sideways. The panels have to be allowed to
+       shrink and scroll inside. */
+    .page > * { min-width: 0; max-width: 100%; }
+    .panel, .grid > *, .kpis { min-width: 0; }
+    .panel-gantt { order: 8; }
+    footer { order: 9; }
+    body { padding: 14px 10px 36px; }
+    .panel { padding: 12px; border-radius: 11px; }
+    h1 { font-size: 19px; }
+    /* The cards become compact rows: on a phone the state and the action
+       have to be visible without a grid of boxes. */
+    .kpis { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .kpi { padding: 8px 10px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+    .kpi-label { order: 1; flex: 0 0 auto; }
+    .kpi-value { order: 2; font-size: 19px; margin: 0; }
+    .kpi-hint { order: 3; flex: 1 1 100%; font-size: 11px; }
+    .toolbar input { min-width: 0; width: 100%; }
+    /* Every touch target is at least 44 CSS px. */
+    .chip, .task-details-trigger, .task-details-close, .toolbar input, .toolbar select { min-height: 44px; min-width: 44px; }
+    .task-details { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .task-details dd { margin-bottom: 8px; }
+    /* The leaf table becomes one compact row per leaf instead of a wide
+       table that has to be scrolled sideways. */
+    .table-leaves { min-width: 0; display: block; }
+    .table-leaves thead { display: none; }
+    .table-leaves tbody { display: block; }
+    .table-leaves tr { display: block; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .table-leaves td { display: flex; gap: 10px; justify-content: space-between; align-items: baseline;
+      border: none; padding: 2px 0; text-align: right; }
+    .table-leaves td::before { content: attr(data-label); color: var(--muted); font-size: 11px;
+      text-transform: uppercase; letter-spacing: .05em; text-align: left; flex: 0 0 auto; }
+    .table-leaves td.task-title { display: block; text-align: left; }
+    .table-leaves td.task-title::before { content: none; }
+    .table-leaves td:last-child { justify-content: flex-start; }
+    .table-leaves td:last-child::before { content: none; }
+    .table-scroll { overflow-x: visible; }
+    /* The opened task is a card under its own row, not another table cell. */
+    .table-leaves tr.task-details-row { display: block; padding: 0; border: none; }
+    .table-leaves tr.task-details-row > td { display: block; padding: 0; text-align: left; }
+    .table-leaves tr.task-details-row > td::before { content: none; }
+  }
+
+</style>
+</head>
+<body>
+<div class="page">
+<div class="progress-strip" id="lhc-progress-strip" role="button" tabindex="0" data-tile="all" aria-label="Степень прогресса — показать все задачи"><div class="progress-strip-line"><span class="progress-strip-title">Степень прогресса</span><span class="progress-strip-value">5 / 11</span><span class="progress-strip-percent">45.5%</span><span class="progress-strip-hint">без неизвестных оценок и ожиданий</span></div><div class="progress-strip-bar"><div class="seg" style="width:45.4545%;background:var(--st-done)" title="Готово: 5"></div><div class="seg" style="width:9.0909%;background:var(--st-running)" title="В работе: 1"></div><div class="seg" style="width:9.0909%;background:var(--st-blocked)" title="Заблокировано: 1"></div><div class="seg" style="width:36.3636%;background:var(--st-queued)" title="В очереди: 4"></div></div></div>
+
+<header><div><h1>Task</h1><div class="sub">LHC · graph-json · план обновлён 2026-10-23 05:10:57 · ревизия d9ffa59ea5c4 · собран 23.10.2026 05:11</div></div><div class="head-actions"><button type="button" class="theme-toggle" id="theme-toggle" aria-label="Переключить тему">Тема: как в системе</button><div class="head-count"><b>11</b><span>задач в графе</span></div></div></header>
+
+
+
+<p class="snapshot-note">Это снимок плана, а не панель управления: фактическое состояние работы приходит из API владельцев, а не из пересказа агента в графе.</p>
+
+<div class="kpis" id="lhc-state"><div class="kpi kpi-tile" data-tile="done" role="button" tabindex="0" aria-label="Готово: 5 / 11 — показать задачи" style="--accent:var(--st-done)"><div class="kpi-label" title="Готово">✅ Готово</div><div class="kpi-value">5 / 11</div><div class="kpi-hint">45.5% листьев</div></div><div class="kpi kpi-tile" data-tile="running" role="button" tabindex="0" aria-label="В работе: 1 — показать задачи" style="--accent:var(--st-running)"><div class="kpi-label" title="В работе">🔄 В работе</div><div class="kpi-value">1</div><div class="kpi-hint">сейчас выполняется</div></div><div class="kpi kpi-tile" data-tile="blocked" role="button" tabindex="0" aria-label="Заблокировано: 1 — показать задачи" style="--accent:var(--st-blocked)"><div class="kpi-label" title="Заблокировано">⛔ Заблокировано</div><div class="kpi-value">1</div><div class="kpi-hint">нужен внешний ход</div></div><div class="kpi kpi-tile" data-tile="queued" role="button" tabindex="0" aria-label="В очереди: 4 — показать задачи" style="--accent:var(--st-queued)"><div class="kpi-label" title="В очереди">⋯ В очереди</div><div class="kpi-value">4</div><div class="kpi-hint">ждут своего слота</div></div><div class="kpi kpi-tile" data-tile="deferred" role="button" tabindex="0" aria-label="Отложено владельцем: 0 — показать задачи" style="--accent:var(--st-deferred)"><div class="kpi-label" title="Отложено владельцем">⏸ Отложено владельцем</div><div class="kpi-value">0</div><div class="kpi-hint">ответа не ждём, вне остатка</div></div><div class="kpi kpi-tile" data-tile="unfinished" role="button" tabindex="0" aria-label="Осталось: 6 — показать задачи" style="--accent:var(--st-queued)"><div class="kpi-label" title="Осталось">⋯ Осталось</div><div class="kpi-value">6</div><div class="kpi-hint">не завершено · отложено владельцем: 0 (в остаток не входит)</div></div><div class="kpi kpi-tile" data-tile="parallel" role="button" tabindex="0" aria-label="Параллельность: 1 / 2 — показать задачи" style="--accent:var(--st-running)"><div class="kpi-label" title="Параллельность">Параллельность</div><div class="kpi-value">1 / 2</div><div class="kpi-hint">пик по плану 2</div></div><div class="kpi kpi-tile" data-tile="remaining" role="button" tabindex="0" aria-label="Известная часть работы: 1 ч — показать задачи" style="--accent:var(--st-waiting)"><div class="kpi-label" title="Известная часть работы">Известная часть работы</div><div class="kpi-value">1 ч</div><div class="kpi-hint">без неизвестных оценок и ожиданий</div></div><div class="kpi kpi-tile" data-tile="forecast" role="button" tabindex="0" aria-label="Прогноз финиша: Срок неизвестен — показать задачи" style="--accent:var(--st-done)"><div class="kpi-label" title="Прогноз финиша">Прогноз финиша</div><div class="kpi-value">Срок неизвестен</div><div class="kpi-hint">Есть внешние ожидания без подтверждённого срока</div></div><div class="kpi kpi-tile" data-tile="effort" role="button" tabindex="0" aria-label="Усилие: 2 ч 36 мин — показать задачи" style="--accent:var(--st-queued)"><div class="kpi-label" title="Усилие">Усилие</div><div class="kpi-value">2 ч 36 мин</div><div class="kpi-hint">критический путь 1 ч</div></div></div>
+
+<div class="tile-card" id="lhc-tile-card" hidden></div>
+<template id="lhc-tile-index">{"tiles": {"all": ["L01", "L02", "L03", "L04", "L05", "L06", "L07", "L08", "L09", "L10", "L11"], "done": ["L01", "L02", "L03", "L04", "L05"], "running": ["L06"], "blocked": ["L07"], "queued": ["L08", "L09", "L10", "L11"], "deferred": [], "unfinished": ["L06", "L07", "L08", "L09", "L10", "L11"], "parallel": ["L01", "L02", "L03", "L04", "L05", "L06", "L07"], "remaining": ["L06", "L07", "L08", "L09", "L10", "L11"], "forecast": ["L11"], "effort": ["L06", "L09", "L10", "L11"]}, "titles": {"done": "Готово", "running": "В работе", "blocked": "Заблокировано", "queued": "В очереди", "deferred": "Отложено владельцем", "unfinished": "Осталось", "parallel": "Параллельность", "remaining": "Известная часть работы", "forecast": "Прогноз финиша", "effort": "Усилие", "all": "Все задачи плана"}, "leaves": {"L01": {"id": "L01", "template": 0, "label": "сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей", "status": "done", "status_label": "Готово", "owner": "Codex gpt-6-luna", "estimate": "8 мин–12 мин"}, "L02": {"id": "L02", "template": 1, "label": "проверить разрешённые удалённые ветки и совпадение локальной main с origin/main", "status": "done", "status_label": "Готово", "owner": "Lead", "estimate": "8 мин–12 мин"}, "L03": {"id": "L03", "template": 2, "label": "сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения", "status": "done", "status_label": "Готово", "owner": "Lead research", "estimate": "8 мин–12 мин"}, "L04": {"id": "L04", "template": 3, "label": "сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов", "status": "done", "status_label": "Готово", "owner": "Lead test", "estimate": "10 мин–15 мин"}, "L05": {"id": "L05", "template": 4, "label": "подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B", "status": "done", "status_label": "Готово", "owner": "Lead runtime verification", "estimate": "10 мин–15 мин"}, "L06": {"id": "L06", "template": 5, "label": "завершить раздельную приемку MatrixRTC guest и Secretary SDK", "status": "running", "status_label": "В работе", "owner": "Lead research", "estimate": "10 мин–15 мин"}, "L07": {"id": "L07", "template": 6, "label": "провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity", "status": "blocked", "status_label": "Заблокировано", "owner": "Worker bugfix", "estimate": "10 мин–15 мин"}, "L08": {"id": "L08", "template": 7, "label": "после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик", "status": "queued", "status_label": "В очереди", "owner": "Lead test", "estimate": "10 мин–15 мин"}, "L09": {"id": "L09", "template": 8, "label": "на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова", "status": "queued", "status_label": "В очереди", "owner": "Lead test", "estimate": "10 мин–15 мин"}, "L10": {"id": "L10", "template": 9, "label": "на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов", "status": "queued", "status_label": "В очереди", "owner": "Lead test", "estimate": "10 мин–15 мин"}, "L11": {"id": "L11", "template": 10, "label": "сохранить проверенные версии и архив с воспроизводимым откатом", "status": "queued", "status_label": "В очереди", "owner": "Lead release", "estimate": "10 мин–15 мин"}}}</template>
+
+<div class="panel panel-now">
+  <div class="panel-head"><h2>Что делать сейчас</h2><div class="slots-badge">Свободных слотов: <b>1 из 2</b></div></div><div class="now-grid"><section class="now-col"><h3><span class="now-glyph">🔄</span> В работе <span class="now-count">1</span></h3><ul class="now-list"><li class="now-item"><div class="now-head"><span class="now-id">L06</span><span class="now-name">завершить раздельную приемку MatrixRTC guest и Secretary SDK</span></div><div class="now-meta">начато в 04:05</div></li></ul></section><section class="now-col"><h3><span class="now-glyph">🚀</span> Готовы к запуску <span class="now-count">0</span></h3><div class="now-empty">Ни одна линия не готова к запуску.</div></section><section class="now-col"><h3><span class="now-glyph">⛔</span> Заблокированы <span class="now-count">1</span></h3><ul class="now-list"><li class="now-item blocked"><div class="now-head"><span class="now-id">L07</span><span class="now-name">провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity</span></div><div class="now-meta">owner credential, user-level send capability, owner `/whoami`, приватная owner↔B комната и MatrixRTC audio подтверждены; установленный AgentCall wrapper SHA `c44c620b5758e7e45a7226552c577369bd1379469e6e642fac5f1a968c6a670c` завершил ход ошибкой `NativeTurnUnsettled`. Нужна установка ранее проверенного AgentCall SDK fix владельцем voice runtime, без дублирования его правок.</div></li></ul></section></div><div class="now-subtitle">Ждут зависимостей (4)</div><div class="wait-list"><span class="wait-chip" title="после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик">L08 ← L07</span><span class="wait-chip" title="на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова">L09 ← L06</span><span class="wait-chip" title="на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов">L10 ← L09</span><span class="wait-chip" title="сохранить проверенные версии и архив с воспроизводимым откатом">L11 ← L10</span></div><div class="hint">Источник расчёта: lhc_parallel.</div>
+</div>
+
+<div class="panel panel-blocking" id="lhc-blocking">
+  <h2>Что блокирует</h2>
+  <div class="blocking-group"><h3>Держит работу</h3><div class="blocker"><div class="blocker-head"><span class="badge" style="background:var(--st-blocked)">Заблокировано</span><b>провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity</b></div><div class="blocker-reason"><b>Почему ждём:</b> owner credential, user-level send capability, owner `/whoami`, приватная owner↔B комната и MatrixRTC audio подтверждены; установленный AgentCall wrapper SHA `c44c620b5758e7e45a7226552c577369bd1379469e6e642fac5f1a968c6a670c` завершил ход ошибкой `NativeTurnUnsettled`. Нужна установка ранее проверенного AgentCall SDK fix владельцем voice runtime, без дублирования его правок.</div><div class="blocker-meta"><b>Ждёт:</b> внешнее условие</div><div class="blocker-meta"><b>Кто делает:</b> Worker bugfix</div><div class="blocker-meta"><b>Следующий шаг:</b> Estimates are active work; external phone-recipient wait is tracked at graph level.</div><div class="blocker-meta"><b>Нужен ли человек:</b> Пока неизвестно. Действие человека не уточнено.</div></div></div>
+</div>
+
+<details class="panel brief-details brief-why-details" open>
+  <summary>Цель и ожидаемый бизнес-результат</summary>
+  <div class="brief brief-why"><article class="brief-card brief-goal"><h2>Цель</h2><p>довести до проверенного выпуска надёжный русский голосовой помощник и корректную эскалацию Matrix → Telegram → телефон; использовать существующие Matrix fixtures для воспроизводимых проверок и сохранить хорошие версии.</p></article><article class="brief-card brief-result"><h2>Ожидаемый бизнес-результат</h2><p>владелец ведёт связный разговор без перебиваний и слышит русские названия; входящий звонок включает секретаря. Ответ в Matrix/Telegram прекращает цепочку, телефон звонит после подтверждённых пропусков; версии можно повторить и откатить.</p></article></div>
+</details>
+
+
+
+<div class="panel panel-progress">
+  <div class="progress"><div class="seg" style="width:45.4545%;background:var(--st-done)" title="Готово: 5"></div><div class="seg" style="width:9.0909%;background:var(--st-running)" title="В работе: 1"></div><div class="seg" style="width:9.0909%;background:var(--st-blocked)" title="Заблокировано: 1"></div><div class="seg" style="width:36.3636%;background:var(--st-queued)" title="В очереди: 4"></div></div>
+  <div class="legend"><span class="legend-item"><i style="background:var(--st-done)"></i>Готово · 5</span><span class="legend-item"><i style="background:var(--st-running)"></i>В работе · 1</span><span class="legend-item"><i style="background:var(--st-blocked)"></i>Заблокировано · 1</span><span class="legend-item"><i style="background:var(--st-queued)"></i>В очереди · 4</span></div>
+</div>
+
+<details class="panel brief-details" open>
+  <summary>Подтверждённый прогресс и внешние ожидания</summary>
+  <div class="brief"><article class="brief-card"><h2>Подтверждённый прогресс</h2><p>Existing QA fixtures were reused; no new Matrix accounts or BotFather issuance. Owner Matrix connector-ref loaded only in-process and `/whoami` matched the owner identity. Generic `messenger_capabilities` provider_status=unconfigured is the read-only messaging adapter; dedicated MatrixCalls RTC sender is separate, owner user-level `capability_enabled('send')` defaults true, and no capability was changed. UserIO commits 5bbf883 and 1d845c7 are on main; backend image b54328f… is installed with rollback snapshot, API/supervisor healthy and accounts unchanged. A private unfederated room contains only owner+B. Final call 6fd4f021-df46-55c7-8e0b-69274c0fc9f9 completed/answered with incoming audio 894542 bytes; recording manifest complete at 9.32s and transcription COMPLETE. Owner transcript preserved the name in Russian: `Сайт гпт админ — панель управления гпт`. The installed AgentCall wrapper then logged `NativeTurnUnsettled: Secretary voice outcome is unknown`; terminal SDK receipt and secretary mode are unproven. The original utterance-boundary call and escalation canaries remain open.</p></article><article class="brief-card brief-wait"><h2>Внешние ожидания</h2><p>The current owner of the server-100 AgentCall voice runtime must install the already-reviewed SDK wrapper/bridge fix and confirm installed hashes; the live wrapper remains SHA c44c620b… while the reported target starts b6c2a590…. This lane will not duplicate voice-runtime edits. After that live readback, run one owner↔QA B Secretary SDK canary. Separate guest outbound acceptance, the original utterance-boundary recording, Matrix→Telegram→phone escalation, and final release/archive remain pending; no human/cellular call is authorized or needed for these checks.</p></article></div>
+</details>
+
+
+
+<div class="panel panel-gantt" id="lhc-plan-gantt">
+  <h2>Гант · листья и параллельные волны</h2>
+  <div class="gantt"><div class="gantt-inner">
+    <div class="gantt-axis-row"><div class="gantt-axis-spacer"></div><div class="gantt-axis"><div class="tick tick-0" style="left:0.0000%">0 мин</div><div class="tick tick-1" style="left:16.6667%">14 мин</div><div class="tick tick-2" style="left:33.3333%">29 мин</div><div class="tick tick-3" style="left:50.0000%">43 мин</div><div class="tick tick-4" style="left:66.6667%">58 мин</div><div class="tick tick-5" style="left:83.3333%">1 ч 12 мин</div><div class="tick tick-6" style="left:100.0000%">1 ч 27 мин</div></div></div>
+    <div class="wave-row"><span>Волна 1</span><span class="wave-count">7 листьев</span></div><div class="gantt-row" data-status="done" data-leaf="L01"><div class="gantt-label" title="сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей"><span class="gantt-line"><span class="dot" style="background:var(--st-done)"></span><span class="gantt-id" title="L01">L01</span><span class="gantt-text">сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">✅ Готово</span></span></div><div class="gantt-track"><div class="bar" style="left:0.0000%;width:13.7931%;background:var(--st-done)" title="L01 · сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей
+статус: Готово
+оценка: 8 мин–12 мин
+усилие (суммарно): 6 мин
+по часам: 6 мин
+начало: 00:32
+конец: 00:38"></div></div></div><div class="gantt-row" data-status="done" data-leaf="L02"><div class="gantt-label" title="проверить разрешённые удалённые ветки и совпадение локальной main с origin/main"><span class="gantt-line"><span class="dot" style="background:var(--st-done)"></span><span class="gantt-id" title="L02">L02</span><span class="gantt-text">проверить разрешённые удалённые ветки и совпадение локальной main с origin/main</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">✅ Готово</span></span></div><div class="gantt-track"><div class="bar" style="left:0.0000%;width:13.7931%;background:var(--st-done)" title="L02 · проверить разрешённые удалённые ветки и совпадение локальной main с origin/main
+статус: Готово
+оценка: 8 мин–12 мин
+усилие (суммарно): 4 мин
+по часам: 4 мин
+начало: 00:40
+конец: 00:44"></div></div></div><div class="gantt-row" data-status="done" data-leaf="L03"><div class="gantt-label" title="сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения"><span class="gantt-line"><span class="dot" style="background:var(--st-done)"></span><span class="gantt-id" title="L03">L03</span><span class="gantt-text">сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">✅ Готово</span></span></div><div class="gantt-track"><div class="bar" style="left:13.7931%;width:13.7931%;background:var(--st-done)" title="L03 · сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения
+статус: Готово
+оценка: 8 мин–12 мин
+усилие (суммарно): 4 мин
+по часам: 4 мин
+начало: 00:44
+конец: 00:48"></div></div></div><div class="gantt-row" data-status="done" data-leaf="L04"><div class="gantt-label" title="сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов"><span class="gantt-line"><span class="dot" style="background:var(--st-done)"></span><span class="gantt-id" title="L04">L04</span><span class="gantt-text">сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">✅ Готово</span></span></div><div class="gantt-track"><div class="bar" style="left:13.7931%;width:17.2414%;background:var(--st-done)" title="L04 · сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов
+статус: Готово
+оценка: 10 мин–15 мин
+по часам: 26 мин
+начало: 00:44
+конец: 01:10"></div></div></div><div class="gantt-row" data-status="done" data-leaf="L05"><div class="gantt-label" title="подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B"><span class="gantt-line"><span class="dot" style="background:var(--st-done)"></span><span class="gantt-id" title="L05">L05</span><span class="gantt-text">подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">✅ Готово</span></span></div><div class="gantt-track"><div class="bar" style="left:27.5862%;width:17.2414%;background:var(--st-done)" title="L05 · подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B
+статус: Готово
+оценка: 10 мин–15 мин
+начало: 01:51"></div></div></div><div class="gantt-row" data-status="running" data-leaf="L06"><div class="gantt-label" title="завершить раздельную приемку MatrixRTC guest и Secretary SDK"><span class="gantt-line"><span class="dot" style="background:var(--st-running)"></span><span class="gantt-id" title="L06">L06</span><span class="gantt-text">завершить раздельную приемку MatrixRTC guest и Secretary SDK</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">🔄 В работе</span><span class="crit" title="критический путь">◆ критический путь</span></span></div><div class="gantt-track"><div class="bar" style="left:31.0345%;width:17.2414%;background:var(--st-running)" title="L06 · завершить раздельную приемку MatrixRTC guest и Secretary SDK
+статус: В работе
+оценка: 10 мин–15 мин
+начало: 04:05
+на критическом пути"></div></div></div><div class="gantt-row" data-status="blocked" data-leaf="L07"><div class="gantt-label" title="провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity"><span class="gantt-line"><span class="dot" style="background:var(--st-blocked)"></span><span class="gantt-id" title="L07">L07</span><span class="gantt-text">провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">⛔ Заблокировано</span></span></div><div class="gantt-track"><div class="bar" style="left:44.8276%;width:17.2414%;background:var(--st-blocked)" title="L07 · провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity
+статус: Заблокировано
+оценка: 10 мин–15 мин
+блокер: owner credential, user-level send capability, owner `/whoami`, приватная owner↔B комната и MatrixRTC audio подтверждены; установленный AgentCall wrapper SHA `c44c620b5758e7e45a7226552c577369bd1379469e6e642fac5f1a968c6a670c` завершил ход ошибкой `NativeTurnUnsettled`. Нужна установка ранее проверенного AgentCall SDK fix владельцем voice runtime, без дублирования его правок."></div></div></div><div class="wave-row"><span>Волна 2</span><span class="wave-count">2 листьев</span></div><div class="gantt-row" data-status="queued" data-leaf="L08"><div class="gantt-label" title="после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик"><span class="gantt-line"><span class="dot" style="background:var(--st-queued)"></span><span class="gantt-id" title="L08">L08</span><span class="gantt-text">после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">⋯ В очереди</span></span></div><div class="gantt-track"><div class="bar" style="left:62.0690%;width:17.2414%;background:var(--st-queued)" title="L08 · после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик
+статус: В очереди
+оценка: 10 мин–15 мин
+зависит: провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity"></div></div></div><div class="gantt-row" data-status="queued" data-leaf="L09"><div class="gantt-label" title="на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова"><span class="gantt-line"><span class="dot" style="background:var(--st-queued)"></span><span class="gantt-id" title="L09">L09</span><span class="gantt-text">на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">⋯ В очереди</span><span class="crit" title="критический путь">◆ критический путь</span></span></div><div class="gantt-track"><div class="bar" style="left:48.2759%;width:17.2414%;background:var(--st-queued)" title="L09 · на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова
+статус: В очереди
+оценка: 10 мин–15 мин
+зависит: завершить раздельную приемку MatrixRTC guest и Secretary SDK
+на критическом пути"></div></div></div><div class="wave-row"><span>Волна 3</span><span class="wave-count">1 листьев</span></div><div class="gantt-row" data-status="queued" data-leaf="L10"><div class="gantt-label" title="на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов"><span class="gantt-line"><span class="dot" style="background:var(--st-queued)"></span><span class="gantt-id" title="L10">L10</span><span class="gantt-text">на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">⋯ В очереди</span><span class="crit" title="критический путь">◆ критический путь</span></span></div><div class="gantt-track"><div class="bar" style="left:65.5172%;width:17.2414%;background:var(--st-queued)" title="L10 · на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов
+статус: В очереди
+оценка: 10 мин–15 мин
+зависит: на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова
+на критическом пути"></div></div></div><div class="wave-row"><span>Волна 4</span><span class="wave-count">1 листьев</span></div><div class="gantt-row" data-status="queued" data-leaf="L11"><div class="gantt-label" title="сохранить проверенные версии и архив с воспроизводимым откатом"><span class="gantt-line"><span class="dot" style="background:var(--st-queued)"></span><span class="gantt-id" title="L11">L11</span><span class="gantt-text">сохранить проверенные версии и архив с воспроизводимым откатом</span></span><span class="gantt-line gantt-meta"><span class="gantt-status">⋯ В очереди</span><span class="crit" title="критический путь">◆ критический путь</span></span></div><div class="gantt-track"><div class="bar" style="left:82.7586%;width:17.2414%;background:var(--st-queued)" title="L11 · сохранить проверенные версии и архив с воспроизводимым откатом
+статус: В очереди
+оценка: 10 мин–15 мин
+зависит: на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов
+на критическом пути"></div></div></div>
+  </div></div>
+</div>
+
+<div class="grid">
+  <div class="panel panel-leaves" id="lhc-leaves">
+    <h2>Листья</h2>
+    <div class="hint">граф: 11 листьев · слотов: 2 · пик параллельности 2</div>
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Поиск по листу, id, владельцу, сессии или модели…">
+      <button class="chip active" data-filter="all">все</button>
+      <button class="chip" data-filter="done">готово</button>
+      <button class="chip" data-filter="running">в работе</button>
+      <button class="chip" data-filter="blocked">блокеры</button>
+      <button class="chip" data-filter="queued">в очереди</button>
+    </div>
+    <div class='table-scroll'><table class='table table-leaves'><thead><tr><th>Задача</th><th>Статус</th><th>Оценка</th><th>Усилие</th><th>Детали</th></tr></thead><tbody><tr data-status="done" data-text="l01 сверить факты по notice place, userio, agentcall и botfather, текущий wip и права путей codex gpt-6-luna codex:01a16587-54a6-7d33-bb25-4848227d42b4 codex gpt-6-luna estimates are active work; external phone-recipient wait is tracked at graph level. a fresh evidence table names each current source head, dirty paths, active owner, permitted target and next shortest fix; no changes made." data-details-id='0' class='leaf-row'><td class='task-title'><span class='row-id'>L01</span><span class='row-name'>сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей</span><span class='row-meta'>владелец: Codex gpt-6-luna · сессия: codex:01a16587-54a6-7d33-bb25-4848227d42b4 · модель: gpt-6-luna</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-done)">✅ Готово</span></td><td data-label="Оценка">8 мин–12 мин</td><td data-label="Усилие" class="">6 мин<span class="cell-sub">по часам 6 мин</span></td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='0' aria-expanded='false' aria-label='Подробнее: сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей'>Подробнее</button></td></tr><tr data-status="done" data-text="l02 проверить разрешённые удалённые ветки и совпадение локальной main с origin/main lead estimates are active work; external phone-recipient wait is tracked at graph level. scoped code review/tests pass, botfather security change is published to its permitted target." data-details-id='1' class='leaf-row'><td class='task-title'><span class='row-id'>L02</span><span class='row-name'>проверить разрешённые удалённые ветки и совпадение локальной main с origin/main</span><span class='row-meta'>владелец: Lead</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-done)">✅ Готово</span></td><td data-label="Оценка">8 мин–12 мин</td><td data-label="Усилие" class="">4 мин<span class="cell-sub">по часам 4 мин</span></td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='1' aria-expanded='false' aria-label='Подробнее: проверить разрешённые удалённые ветки и совпадение локальной main с origin/main'>Подробнее</button></td></tr><tr data-status="done" data-text="l03 сверить опубликованный matrixrtc путь userio, его проверки и активные ограничения lead research estimates are active work; external phone-recipient wait is tracked at graph level. per-user matrixrtc call uses the caller model without persisting secrets; audio/stt regression tests pass and source is published to the permitted target." data-details-id='2' class='leaf-row'><td class='task-title'><span class='row-id'>L03</span><span class='row-name'>сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения</span><span class='row-meta'>владелец: Lead research</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-done)">✅ Готово</span></td><td data-label="Оценка">8 мин–12 мин</td><td data-label="Усилие" class="">4 мин<span class="cell-sub">по часам 4 мин</span></td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='2' aria-expanded='false' aria-label='Подробнее: сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения'>Подробнее</button></td></tr><tr data-status="done" data-text="l04 сверить и использовать существующие matrix test fixtures вместо выпуска новых аккаунтов lead test estimates are active work; external phone-recipient wait is tracked at graph level. an incoming call enters secretary mode and the mode transition is observable on the actual consumer path." data-details-id='3' class='leaf-row'><td class='task-title'><span class='row-id'>L04</span><span class='row-name'>сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов</span><span class='row-meta'>владелец: Lead test</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-done)">✅ Готово</span></td><td data-label="Оценка">10 мин–15 мин</td><td data-label="Усилие" class="">не измерено<span class="cell-sub">по часам 26 мин</span></td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='3' aria-expanded='false' aria-label='Подробнее: сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов'>Подробнее</button></td></tr><tr data-status="done" data-text="l05 подтвердить read-only selector probes secretarybrain/mode=secretary для owner и qa b lead runtime verification estimates are active work; external phone-recipient wait is tracked at graph level. the original utterance completes before response; no stale response starts; russian names/terms survive and remain speakable." data-details-id='4' class='leaf-row'><td class='task-title'><span class='row-id'>L05</span><span class='row-name'>подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B</span><span class='row-meta'>владелец: Lead runtime verification</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-done)">✅ Готово</span></td><td data-label="Оценка">10 мин–15 мин</td><td data-label="Усилие" class="">не измерено</td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='4' aria-expanded='false' aria-label='Подробнее: подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B'>Подробнее</button></td></tr><tr data-status="running" data-text="l06 завершить раздельную приемку matrixrtc guest и secretary sdk lead research estimates are active work; external phone-recipient wait is tracked at graph level. userio stop/finalization fix 5bbf883 is installed and an owner↔b call completed with durable audio/transcription; the owner sdk turn remained unsettled, and a separate non-owner outbound guest call/receipt is still unverified. two test accounts establish the call; both-side speech/audio records are present and the per-user model is used." data-details-id='5' class='leaf-row'><td class='task-title'><span class='row-id'>L06</span><span class='row-name'>завершить раздельную приемку MatrixRTC guest и Secretary SDK</span><span class='row-meta'>владелец: Lead research</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-running)">🔄 В работе</span></td><td data-label="Оценка">10 мин–15 мин</td><td data-label="Усилие" class="">не измерено</td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='5' aria-expanded='false' aria-label='Подробнее: завершить раздельную приемку MatrixRTC guest и Secretary SDK'>Подробнее</button></td></tr><tr data-status="blocked" data-text="l07 провести полностью завершённый secretary sdk диалог через существующую owner matrix identity worker bugfix estimates are active work; external phone-recipient wait is tracked at graph level. owner credential, user-level send capability, owner `/whoami`, приватная owner↔b комната и matrixrtc audio подтверждены; установленный agentcall wrapper sha `c44c620b5758e7e45a7226552c577369bd1379469e6e642fac5f1a968c6a670c` завершил ход ошибкой `nativeturnunsettled`. нужна установка ранее проверенного agentcall sdk fix владельцем voice runtime, без дублирования его правок. the specified owner recording conversation passes the unchanged utterance-boundary canary." data-details-id='6' class='leaf-row'><td class='task-title'><span class='row-id'>L07</span><span class='row-name'>провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity</span><span class='row-meta'>владелец: Worker bugfix</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-blocked)">⛔ Заблокировано</span></td><td data-label="Оценка">10 мин–15 мин</td><td data-label="Усилие" class="">не измерено</td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='6' aria-expanded='false' aria-label='Подробнее: провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity'>Подробнее</button></td></tr><tr data-status="queued" data-text="l08 после установки agentcall sdk fix провести один secretary sdk разговор owner↔qa b и проверить границы реплик lead test estimates are active work; external phone-recipient wait is tracked at graph level. a confirmed matrix or telegram answer creates no later phone delivery." data-details-id='7' class='leaf-row'><td class='task-title'><span class='row-id'>L08</span><span class='row-name'>после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик</span><span class='row-meta'>владелец: Lead test</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-queued)">⋯ В очереди</span></td><td data-label="Оценка">10 мин–15 мин</td><td data-label="Усилие" class="">не измерено</td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='7' aria-expanded='false' aria-label='Подробнее: после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик'>Подробнее</button></td></tr><tr data-status="queued" data-text="l09 на свежем запросе подтвердить, что ответ в matrix/telegram останавливает цепочку без телефонного вызова lead test estimates are active work; external phone-recipient wait is tracked at graph level. a fresh chain with definitive missed matrix and telegram legs starts exactly one phone call; no old delivery is replayed." data-details-id='8' class='leaf-row'><td class='task-title'><span class='row-id'>L09</span><span class='row-name'>на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова</span><span class='row-meta'>владелец: Lead test</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-queued)">⋯ В очереди</span></td><td data-label="Оценка">10 мин–15 мин</td><td data-label="Усилие" class="">не измерено</td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='8' aria-expanded='false' aria-label='Подробнее: на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова'>Подробнее</button></td></tr><tr data-status="queued" data-text="l10 на отдельном свежем запросе подтвердить: достоверный пропуск matrix и telegram даёт ровно один телефонный вызов lead test estimates are active work; external phone-recipient wait is tracked at graph level. each changed repository has a pinned good release, archive reference and rollback path." data-details-id='9' class='leaf-row'><td class='task-title'><span class='row-id'>L10</span><span class='row-name'>на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов</span><span class='row-meta'>владелец: Lead test</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-queued)">⋯ В очереди</span></td><td data-label="Оценка">10 мин–15 мин</td><td data-label="Усилие" class="">не измерено</td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='9' aria-expanded='false' aria-label='Подробнее: на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов'>Подробнее</button></td></tr><tr data-status="queued" data-text="l11 сохранить проверенные версии и архив с воспроизводимым откатом lead release" data-details-id='10' class='leaf-row'><td class='task-title'><span class='row-id'>L11</span><span class='row-name'>сохранить проверенные версии и архив с воспроизводимым откатом</span><span class='row-meta'>владелец: Lead release</span></td><td data-label="Статус"><span class="status" style="--c:var(--st-queued)">⋯ В очереди</span></td><td data-label="Оценка">10 мин–15 мин</td><td data-label="Усилие" class="">не измерено</td><td class='details-cell'><button type='button' class='task-details-trigger' data-details-id='10' aria-expanded='false' aria-label='Подробнее: сохранить проверенные версии и архив с воспроизводимым откатом'>Подробнее</button></td></tr></tbody></table></div>
+    <div id='task-details-host' class='task-details-host' hidden></div><template id='task-details-template-0'><div class='task-details-card'><div class='task-details-head'><h3>сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L01</dd><dt>Ожидаемый результат</dt><dd>A fresh evidence table names each current source head, dirty paths, active owner, permitted target and next shortest fix; no changes made.</dd><dt>Примечание</dt><dd>Estimates are active work; external phone-recipient wait is tracked at graph level.</dd><dt>Владелец</dt><dd>Codex gpt-6-luna</dd><dt>Зависит от</dt><dd>—</dd><dt>Параллельно с</dt><dd>—</dd><dt>Сессия</dt><dd>codex:01a16587-54a6-7d33-bb25-4848227d42b4</dd><dt>Модель</dt><dd>gpt-6-luna</dd><dt>Рантайм</dt><dd>codex</dd><dt>Усилие (суммарно)</dt><dd>6 мин</dd><dt>Длительность по часам</dt><dd>6 мин</dd><dt>Окно работы</dt><dd>00:32 – 00:38</dd></dl></div></template><template id='task-details-template-1'><div class='task-details-card'><div class='task-details-head'><h3>проверить разрешённые удалённые ветки и совпадение локальной main с origin/main</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L02</dd><dt>Ожидаемый результат</dt><dd>Scoped code review/tests pass, BotFather security change is published to its permitted target.</dd><dt>Примечание</dt><dd>Estimates are active work; external phone-recipient wait is tracked at graph level.</dd><dt>Владелец</dt><dd>Lead</dd><dt>Зависит от</dt><dd>—</dd><dt>Параллельно с</dt><dd>—</dd><dt>Сессия</dt><dd>—</dd><dt>Усилие (суммарно)</dt><dd>4 мин</dd><dt>Длительность по часам</dt><dd>4 мин</dd><dt>Окно работы</dt><dd>00:40 – 00:44</dd></dl></div></template><template id='task-details-template-2'><div class='task-details-card'><div class='task-details-head'><h3>сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L03</dd><dt>Ожидаемый результат</dt><dd>Per-user MatrixRTC call uses the caller model without persisting secrets; audio/STT regression tests pass and source is published to the permitted target.</dd><dt>Примечание</dt><dd>Estimates are active work; external phone-recipient wait is tracked at graph level.</dd><dt>Владелец</dt><dd>Lead research</dd><dt>Зависит от</dt><dd>—</dd><dt>Параллельно с</dt><dd>—</dd><dt>Сессия</dt><dd>—</dd><dt>Усилие (суммарно)</dt><dd>4 мин</dd><dt>Длительность по часам</dt><dd>4 мин</dd><dt>Окно работы</dt><dd>00:44 – 00:48</dd></dl></div></template><template id='task-details-template-3'><div class='task-details-card'><div class='task-details-head'><h3>сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L04</dd><dt>Ожидаемый результат</dt><dd>An incoming call enters secretary mode and the mode transition is observable on the actual consumer path.</dd><dt>Примечание</dt><dd>Estimates are active work; external phone-recipient wait is tracked at graph level.</dd><dt>Владелец</dt><dd>Lead test</dd><dt>Зависит от</dt><dd>—</dd><dt>Параллельно с</dt><dd>—</dd><dt>Сессия</dt><dd>—</dd><dt>Усилие (суммарно)</dt><dd>не измерено</dd><dt>Длительность по часам</dt><dd>26 мин</dd><dt>Окно работы</dt><dd>00:44 – 01:10</dd></dl></div></template><template id='task-details-template-4'><div class='task-details-card'><div class='task-details-head'><h3>подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L05</dd><dt>Ожидаемый результат</dt><dd>The original utterance completes before response; no stale response starts; Russian names/terms survive and remain speakable.</dd><dt>Примечание</dt><dd>Estimates are active work; external phone-recipient wait is tracked at graph level.</dd><dt>Владелец</dt><dd>Lead runtime verification</dd><dt>Зависит от</dt><dd>—</dd><dt>Параллельно с</dt><dd>—</dd><dt>Сессия</dt><dd>—</dd><dt>Усилие (суммарно)</dt><dd>не измерено</dd><dt>Длительность по часам</dt><dd>—</dd></dl></div></template><template id='task-details-template-5'><div class='task-details-card'><div class='task-details-head'><h3>завершить раздельную приемку MatrixRTC guest и Secretary SDK</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L06</dd><dt>Ожидаемый результат</dt><dd>Two test accounts establish the call; both-side speech/audio records are present and the per-user model is used.</dd><dt>Примечание</dt><dd>Estimates are active work; external phone-recipient wait is tracked at graph level.</dd><dt>Владелец</dt><dd>Lead research</dd><dt>Зависит от</dt><dd>—</dd><dt>Параллельно с</dt><dd>—</dd><dt>Блокер</dt><dd>UserIO stop/finalization fix 5bbf883 is installed and an owner↔B call completed with durable audio/transcription; the owner SDK turn remained unsettled, and a separate non-owner outbound guest call/receipt is still unverified.</dd><dt>Сессия</dt><dd>—</dd><dt>Усилие (суммарно)</dt><dd>не измерено</dd><dt>Длительность по часам</dt><dd>—</dd></dl></div></template><template id='task-details-template-6'><div class='task-details-card'><div class='task-details-head'><h3>провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L07</dd><dt>Ожидаемый результат</dt><dd>The specified owner recording conversation passes the unchanged utterance-boundary canary.</dd><dt>Примечание</dt><dd>Estimates are active work; external phone-recipient wait is tracked at graph level.</dd><dt>Владелец</dt><dd>Worker bugfix</dd><dt>Зависит от</dt><dd>—</dd><dt>Параллельно с</dt><dd>—</dd><dt>Блокер</dt><dd>owner credential, user-level send capability, owner `/whoami`, приватная owner↔B комната и MatrixRTC audio подтверждены; установленный AgentCall wrapper SHA `c44c620b5758e7e45a7226552c577369bd1379469e6e642fac5f1a968c6a670c` завершил ход ошибкой `NativeTurnUnsettled`. Нужна установка ранее проверенного AgentCall SDK fix владельцем voice runtime, без дублирования его правок.</dd><dt>Сессия</dt><dd>—</dd><dt>Усилие (суммарно)</dt><dd>не измерено</dd><dt>Длительность по часам</dt><dd>—</dd></dl></div></template><template id='task-details-template-7'><div class='task-details-card'><div class='task-details-head'><h3>после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L08</dd><dt>Ожидаемый результат</dt><dd>A confirmed Matrix or Telegram answer creates no later phone delivery.</dd><dt>Примечание</dt><dd>Estimates are active work; external phone-recipient wait is tracked at graph level.</dd><dt>Владелец</dt><dd>Lead test</dd><dt>Зависит от</dt><dd>провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity</dd><dt>Параллельно с</dt><dd>—</dd><dt>Сессия</dt><dd>—</dd><dt>Усилие (суммарно)</dt><dd>не измерено</dd><dt>Длительность по часам</dt><dd>—</dd></dl></div></template><template id='task-details-template-8'><div class='task-details-card'><div class='task-details-head'><h3>на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L09</dd><dt>Ожидаемый результат</dt><dd>A fresh chain with definitive missed Matrix and Telegram legs starts exactly one phone call; no old delivery is replayed.</dd><dt>Примечание</dt><dd>Estimates are active work; external phone-recipient wait is tracked at graph level.</dd><dt>Владелец</dt><dd>Lead test</dd><dt>Зависит от</dt><dd>завершить раздельную приемку MatrixRTC guest и Secretary SDK</dd><dt>Параллельно с</dt><dd>—</dd><dt>Сессия</dt><dd>—</dd><dt>Усилие (суммарно)</dt><dd>не измерено</dd><dt>Длительность по часам</dt><dd>—</dd></dl></div></template><template id='task-details-template-9'><div class='task-details-card'><div class='task-details-head'><h3>на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L10</dd><dt>Ожидаемый результат</dt><dd>Each changed repository has a pinned good release, archive reference and rollback path.</dd><dt>Примечание</dt><dd>Estimates are active work; external phone-recipient wait is tracked at graph level.</dd><dt>Владелец</dt><dd>Lead test</dd><dt>Зависит от</dt><dd>на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова</dd><dt>Параллельно с</dt><dd>—</dd><dt>Сессия</dt><dd>—</dd><dt>Усилие (суммарно)</dt><dd>не измерено</dd><dt>Длительность по часам</dt><dd>—</dd></dl></div></template><template id='task-details-template-10'><div class='task-details-card'><div class='task-details-head'><h3>сохранить проверенные версии и архив с воспроизводимым откатом</h3><button type='button' class='task-details-close'>Закрыть</button></div><dl class='task-details'><dt>Код</dt><dd>L11</dd><dt>Владелец</dt><dd>Lead release</dd><dt>Зависит от</dt><dd>на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов</dd><dt>Параллельно с</dt><dd>—</dd><dt>Сессия</dt><dd>—</dd><dt>Усилие (суммарно)</dt><dd>не измерено</dd><dt>Длительность по часам</dt><dd>—</dd></dl></div></template>
+  </div>
+  <div>
+    <div class="panel">
+      <h2>Технические привязки</h2>
+      <details class="technical"><summary>Владельцы, сессии, harness и модели</summary>
+        <div class='table-scroll'><table class='table'><thead><tr><th>ID</th><th>Лист</th><th>Владелец</th><th>Сессия</th><th>Harness</th><th>Модель</th><th>Статус</th></tr></thead><tbody><tr><td><span class="dot" style="background:var(--st-done)"></span>L01</td><td>сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий </td><td>Codex gpt-6-luna</td><td>codex:01a16587-54a6-7d33-bb25-4848227d42b4</td><td>codex</td><td>gpt-6-luna</td><td>Готово</td></tr><tr><td><span class="dot" style="background:var(--st-done)"></span>L02</td><td>проверить разрешённые удалённые ветки и совпадение локальной main с or</td><td>Lead</td><td>—</td><td>—</td><td>—</td><td>Готово</td></tr><tr><td><span class="dot" style="background:var(--st-done)"></span>L03</td><td>сверить опубликованный MatrixRTC путь UserIO, его проверки и активные </td><td>Lead research</td><td>—</td><td>—</td><td>—</td><td>Готово</td></tr><tr><td><span class="dot" style="background:var(--st-done)"></span>L04</td><td>сверить и использовать существующие Matrix test fixtures вместо выпуск</td><td>Lead test</td><td>—</td><td>—</td><td>—</td><td>Готово</td></tr><tr><td><span class="dot" style="background:var(--st-done)"></span>L05</td><td>подтвердить read-only selector probes SecretaryBrain/mode=secretary дл</td><td>Lead runtime verification</td><td>—</td><td>—</td><td>—</td><td>Готово</td></tr><tr><td><span class="dot" style="background:var(--st-running)"></span>L06</td><td>завершить раздельную приемку MatrixRTC guest и Secretary SDK</td><td>Lead research</td><td>—</td><td>—</td><td>—</td><td>В работе</td></tr><tr><td><span class="dot" style="background:var(--st-blocked)"></span>L07</td><td>провести полностью завершённый Secretary SDK диалог через существующую</td><td>Worker bugfix</td><td>—</td><td>—</td><td>—</td><td>Заблокировано</td></tr><tr><td><span class="dot" style="background:var(--st-queued)"></span>L08</td><td>после установки AgentCall SDK fix провести один Secretary SDK разговор</td><td>Lead test</td><td>—</td><td>—</td><td>—</td><td>В очереди</td></tr><tr><td><span class="dot" style="background:var(--st-queued)"></span>L09</td><td>на свежем запросе подтвердить, что ответ в Matrix/Telegram останавлива</td><td>Lead test</td><td>—</td><td>—</td><td>—</td><td>В очереди</td></tr><tr><td><span class="dot" style="background:var(--st-queued)"></span>L10</td><td>на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и </td><td>Lead test</td><td>—</td><td>—</td><td>—</td><td>В очереди</td></tr><tr><td><span class="dot" style="background:var(--st-queued)"></span>L11</td><td>сохранить проверенные версии и архив с воспроизводимым откатом</td><td>Lead release</td><td>—</td><td>—</td><td>—</td><td>В очереди</td></tr></tbody></table></div>
+      </details>
+    </div>
+    <div class="panel" id="lhc-forecast">
+      <h2>Прогноз</h2>
+      <ul class='facts'><li><b>Усилие</b> (сумма известных оценок): 2 ч 36 мин</li><li><b>Известная активная работа (план с 2 слотами): 1 ч 27 мин</li><li><b>Осталось</b> (без завершённых): 1 ч</li><li><b>Пик параллельности</b> по плану: 2 из 2 слотов</li><li><b>Критический путь</b>: завершить раздельную приемку MatrixRTC guest и Secretary SDK → на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова → на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов → сохранить проверенные версии и архив с воспроизводимым откатом</li><li><b>Заблокировано</b> работы: 15 мин</li><li><b>Срок завершения</b>: неизвестен из-за ожиданий вне активной работы</li></ul>
+      
+    </div>
+    <div class="panel journal-fold" id="lhc-journal">
+      <details>
+        <summary><h2>Журнал изменений</h2></summary>
+
+      <h2>Журнал изменений</h2>
+      <ul class="live"><li><span class="dot" style="background:var(--st-done)"></span><span class="live-text">сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей</span><span class="leaf-tag">сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей</span></li><li><span class="dot" style="background:var(--st-done)"></span><span class="live-text">проверить разрешённые удалённые ветки и совпадение локальной main с origin/main</span><span class="leaf-tag">проверить разрешённые удалённые ветки и совпадение локальной main с origin/main</span></li><li><span class="dot" style="background:var(--st-done)"></span><span class="live-text">сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения</span><span class="leaf-tag">сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения</span></li><li><span class="dot" style="background:var(--st-done)"></span><span class="live-text">сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов</span><span class="leaf-tag">сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов</span></li><li><span class="dot" style="background:var(--st-done)"></span><span class="live-text">подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B</span><span class="leaf-tag">подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B</span></li><li><span class="dot" style="background:var(--st-running)"></span><span class="live-text">завершить раздельную приемку MatrixRTC guest и Secretary SDK</span><span class="leaf-tag">завершить раздельную приемку MatrixRTC guest и Secretary SDK</span></li><li><span class="dot" style="background:var(--st-blocked)"></span><span class="live-text">провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity</span><span class="leaf-tag">провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity</span></li><li><span class="dot" style="background:var(--st-queued)"></span><span class="live-text">после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик</span><span class="leaf-tag">после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик</span></li><li><span class="dot" style="background:var(--st-queued)"></span><span class="live-text">на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова</span><span class="leaf-tag">на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова</span></li><li><span class="dot" style="background:var(--st-queued)"></span><span class="live-text">на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов</span><span class="leaf-tag">на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов</span></li><li><span class="dot" style="background:var(--st-queued)"></span><span class="live-text">сохранить проверенные версии и архив с воспроизводимым откатом</span><span class="leaf-tag">сохранить проверенные версии и архив с воспроизводимым откатом</span></li></ul>
+
+      </details>
+    </div>
+  </div>
+</div>
+</div>
+
+<footer>
+  LHC task graph · ревизия d9ffa59ea5c4 · один файл, без внешних зависимостей · собран 23.10.2026 05:11
+  <details class="technical"><summary>Путь исходного плана</summary><code>.agents/tasks/20261023-voice-call-experience/plan.graph.json</code></details>
+</footer>
+
+<script>
+(function () {
+  // The theme is the reader's choice, remembered between openings. Without a
+  // stored choice the dashboard follows the system.
+  var root = document.documentElement;
+  var stored = null;
+  try { stored = window.localStorage.getItem('lhc-theme'); } catch (error) { stored = null; }
+  function systemPrefersLight() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+  }
+  function applyTheme(state) {
+    if (state === 'light' || state === 'dark') {
+      root.setAttribute('data-theme', state);
+    } else {
+      // "as the system": no attribute, and the light scheme of the system wins.
+      root.removeAttribute('data-theme');
+      if (systemPrefersLight()) { root.setAttribute('data-theme', 'light'); }
+    }
+  }
+  function currentTheme() {
+    var value = null;
+    try { value = window.localStorage.getItem('lhc-theme'); } catch (error) { value = null; }
+    return value === 'light' || value === 'dark' ? value : 'auto';
+  }
+  applyTheme(currentTheme());
+  var toggle = document.getElementById('theme-toggle');
+  if (toggle) {
+    var order = ['auto', 'light', 'dark'];
+    var names = { auto: 'Тема: как в системе', light: 'Тема: светлая', dark: 'Тема: тёмная' };
+    function label() { toggle.textContent = names[currentTheme()]; }
+    label();
+    toggle.addEventListener('click', function () {
+      var next = order[(order.indexOf(currentTheme()) + 1) % order.length];
+      applyTheme(next);
+      try {
+        if (next === 'auto') { window.localStorage.removeItem('lhc-theme'); }
+        else { window.localStorage.setItem('lhc-theme', next); }
+      } catch (error) { /* no storage */ }
+      label();
+    });
+  }
+})();
+(function () {
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.chip'));
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.table-leaves tbody tr'));
+  var input = document.getElementById('search');
+  var activeDetailsRow = null;
+  var filter = 'all';
+  function apply() {
+    var query = (input && input.value || '').trim().toLowerCase();
+    rows.forEach(function (row) {
+      var okFilter = filter === 'all' || row.dataset.status === filter;
+      var okQuery = !query || (row.dataset.text || '').indexOf(query) !== -1;
+      row.style.display = (okFilter && okQuery) ? '' : 'none';
+    });
+  }
+  chips.forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      chips.forEach(function (other) { other.classList.remove('active'); });
+      chip.classList.add('active');
+      filter = chip.dataset.filter;
+      apply();
+    });
+  });
+  if (input) { input.addEventListener('input', apply); }
+  // The task opens where the owner taps it. The card used to open in a host
+  // below the whole table, which on a phone is thousands of pixels away from
+  // the finger that asked for it.
+  function closeDetails() {
+    if (!activeDetailsRow) { return; }
+    if (activeDetailsRow.previousElementSibling) {
+      var previousButton = activeDetailsRow.previousElementSibling.querySelector('.task-details-trigger');
+      if (previousButton) { previousButton.setAttribute('aria-expanded', 'false'); }
+    }
+    activeDetailsRow.remove();
+    activeDetailsRow = null;
+  }
+  function openDetails(row, id) {
+    var template = document.getElementById('task-details-template-' + id);
+    if (!template || !row) { return; }
+    closeDetails();
+    var detailsRow = document.createElement('tr');
+    detailsRow.className = 'task-details-row';
+    var cell = document.createElement('td');
+    cell.colSpan = 5;
+    cell.appendChild(template.content.cloneNode(true));
+    detailsRow.appendChild(cell);
+    row.after(detailsRow);
+    activeDetailsRow = detailsRow;
+    var button = row.querySelector('.task-details-trigger');
+    if (button) { button.setAttribute('aria-expanded', 'true'); }
+    var close = detailsRow.querySelector('.task-details-close');
+    if (close) {
+      close.addEventListener('click', function () { closeDetails(); });
+      close.focus({ preventScroll: true });
+    }
+    detailsRow.scrollIntoView({ block: 'nearest' });
+  }
+  document.querySelectorAll('.task-details-trigger').forEach(function (button) {
+    button.addEventListener('click', function (event) {
+      event.stopPropagation();
+      var row = button.closest('tr');
+      openDetails(row, button.dataset.detailsId);
+    });
+  });
+  rows.forEach(function (row) {
+    if (!row.dataset.detailsId) { return; }
+    row.addEventListener('click', function () {
+      openDetails(row, row.dataset.detailsId);
+    });
+  });
+  // Every number of the page can be opened: the tile shows the tasks behind
+  // it, and a task in that list opens its full card.
+  var tileIndex = null;
+  try {
+    var island = document.getElementById('lhc-tile-index');
+    tileIndex = island ? JSON.parse(island.content.textContent) : null;
+  } catch (error) { tileIndex = null; }
+  var tileCard = document.getElementById('lhc-tile-card');
+  var currentTile = null;
+  function tileTitle(key) {
+    return (tileIndex && tileIndex.titles && tileIndex.titles[key]) || 'Задачи';
+  }
+  function renderTileList(key) {
+    if (!tileIndex || !tileCard) { return; }
+    var ids = (tileIndex.tiles && tileIndex.tiles[key]) || [];
+    var head = document.createElement('div');
+    head.className = 'tile-card-head';
+    var title = document.createElement('b');
+    title.textContent = tileTitle(key) + ' · ' + ids.length;
+    var close = document.createElement('button');
+    close.type = 'button'; close.className = 'tile-card-close'; close.textContent = 'Закрыть';
+    close.addEventListener('click', function () {
+      tileCard.hidden = true; tileCard.replaceChildren(); currentTile = null;
+    });
+    head.appendChild(title); head.appendChild(close);
+    var list = document.createElement('ul');
+    list.className = 'tile-card-list';
+    ids.forEach(function (id) {
+      var leaf = (tileIndex.leaves && tileIndex.leaves[id]) || {};
+      var item = document.createElement('li');
+      item.className = 'tile-card-item';
+      var code = document.createElement('span'); code.className = 'row-id'; code.textContent = id;
+      var name = document.createElement('span'); name.className = 'row-name';
+      name.textContent = leaf.label || id;
+      var meta = document.createElement('span'); meta.className = 'row-meta';
+      meta.textContent = [leaf.status_label, leaf.owner, leaf.estimate].filter(Boolean).join(' · ');
+      item.appendChild(code); item.appendChild(name); item.appendChild(meta);
+      item.addEventListener('click', function () { openLeafInTile(id); });
+      list.appendChild(item);
+    });
+    if (!ids.length) {
+      var empty = document.createElement('div');
+      empty.className = 'empty'; empty.textContent = 'Задач нет.';
+      list.appendChild(empty);
+    }
+    tileCard.replaceChildren(head, list);
+    tileCard.hidden = false;
+  }
+  function openLeafInTile(id) {
+    if (!tileIndex || !tileCard) { return; }
+    var leaf = (tileIndex.leaves && tileIndex.leaves[id]) || {};
+    var template = document.getElementById('task-details-template-' + leaf.template);
+    if (!template) { return; }
+    var back = document.createElement('button');
+    back.type = 'button'; back.className = 'tile-card-back'; back.textContent = '← ко всем задачам';
+    back.addEventListener('click', function () { renderTileList(currentTile); });
+    var card = template.content.cloneNode(true);
+    tileCard.replaceChildren(back, card);
+    tileCard.hidden = false;
+    var close = tileCard.querySelector('.task-details-close');
+    if (close) {
+      close.addEventListener('click', function () { renderTileList(currentTile); });
+    }
+  }
+  document.querySelectorAll('[data-tile]').forEach(function (tile) {
+    tile.addEventListener('click', function () {
+      currentTile = tile.dataset.tile;
+      renderTileList(currentTile);
+    });
+    tile.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        tile.click();
+      }
+    });
+  });
+  apply();
+})();
+
+</script>
+</body>
+</html>

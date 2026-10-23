@@ -1,0 +1,295 @@
+{
+  "schema_version": 2,
+  "title": "Task",
+  "goal": "довести до проверенного выпуска надёжный русский голосовой помощник и корректную эскалацию Matrix → Telegram → телефон; использовать существующие Matrix fixtures для воспроизводимых проверок и сохранить хорошие версии.",
+  "business_result": "владелец ведёт связный разговор без перебиваний и слышит русские названия; входящий звонок включает секретаря. Ответ в Matrix/Telegram прекращает цепочку, телефон звонит после подтверждённых пропусков; версии можно повторить и откатить.",
+  "current_progress": "Existing QA fixtures were reused; no new Matrix accounts or BotFather issuance. Owner Matrix connector-ref loaded only in-process and `/whoami` matched the owner identity. Generic `messenger_capabilities` provider_status=unconfigured is the read-only messaging adapter; dedicated MatrixCalls RTC sender is separate, owner user-level `capability_enabled('send')` defaults true, and no capability was changed. UserIO commits 5bbf883 and 1d845c7 are on main; backend image b54328f… is installed with rollback snapshot, API/supervisor healthy and accounts unchanged. A private unfederated room contains only owner+B. Final call 6fd4f021-df46-55c7-8e0b-69274c0fc9f9 completed/answered with incoming audio 894542 bytes; recording manifest complete at 9.32s and transcription COMPLETE. Owner transcript preserved the name in Russian: `Сайт гпт админ — панель управления гпт`. The installed AgentCall wrapper then logged `NativeTurnUnsettled: Secretary voice outcome is unknown`; terminal SDK receipt and secretary mode are unproven. The original utterance-boundary call and escalation canaries remain open.",
+  "external_waits": "The current owner of the server-100 AgentCall voice runtime must install the already-reviewed SDK wrapper/bridge fix and confirm installed hashes; the live wrapper remains SHA c44c620b… while the reported target starts b6c2a590…. This lane will not duplicate voice-runtime edits. After that live readback, run one owner↔QA B Secretary SDK canary. Separate guest outbound acceptance, the original utterance-boundary recording, Matrix→Telegram→phone escalation, and final release/archive remain pending; no human/cellular call is authorized or needed for these checks.",
+  "slots": 2,
+  "updated_at": "2026-10-23T05:10:57",
+  "tasks": [
+    {
+      "id": "L01",
+      "label": "сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей",
+      "status": "done",
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 8.0,
+        "maximum": 12.0
+      },
+      "actual_minutes": 6.0,
+      "started_at": "00:32",
+      "finished_at": "00:38",
+      "owner": "Codex gpt-6-luna",
+      "session": "codex:01a16587-54a6-7d33-bb25-4848227d42b4",
+      "harness": "codex",
+      "model": "gpt-6-luna",
+      "model_class": "gpt-6-luna",
+      "role": "Worker research",
+      "acceptance": "A fresh evidence table names each current source head, dirty paths, active owner, permitted target and next shortest fix; no changes made.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion",
+        "/home/roomhacker/matrix-synapse/matrix-botfather"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion",
+        "/home/roomhacker/matrix-synapse/matrix-botfather"
+      ]
+    },
+    {
+      "id": "L02",
+      "label": "проверить разрешённые удалённые ветки и совпадение локальной main с origin/main",
+      "status": "done",
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 8.0,
+        "maximum": 12.0
+      },
+      "actual_minutes": 4.0,
+      "started_at": "00:40",
+      "finished_at": "00:44",
+      "role": "Lead",
+      "acceptance": "Scoped code review/tests pass, BotFather security change is published to its permitted target.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion"
+      ]
+    },
+    {
+      "id": "L03",
+      "label": "сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения",
+      "status": "done",
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 8.0,
+        "maximum": 12.0
+      },
+      "actual_minutes": 4.0,
+      "started_at": "00:44",
+      "finished_at": "00:48",
+      "role": "Lead research",
+      "acceptance": "Per-user MatrixRTC call uses the caller model without persisting secrets; audio/STT regression tests pass and source is published to the permitted target.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/universal-userio/docs/COMMUNICATIONS-ARCHITECTURE.md",
+        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/matrix_calls.py",
+        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/matrix_call_worker.py",
+        "/home/roomhacker/agents-projects/universal-userio/tests/test_matrix_calls.py",
+        "/home/roomhacker/agents-projects/universal-userio/tests/manual/matrix_rtc_ai_peer.py",
+        "/home/roomhacker/agents-projects/universal-userio/tests/test_matrix_rtc_ai_peer.py"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/universal-userio"
+      ]
+    },
+    {
+      "id": "L04",
+      "label": "сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов",
+      "status": "done",
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "started_at": "00:44",
+      "finished_at": "01:10",
+      "role": "Lead test",
+      "acceptance": "An incoming call enters secretary mode and the mode transition is observable on the actual consumer path.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/universal-userio/.agents/TEST_ACCESS.md",
+        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/matrix_calls.py",
+        "/home/roomhacker/agents-projects/universal-userio/tests/manual/matrix_rtc_ai_peer.py"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/universal-userio"
+      ]
+    },
+    {
+      "id": "L05",
+      "label": "подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B",
+      "status": "done",
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "started_at": "01:51",
+      "role": "Lead runtime verification",
+      "acceptance": "The original utterance completes before response; no stale response starts; Russian names/terms survive and remain speakable.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/voice"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/voice"
+      ]
+    },
+    {
+      "id": "L06",
+      "label": "завершить раздельную приемку MatrixRTC guest и Secretary SDK",
+      "status": "running",
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "started_at": "04:05",
+      "role": "Lead research",
+      "acceptance": "Two test accounts establish the call; both-side speech/audio records are present and the per-user model is used.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "blocker": "UserIO stop/finalization fix 5bbf883 is installed and an owner↔B call completed with durable audio/transcription; the owner SDK turn remained unsettled, and a separate non-owner outbound guest call/receipt is still unverified.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/voice",
+        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/matrix_call_worker.py",
+        "/home/roomhacker/agents-projects/universal-userio/tests/manual/matrix_rtc_ai_peer.py",
+        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/voice/gigaam.py"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/universal-userio"
+      ]
+    },
+    {
+      "id": "L07",
+      "label": "провести полностью завершённый Secretary SDK диалог через существующую owner Matrix identity",
+      "status": "blocked",
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "blocker": "owner credential, user-level send capability, owner `/whoami`, приватная owner↔B комната и MatrixRTC audio подтверждены; установленный AgentCall wrapper SHA `c44c620b5758e7e45a7226552c577369bd1379469e6e642fac5f1a968c6a670c` завершил ход ошибкой `NativeTurnUnsettled`. Нужна установка ранее проверенного AgentCall SDK fix владельцем voice runtime, без дублирования его правок.",
+      "role": "Worker bugfix",
+      "acceptance": "The specified owner recording conversation passes the unchanged utterance-boundary canary.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip/ai-bridge/agentcall_realtime_bridge.py",
+        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip/ai-bridge/agentcall_fast_agent_worker.py",
+        "/home/roomhacker/ServersAdministartion/tests/test_agentcall_turn_timing_regression.py"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip/ai-bridge"
+      ]
+    },
+    {
+      "id": "L08",
+      "label": "после установки AgentCall SDK fix провести один Secretary SDK разговор owner↔QA B и проверить границы реплик",
+      "status": "queued",
+      "depends_on": [
+        "L07"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "role": "Lead test",
+      "acceptance": "A confirmed Matrix or Telegram answer creates no later phone delivery.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip",
+        "/home/roomhacker/agents-projects/universal-userio"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip",
+        "/home/roomhacker/agents-projects/universal-userio"
+      ]
+    },
+    {
+      "id": "L09",
+      "label": "на свежем запросе подтвердить, что ответ в Matrix/Telegram останавливает цепочку без телефонного вызова",
+      "status": "queued",
+      "depends_on": [
+        "L06"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "role": "Lead test",
+      "acceptance": "A fresh chain with definitive missed Matrix and Telegram legs starts exactly one phone call; no old delivery is replayed.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio"
+      ]
+    },
+    {
+      "id": "L10",
+      "label": "на отдельном свежем запросе подтвердить: достоверный пропуск Matrix и Telegram даёт ровно один телефонный вызов",
+      "status": "queued",
+      "depends_on": [
+        "L09"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "role": "Lead test",
+      "acceptance": "Each changed repository has a pinned good release, archive reference and rollback path.",
+      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip"
+      ],
+      "write_paths": [],
+      "paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion/infra/android-s21/gsm2sip"
+      ]
+    },
+    {
+      "id": "L11",
+      "label": "сохранить проверенные версии и архив с воспроизводимым откатом",
+      "status": "queued",
+      "depends_on": [
+        "L10"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "role": "Lead release",
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion"
+      ],
+      "write_paths": [
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/release-manifest.json"
+      ],
+      "paths": [
+        "/home/roomhacker/agents-projects/noticeplace",
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/ServersAdministartion"
+      ]
+    }
+  ],
+  "leaf_count": 11
+}
