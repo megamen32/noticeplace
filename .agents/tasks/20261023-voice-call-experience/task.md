@@ -8,11 +8,11 @@
 
 ### Последний срез — 2026-10-23; он supersedes прежние следующие шаги ниже
 
-- UserIO: backend `main=origin/main` на `925a47a`, focused проверки — 20 passed. Owner MatrixRTC history подтверждает двустороннее русское аудио и русское произношение названия, но SDK не дошёл до terminal receipt: прежний effective URL указывал на Airlock Platform. Конфиг `/etc/agentcall-secretary-voice.json` теперь направлен на SDK app `192.168.128.7:8080`; перезапускали только `userio-voice`, Airlock не меняли. Стабильный tunnel `127.0.0.1:18086` отсутствует.
-- Запрос `owner-matrix-secretary-after-sdk-route-20261023-01` остаётся **UNKNOWN** и не replay: строки не найдены в Matrix call store, UserIO DB или backend/voice logs, dispatcher log недоступен, точная передача не доказана. Отдельный Matrix call завершился `answered=false`, `actor=null`, без диалога; повторять нельзя. Новые голосовые тесты — только между существующими QA-ботами A/B в изолированной Matrix-комнате, не с owner identity и не по телефону.
+- UserIO: backend `main=origin/main` на `925a47a`, focused проверки — 20 passed. Owner MatrixRTC history подтверждает двустороннее русское аудио и произношение названия, но SDK не дошёл до terminal receipt: прежний effective URL указывал на Airlock Platform. Конфиг `/etc/agentcall-secretary-voice.json` направлен на SDK app `192.168.128.7:8080`; перезапускали только `userio-voice`, Airlock не меняли. Транспортный путь сейчас ведёт внешний владелец `/root/voice_delivery`; он не зависит от прежнего UNKNOWN. Root применит возвращённый URL/config и владеет последующей проверкой диалога.
+- Запрос `owner-matrix-secretary-after-sdk-route-20261023-01` остаётся **UNKNOWN** и не replay. Старый GET после DNS repair вернул not found; это отдельная записанная операция, не prerequisite для SDK route. Отдельный direct Matrix call завершился `answered=false`, `actor=null`, без диалога; не повторять без полезного изменения готовности/необходимости.
 - Notice Place `b1944cd` установлен и read back на server-100/44: readiness HTTP 200, classifier SHA256 `4f24c3e21656406d72fdc51a3f8560989b89dff8cf861d013da900a8757612c0`. Server-88 остаётся заблокирован live deliveries. Контракт эскалации совпадает с runtime и подтверждённый ответ останавливает цепочку; live canary ещё не подтвердил эту ветку.
-- Voice-only archive создан и проверен по пути `/var/backups/universal-userio/voice-f199406-29a2c4d-20261023`: source `29a2c4d` прошёл независимый review; manifest SHA256 `d098c7889f695acc75160ee68f492aecf874ff95e91e9cbaa38ba47586da0b4c`, receipt SHA256 `327c2a1d1d6b0421d7357954851ff9ae9a137d0b3943123af0fc761c3b258394`. Hashes, root-only permissions и readback PASS; live container не менялся. Это только archive voice, не общий release/acceptance.
-- Прямой owner phone request был отвергнут до admission: активного phone gateway нет. Повторов не было. Реальные телефонные/PSTN/GSM/SIP вызовы запрещены для теста; phone escalation остаётся непроверенной.
+- Voice-only archive создан и проверен: `/var/backups/universal-userio/voice-f199406-29a2c4d-20261023`; manifest SHA256 `d098c7889f695acc75160ee68f492aecf874ff95e91e9cbaa38ba47586da0b4c`, receipt SHA256 `327c2a1d1d6b0421d7357954851ff9ae9a137d0b3943123af0fc761c3b258394`. Hashes, root-only permissions и readback PASS; live container не менялся. Это не общий release/acceptance.
+- С 09:15 действует явная авторизация владельца на один прямой owner/phone call; первый и единственный запрос был отклонён до набора, так как активного phone gateway нет. Не повторять автоматически и не делать серию. После готовности gateway и адресного маршрута возможна одна свежая осознанная попытка в рамках этой авторизации. Это отдельно от automated QA: тестовые voice canaries выполняются на существующих ботах A/B в изолированной Matrix-комнате.
 - BotFather MAS fix уже в `main` (`db1eeff`), `main=origin/main` `fae2743`, focused tests 4/4. QA A/B есть в registry/TEST_ACCESS; новых аккаунтов нет.
 - Общий release/rollback архив ещё неполон: backend archives `b54328f`/`baa2764` сохранены; runtime revisions Notice Place расходятся; у BotFather image нет digest/rollback receipt.
 
@@ -42,7 +42,7 @@
 
 ## План
 
-Цель: довести до проверенного выпуска надёжный русский голосовой помощник и корректную эскалацию Matrix → Telegram → телефон; новые голосовые проверки выполнять только на существующих QA Matrix-ботах A/B и сохранять проверенные версии.
+Цель: довести до проверенного выпуска надёжный русский голосовой помощник и корректную эскалацию Matrix → Telegram → телефон; автоматические QA-проверки выполнять на существующих ботах Matrix A/B, а отдельную owner/phone авторизацию использовать только в её точных пределах.
 Бизнес-результат: связный русский разговор без перебивания и устаревшего ответа, входящий режим секретаря, остановка цепочки после ответа и корректное поведение после достоверных пропусков; версии можно восстановить.
 Декомпозиция: 15 листьев · 2 параллельно · 4 волны · слотов: 2
 
@@ -57,31 +57,31 @@
 
 ### В работе
 
-🔄 работаем (завершить раздельную приёмку MatrixRTC guest и Secretary SDK только на тестовых ботах A/B) начата 04:05, оценка 10-15 минут, активное время не измерено; owner history доказывает двустороннее русское аудио/название, но SDK не получил terminal receipt; отдельный direct Matrix call `answered=false`, `actor=null`, без диалога
-🔄 работаем (завершить Notice Place rollout/readback и phone-consumer review) начата, время начала не измерено, оценка 10-15 минут, активное время не измерено; `b1944cd` установлен и readiness HTTP 200 на server-100/44, classifier SHA256 `4f24c3e21656406d72fdc51a3f8560989b89dff8cf861d013da900a8757612c0`; server-88 заблокирован live deliveries
+🔄 работаем (завершить раздельную приёмку MatrixRTC guest и Secretary SDK на тестовых ботах A/B) начата 04:05, оценка 10-15 минут, активное время не измерено; owner history доказывает аудио/название, но не terminal SDK receipt; direct Matrix call ответил `answered=false`, `actor=null`, без диалога
+🔄 работаем (завершить Notice Place rollout/readback и phone-consumer review) начата, время начала не измерено, оценка 10-15 минут, активное время не измерено; `b1944cd` установлен/read back на server-100/44, readiness 200, classifier SHA256 `4f24c3e21656406d72fdc51a3f8560989b89dff8cf861d013da900a8757612c0`; server-88 заблокирован live deliveries
+🔄 работаем (довести stable SDK transport к приложению) начата, время начала не измерено, оценка 10-15 минут, активное время не измерено; владелец — внешний `/root/voice_delivery`, путь независим от UNKNOWN; наша линия не дублирует транспортную работу
 
 ### Заблокировано
 
-⛔ (получить terminal SDK turn по Secretary маршруту на QA A/B) оценка 10-15 минут, блокер: прежний effective URL указывал на Airlock; config теперь указывает SDK app `192.168.128.7:8080`, перезапущен только `userio-voice`; tunnel `127.0.0.1:18086` отсутствует, dialogue/terminal receipt не доказаны
-⛔ (reconcile исход запроса `owner-matrix-secretary-after-sdk-route-20261023-01` без повтора) оценка 10-15 минут, блокер: dispatcher log недоступен, строк в call store/DB/backend/voice logs нет, точная передача не доказана; статус UNKNOWN, не replay
-⛔ (зафиксировать отрицательный результат отдельного direct Matrix вызова без повтора) оценка 10-15 минут, блокер: `answered=false`, `actor=null`, диалога нет; вызов не повторять и не считать приёмкой
-⛔ (подтвердить phone escalation после достоверных Matrix/Telegram пропусков) оценка 10-15 минут, блокер: прямой owner phone request pre-admission отклонён, активного gateway нет; не повторять и не тестировать реальный телефон/PSTN/GSM/SIP
+⛔ (получить Secretary SDK dialogue acceptance после готовности транспорта) оценка 10-15 минут, блокер: прежний effective URL указывал на Airlock; root применит возвращённый URL/config и владеет последующей диалоговой проверкой; текущий terminal receipt и диалог отсутствуют
+⛔ (сохранить результат запроса `owner-matrix-secretary-after-sdk-route-20261023-01` без повтора) оценка 10-15 минут, блокер: request остаётся UNKNOWN; старый GET после DNS repair вернул not found, dispatcher call receipt не подтверждён. Это только recorded operation и не prerequisite для build stable route
+⛔ (зафиксировать отдельный direct Matrix результат без повтора) оценка 10-15 минут, блокер: `answered=false`, `actor=null`, диалога нет; не повторять без материального изменения готовности/необходимости
+⛔ (подтвердить phone escalation после достоверных Matrix/Telegram пропусков) оценка 10-15 минут, блокер: авторизованный владельцем direct owner/phone request был один раз отклонён до набора из-за отсутствия активного gateway; без серии и слепых повторов
 
 ### В очереди
 
-⏳ (на разрешённом тестовом Matrix A/B сценарии подтвердить, что ответ останавливает цепочку) начнём после листьев 7 и 8, потому что нужны принятый голосовой путь и завершённый Notice Place rollout/review; оценка 10-15 минут
-⏳ (проверить или восстановить стабильный tunnel `127.0.0.1:18086` к SDK app `192.168.128.7:8080`) начнём после листа 10, потому что перед любым новым SDK действием надо сохранить/reconcile UNKNOWN; оценка 10-15 минут
-⏳ (завершить общий release/rollback archive с точными receipts и digest) начнём после листьев 9, 10, 11, 12, 13 и 14, потому что полный архив должен включать все принятые результаты; voice-only archive уже готов, но backend/Notice Place/BotFather evidence ещё требует сверки; оценка 10-15 минут
+⏳ (на разрешённом тестовом Matrix A/B сценарии подтвердить, что ответ останавливает цепочку) начнём после листьев 7 и 8, потому что нужны принятый тестовый голосовой путь и завершённый Notice Place rollout/review; оценка 10-15 минут
+⏳ (завершить общий release/rollback archive с точными receipts и digest) начнём после листьев 6, 10, 11, 12, 13 и 14, потому что полный архив должен включать все принятые результаты; voice-only archive уже готов, но cross-service evidence остаётся неполным; оценка 10-15 минут
 
 ### Маршрут и оценка
 
 - Fullcycle и исходная цель сохранены: русский голос и границы реплик, Secretary SDK, отдельный guest путь, Matrix → Telegram → телефон и воспроизводимые release/rollback архивы остаются открытыми до consumer acceptance.
-- UserIO backend `main=origin/main` `925a47a`, focused tests 20 passed; owner MatrixRTC history подтверждает аудио и произносимое название, но не terminal SDK turn. Effective URL теперь на SDK app `192.168.128.7:8080`; stable tunnel отсутствует.
-- Запрос `owner-matrix-secretary-after-sdk-route-20261023-01` остаётся UNKNOWN; не replay. Отдельный Matrix вызов `answered=false`, `actor=null` без диалога не повторять. Новые тестовые звонки только между QA A/B в изолированной Matrix комнате; owner Matrix и телефон не использовать.
-- Notice Place `b1944cd` установлен/read back на server-100/+44; readiness 200, classifier SHA приведён выше. Server-88 заблокирован live deliveries. Контракт/runtime совпадает, но ответ-stop live canary не пройден.
-- Прямой phone request не прошёл admission из-за отсутствия gateway. Реальный phone leg не проверен; никаких телефонных тестов людям. Эскалация остаётся целью, её приёмка не заявляется.
-- Voice-only archive `29a2c4d` успешно сохранён с manifest/receipt, hashes, root-only permissions и readback PASS; live container unchanged. Общий archive ожидает completion SDK/эскалационных canaries и точные cross-service digests/receipts.
-- Неизмеренное активное время и ожидания не превращать в числа; rollout на server-88, UNKNOWN receipt, стабильный tunnel и полный release archive остаются препятствиями.
+- UserIO backend `main=origin/main` `925a47a`, focused tests 20 passed; owner MatrixRTC history подтверждает аудио/название, но не terminal SDK turn. Внешний `/root/voice_delivery` ведёт stable transport; он независим от UNKNOWN. Root применит возвращённый URL/config и владеет последующей dialogue acceptance.
+- Запрос `owner-matrix-secretary-after-sdk-route-20261023-01` остаётся UNKNOWN/no replay. Старый GET после DNS repair not found — recorded operation, не dependency для транспортной работы. Direct Matrix call `answered=false`, `actor=null`, no dialogue; без readiness/need не повторять.
+- Notice Place `b1944cd` installed/readback на server-100/+44, readiness 200, classifier SHA выше; server-88 остаётся blocked by live deliveries. Контракт/runtime совпадает, live answer-stop canary ещё не пройден.
+- Owner authorization на один прямой owner/phone call активна с 09:15; единственная попытка была отвергнута pre-dial из-за отсутствия gateway. Повтора не запускать автоматически или серией; при материальной готовности gateway/recipient route допустима одна свежая осознанная попытка в рамках разрешения. Автоматические QA A/B проверки остаются отдельными и идут только через изолированную Matrix комнату.
+- Voice-only archive успешно подтверждён, live container unchanged. Общий archive ждёт completion оставшихся acceptance и cross-service evidence.
+- Неизмеренное активное время и ожидания не превращать в числа; rollout server-88, terminal SDK dialogue, phone gateway и release convergence остаются препятствиями.
 
 ## Журнал изменений
 
@@ -113,5 +113,5 @@
 
 - Сохранить чужой WIP и активные ownership-записи; перед правкой пути проверить текущего владельца и свежесть исходников.
 - Не повторять старые или неопределённые доставки. `answered=true` прекращает эскалацию; `uncertain` не считается пропуском.
-- Новые voice canaries — только между существующими тестовыми Matrix-ботами A/B в изолированной комнате. Не использовать owner identity; запрещены PSTN/GSM/SIM/external SIP, phone fallback и любые тестовые вызовы людям. UNKNOWN/accepted и answered=false попытки не повторять.
+- Автоматические QA voice canaries — только между существующими ботами Matrix A/B в изолированной комнате; это отдельно от прямого owner/phone call. Owner authorization с 09:15 покрывает одну прямую попытку; она была отклонена до набора из-за отсутствующего gateway. Не повторять автоматически и не делать серию: при материальной готовности gateway/recipient route допускается одна свежая осознанная попытка в рамках этой авторизации. UNKNOWN/accepted не replay; answered=false/actor=null без dialogue не повторять без материального изменения готовности/необходимости.
 - Сначала опубликованный/разрешённый dev target и source-backed review; upstream `main` shared/external репозиториев не сливать автоматически. Секреты и номера не помещать в отчёты или архив.

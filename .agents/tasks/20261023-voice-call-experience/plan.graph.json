@@ -1,12 +1,12 @@
 {
   "schema_version": 2,
   "title": "Task",
-  "goal": "довести до проверенного выпуска надёжный русский голосовой помощник и корректную эскалацию Matrix → Telegram → телефон; новые голосовые проверки выполнять только на существующих QA Matrix-ботах A/B и сохранять проверенные версии.",
+  "goal": "довести до проверенного выпуска надёжный русский голосовой помощник и корректную эскалацию Matrix → Telegram → телефон; автоматические QA-проверки выполнять на существующих ботах Matrix A/B, а отдельную owner/phone авторизацию использовать только в её точных пределах.",
   "business_result": "связный русский разговор без перебивания и устаревшего ответа, входящий режим секретаря, остановка цепочки после ответа и корректное поведение после достоверных пропусков; версии можно восстановить.",
-  "current_progress": "Verified snapshot 2026-10-23: UserIO backend main=origin/main 925a47a; focused checks 20 passed. Owner MatrixRTC history proves two-way Russian audio/product name, but SDK had no terminal receipt because effective URL pointed to Airlock Platform; config now targets SDK app 192.168.128.7:8080, only userio-voice restarted, stable tunnel 127.0.0.1:18086 absent. Exact request owner-matrix-secretary-after-sdk-route-20261023-01 stays UNKNOWN/no replay. Separate Matrix attempt answered=false/actor=null/no dialogue/no repeat. Notice Place b1944cd installed/read back on server-100/+44: HTTP 200; classifier SHA256 4f24c3e21656406d72fdc51a3f8560989b89dff8cf861d013da900a8757612c0; server-88 blocked by live deliveries. Contract/runtime match; answer-stop live canary remains open. Voice-only archive SUCCESS at /var/backups/universal-userio/voice-f199406-29a2c4d-20261023; manifest d098c7889f695acc75160ee68f492aecf874ff95e91e9cbaa38ba47586da0b4c and receipt 327c2a1d1d6b0421d7357954851ff9ae9a137d0b3943123af0fc761c3b258394; hashes/root-only permissions/readback PASS; live container unchanged. Direct owner phone request rejected before admission: no active gateway. No phone test calls/repeats. BotFather fix db1eeff on main/head fae2743, tests 4/4, QA A/B registry exists. Overall release/acceptance remains open.",
-  "external_waits": "Owner→QA request owner-matrix-secretary-after-sdk-route-20261023-01 remains UNKNOWN; do not replay. Stable SDK tunnel absent. Notice Place server-88 remains blocked by live deliveries. No active phone gateway; phone/PSTN/GSM/SIP calls prohibited for testing. Voice-only archive is complete; cross-service release digests/receipts and remaining Matrix acceptance are incomplete.",
+  "current_progress": "Verified snapshot 2026-10-23: UserIO backend main=origin/main 925a47a; focused checks 20 passed. Owner MatrixRTC history proves two-way Russian audio/product-name pronunciation, but prior SDK turn lacked terminal receipt because effective URL pointed to Airlock. Stable SDK transport is currently owned externally by /root/voice_delivery, independent of the older UNKNOWN request; root applies returned URL/config and owns subsequent dialogue acceptance. Exact request owner-matrix-secretary-after-sdk-route-20261023-01 remains UNKNOWN/no replay; separate GET after DNS repair returned not found and is recorded, not a transport prerequisite. Separate direct Matrix call answered=false/actor=null/no dialogue; no repeat absent material readiness/need. Notice Place b1944cd installed/read back on server-100/+44, readiness HTTP 200, classifier SHA256 4f24c3e21656406d72fdc51a3f8560989b89dff8cf861d013da900a8757612c0; server-88 remains blocked by live deliveries. Owner authorization for one direct owner/phone call has been active since 09:15; the only request was rejected pre-dial because no phone gateway is active. No automatic retry or call series; after material gateway/recipient-route readiness, one fresh deliberate attempt remains within that authorization. Automated QA A/B is separate and Matrix-isolated. Voice-only archive PASS at /var/backups/universal-userio/voice-f199406-29a2c4d-20261023; manifest d098c7889f695acc75160ee68f492aecf874ff95e91e9cbaa38ba47586da0b4c and receipt 327c2a1d1d6b0421d7357954851ff9ae9a137d0b3943123af0fc761c3b258394; hashes/root-only permissions/readback PASS, live container unchanged. BotFather fix db1eeff on main/head fae2743, tests 4/4, QA A/B registry exists. Overall release/acceptance remains open.",
+  "external_waits": "Stable SDK transport is being handled by external /root/voice_delivery; it does not depend on or replay owner-matrix-secretary-after-sdk-route-20261023-01, which remains UNKNOWN. Root owns applying the returned URL/config and subsequent dialogue acceptance. Notice Place server-88 is blocked by live deliveries. Direct owner/phone authorization is active for one call; the only request was rejected pre-dial due to no active gateway. No retry/series until material readiness/need, then only one fresh deliberate attempt within current authorization. Separate direct Matrix answered=false/actor=null remains no-dialogue and is not repeated absent material readiness/need. Cross-service release evidence and remaining Matrix acceptance are incomplete.",
   "slots": 2,
-  "updated_at": "2026-10-23T12:28:49+03:00",
+  "updated_at": "2026-10-23T12:32:43",
   "tasks": [
     {
       "id": "L01",
@@ -167,7 +167,7 @@
     },
     {
       "id": "L07",
-      "label": "завершить раздельную приёмку MatrixRTC guest и Secretary SDK только на тестовых ботах A/B",
+      "label": "завершить раздельную приёмку MatrixRTC guest и Secretary SDK на тестовых ботах A/B",
       "status": "running",
       "depends_on": [],
       "estimate_minutes": {
@@ -208,19 +208,17 @@
     },
     {
       "id": "L09",
-      "label": "получить terminal SDK turn по Secretary маршруту на QA A/B",
-      "status": "blocked",
-      "depends_on": [
-        "L14"
-      ],
+      "label": "довести stable SDK transport к приложению",
+      "status": "running",
+      "depends_on": [],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "blocker": "The prior effective URL pointed to Airlock Platform. Configuration now targets SDK app 192.168.128.7:8080; only userio-voice restarted; stable tunnel 127.0.0.1:18086 absent. No terminal SDK receipt/dialogue proof. Future tests only QA Matrix A/B.",
-      "role": "Lead runtime acceptance",
-      "acceptance": "A permitted QA A/B Matrix test reaches the SDK app, yields a terminal receipt and confirms Secretary behavior; no owner identity or phone.",
-      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "role": "External transport owner",
+      "acceptance": "Deliver a stable transport path to the SDK app and return the effective URL/config; do not perform or claim dialogue acceptance. This work is independent of the older UNKNOWN request.",
+      "note": "External work is already running under /root/voice_delivery; root applies returned URL/config and owns the separate dialogue acceptance.",
+      "blocker": "No stable returned route is available yet; current evidence shows config target 192.168.128.7:8080 but stable tunnel 127.0.0.1:18086 absent. This work does not depend on the old UNKNOWN call.",
       "read_paths": [
         "/etc/agentcall-secretary-voice.json",
         "/home/roomhacker/agents-projects/universal-userio",
@@ -230,21 +228,24 @@
       "paths": [
         "/home/roomhacker/agents-projects/universal-userio",
         "/home/roomhacker/ServersAdministartion"
-      ]
+      ],
+      "owner": "/root/voice_delivery"
     },
     {
       "id": "L10",
-      "label": "reconcile исход запроса `owner-matrix-secretary-after-sdk-route-20261023-01` без повтора",
+      "label": "получить Secretary SDK dialogue acceptance после готовности транспорта",
       "status": "blocked",
-      "depends_on": [],
+      "depends_on": [
+        "L09"
+      ],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "blocker": "Exact request_id owner-matrix-secretary-after-sdk-route-20261023-01 remains UNKNOWN: no matching row in Matrix call store, UserIO DB or backend/voice logs; dispatcher log unavailable, exact dispatch unproven. Do not replay.",
-      "role": "Lead receipt reconciliation",
-      "acceptance": "Obtain authoritative terminal receipt for exact request_id; otherwise preserve UNKNOWN without replay.",
-      "note": "Never replay request_id owner-matrix-secretary-after-sdk-route-20261023-01; a permitted fresh request is a separate canary.",
+      "blocker": "No terminal SDK receipt or dialogue proof yet. Root owns applying the external transport result and subsequent acceptance.",
+      "role": "Root dialogue acceptance",
+      "acceptance": "After transport readiness, root applies returned URL/config and obtains an authoritative terminal SDK receipt plus dialogue evidence; no claim of acceptance before that evidence.",
+      "note": "Does not depend on replaying the old UNKNOWN request; any fresh action must be deliberate and separately authorized.",
       "read_paths": [
         "/home/roomhacker/agents-projects/universal-userio",
         "/home/roomhacker/agents-projects/noticeplace"
@@ -253,18 +254,19 @@
       "paths": [
         "/home/roomhacker/agents-projects/universal-userio",
         "/home/roomhacker/agents-projects/noticeplace"
-      ]
+      ],
+      "owner": "root"
     },
     {
       "id": "L11",
-      "label": "зафиксировать отрицательный результат отдельного direct Matrix вызова без повтора",
+      "label": "сохранить результат запроса `owner-matrix-secretary-after-sdk-route-20261023-01` без повтора",
       "status": "blocked",
       "depends_on": [],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "blocker": "The direct Matrix receipt is answered=false and actor=null, with no dialogue. Do not repeat or count it as acceptance.",
+      "blocker": "request остаётся UNKNOWN; старый GET после DNS repair вернул not found, dispatcher call receipt не подтверждён. Это только recorded operation и не prerequisite для build stable route",
       "role": "Lead call receipt review",
       "acceptance": "A direct Matrix dialogue receipt proves a real answer; current attempt was an explicit no-answer and must not be repeated.",
       "note": "The Notice Place source review is still in progress; contract/runtime alignment alone is not live canary proof.",
@@ -278,16 +280,14 @@
     },
     {
       "id": "L12",
-      "label": "подтвердить phone escalation после достоверных Matrix/Telegram пропусков",
+      "label": "зафиксировать отдельный direct Matrix результат без повтора",
       "status": "blocked",
-      "depends_on": [
-        "L08"
-      ],
+      "depends_on": [],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "blocker": "Direct owner phone request was rejected before admission because no phone gateway is active. No repeat; real phone/PSTN/GSM/SIP calls are prohibited for test work.",
+      "blocker": "`answered=false`, `actor=null`, диалога нет; не повторять без материального изменения готовности/необходимости",
       "role": "Lead escalation acceptance",
       "acceptance": "Verify phone-escalation policy through a non-dialing test sink only; actual phone delivery remains unaccepted.",
       "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
@@ -303,16 +303,14 @@
     },
     {
       "id": "L13",
-      "label": "на разрешённом тестовом Matrix A/B сценарии подтвердить, что ответ останавливает цепочку",
-      "status": "queued",
-      "depends_on": [
-        "L07",
-        "L08"
-      ],
+      "label": "подтвердить phone escalation после достоверных Matrix/Telegram пропусков",
+      "status": "blocked",
+      "depends_on": [],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
+      "blocker": "авторизованный владельцем direct owner/phone request был один раз отклонён до набора из-за отсутствия активного gateway; без серии и слепых повторов",
       "role": "Lead test",
       "acceptance": "A permitted isolated QA Matrix A/B scenario with a confirmed answer stops escalation; no phone leg is dialed.",
       "read_paths": [
@@ -327,32 +325,38 @@
     },
     {
       "id": "L14",
-      "label": "проверить или восстановить стабильный tunnel `127.0.0.1:18086` к SDK app `192.168.128.7:8080`",
+      "label": "на разрешённом тестовом Matrix A/B сценарии подтвердить, что ответ останавливает цепочку",
       "status": "queued",
       "depends_on": [
-        "L10"
+        "L07",
+        "L08"
       ],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "role": "Lead infrastructure verification",
-      "acceptance": "Verify or restore stable local tunnel 127.0.0.1:18086 to SDK app 192.168.128.7:8080; confirm target before any separately authorized QA A/B test.",
+      "role": "Lead test",
+      "acceptance": "On isolated existing QA A/B Matrix accounts, prove a confirmed answer stops the escalation chain; keep this distinct from owner dialogue and direct phone authorization.",
       "read_paths": [
-        "/etc/agentcall-secretary-voice.json",
-        "/home/roomhacker/ServersAdministartion"
+        "/home/roomhacker/agents-projects/universal-userio/.agents/TEST_ACCESS.md",
+        "/home/roomhacker/agents-projects/noticeplace"
       ],
       "write_paths": [],
       "paths": [
-        "/home/roomhacker/ServersAdministartion"
-      ]
+        "/home/roomhacker/agents-projects/universal-userio",
+        "/home/roomhacker/agents-projects/noticeplace"
+      ],
+      "owner": null,
+      "note": "Separate automated QA scenario; use existing fixtures only.",
+      "blocker": "No stable returned route is available yet; current evidence shows config target 192.168.128.7:8080 but stable tunnel 127.0.0.1:18086 absent. This work does not depend on the old UNKNOWN call."
     },
     {
       "id": "L15",
       "label": "завершить общий release/rollback archive с точными receipts и digest",
       "status": "queued",
       "depends_on": [
-        "L06",
+        "L07",
+        "L08",
         "L09",
         "L10",
         "L11",
