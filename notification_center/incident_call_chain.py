@@ -201,7 +201,20 @@ class IncidentCallSender:
         except urllib.error.HTTPError as error:
             if error.code in {401,403,404}:
                 return {'answered':False,'ended':True,'safe_to_fallback':True,'status':'unavailable'}
-            return _http_error_receipt(error)
+            receipt=_http_error_receipt(error)
+            # UserIO rejects Matrix admission before creating a call when a
+            # different Matrix voice call is already active. That exact 400
+            # is a known no-delivery receipt, so continue the ordered chain;
+            # generic validation errors and every other HTTP failure remain
+            # uncertain and must stop escalation.
+            if (error.code == 400
+                and urllib.parse.urlsplit(self.url).path == '/v1/calls/matrix/noticeplace'
+                and receipt.get('response_metadata',{}).get('error') == 'another Matrix voice call is active'):
+                return {'answered':False,'ended':True,'safe_to_fallback':True,
+                        'status':'not_admitted','channel':'matrix','http_status':400,
+                        'error':'another Matrix voice call is active',
+                        'response_metadata':receipt['response_metadata']}
+            return receipt
         except urllib.error.URLError as error:
             if not isinstance(error.reason, ConnectionRefusedError): raise
             return {'answered':False,'ended':True,'safe_to_fallback':True,'status':'unavailable'}

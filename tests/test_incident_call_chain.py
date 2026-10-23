@@ -142,6 +142,57 @@ class ChainTests(unittest.TestCase):
         self.assertEqual([],self.calls)
         self.assertEqual('open',self.center.get_incident(incident)['state'])
 
+    def test_matrix_active_call_conflict_is_confirmed_pre_admission_and_chain_continues(self):
+        error=urllib.error.HTTPError(
+            'http://userio/v1/calls/matrix/noticeplace',400,'bad request',{},
+            io.BytesIO(json.dumps({'error':'another Matrix voice call is active'}).encode()),
+        )
+        def reject(*args,**kwargs):
+            self.calls.append('matrix')
+            raise error
+        self.worker._matrix_call=IncidentCallSender(
+            'http://userio/v1/calls/matrix/noticeplace','test',runner=reject)
+
+        self.start()
+        self.step()
+        self.assertEqual('failed',self.rows()[0]['status'])
+        self.assertTrue(json.loads(self.rows()[0]['result_json'])['safe_to_fallback'])
+        self.assertEqual(['matrix'],self.calls)
+
+        self.telegram.result=dict(MISSED)
+        self.step()
+        self.assertEqual(['matrix','telegram'],self.calls)
+        self.assertEqual(['matrix.call','telegram.call','android.phone.call'],
+                         [row['channel'] for row in self.rows()])
+        self.assertEqual('queued',self.rows()[-1]['status'])
+
+        self.step()
+        self.assertEqual(['matrix','telegram','phone'],self.calls)
+
+    def test_other_matrix_http_400_remains_uncertain(self):
+        error=urllib.error.HTTPError(
+            'http://userio/v1/calls/matrix/noticeplace',400,'bad request',{},
+            io.BytesIO(json.dumps({'error':'invalid call bounds'}).encode()),
+        )
+        def reject(*args,**kwargs): raise error
+        sender=IncidentCallSender('http://userio/v1/calls/matrix/noticeplace','test',runner=reject)
+        result=sender.send({'incident':{'id':'incident-test','title':'test'}})
+        self.assertIsNone(result['answered'])
+        self.assertTrue(result['uncertain'])
+        self.assertNotIn('safe_to_fallback',result)
+
+    def test_matrix_conflict_error_from_other_channel_remains_uncertain(self):
+        error=urllib.error.HTTPError(
+            'http://userio/v1/calls/telegram/noticeplace',400,'bad request',{},
+            io.BytesIO(json.dumps({'error':'another Matrix voice call is active'}).encode()),
+        )
+        def reject(*args,**kwargs): raise error
+        sender=IncidentCallSender('http://userio/v1/calls/telegram/noticeplace','test',runner=reject)
+        result=sender.send({'incident':{'id':'incident-test','title':'test'}})
+        self.assertIsNone(result['answered'])
+        self.assertTrue(result['uncertain'])
+        self.assertNotIn('safe_to_fallback',result)
+
     def test_http_error_unparseable_body_stores_only_bounded_length_and_digest(self):
         body=b'<html>Bearer private-token; caller +1 202 555 0147</html>'
         error=urllib.error.HTTPError('http://bridge',503,'unavailable',{},io.BytesIO(body))
