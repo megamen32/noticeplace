@@ -22,6 +22,11 @@ from zoneinfo import ZoneInfo
 SEVERITIES = ("debug", "info", "notice", "important", "critical", "emergency")
 OPEN_STATES = ("open", "acknowledged", "snoozed")
 DELIVERABLE_STATES = ("open", "snoozed")
+# An explicit consumer policy that names Matrix only is the operator decision
+# for that recipient: it outranks the builtin ladder and the incident call
+# chain, so a rejected Matrix step can never become a Telegram or a phone rung.
+MATRIX_ONLY_POLICY_PLATFORM = "matrix"
+NON_MATRIX_TRANSPORT_PLATFORMS = frozenset({"telegram", "phone", "android", "whatsapp", "vk"})
 # Session links and conclusions report existing work; ACK must not hide them.
 _SESSION_NOTICE_SQL = "(channel = 'telegram.main' AND (COALESCE(json_type(COALESCE(target_json, '{}'), '$.health_session'), '') = 'object' OR COALESCE(json_type(COALESCE(target_json, '{}'), '$.health_outcome'), '') = 'object'))"
 
@@ -2152,8 +2157,61 @@ class NotificationCenter:
             (json.dumps(target, ensure_ascii=False), delivery_id),
         )
 
-    def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float, target: Mapping[str, Any] | None = None, policy_step_id: str | None = None, repeat_number: int | None = None) -> str:
+    def consumer_policy_is_matrix_only(self, consumer_id: str) -> bool:
+        """True when the effective policy of a consumer is explicit and Matrix only.
+
+        An explicit policy whose every enabled stage names Matrix is the
+        operator decision that this recipient is contacted over Matrix and over
+        nothing else. The builtin ladder, the incident call chain and every
+        failure neighbour must respect that decision.
+        """
+        rows = self._connection.execute(
+            "SELECT platform, kind FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1",
+            (consumer_id,),
+        ).fetchall()
+        explicit = False
+        for row in rows:
+            platform = str(row["platform"] or "").strip().lower()
+            if not platform:
+                kind = str(row["kind"] or "").strip().lower()
+                platform = kind.split(".", 1)[0]
+            if not platform:
+                # An unknown legacy route keeps the product defaults.
+                return False
+            explicit = True
+            if platform != MATRIX_ONLY_POLICY_PLATFORM:
+                return False
+        return explicit
+
+    def incident_is_matrix_only(self, incident_id: str) -> bool:
+        """True when the incident belongs to a consumer with a Matrix only policy."""
+        row = self._connection.execute(
+            "SELECT consumer_id FROM incidents WHERE id = ?", (incident_id,)
+        ).fetchone()
+        if row is None or not row["consumer_id"]:
+            return False
+        return self.consumer_policy_is_matrix_only(str(row["consumer_id"]))
+
+    def channel_denied_by_matrix_only_policy(self, incident_id: str, channel: str) -> bool:
+        """Deny every non Matrix transport for an incident of a Matrix only consumer.
+
+        A call is denied for every transport, so a rejected Matrix step can
+        never become a phone rung even when a caller asks for one by name.
+        """
+        name = str(channel or "")
+        platform = name.split(".", 1)[0]
+        if platform == MATRIX_ONLY_POLICY_PLATFORM:
+            return False
+        if platform not in NON_MATRIX_TRANSPORT_PLATFORMS and not name.endswith(".call"):
+            return False
+        return self.incident_is_matrix_only(incident_id)
+
+    def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float, target: Mapping[str, Any] | None = None, policy_step_id: str | None = None, repeat_number: int | None = None) -> str | None:
         """Create a stable scheduled delivery and return its identity."""
+        if self.channel_denied_by_matrix_only_policy(incident_id, channel):
+            self._audit(incident_id, "delivery_denied", "policy", {
+                "channel": channel, "step": step, "reason": "matrix_only_policy"})
+            return None
         delivery_key = f"{incident_id}:{channel}:{step}"
         row = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (delivery_key,)).fetchone()
         if row is not None:
@@ -2238,7 +2296,7 @@ class NotificationCenter:
             return resume.timestamp()
         return None
 
-    def schedule_escalation(self, incident_id: str, channel: str, due_epoch: float) -> str:
+    def schedule_escalation(self, incident_id: str, channel: str, due_epoch: float) -> str | None:
         """Schedule one named escalation while the incident remains active."""
         with self._lock, self._connection:
             incident = self.get_incident(incident_id)
@@ -2458,7 +2516,7 @@ class NotificationCenter:
             if health and channel.startswith("telegram."):
                 current_step = str(successor["step_id"])
                 continue
-            self._schedule_delivery(
+            delivery_id = self._schedule_delivery(
                 incident_id,
                 channel,
                 f"step:{successor['step_id']}:repeat:1",
@@ -2467,7 +2525,7 @@ class NotificationCenter:
                 str(successor["step_id"]),
                 1,
             )
-            return True
+            return delivery_id is not None
         return False
 
     def _schedule_failure_neighbours(self, row: sqlite3.Row, now: float) -> None:

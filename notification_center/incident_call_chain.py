@@ -156,7 +156,15 @@ def advance(center, row, outcome, receipt, now):
     if chain is None or outcome != 'failed' or not safe_missed(receipt): return
     if row['state'] not in ('open','snoozed') or chain['index'] == len(ORDER)-1: return
     index = chain['index'] + 1
-    center._schedule_delivery(str(row['incident_id']), ORDER[index], f'voice-chain:{index}', now,
+    successor = ORDER[index]
+    if successor.split('.', 1)[0] != 'matrix' and center.incident_is_matrix_only(str(row['incident_id'])):
+        # An explicit Matrix only policy constrains the whole episode: a
+        # rejected Matrix step is the end of the chain, never a Telegram call
+        # and never a phone rung.
+        center._audit(str(row['incident_id']), 'chain_advance_denied', 'policy',
+                      {'channel': successor, 'reason': 'matrix_only_policy'})
+        return
+    center._schedule_delivery(str(row['incident_id']), successor, f'voice-chain:{index}', now,
         {'incident_call_chain': {'root': chain['root'], 'index': index, 'previous': str(row['id'])}})
 
 

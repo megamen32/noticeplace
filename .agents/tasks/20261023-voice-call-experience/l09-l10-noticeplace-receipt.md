@@ -205,3 +205,250 @@ delete/update path (`notification_center/admin.py` has only `create_consumer`; n
 `consumers` in `notification_center/`), and raw SQL writes to the live mesh are out of bounds for me. It is
 inert (own project, lost intake token, no events, no deliveries). Minimal unlock: an owner-side deletion path
 or an explicit decision to keep it.
+
+
+## 7. L10 REPAIR — chain-wide deny, test-only binding, prepared live call (2026-10-24)
+
+Session: mvs_2b489b9ad2364fcaa03f4687420699a1 (same leaf, continuation). Root decision 23.10:
+L09 accepted, L10 to be repaired with the answered Matrix call path. No chat-reply ingress was built.
+
+### 7.1 Source fix: an explicit Matrix-only policy now constrains the whole incident
+
+- `notification_center/core.py:28-29` — `MATRIX_ONLY_POLICY_PLATFORM = "matrix"`,
+  `NON_MATRIX_TRANSPORT_PLATFORMS = {telegram, phone, android, whatsapp, vk}`.
+- `notification_center/core.py:2160-2184` — `consumer_policy_is_matrix_only()`: true only when the
+  consumer has an explicit, non-empty enabled policy whose every stage names Matrix (generic rows use
+  `platform`, legacy rows use the `kind` prefix; an unknown legacy route keeps the product defaults).
+- `notification_center/core.py:2186-2193` — `incident_is_matrix_only()`: the incident belongs to such a
+  consumer.
+- `notification_center/core.py:2195-2214` — `channel_denied_by_matrix_only_policy()` plus the funnel guard
+  inside `_schedule_delivery()`: every non-Matrix transport (and every `*.call` on any transport) is denied
+  for such an incident, the denial is audited as `delivery_denied` with `reason=matrix_only_policy`, and no
+  delivery row is created.
+- `notification_center/core.py:2461-2471` — `_schedule_next_policy_successor()` reports a denied schedule as
+  "not scheduled" instead of claiming a successor.
+- `notification_center/core.py:2249` — `schedule_escalation()` may now answer `None` when the policy denies
+  the channel.
+- `notification_center/incident_call_chain.py:154-170` — `advance()` refuses a non-Matrix successor of the
+  incident call chain for a Matrix-only incident and audits `chain_advance_denied`. This is the exact gap
+  Root named: a rejected Matrix 400 (`safe_missed`) used to schedule `telegram.call` and then
+  `android.phone.call`.
+
+Invariant after the fix: for a consumer with an explicit Matrix-only policy there is no `telegram.*`,
+`phone.*`, `android.*` or other-transport `*.call` in `consumer_policy_stages`, in `deliveries` (any status)
+and in the delivery work queue.
+
+Live blast radius before the change (read-only, dqlite mesh): five consumers have an all-Matrix enabled
+policy (`consumer_0dcec5a5254a425d819ab3aaa4397853`, `consumer_4f63a2d2297c4f5dbddd19db3ff40dd2`,
+`consumer_5ab72afca635473dad7fc7e7e326d272`, `consumer_7ad31d4110d744259bde4ee7580890e4`,
+`consumer_e05b453f21c54427a1ef17c82736cf4e`); the number of their delivery rows on a non-Matrix channel is
+**0**, so the guard changes no existing behaviour and only prevents future rungs.
+
+### 7.2 Deny regression (owned test files)
+
+- `tests/test_incident_call_chain.py:381-423`
+  `test_matrix_only_consumer_policy_denies_the_voice_chain_after_a_rejected_matrix_call` — a proven miss
+  (the rejected Matrix receipt) must not advance the episode: the delivery set stays
+  `['matrix.call','matrix.call']`, there is no `telegram.*`/`android.*`/`phone.*` row, no queued/claimed/
+  sending non-Matrix order, the policy stages stay `[('matrix','call')]`, and exactly one
+  `chain_advance_denied` audit event is written.
+- `tests/test_incident_call_chain.py:425-...`
+  `test_matrix_only_consumer_policy_denies_a_phone_rung_after_an_answered_matrix_call` — an answered Matrix
+  call acknowledges the incident, and nothing else is delivered, queued or written into the policy.
+- `tests/test_consumer_policy.py:362-...`
+  `test_matrix_only_policy_denies_every_non_matrix_transport_for_its_incident` —
+  `schedule_escalation` for `telegram.main`, `telegram.message`, `telegram.call`, `phone.call` and
+  `android.phone.call` all answer `None`, the incident keeps only `matrix.message`, the policy stages stay
+  `[('matrix','message')]`, and five `delivery_denied` audit events prove the denials.
+- Earlier leaf test kept: `tests/test_incident_call_chain.py:340-380` (answered call acknowledges, no phone
+  or Telegram row) and `tests/test_consumer_policy.py:326-359` (a refused Matrix delivery stays inside
+  Matrix).
+
+The existing product-default test `test_matrix_active_call_conflict_is_confirmed_pre_admission_and_chain_continues`
+(`tests/test_incident_call_chain.py:143-176`) still passes unchanged: a producer event without a consumer
+policy keeps the builtin ladder, because the deny is scoped to an explicit Matrix-only consumer policy.
+
+### 7.3 Live facts before any event (Root point 7)
+
+Read-only from the UserIO store (`/var/lib/universal-userio/userio.sqlite3`, `mode=ro`):
+
+- Two test accounts, both bound to the isolated room `!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com`:
+  - `user_b0fa237eee8f4793aad037971be582a3` → account `matrix:ab023a689e926bf99d924e933ebd` →
+    `@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com` → conversation `conv_a4acd97c513b3a7d610769c6`
+  - `user_ee857eff8b2e45f3887a33db98441519` → account `matrix:37698708b623db45e1bfe61f4d01` →
+    `@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com` → conversation `conv_98a00b4b641155630f6a6c22`
+  - both conversations use route `matrix-read-only` (`conversation_kind=direct`).
+- fallback = 0: `phone_conversation_aliases` rows pointing at either L02 conversation = **0**; the two users
+  have no provider account other than `matrix` (no telegram, whatsapp or vk account), so no phone, PSTN, GSM
+  or SIP fallback exists for that path; the NoticePlace consumer policy carries no phone, android or
+  telegram stage.
+- Production noticeplace voice binding, unchanged: `USERIO_MATRIX_NOTICE_ACCOUNT=matrix:3a38caa1e8ac2eeb77443b275466`
+  (`@aiadmin:chat.bezrabotnyi.com`), `USERIO_MATRIX_NOTICE_ROOM=!IfwZsTlPzouoIDHQez:chat.bezrabotnyi.com`,
+  `USERIO_MATRIX_NOTICE_TARGET=@bezrabotnyi:chat.bezrabotnyi.com` (personal). The bridge is UserIO's runtime
+  (`python -m universal_userio.runtime`, pid 2341933, `0.0.0.0:18093`).
+
+### 7.4 Test-only consumer (live, created, idle — no event, no call)
+
+Created through the sanctioned path only: an SSO session minted by the SSO's own `make_token()` for the
+existing principal `roomhacker` (cookie `gptadmin_auth`, 30-minute TTL, stateless so nothing is left
+behind), `GET /api/csrf` for the CSRF token, then `POST /consumers` → **HTTP 201**. Audit record:
+`{"action": "consumer_created", "actor": "sso:operator", "subject": "consumer_2dea1f679372443eaa2c757088e5fc70", ...}`
+in `/var/lib/noticeplace-console/admin-state/audit.jsonl`.
+
+- `consumer_id`: `consumer_2dea1f679372443eaa2c757088e5fc70`, project `noticeplace-qa-voice-20261024`,
+  name "QA: голосовой ответ в изолированной комнате L02", `profile_type=custom`, `max_severity=notice`.
+- `consumer_policy_stages`: exactly one enabled row — `step-1`, `previous_step_id=NULL`, `platform=matrix`,
+  `action=call`, `enabled=1`, `retry_interval_seconds=60`, `max_repeats=1`, `target_json` =
+  `{"account_ref": "matrix:37698708b623db45e1bfe61f4d01",
+  "participants": ["@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+  "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"],
+  "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+  "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"}`
+  — the isolated room and A/B only.
+- Counts read back from the mesh: stages **1**, non-Matrix stages **0**, phone-like stages **0**,
+  non-Matrix call stages **0**; incidents for this consumer **0**; deliveries for this consumer **0**
+  (no event was posted, therefore no call and no voice chain).
+- Intake token stored 0600 outside the repository:
+  `/home/roomhacker/.config/noticeplace/qa-voice-20261024-consumer.json` (value and fingerprint are not
+  reproduced in this report).
+
+### 7.5 Why the event is prepared but not sent, and the exact seam
+
+The live Matrix call sender posts to one env-bound bridge URL
+(`MATRIX_CALL_URL=http://127.0.0.1:18093/v1/calls/matrix/noticeplace`) and `MatrixCallSender`
+(`notification_center/http_api.py:614-650`) uses only the incident fields of the payload: the destination is
+decided by the bridge environment, not by the policy target. Posting the event now would therefore place the
+call in the owner's room with the owner's personal target `@bezrabotnyi:…` — forbidden — and would not reach
+the L02 room at all. So the event is prepared, not sent (Root point 8).
+
+Minimal seam, entirely in the parent's zone and with no production route change: bind the noticeplace Matrix
+destination per project inside the UserIO bridge — for project `noticeplace-qa-voice-20261024` use
+`account_ref=matrix:37698708b623db45e1bfe61f4d01`, `room_id=!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com`,
+`target=@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com`; every other project keeps the production
+`USERIO_MATRIX_NOTICE_*` binding untouched. No new ACL, role or user, no global allow.
+Fallback, if the parent prefers the binding to live on the NoticePlace side: let
+`notification_center/http_api.py` honour the scoped target of an explicit `matrix/call` policy stage. That
+needs a new owned path (and its test file), so I do not touch it before the exact-seam approval (Root point 9).
+
+Prepared event, executed only after the parent's terminal release and explicit go:
+`POST http://127.0.0.1:8091/v1/events`, `Authorization: Bearer <intake token of
+consumer_2dea1f679372443eaa2c757088e5fc70>`, `Idempotency-Key: l10-matrix-call-20261024-run1`, body
+`{"schema":"notify.event.v1","project":"noticeplace-qa-voice-20261024","recipient":"lhc-voice-tester-b",
+"kind":"incident","severity":"notice","title":"Проверка голосового ответа в изолированной комнате L02",
+"body":"Ответьте голосом, чтобы подтвердить остановку эскалации.",
+"dedup_key":"l10-matrix-call-20261024-run1"}` — a new dedup key and idempotency key; the resolved incident
+`inc_1d027be8f1fd419f890e67d3e7fc89a8` and the cancelled delivery `dlv_176ba2cfc49c41eca84b6bebef72d288` are
+not reused.
+
+Readback after the go (independent SELECTs over the dqlite mesh): the incident is `acknowledged` with an audit
+actor `matrix:@…`; the delivery set of that incident is `matrix.call` only; zero rows for `telegram.*`,
+`android.*`, `phone.*`; zero queued or claimed non-Matrix orders; and the consumer policy still carries one
+Matrix-only stage.
+
+### 7.6 Deployment state of the fix
+
+The deny lives in the checkout only. The live release
+`/opt/noticeplace-releases/20261023T091306Z-b1944cd2b39c-2269751` still runs the previous code
+(`core.py` sha256 `2e8ecfc64e111a68…` versus checkout `4a943eafd953718d…`), and no service was restarted
+(Root point 12). The live guarantee for the test-only consumer does not depend on the deploy: a custom
+Matrix-only consumer never receives a `telegram.main` initial delivery, so the voice chain is never started
+(`notification_center/http_api.py:1006-1010` starts it only after a successful `telegram.main` initial
+delivery of a critical/emergency incident), its failure neighbours are the policy stages only
+(`notification_center/core.py:2472-2510`), and the builtin ladder applies to `profile_type=builtin` only
+(`notification_center/core.py:2500-2505`). The source fix makes that guarantee explicit, audited and
+enforced for every future path, including an explicit `schedule_escalation` of a phone rung.
+
+
+## 8. L10 live call — pre-call safety proof: the call is HELD, the room was never taken
+
+The room release was confirmed by the parent (peer canary mavis06 finished, transport receipt terminal,
+room composition unchanged, `@aiadmin` never invited). The live call was still not placed, because the
+bridge contract proves that a Notice Place initiated Matrix call cannot be answered by bot A/B today — it
+would be an owner identity call, which the parent's own safety rule forbids.
+
+Proof, all read-only:
+
+- `/opt/universal-userio/src/universal_userio/http_api.py:352-355` — the noticeplace call route accepts
+  `USERIO_MATRIX_NOTICE_TOKEN` and sets `principal = service._store.owner()`. Every Notice Place Matrix call
+  is therefore placed **as the owner**.
+- `/opt/universal-userio/src/universal_userio/noticeplace_calls.py:47-53` — the Matrix destination of that
+  call is fixed by the bridge environment: `USERIO_MATRIX_NOTICE_ACCOUNT`, `USERIO_MATRIX_NOTICE_ROOM`,
+  `USERIO_MATRIX_NOTICE_TARGET`. The live values are
+  `matrix:3a38caa1e8ac2eeb77443b275466` (`@aiadmin:chat.bezrabotnyi.com`),
+  `!IfwZsTlPzouoIDHQez:chat.bezrabotnyi.com` (the owner room) and
+  `@bezrabotnyi:chat.bezrabotnyi.com` (the owner personal account). Not changed by me.
+- `/opt/universal-userio/src/universal_userio/matrix_calls.py:71-85` — `start()` refuses any caller that is
+  not `store.default_user_id` (`store.owner().user_id`) and looks the account up among the **owner** accounts
+  (`@bezrabotnyi` and `@aiadmin` only).
+- The L02 bots are not owner accounts: `matrix:ab023a689e926bf99d924e933ebd`
+  (`@lhc_voice_tester_a_20261021`) belongs to `user_b0fa237eee8f4793aad037971be582a3` and
+  `matrix:37698708b623db45e1bfe61f4d01` (`@lhc_voice_tester_b_20261021`) to
+  `user_ee857eff8b2e45f3887a33db98441519`. The owner-bound gateway cannot use them.
+- `@aiadmin` cannot be the calling account in the isolated room either: `whoami` 200 and `joined_rooms` 20
+  without `!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com`, and the peer fixture aborts on a third joined member.
+
+Consequence: posting the prepared event now would ring `@bezrabotnyi` in the owner room — an owner identity
+call in the owner room, not a call into the isolated L02 room answered by bot A/B. It would neither satisfy
+L10 nor be allowed, so the event stays prepared and the room was never taken (the parent can run its next
+canary immediately).
+
+Minimal unlock, in the parent's zone, no global allow and no new ACL, role or user: let the noticeplace
+Matrix call route place a **scoped** call for the QA project only — for project
+`noticeplace-qa-voice-20261024`: account `matrix:37698708b623db45e1bfe61f4d01`
+(`@lhc_voice_tester_b_20261021`), room `!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com`, target
+`@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com` — while every other project keeps the production
+`USERIO_MATRIX_NOTICE_*` binding untouched. The A/B accounts already exist; the parent only has to allow
+that one project-scoped call to run as the account owner instead of the owner. With that in place, L10 is one
+`POST /v1/events` plus the independent readback of §7.5.
+
+### 8.1 Factual checkpoint requested by the parent
+
+(a) Seam change that constrains the whole advance chain:
+- `notification_center/core.py:2195-2214` — `channel_denied_by_matrix_only_policy()` plus the guard inside
+  `_schedule_delivery()`: every non-Matrix transport and every `*.call` on another transport is denied for
+  an incident of a consumer with an explicit Matrix-only policy; the denial is audited as `delivery_denied`
+  with `reason=matrix_only_policy` and no delivery row is created.
+- `notification_center/core.py:2160-2193` — `consumer_policy_is_matrix_only()` and
+  `incident_is_matrix_only()` (the effective policy of the consumer, not only its first step).
+- `notification_center/core.py:2461-2471` — a denied successor counts as "not scheduled".
+- `notification_center/incident_call_chain.py:154-170` — `advance()` refuses a non-Matrix successor of the
+  incident call chain and audits `chain_advance_denied`. This is the exact rung Root named: a rejected
+  Matrix 400 (`safe_missed`) used to schedule `telegram.call` and then `android.phone.call`.
+
+(b) Deny regression, names and actual output:
+- `tests/test_incident_call_chain.py:381-423`
+  `test_matrix_only_consumer_policy_denies_the_voice_chain_after_a_rejected_matrix_call`
+- `tests/test_incident_call_chain.py:425-464`
+  `test_matrix_only_consumer_policy_denies_a_phone_rung_after_an_answered_matrix_call`
+- `tests/test_consumer_policy.py:362-402`
+  `test_matrix_only_policy_denies_every_non_matrix_transport_for_its_incident`
+- output: `python3 -m pytest tests/test_consumer_policy.py tests/test_incident_call_chain.py -q` →
+  **44 passed in 33.70s**; the three deny tests alone → `3 passed, 29 deselected in 3.06s`.
+- attribution of the wider suite: the same nine tests fail **before** the change
+  (`git checkout HEAD` baseline: `9 failed, 74 passed` on `tests/test_delivery_worker.py` and
+  `tests/test_incident_outcomes.py`, identical failure names) and after it (`9 failed, 88 passed` on the
+  same two files plus `tests/test_notification_center.py`). The nine failures are pre-existing and are not
+  caused by this change.
+
+(c) The new allowed test the event, dedup and idempotency belong to: the L10 live call test of the
+test-only consumer `consumer_2dea1f679372443eaa2c757088e5fc70` — new dedup key
+`l10-matrix-call-20261024-run1`, new idempotency key `l10-matrix-call-20261024-run1`, new event,
+`severity=notice`, project `noticeplace-qa-voice-20261024`. The resolved incident
+`inc_1d027be8f1fd419f890e67d3e7fc89a8` and the cancelled delivery
+`dlv_176ba2cfc49c41eca84b6bebef72d288` are not reused and were not replayed.
+
+(d) dqlite mesh readback (SELECTs over `/run/noticeplace-mesh/sql.sock`):
+- consumer: `consumer_2dea1f679372443eaa2c757088e5fc70`, project `noticeplace-qa-voice-20261024`,
+  `profile_type=custom`, `max_severity=notice`.
+- stages: exactly 1 — `step-1`, `previous_step_id=NULL`, `platform=matrix`, `action=call`, `enabled=1`,
+  `retry_interval_seconds=60`, `max_repeats=1`, `target_json` = isolated room + A/B only (see §7.4).
+  Counts: stages **1**, non-Matrix **0**, phone-like **0**, non-Matrix call **0**.
+- deliveries: **0** rows for this consumer (no event was posted).
+- orders: **0** queued, claimed or sending rows; nothing was scheduled, so no call and no voice chain.
+- audit: `/var/lib/noticeplace-console/admin-state/audit.jsonl` →
+  `{"action": "consumer_created", "actor": "sso:operator", "subject": "consumer_2dea1f679372443eaa2c757088e5fc70", ...}`.
+
+### 8.2 Room state handed back
+
+The isolated room was never taken: no Matrix call was placed, no event was posted, no delivery was created.
+The parent's next canary can start immediately.

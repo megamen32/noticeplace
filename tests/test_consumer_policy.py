@@ -359,5 +359,46 @@ class ConsumerPolicyTests(unittest.TestCase):
         stored = self.center.get_consumer(consumer["id"])
         self.assertEqual(["matrix.message"], [stage["kind"] for stage in stored["policy"]])
 
+    def test_matrix_only_policy_denies_every_non_matrix_transport_for_its_incident(self) -> None:
+        """An explicit Matrix only policy owns the whole incident, not only its first step."""
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Matrix only",
+            policy=[
+                {
+                    "id": "step-1",
+                    "platform": "matrix",
+                    "action": "message",
+                    "target": {"room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"},
+                    "retry_interval_seconds": 60,
+                    "max_repeats": 1,
+                },
+            ],
+        )
+        created = self.center.create_event(consumer["intake_token"], "matrix-only", self.event())
+        incident_id = created["incident_id"]
+        for channel in ("telegram.main", "telegram.message", "telegram.call", "phone.call", "android.phone.call"):
+            self.assertIsNone(self.center.schedule_escalation(incident_id, channel, 0))
+
+        rows = self.center._connection.execute(
+            "SELECT channel, status FROM deliveries WHERE incident_id = ? ORDER BY due_at, channel",
+            (incident_id,),
+        ).fetchall()
+        self.assertEqual(["matrix.message"], [row["channel"] for row in rows])
+        self.assertEqual([], [row["channel"] for row in rows if not row["channel"].startswith("matrix.")])
+        self.assertEqual([], [row["channel"] for row in rows
+                              if row["status"] in ("queued", "claimed", "sending")
+                              and not row["channel"].startswith("matrix.")])
+        stages = self.center._connection.execute(
+            "SELECT platform, action FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1",
+            (consumer["id"],),
+        ).fetchall()
+        self.assertEqual([("matrix", "message")], [(row["platform"], row["action"]) for row in stages])
+        denied = self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE incident_id = ? AND type = 'delivery_denied'",
+            (incident_id,),
+        ).fetchone()
+        self.assertEqual(5, denied["count"])
+
 if __name__ == "__main__":
     unittest.main()

@@ -378,6 +378,89 @@ class ChainTests(unittest.TestCase):
             "(channel LIKE 'telegram.%' OR channel LIKE 'android.%' OR channel LIKE 'phone.%')",
             (incident_id,)).fetchall())
 
+    def test_matrix_only_consumer_policy_denies_the_voice_chain_after_a_rejected_matrix_call(self):
+        """A rejected Matrix call ends the episode for a Matrix only consumer.
+
+        Without the policy guard a proven miss advances the episode to
+        telegram.call and then android.phone.call. An explicit Matrix only
+        policy forbids that whole rung, not only its first step.
+        """
+        consumer = self.center.create_consumer(
+            project='test', name='Matrix only call',
+            policy=[{'id': 'step-1', 'platform': 'matrix', 'action': 'call', 'target': {},
+                     'retry_interval_seconds': 60, 'max_repeats': 1}],
+        )
+        created = self.center.create_event(consumer['intake_token'], 'matrix-only-call', self.event)
+        incident_id = created['incident_id']
+        self.center.schedule_incident_call_chain_if_active(incident_id, 0)
+        rows = self.center._connection.execute(
+            "SELECT id, channel FROM deliveries WHERE incident_id=? ORDER BY created_at, rowid", (incident_id,)
+        ).fetchall()
+        self.assertEqual(['matrix.call', 'matrix.call'], [row['channel'] for row in rows])
+
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12, channel_group='call')
+        self.assertEqual(2, len(claimed))
+        for row in claimed:
+            self.center.complete_delivery(row['id'], 'failed', result=MISSED)
+
+        after = self.center._connection.execute(
+            "SELECT channel, status FROM deliveries WHERE incident_id=? ORDER BY created_at, rowid", (incident_id,)
+        ).fetchall()
+        self.assertEqual(['matrix.call', 'matrix.call'], [row['channel'] for row in after])
+        self.assertEqual([], [row['channel'] for row in after if not row['channel'].startswith('matrix.')])
+        self.assertEqual([], [row['channel'] for row in after
+                              if row['status'] in ('queued', 'claimed', 'sending')
+                              and not row['channel'].startswith('matrix.')])
+        stages = self.center._connection.execute(
+            "SELECT platform, action FROM consumer_policy_stages WHERE consumer_id=? AND enabled=1",
+            (consumer['id'],),
+        ).fetchall()
+        self.assertEqual([('matrix', 'call')], [(row['platform'], row['action']) for row in stages])
+        denied = self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE incident_id=? AND type='chain_advance_denied'",
+            (incident_id,),
+        ).fetchone()
+        self.assertEqual(1, denied['count'])
+
+    def test_matrix_only_consumer_policy_denies_a_phone_rung_after_an_answered_matrix_call(self):
+        """An answered Matrix call acknowledges the incident and schedules nothing else."""
+        class MatrixCall:
+            def __init__(this): this.calls = []
+            def send(this, payload):
+                this.calls.append(payload)
+                return {'ok': True, 'answered': True, 'acknowledged': True, 'ended': False,
+                        'safe_to_fallback': False, 'status': 'active',
+                        'target': '@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com',
+                        'channel': 'matrix', 'actor': 'matrix:@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com'}
+        consumer = self.center.create_consumer(
+            project='test', name='Matrix only answered call',
+            policy=[{'id': 'step-1', 'platform': 'matrix', 'action': 'call', 'target': {},
+                     'retry_interval_seconds': 60, 'max_repeats': 1}],
+        )
+        created = self.center.create_event(consumer['intake_token'], 'matrix-only-answered', self.event)
+        incident_id = created['incident_id']
+        sender = MatrixCall()
+        self.worker._matrix_call = sender
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12, channel_group='call')
+        self.assertEqual(1, len(claimed))
+        for row in claimed:
+            self.worker.deliver(row)
+
+        self.assertEqual(1, len(sender.calls))
+        self.assertEqual('acknowledged', self.center.get_incident(incident_id)['state'])
+        after = self.center._connection.execute(
+            "SELECT channel, status FROM deliveries WHERE incident_id=? ORDER BY created_at, rowid", (incident_id,)
+        ).fetchall()
+        self.assertEqual([], [row['channel'] for row in after if not row['channel'].startswith('matrix.')])
+        self.assertEqual([], [row['channel'] for row in after
+                              if row['status'] in ('queued', 'claimed', 'sending')
+                              and not row['channel'].startswith('matrix.')])
+        stages = self.center._connection.execute(
+            "SELECT platform, action FROM consumer_policy_stages WHERE consumer_id=? AND enabled=1",
+            (consumer['id'],),
+        ).fetchall()
+        self.assertEqual([('matrix', 'call')], [(row['platform'], row['action']) for row in stages])
+
 class SenderTests(unittest.TestCase):
     payload={'incident':{'id':'incident-test','title':'Проверка','body':'Связь','project':'test','severity':'critical'}}
 
