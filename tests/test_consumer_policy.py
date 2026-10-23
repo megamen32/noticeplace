@@ -323,5 +323,41 @@ class ConsumerPolicyTests(unittest.TestCase):
         self.assertEqual(datetime(2030, 1, 2, 9, 0, tzinfo=ZoneInfo("Europe/Moscow")).timestamp(), deferred)
 
 
+    def test_matrix_only_policy_keeps_a_refused_delivery_inside_matrix(self) -> None:
+        """A Matrix-only consumer never spills a refused step into phone or Telegram."""
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Matrix only",
+            policy=[
+                {
+                    "id": "step-1",
+                    "platform": "matrix",
+                    "action": "message",
+                    "target": {"room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"},
+                    "retry_interval_seconds": 60,
+                    "max_repeats": 1,
+                },
+            ],
+        )
+        created = self.center.create_event(consumer["intake_token"], "matrix-only", self.event())
+        incident_id = created["incident_id"]
+        rows = self.center._connection.execute(
+            "SELECT id, channel FROM deliveries WHERE incident_id = ? ORDER BY due_at", (incident_id,)
+        ).fetchall()
+        self.assertEqual(["matrix.message"], [row["channel"] for row in rows])
+
+        # A refused Matrix delivery stays inside Matrix: no phone, no Telegram.
+        self.center.complete_delivery(rows[0]["id"], "failed", "HTTP Error 403: Forbidden")
+        after = self.center._connection.execute(
+            "SELECT channel FROM deliveries WHERE incident_id = ? ORDER BY due_at", (incident_id,)
+        ).fetchall()
+        self.assertEqual(["matrix.message"], [row["channel"] for row in after])
+        self.assertEqual(
+            [],
+            [row["channel"] for row in after if row["channel"].split(".")[0] in {"phone", "android", "telegram"}],
+        )
+        stored = self.center.get_consumer(consumer["id"])
+        self.assertEqual(["matrix.message"], [stage["kind"] for stage in stored["policy"]])
+
 if __name__ == "__main__":
     unittest.main()
