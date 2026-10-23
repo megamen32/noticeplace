@@ -2,6 +2,40 @@
 
 Секретов нет: только идентификаторы, file:line и измерения.
 
+## АКТУАЛЬНО 2026-10-24 02:40 МСК — L10 source-часть закрыта, mavis06 разобран по транскриптам, идёт mavis07
+
+### 1) L10: source-часть закрыта NP-child'ом; live call — доказанный safety-stop (шов в моей зоне)
+- Коммит в noticeplace: `d1cf189355219bdc115ad55eb95f9bfbc29f99b8` («L10 repair: an explicit Matrix only policy constrains the whole incident chain»), автор `Mavis <Mavis@local>`, 5 файлов, 442 вставки:
+  - `notification_center/core.py` (+66/-5): `:28-29` константы `MATRIX_ONLY_POLICY_PLATFORM` / `NON_MATRIX_TRANSPORT_PLATFORMS`; `:2160-2184` `consumer_policy_is_matrix_only()`; `:2186-2193` `incident_is_matrix_only()`; `:2195-2214` `channel_denied_by_matrix_only_policy()` + guard в воронке `_schedule_delivery()` (любой не-Matrix транспорт и любой `*.call` на другом транспорте → deny, аудит `delivery_denied` reason=matrix_only_policy, строка доставки не создаётся); `:2461-2471` denied-successor считается «не запланирован».
+  - `notification_center/incident_call_chain.py` (+10/-1): `:154-170` `advance()` отказывает не-Matrix successor'у цепочки, аудит `chain_advance_denied`.
+  - Тесты: `tests/test_consumer_policy.py:362-402`, `tests/test_incident_call_chain.py:381-464` → `pytest tests/test_consumer_policy.py tests/test_incident_call_chain.py -q` = **44 passed**; три deny-теста отдельно = 3 passed. В rejected-кейсе delivery-set остаётся `['matrix.call','matrix.call']`, ни одного `telegram.*/android.*/phone.*`, ровно 1 `chain_advance_denied`; в answered-кейсе incident `acknowledged`, не-Matrix — ноль.
+- Атрибуция 9 падений в широких файлах — предсуществующие (baseline до правки: те же 9 имён в `test_delivery_worker.py`/`test_incident_outcomes.py`; после правки 9 failed / 88 passed).
+- Живой релиз noticeplace не обновлялся и не перезапускался: deny живёт в checkout и уедет в релиз штатно.
+- **L10 live call НЕ сделан — это safety-stop, а не недоделанка.** Причина — owner-привязка в МОЕЙ зоне: `http_api.py:352-355` маршрут noticeplace ставит `principal = service._store.owner()`; `noticeplace_calls.py:47-53` адресация берётся из env `USERIO_MATRIX_NOTICE_ACCOUNT/ROOM/TARGET` (= `@aiadmin`, комната и ЛИЧНЫЙ target владельца); `matrix_calls.py:71-85` `start()` отказывает всем, кроме `store.default_user_id` и ищет аккаунт среди owner-аккаунтов. Боты A/B — не owner-аккаунты ⇒ owner-bound gateway их не достаёт. Требуется моя правка: scope-адресация для проекта `noticeplace-qa-voice-20261024` аккаунтом `matrix:37698708b623db45e1bfe61f4d01` (`@lhc_voice_tester_b`) в комнату `!ZatzpywRZSemgAaPju`. Production `USERIO_MATRIX_NOTICE_*` не трогаю, @aiadmin не приглашаю.
+- Ни одного звонка на телефон (PSTN/GSM/SIP); личный Matrix владельца не вызывался; комната освобождена.
+
+### 2) НОВЫЙ ДИАГНОЗ mavis06 по транскриптам (раньше не был виден)
+Транскрипты: `/var/lib/agentcall/recordings/<voice_call_id>/transcript.txt` (peer `30b1e6e0-…`, A-side `97a1eb32-…`).
+- **Дефект 1 — порядок реплик.** Обе ноги произносят сначала attention prompt «Алло, алло, алло.», и только потом свою реплику. Peer: «Собеседник: [1.2–2.9] Алло, алло, алло. / [3.8–7.7] Привет. Проверка связи. Код 817 720.»; «Наш помощник: [0.4–2.0] Алло, алло, алло. / [3.0–6.1] Здравствуйте. Проверим, что звук работает в обе стороны.» ⇒ turn 1 отвечающей стороны = «Алло, алло, алло.» (то же в `exmanager_voice_turns.input_text` и в её engine-log `heard: Алло, алло, алло.`). Шов: bridge `play_attention_until_remote_audio()` (candidate 2929-2985), `send_pcm_stream(attention_pcm)` перед greeting (candidate 3938), `PreparedCall.attention_pcm` (2164-2178).
+- **Дефект 2 — усечение вопроса.** Произнесённый текст вызывающей стороны = «Привет. Проверка связи. Код 817 720.» ⇒ домен notify.bezrabotnyi.com и «ошибка 502» физически НЕ произнесены. Шов: `short_opening()` (candidate 1646) — 2 предложения / 120 символов после `text_for_speech` (1441), поверх `generate_opening` (`LocalSpeechPipeline.opening`, 2198 → 2528). Следствие: L05 в mavis06 не мог закрыться по содержанию даже при не-UNKNOWN turn.
+- Это ДВА независимых дефекта моего контура; усечение 256→1024 у Root'а (его run `8d4556c7`, finish=length) — ТРЕТИЙ, не смешиваю.
+
+### 3) Root (ExManager) подтвердил письменно: допуск существует, контракт одного turn
+- Допуск УЖЕ есть: `GET /api/v1/agents/c8b0c2c6-…/members` → `9b4ab5e7…` и `0680a349…` member=true role=user (его readback 23:09:18Z); owner `5e438326…` role=admin не трогаем; новых grant не делали; 403 «voice call not admitted» для постороннего остаётся; глобальные isOwner/guest-allow/phone-fallback не тронуты.
+- Контракт одного turn: POST `/internal/voice/turn` на native app `c8b0c2c6-…`, caller kind=application, `X-Airlock-Caller`, `X-Exmanager-Voice-Signature`=hex HMAC-SHA256(path+"\n"+body), `X-Exmanager-Progress:1`, transport=matrix, direction=incoming, userId=`0680a349-beb3-43fa-bd53-4e0363496a34`, callId=НОВЫЙ uuid4, turnId=1, text=новый уникальный вопрос, callContext=[]. Приложение само создаёт durable `exmanager_voice_calls`/`exmanager_voice_turns` в транзакции первого turn (`voice_chat.go:216`; SQL `internal/db/voice_calls.sql.go:124-125`, ON CONFLICT DO NOTHING); внутри call_id (user_id, transport, direction) неизменны (409 «call source changed», `voice_chat.go:220-225`); claim turn'а — `:238`; идемпотентность turn'а — `:227-230` (тот же turn_id с другим текстом ⇒ 409 ⇒ новый вопрос = новый turn_id). Подпись по образцу живого SDK-клиента `agentcall_secretary_voice.py:62-69`.
+- Модельный маршрут scoped-участника: provider `7bcba8da` → фактически mmcode/MiniMax-M3.1-Flash (подтверждено его прогоном call `5f308cb6` / run `8d4556c7`, userId `0680a349`, accepted→text-delta→done, ledger completed).
+
+### 4) Что идёт сейчас: mavis07 (один свежий canary)
+- Новый `request_id` `lhc_matrixrtc_20261024_a2b_mavis07`, новые call_id. Старые (`30b1e6e0…`, `1efc19e4…`, `5f308cb6…`, probe-строки) не переигрываются; принятые/UNKNOWN не откатываются.
+- Правки — в peer-фикстуре (test harness), НЕ в продуктовом bridge: гейт первого удалённого utterance (attention вызывающей стороны) + приветствие инициатора, переживающее `short_opening` с доменом и «502» в первых двух предложениях.
+- Приёмка: turn 1 = содержательный вопрос; accepted(mode=secretary)→text-delta*→done(state=completed), не HTTP-200 и не «finish stop»; в engine-log `voice_mode call=… turn=1 mode=secretary` (+ `mode=incidents` при handoff); ledger readback по новому call_id; домен и «ошибка 502» произнесены полностью; cleanup по записанному PID + readback; привязка к живой ревизии и publish-receipt.
+- Продуктовые attention-порядок и `short_opening`-усечение остаются в production-коде: их правка меняет поведение реальных звонков ⇒ отдельный согласованный rollout, не молчаливый.
+
+### 5) Владение и координация
+- Новый Lead/координатор Notice Place/Herder — Mavis `mvs_fee82cd663194081a4dfab9969c20274`; Codex `01a1653b` прекратил координацию (hourly `1f58ec02` отключён), старые Codex follow-up не исполняю. Material callback новому Lead отправлен (session send принят, queued → turn `turn_de4769b5-ebbd-4a0b-a383-db32967016c3`).
+- Открытые решения у нового Lead: (а) приоритет L10-шва vs mavis07; (б) путь/санкция L14-раскатки QA-фикса в живой voice runtime (installed engine md5 `bece40a7` ≠ candidate `36c60ea9`, QA-seam в живом образе отсутствует); (в) подтверждение L12 (Tester A) только после зелёного L11.
+
+
 ## АКТУАЛЬНО 2026-10-24 01:25 МСК — что реально прогонялось после mavis03 (история ниже сохранена)
 
 Короткий диагноз: **транспорт терминален, модельный turn — UNKNOWN (не прерван, не переигран)**. Идентичность по контракту подтверждена durable-строками.
