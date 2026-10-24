@@ -298,6 +298,15 @@ class NotificationCenter:
                     native_cwd TEXT,
                     kind TEXT NOT NULL DEFAULT 'user'
                 );
+                CREATE TABLE IF NOT EXISTS matrix_reply_receipts (
+                    reply_event_id TEXT PRIMARY KEY,
+                    delivery_id TEXT NOT NULL,
+                    incident_id TEXT NOT NULL,
+                    consumer_id TEXT NOT NULL,
+                    sender TEXT NOT NULL,
+                    room_id TEXT NOT NULL,
+                    bound_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS human_request_completions (
                     request_id TEXT PRIMARY KEY,
                     result_ref TEXT NOT NULL,
@@ -2235,9 +2244,15 @@ class NotificationCenter:
             value = str(item).strip()
             if value and value not in participants:
                 participants.append(value)
+        senders: list[str] = []
+        for item in target.get("senders") or []:
+            value = str(item).strip()
+            if value and value not in senders:
+                senders.append(value)
         return {
             "room_id": room_id,
             "participants": participants,
+            "senders": senders,
             "target": str(target.get("target") or "").strip(),
             "account_ref": str(target.get("account_ref") or "").strip(),
         }
@@ -2809,49 +2824,137 @@ class NotificationCenter:
             raise ValidationError("cannot acknowledge an inactive incident")
         return result
 
-    def bind_matrix_reply(self, token: str, incident_id: str, room_id: str, answerer: str, answer: str = "") -> dict[str, Any]:
-        """Bind one Matrix answer of the explicit route to its incident.
+    def bind_matrix_reply(self, reply_event_id: str, reply_to_event_id: str, sender: str, room_id: str, answer: str = "") -> dict[str, Any]:
+        """Bind one verified Matrix answer to the incident of the notice it answers.
 
-        The answer must arrive in the room that the explicit Matrix route of
-        the consumer declares and from an identity that route declares. An
-        answer from any other room or identity never binds, and a late answer
-        never resurrects a closed incident.
+        The binding is resolved from the notice that the answer answers: the
+        delivery record of the sent Matrix message, its incident, its consumer
+        and the explicit route of that consumer. An answer that answers no
+        known notice, that arrives in another room, or that comes from an
+        identity the route does not declare as a sender binds nothing. One
+        answer event is consumed once, so a repeat never acknowledges twice
+        and never emits a second event.
         """
-        incident_id = str(incident_id or "").strip()
+        reply_event_id = str(reply_event_id or "").strip()
+        reply_to_event_id = str(reply_to_event_id or "").strip()
+        sender = str(sender or "").strip()
         room_id = str(room_id or "").strip()
-        answerer = str(answerer or "").strip()
         answer = str(answer or "")
-        if not incident_id or not room_id or not answerer:
-            raise ValidationError("a matrix reply needs an incident, a room and an answerer")
-        self.authorize_incident(token, incident_id)
-        scope = self.incident_matrix_scope(incident_id)
-        if scope is None:
-            raise ValidationError("the incident has no explicit Matrix route")
-        if room_id != scope["room_id"]:
-            raise ValidationError("the matrix reply room is outside the explicit route")
-        allowed = set(scope["participants"])
-        if scope["target"]:
-            allowed.add(scope["target"])
-        if not allowed:
-            raise ValidationError("the explicit Matrix route declares no answerer")
-        if answerer not in allowed:
-            raise ValidationError("the matrix reply answerer is not a declared participant")
-        incident = self.get_incident(incident_id)
-        if incident is None:
-            raise ValidationError("incident not found")
-        if str(incident["state"]) not in DELIVERABLE_STATES:
-            return {"incident_id": incident_id, "state": str(incident["state"]), "bound": False, "actor": None}
-        bound = self.acknowledge_if_active(incident_id, f"matrix:{answerer}")
-        self._audit(incident_id, "matrix_reply_bound", f"matrix:{answerer}", {
-            "room_id": room_id,
-            "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else None,
-        })
-        return {
-            "incident_id": incident_id,
-            "state": str((bound or incident)["state"]),
-            "bound": bool(bound),
-            "actor": f"matrix:{answerer}",
-        }
+        if not reply_event_id or not reply_to_event_id or not sender or not room_id:
+            raise ValidationError("a matrix reply needs an event, an answered notice, a sender and a room")
+        with self._lock:
+            delivery = self._connection.execute(
+                "SELECT id, incident_id FROM deliveries WHERE channel LIKE 'matrix.%' AND status = 'sent' "
+                "AND json_extract(result_json, '$.event_id') = ? ORDER BY updated_at DESC LIMIT 1",
+                (reply_to_event_id,),
+            ).fetchone()
+            if delivery is None:
+                raise ValidationError("the reply answers no known Matrix notice")
+            incident_id = str(delivery["incident_id"])
+            incident = self._connection.execute(
+                "SELECT id, consumer_id, state FROM incidents WHERE id = ?", (incident_id,)
+            ).fetchone()
+            if incident is None:
+                raise ValidationError("the answered notice has no incident")
+            consumer_id = str(incident["consumer_id"] or "")
+            scope = self.consumer_matrix_scope(consumer_id) if consumer_id else None
+            if scope is None:
+                raise ValidationError("the incident has no explicit Matrix route")
+            if room_id != scope["room_id"]:
+                raise ValidationError("the reply room is outside the explicit route")
+            senders = set(scope["senders"])
+            if not senders:
+                raise ValidationError("the explicit Matrix route declares no sender")
+            if sender not in senders:
+                raise ValidationError("the reply sender is not a declared sender")
+            now = time.time()
+            with self._connection:
+                try:
+                    self._connection.execute(
+                        "INSERT INTO matrix_reply_receipts(reply_event_id, delivery_id, incident_id, consumer_id, sender, room_id, bound_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (reply_event_id, str(delivery["id"]), incident_id, consumer_id, sender, room_id, now),
+                    )
+                except sqlite3.IntegrityError:
+                    # The answer was already consumed: no second acknowledgement,
+                    # no second event, and no new audit.
+                    stored = self._connection.execute(
+                        "SELECT delivery_id, incident_id FROM matrix_reply_receipts WHERE reply_event_id = ?",
+                        (reply_event_id,),
+                    ).fetchone()
+                    current = self._connection.execute(
+                        "SELECT state FROM incidents WHERE id = ?", (incident_id,)
+                    ).fetchone()
+                    return {
+                        "bound": False,
+                        "idempotent": True,
+                        "incident_id": incident_id,
+                        "delivery_id": str(delivery["id"]),
+                        "state": str(current["state"]) if current else "unknown",
+                        "actor": f"matrix:{sender}",
+                        "reply_event_id": reply_event_id,
+                    }
+                state = str(incident["state"])
+                bound = False
+                if state in DELIVERABLE_STATES:
+                    acknowledged = self._transition(incident_id, "acknowledged", f"matrix:{sender}")
+                    bound = True
+                    state = str(acknowledged.get("state") or state)
+                self._audit(incident_id, "matrix_reply_bound", f"matrix:{sender}", {
+                    "reply_event_id": reply_event_id,
+                    "reply_to_event_id": reply_to_event_id,
+                    "delivery_id": str(delivery["id"]),
+                    "sender": sender,
+                    "room_id": room_id,
+                    "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else None,
+                })
+            return {
+                "bound": bound,
+                "idempotent": False,
+                "incident_id": incident_id,
+                "delivery_id": str(delivery["id"]),
+                "state": state,
+                "actor": f"matrix:{sender}",
+                "reply_event_id": reply_event_id,
+            }
+
+    def replace_consumer_policy(self, consumer_id: str, policy: list[Mapping[str, Any]], actor: str) -> dict[str, Any]:
+        """Replace the delivery policy of one consumer and keep its identity.
+
+        The consumer keeps its id, its intake token, its project and its
+        severity. Only the stages change, so a scoped Matrix route can gain
+        its sender bindings without a new consumer and without a new grant.
+        """
+        consumer_id = str(consumer_id or "").strip()
+        if not consumer_id:
+            raise ValidationError("consumer id is required")
+        normalized_policy = self._validate_consumer_policy(policy)
+        now = time.time()
+        with self._lock, self._connection:
+            consumer = self._connection.execute(
+                "SELECT id, project, profile_type FROM consumers WHERE id = ?", (consumer_id,)
+            ).fetchone()
+            if consumer is None:
+                raise ValidationError("consumer not found")
+            if str(consumer["profile_type"] or "custom") == "builtin":
+                raise ValidationError("a builtin profile policy cannot be replaced")
+            self._connection.execute("DELETE FROM consumer_policy_stages WHERE consumer_id = ?", (consumer_id,))
+            self._connection.executemany(
+                "INSERT INTO consumer_policy_stages(consumer_id, stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, retry_interval_seconds, max_repeats) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (consumer_id, stage["stage"], stage["kind"], int(stage["enabled"]), json.dumps(stage["target"], sort_keys=True), stage.get("step_id"), stage.get("platform"), stage.get("action"), stage.get("previous_step_id"), stage.get("retry_interval_seconds"), stage.get("max_repeats"))
+                    for stage in normalized_policy
+                ],
+            )
+            self._connection.execute("UPDATE consumers SET updated_at = ? WHERE id = ?", (now, consumer_id))
+            self._audit(None, "consumer_policy_updated", str(actor or "operator"), {
+                "consumer_id": consumer_id,
+                "project": str(consumer["project"]),
+                "stages": [
+                    {"step_id": stage.get("step_id"), "platform": stage.get("platform"), "action": stage.get("action")}
+                    for stage in normalized_policy
+                ],
+            })
+        return self.get_consumer(consumer_id) or {}
 
     def acknowledge_if_active(self, incident_id: str, actor: str) -> dict[str, Any] | None:
         """ACK only an open or snoozed incident; never resurrect a resolved one."""

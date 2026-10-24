@@ -532,5 +532,78 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertIn(b"Copy this intake URL", token_page)
 
 
+    def test_consumer_policy_update_keeps_identity_and_replaces_stages(self) -> None:
+        """The update keeps the consumer identity and only replaces its stages."""
+        created = self.store.create_consumer(
+            project="hermes", name="Scoped route", chat_id="", topic_id="",
+            matrix_delay_seconds="", phone_delay_seconds="45",
+            max_severity="notice", actor="sso:operator",
+            policy_json=json.dumps([{
+                "id": "step-1", "platform": "matrix", "action": "message",
+                "target": {"room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"},
+                "retry_interval_seconds": 60, "max_repeats": 1,
+            }]),
+        )
+        consumer_id = created["id"]
+        intake_token = created["intake_token"]
+
+        updated = self.store.update_consumer_policy(
+            consumer_id,
+            json.dumps([{
+                "id": "step-1", "platform": "matrix", "action": "message",
+                "target": {
+                    "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                    "senders": ["@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"],
+                    "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                },
+                "retry_interval_seconds": 60, "max_repeats": 1,
+            }]),
+            "sso:operator",
+        )
+        self.assertEqual(consumer_id, updated["id"])
+        self.assertEqual(created["token_fingerprint"], updated["token_fingerprint"])
+        stages = updated["policy"]
+        self.assertEqual(1, len(stages))
+        self.assertEqual("matrix", stages[0]["platform"])
+        self.assertEqual("message", stages[0]["action"])
+        self.assertIn(
+            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+            stages[0]["senders"],
+        )
+        self.assertEqual("!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com", stages[0]["room_id"])
+
+        # The intake token of the consumer still works: no new grant, no new consumer.
+        center = NotificationCenter(self.database, {"old-token": {"project": "hermes", "max_severity": "notice"}})
+        incident = center.create_event(intake_token, "policy-update", {
+            "schema": "notify.event.v1", "project": "hermes", "recipient": "operator",
+            "kind": "incident", "severity": "notice", "title": "t", "dedup_key": "policy-update",
+        })
+        self.assertEqual("open", center.get_incident(incident["incident_id"])["state"])
+        self.assertEqual(
+            1,
+            len([row for row in self.store.snapshot().get("consumers", []) if row.get("id") == consumer_id]),
+        )
+
+    def test_consumer_policy_update_refuses_builtin_profiles_and_invalid_policy(self) -> None:
+        """A builtin profile and an invalid policy are both refused."""
+        with self.assertRaises(ValidationError):
+            self.store.update_consumer_policy("profile_critical", "[]", "sso:operator")
+        with self.assertRaises(ValidationError):
+            self.store.update_consumer_policy("consumer_missing", "[]", "sso:operator")
+        created = self.store.create_consumer(
+            project="hermes", name="Scoped route", chat_id="", topic_id="",
+            matrix_delay_seconds="", phone_delay_seconds="45",
+            max_severity="notice", actor="sso:operator",
+            policy_json=json.dumps([{
+                "id": "step-1", "platform": "matrix", "action": "message",
+                "target": {"room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"},
+                "retry_interval_seconds": 60, "max_repeats": 1,
+            }]),
+        )
+        with self.assertRaises(ValidationError):
+            self.store.update_consumer_policy(created["id"], "{not json", "sso:operator")
+        with self.assertRaises(ValidationError):
+            self.store.update_consumer_policy(created["id"], json.dumps([{"platform": "phone", "action": "call"}]), "sso:operator")
+
 if __name__ == "__main__":
     unittest.main()

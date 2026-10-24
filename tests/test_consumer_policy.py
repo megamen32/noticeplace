@@ -450,131 +450,6 @@ class ConsumerPolicyTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(2, denied["count"])
 
-    def test_matrix_reply_binds_only_inside_the_explicit_route(self) -> None:
-        """An answer binds its incident only from the declared room and participant."""
-        consumer = self.center.create_consumer(
-            project="hermes",
-            name="Scoped Matrix reply",
-            policy=[
-                {
-                    "id": "step-1",
-                    "platform": "matrix",
-                    "action": "message",
-                    "target": {
-                        "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
-                        "participants": [
-                            "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
-                            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
-                        ],
-                    },
-                    "retry_interval_seconds": 60,
-                    "max_repeats": 1,
-                },
-            ],
-        )
-        created = self.center.create_event(consumer["intake_token"], "scoped-reply", self.event())
-        incident_id = created["incident_id"]
-
-        bound = self.center.bind_matrix_reply(
-            consumer["intake_token"],
-            incident_id,
-            "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
-            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
-            "подтверждаю",
-        )
-        self.assertTrue(bound["bound"])
-        self.assertEqual("acknowledged", bound["state"])
-        incident = self.center.get_incident(incident_id)
-        self.assertEqual("acknowledged", incident["state"])
-        self.assertIsNotNone(incident["acknowledged_at"])
-        audit = self.center._connection.execute(
-            "SELECT actor FROM audit_events WHERE incident_id = ? AND type = 'matrix_reply_bound'",
-            (incident_id,),
-        ).fetchall()
-        self.assertEqual(
-            ["matrix:@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"],
-            [row["actor"] for row in audit],
-        )
-
-        # A late answer never resurrects a closed incident.
-        late = self.center.bind_matrix_reply(
-            consumer["intake_token"],
-            incident_id,
-            "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
-            "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
-            "опоздал",
-        )
-        self.assertFalse(late["bound"])
-        self.assertEqual("acknowledged", late["state"])
-
-    def test_matrix_reply_from_a_foreign_room_or_identity_never_binds(self) -> None:
-        """Only the declared room and the declared participants may answer."""
-        consumer = self.center.create_consumer(
-            project="hermes",
-            name="Scoped Matrix refusal",
-            policy=[
-                {
-                    "id": "step-1",
-                    "platform": "matrix",
-                    "action": "message",
-                    "target": {
-                        "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
-                        "participants": [
-                            "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
-                            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
-                        ],
-                    },
-                    "retry_interval_seconds": 60,
-                    "max_repeats": 1,
-                },
-            ],
-        )
-        created = self.center.create_event(consumer["intake_token"], "scoped-refusal", self.event())
-        incident_id = created["incident_id"]
-
-        for room_id, answerer in (
-            ("!SGgCRDRJRnTYTQvKAG:chat.bezrabotnyi.com", "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"),
-            ("!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com", "@bezrabotnyi:chat.bezrabotnyi.com"),
-        ):
-            with self.subTest(room_id=room_id, answerer=answerer):
-                with self.assertRaises(ValidationError):
-                    self.center.bind_matrix_reply(
-                        consumer["intake_token"], incident_id, room_id, answerer, "не тот"
-                    )
-        self.assertEqual("open", self.center.get_incident(incident_id)["state"])
-        self.assertEqual(
-            0,
-            self.center._connection.execute(
-                "SELECT COUNT(*) AS count FROM audit_events WHERE incident_id = ? AND type = 'matrix_reply_bound'",
-                (incident_id,),
-            ).fetchone()["count"],
-        )
-
-        # An incident without an explicit Matrix route never binds a reply.
-        telegram_consumer = self.center.create_consumer(
-            project="hermes",
-            name="No Matrix route",
-            policy=[
-                {
-                    "id": "step-1",
-                    "platform": "telegram",
-                    "action": "message",
-                    "target": {"chat_id": "-1001"},
-                    "retry_interval_seconds": 60,
-                    "max_repeats": 1,
-                },
-            ],
-        )
-        other = self.center.create_event(telegram_consumer["intake_token"], "no-matrix-route", self.event())
-        with self.assertRaises(ValidationError):
-            self.center.bind_matrix_reply(
-                telegram_consumer["intake_token"],
-                other["incident_id"],
-                "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
-                "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
-                "не тот маршрут",
-            )
-
     def test_matrix_repeat_stays_inside_the_explicit_route(self) -> None:
         """A repeated Matrix delivery keeps the declared room of the route."""
         consumer = self.center.create_consumer(
@@ -614,6 +489,138 @@ class ConsumerPolicyTests(unittest.TestCase):
             "SELECT COUNT(*) AS count FROM audit_events WHERE incident_id=? AND type='delivery_denied'", (incident_id,)
         ).fetchone()
         self.assertEqual(0, denied["count"])
+
+    def _scoped_consumer(self, name: str, senders: list[str] | None = None) -> dict:
+        target = {
+            "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+            "participants": [
+                "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+                "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+            ],
+            "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+        }
+        if senders is not None:
+            target["senders"] = senders
+        return self.center.create_consumer(
+            project="hermes",
+            name=name,
+            policy=[
+                {
+                    "id": "step-1",
+                    "platform": "matrix",
+                    "action": "message",
+                    "target": target,
+                    "retry_interval_seconds": 60,
+                    "max_repeats": 1,
+                },
+            ],
+        )
+
+    def _sent_notice(self, consumer: dict, event_id: str = "$notice-1") -> str:
+        created = self.center.create_event(consumer["intake_token"], "notice-" + event_id.strip("$"), self.event())
+        incident_id = created["incident_id"]
+        row = self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id=? ORDER BY created_at LIMIT 1", (incident_id,)
+        ).fetchone()
+        self.center.complete_delivery(
+            row["id"], "sent",
+            result={"event_id": event_id, "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"},
+        )
+        return incident_id
+
+    def test_matrix_reply_binds_only_to_the_notice_it_answers(self) -> None:
+        """The binding comes from the sent notice, never from the caller."""
+        consumer = self._scoped_consumer(
+            "Scoped reply", ["@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"]
+        )
+        incident_id = self._sent_notice(consumer)
+        bound = self.center.bind_matrix_reply(
+            "$reply-1",
+            "$notice-1",
+            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+            "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+            "подтверждаю",
+        )
+        self.assertTrue(bound["bound"])
+        self.assertEqual(incident_id, bound["incident_id"])
+        self.assertEqual("acknowledged", bound["state"])
+        self.assertEqual("matrix:@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com", bound["actor"])
+
+    def test_matrix_reply_needs_a_known_notice_and_a_declared_sender(self) -> None:
+        """An unknown notice, a foreign room or an undeclared sender binds nothing."""
+        consumer = self._scoped_consumer(
+            "Scoped refusal", ["@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"]
+        )
+        incident_id = self._sent_notice(consumer)
+        for reply_to, sender, room in (
+            ("$unknown-notice", "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com", "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"),
+            ("$notice-1", "@bezrabotnyi:chat.bezrabotnyi.com", "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"),
+            ("$notice-1", "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com", "!SGgCRDRJRnTYTQvKAG:chat.bezrabotnyi.com"),
+        ):
+            with self.subTest(reply_to=reply_to, sender=sender, room=room):
+                with self.assertRaises(ValidationError):
+                    self.center.bind_matrix_reply("$reply-x", reply_to, sender, room, "нет")
+        self.assertEqual("open", self.center.get_incident(incident_id)["state"])
+
+    def test_matrix_reply_needs_a_declared_sender_in_the_route(self) -> None:
+        """A route that declares no sender can never bind an answer."""
+        consumer = self._scoped_consumer("Room only route")
+        incident_id = self._sent_notice(consumer)
+        with self.assertRaises(ValidationError):
+            self.center.bind_matrix_reply(
+                "$reply-2", "$notice-1",
+                "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com", "подтверждаю",
+            )
+        self.assertEqual("open", self.center.get_incident(incident_id)["state"])
+
+    def test_matrix_reply_is_consumed_once_and_never_acks_twice(self) -> None:
+        """One reply event binds once; a repeat never emits a second event."""
+        consumer = self._scoped_consumer(
+            "Scoped once", ["@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"]
+        )
+        incident_id = self._sent_notice(consumer)
+        first = self.center.bind_matrix_reply(
+            "$reply-3", "$notice-1",
+            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+            "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com", "подтверждаю",
+        )
+        self.assertTrue(first["bound"])
+        second = self.center.bind_matrix_reply(
+            "$reply-3", "$notice-1",
+            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+            "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com", "подтверждаю",
+        )
+        self.assertFalse(second["bound"])
+        self.assertTrue(second["idempotent"])
+        self.assertEqual(incident_id, second["incident_id"])
+        audits = self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE incident_id=? AND type='matrix_reply_bound'",
+            (incident_id,),
+        ).fetchone()
+        self.assertEqual(1, audits["count"])
+        deliveries = self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM deliveries WHERE incident_id=?", (incident_id,)
+        ).fetchone()
+        self.assertEqual(1, deliveries["count"])
+
+    def test_matrix_reply_never_binds_across_consumers(self) -> None:
+        """A sender of another route cannot answer a notice of this one."""
+        first = self._scoped_consumer(
+            "Route one", ["@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com"]
+        )
+        second = self._scoped_consumer(
+            "Route two", ["@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"]
+        )
+        incident_id = self._sent_notice(first)
+        with self.assertRaises(ValidationError):
+            self.center.bind_matrix_reply(
+                "$reply-4", "$notice-1",
+                "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com", "чужой ответ",
+            )
+        self.assertEqual("open", self.center.get_incident(incident_id)["state"])
+        self.assertIsNotNone(second)
 
 if __name__ == "__main__":
     unittest.main()

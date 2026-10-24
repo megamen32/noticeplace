@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import hmac
 import ipaddress
 import os
 import re
@@ -2426,19 +2427,28 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     self._reply(HTTPStatus.ACCEPTED, center.create_event(token, key, body, request_meta=self._request_meta()))
                     return
                 if self.path == "/v1/matrix/reply":
-                    # An answer inside the explicit Matrix route of a consumer
-                    # binds to its incident. Any other room or identity is
-                    # refused, so a reply can never bind across the route.
+                    # The binding is resolved from the notice that the answer
+                    # answers, never from the body: the body may not name an
+                    # incident at all. The capability is the transport one, so a
+                    # producer bearer cannot acknowledge a notice for itself.
+                    capability = os.environ.get("NOTIFY_MATRIX_REPLY_TOKEN", "").strip()
+                    if not capability:
+                        self._reply(HTTPStatus.FORBIDDEN, {"error": "the matrix reply capability is not configured"})
+                        return
+                    if not hmac.compare_digest(capability, token):
+                        self._reply(HTTPStatus.UNAUTHORIZED, {"error": "the matrix reply capability is required"})
+                        return
+                    if set(body) - {"reply_event_id", "reply_to_event_id", "sender", "room_id", "answer"}:
+                        self._reply(HTTPStatus.BAD_REQUEST, {"error": "a matrix reply accepts only the reply fields"})
+                        return
                     try:
                         self._reply(HTTPStatus.OK, center.bind_matrix_reply(
-                            token,
-                            str(body.get("incident_id") or ""),
+                            str(body.get("reply_event_id") or ""),
+                            str(body.get("reply_to_event_id") or ""),
+                            str(body.get("sender") or ""),
                             str(body.get("room_id") or ""),
-                            str(body.get("answerer") or ""),
                             str(body.get("answer") or ""),
                         ))
-                    except AuthorizationError as error:
-                        self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
                     except ValidationError as error:
                         self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                     return

@@ -661,6 +661,28 @@ class AdminConfigStore:
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "consumer_created", "subject": created["id"], "token_fingerprint": created["token_fingerprint"]})
         return created
 
+    def update_consumer_policy(self, consumer_id: str, policy_json: str, actor: str) -> dict[str, Any]:
+        """Replace the delivery policy of one consumer and keep its identity.
+
+        The consumer keeps its id, its intake token, its project and its
+        severity. Only the stages change, so a scoped Matrix route can gain
+        its sender bindings without a new consumer and without a new grant.
+        """
+        try:
+            policy = json.loads(policy_json or "")
+        except json.JSONDecodeError as error:
+            raise ValidationError("consumer policy JSON is invalid") from error
+        if not isinstance(policy, list):
+            raise ValidationError("consumer policy JSON must be a list")
+        updated = self._consumer_notification_center().replace_consumer_policy(consumer_id, policy, actor)
+        self._audit({
+            "timestamp": int(time.time()),
+            "actor": actor,
+            "action": "consumer_policy_updated",
+            "subject": consumer_id,
+        })
+        return updated
+
     def _attach_custom_telegram_topic(self, policy: list[dict[str, Any]], name: str) -> None:
         """Give each Telegram-targeting custom consumer one ordinary forum topic."""
         env = parse_environment(self.primary_env)

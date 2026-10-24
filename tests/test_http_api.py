@@ -53,8 +53,7 @@ class HttpApiTests(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
 
-    def test_matrix_reply_route_binds_inside_the_route_and_refuses_outside(self) -> None:
-        """The reply route binds one answer and refuses every other room or identity."""
+    def _scoped_consumer_with_notice(self) -> tuple[dict, str]:
         consumer = self.center.create_consumer(
             project="hermes",
             name="Scoped Matrix reply",
@@ -69,6 +68,8 @@ class HttpApiTests(unittest.TestCase):
                             "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
                             "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
                         ],
+                        "senders": ["@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"],
+                        "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
                     },
                     "retry_interval_seconds": 60,
                     "max_repeats": 1,
@@ -77,7 +78,7 @@ class HttpApiTests(unittest.TestCase):
         )
         created = self.center.create_event(
             consumer["intake_token"],
-            "scoped-reply",
+            "notice-scoped",
             {
                 "schema": "notify.event.v1",
                 "project": "hermes",
@@ -85,52 +86,146 @@ class HttpApiTests(unittest.TestCase):
                 "kind": "incident",
                 "severity": "critical",
                 "title": "Gateway unavailable",
-                "dedup_key": "scoped-reply",
+                "dedup_key": "notice-scoped",
             },
         )
         incident_id = created["incident_id"]
-        headers = {"Authorization": "Bearer secret-token"}
-
-        status, body = self.request(
-            "POST",
-            "/v1/matrix/reply",
-            {
-                "incident_id": incident_id,
-                "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
-                "answerer": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
-                "answer": "подтверждаю",
-            },
-            **headers,
+        row = self.center._connection.execute(
+            "SELECT id FROM deliveries WHERE incident_id=? ORDER BY created_at LIMIT 1", (incident_id,)
+        ).fetchone()
+        self.center.complete_delivery(
+            row["id"], "sent",
+            result={"event_id": "$notice-http", "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"},
         )
-        self.assertEqual(200, status)
-        self.assertTrue(body["bound"])
-        self.assertEqual("acknowledged", body["state"])
+        return consumer, incident_id
 
-        status, body = self.request(
-            "POST",
-            "/v1/matrix/reply",
-            {
-                "incident_id": incident_id,
-                "room_id": "!SGgCRDRJRnTYTQvKAG:chat.bezrabotnyi.com",
-                "answerer": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
-                "answer": "не та комната",
-            },
-            **headers,
-        )
+    def test_matrix_reply_route_refuses_a_producer_bearer(self) -> None:
+        """A producer bearer may not acknowledge a notice for itself."""
+        consumer, incident_id = self._scoped_consumer_with_notice()
+        with mock.patch.dict(os.environ, {"NOTIFY_MATRIX_REPLY_TOKEN": "transport-capability"}):
+            status, body = self.request(
+                "POST",
+                "/v1/matrix/reply",
+                {
+                    "incident_id": incident_id,
+                    "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                    "answerer": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                    "answer": "подтверждаю",
+                },
+                Authorization=f"Bearer {consumer['intake_token']}",
+            )
+        self.assertEqual(401, status)
+        self.assertEqual("open", self.center.get_incident(incident_id)["state"])
+
+    def test_matrix_reply_route_refuses_a_body_that_claims_the_incident(self) -> None:
+        """The body may not name the incident; the binding is resolved by the server."""
+        consumer, incident_id = self._scoped_consumer_with_notice()
+        with mock.patch.dict(os.environ, {"NOTIFY_MATRIX_REPLY_TOKEN": "transport-capability"}):
+            status, body = self.request(
+                "POST",
+                "/v1/matrix/reply",
+                {
+                    "incident_id": incident_id,
+                    "reply_event_id": "$reply-http",
+                    "reply_to_event_id": "$notice-http",
+                    "sender": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                    "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                },
+                Authorization="Bearer transport-capability",
+            )
         self.assertEqual(400, status)
+        self.assertEqual("open", self.center.get_incident(incident_id)["state"])
 
-        status, body = self.request(
-            "POST",
-            "/v1/matrix/reply",
-            {
-                "incident_id": incident_id,
-                "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
-                "answerer": "@bezrabotnyi:chat.bezrabotnyi.com",
-                "answer": "не тот",
-            },
-            **headers,
-        )
-        self.assertEqual(400, status)
+    def test_matrix_reply_route_requires_the_transport_capability(self) -> None:
+        """Without a configured transport capability the route denies everything."""
+        consumer, incident_id = self._scoped_consumer_with_notice()
+        payload = {
+            "reply_event_id": "$reply-http",
+            "reply_to_event_id": "$notice-http",
+            "sender": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+            "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+        }
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NOTIFY_MATRIX_REPLY_TOKEN", None)
+            status, body = self.request(
+                "POST", "/v1/matrix/reply", payload, Authorization="Bearer transport-capability",
+            )
+        self.assertEqual(403, status)
+        with mock.patch.dict(os.environ, {"NOTIFY_MATRIX_REPLY_TOKEN": "transport-capability"}):
+            status, body = self.request(
+                "POST", "/v1/matrix/reply", payload, Authorization="Bearer secret-token",
+            )
+        self.assertEqual(401, status)
+        self.assertEqual("open", self.center.get_incident(incident_id)["state"])
+
+    def test_matrix_reply_route_binds_inside_the_route_and_refuses_outside(self) -> None:
+        """A verified answer binds; a foreign sender or room never binds."""
+        consumer, incident_id = self._scoped_consumer_with_notice()
+        with mock.patch.dict(os.environ, {"NOTIFY_MATRIX_REPLY_TOKEN": "transport-capability"}):
+            status, body = self.request(
+                "POST",
+                "/v1/matrix/reply",
+                {
+                    "reply_event_id": "$reply-http-1",
+                    "reply_to_event_id": "$notice-http",
+                    "sender": "@bezrabotnyi:chat.bezrabotnyi.com",
+                    "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                },
+                Authorization="Bearer transport-capability",
+            )
+            self.assertEqual(400, status)
+            status, body = self.request(
+                "POST",
+                "/v1/matrix/reply",
+                {
+                    "reply_event_id": "$reply-http-2",
+                    "reply_to_event_id": "$notice-http",
+                    "sender": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                    "room_id": "!SGgCRDRJRnTYTQvKAG:chat.bezrabotnyi.com",
+                },
+                Authorization="Bearer transport-capability",
+            )
+            self.assertEqual(400, status)
+            self.assertEqual("open", self.center.get_incident(incident_id)["state"])
+
+            status, body = self.request(
+                "POST",
+                "/v1/matrix/reply",
+                {
+                    "reply_event_id": "$reply-http-3",
+                    "reply_to_event_id": "$notice-http",
+                    "sender": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                    "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                    "answer": "подтверждаю",
+                },
+                Authorization="Bearer transport-capability",
+            )
+            self.assertEqual(200, status)
+            self.assertTrue(body["bound"])
+            self.assertEqual("acknowledged", body["state"])
+            self.assertEqual(incident_id, body["incident_id"])
+
+            # One reply event is consumed once: the repeat never acks again.
+            status, body = self.request(
+                "POST",
+                "/v1/matrix/reply",
+                {
+                    "reply_event_id": "$reply-http-3",
+                    "reply_to_event_id": "$notice-http",
+                    "sender": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                    "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                    "answer": "подтверждаю",
+                },
+                Authorization="Bearer transport-capability",
+            )
+            self.assertEqual(200, status)
+            self.assertFalse(body["bound"])
+            self.assertTrue(body["idempotent"])
+        audits = self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE incident_id=? AND type='matrix_reply_bound'",
+            (incident_id,),
+        ).fetchone()
+        self.assertEqual(1, audits["count"])
 
     def request_raw(self, path: str) -> tuple[int, str, bytes]:
         """Read a public representation without assuming the JSON API."""
