@@ -25,7 +25,8 @@ from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import DirectHealthRemediationAdapter, DurableHealthRemediationAdapter, GptAdminAgentJobAdapter
 from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, normalize_health_recommendation, sanitize_bounded_text, validate_health_plans
 from .instructions import noticeplace_instructions
-from .incident_call_chain import destination_mismatch, metadata as call_chain_metadata, scoped_destination
+from .incident_call_chain import (destination_mismatch, expected_request_id,
+                                  metadata as call_chain_metadata, scoped_destination)
 from .human_request_original import render_human_request_original
 from .selected_card import apply_selection_receipt, canonical_choice_ref
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
@@ -664,7 +665,8 @@ class MatrixCallSender:
         if destination is None and answered and not actor.startswith("@"):
             raise RuntimeError("Matrix call bridge did not identify the answerer")
         if destination is not None:
-            mismatch = destination_mismatch(destination, result)
+            mismatch = destination_mismatch(destination, result,
+                expected_request_id(request["incident_id"], delivery_key))
             if mismatch:
                 # The receipt does not belong to the requested binding: the
                 # outcome stays unknown, nothing is acknowledged and nothing is

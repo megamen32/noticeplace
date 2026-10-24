@@ -13,7 +13,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from notification_center.core import NotificationCenter, ValidationError
-from notification_center.http_api import DeliveryWorker
+from notification_center.http_api import DeliveryWorker, MatrixCallSender
 from notification_center.incident_call_chain import (
     HTTP_ERROR_BODY_LIMIT,
     ORDER,
@@ -22,6 +22,9 @@ from notification_center.incident_call_chain import (
 )
 
 MISSED={'answered':False,'ended':True,'safe_to_fallback':True,'status':'unanswered'}
+# The request ids UserIO publishes for the incident and the delivery key of this fixture.
+SCOPED_REQUEST_ID='noticeplace:c87a232d36f21e74250440fccc64bc159ccf2c25a71b5f8a0acea64d199d086e'
+SCOPED_SHORT_KEY_REQUEST_ID='noticeplace:3a22563e2667f006e743520c9eac29df0fc9024b2d2f83187f2c576bc28c6194'
 
 
 class ChainTests(unittest.TestCase):
@@ -562,14 +565,14 @@ class ScopedCallTests(unittest.TestCase):
         },
     }
 
-    def _receipt(self, **changes):
+    def _receipt(self, expected_request_id, **changes):
         receipt = {
             'call_id': 'call-1', 'channel': 'matrix', 'status': 'completed', 'ended': True,
             'answered': True, 'acknowledged': True, 'safe_to_fallback': False,
             'account_ref': self.payload['destination']['account_ref'],
             'room_id': self.payload['destination']['room_id'],
             'destination': dict(self.payload['destination']),
-            'request_id': 'noticeplace:scoped',
+            'request_id': expected_request_id,
             'actor': '@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com',
             'ok': True,
         }
@@ -589,7 +592,7 @@ class ScopedCallTests(unittest.TestCase):
 
     def test_scoped_call_sends_the_typed_destination(self):
         requests = []
-        result = self._sender(self._receipt(), requests).send(self.payload, 'incident-call:matrix.call:step:step-1:repeat:1')
+        result = self._sender(self._receipt(SCOPED_REQUEST_ID), requests).send(self.payload, 'incident-call:matrix.call:step:step-1:repeat:1')
         self.assertTrue(result['answered'])
         self.assertEqual('matrix:@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com', result['actor'])
         self.assertEqual(self.payload['destination'], requests[0]['destination'])
@@ -604,7 +607,7 @@ class ScopedCallTests(unittest.TestCase):
         ):
             with self.subTest(changes=changes):
                 requests = []
-                result = self._sender(self._receipt(**changes), requests).send(self.payload, 'key')
+                result = self._sender(self._receipt(SCOPED_SHORT_KEY_REQUEST_ID, **changes), requests).send(self.payload, 'key')
                 self.assertIsNone(result['answered'])
                 self.assertTrue(result['uncertain'])
                 self.assertNotIn('safe_to_fallback', result)
@@ -613,10 +616,57 @@ class ScopedCallTests(unittest.TestCase):
         payload = dict(self.payload)
         payload['destination'] = {'room_id': '!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com'}
         requests = []
-        result = self._sender(self._receipt(), requests).send(payload, 'key')
+        result = self._sender(self._receipt(SCOPED_SHORT_KEY_REQUEST_ID), requests).send(payload, 'key')
         self.assertIsNone(result['answered'])
         self.assertTrue(result['uncertain'])
         self.assertEqual([], requests)
+
+
+    def test_scoped_call_rejects_a_receipt_of_another_delivery(self):
+        """A receipt of an older delivery never answers the current incident."""
+        for call_id in ('3f6d2c4e-2b1a-4c7d-9e5f-0a1b2c3d4e5f',
+                        '8a7b6c5d-4e3f-4a2b-9c8d-7e6f5a4b3c2d'):
+            with self.subTest(call_id=call_id):
+                requests = []
+                receipt = self._receipt(SCOPED_SHORT_KEY_REQUEST_ID, call_id=call_id,
+                                        request_id='noticeplace:OLD-DELIVERY')
+                result = self._sender(receipt, requests).send(self.payload, 'key')
+                self.assertIsNone(result['answered'])
+                self.assertTrue(result['uncertain'])
+                self.assertNotIn('safe_to_fallback', result)
+                self.assertEqual('request_id_mismatch', result['mismatch'])
+
+    def test_scoped_call_rejects_a_receipt_answered_by_another_participant(self):
+        """The caller is not the target: a participant receipt never answers."""
+        requests = []
+        receipt = self._receipt(SCOPED_SHORT_KEY_REQUEST_ID,
+                                actor='@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com')
+        result = self._sender(receipt, requests).send(self.payload, 'key')
+        self.assertIsNone(result['answered'])
+        self.assertTrue(result['uncertain'])
+        self.assertNotIn('safe_to_fallback', result)
+        self.assertEqual('actor_target_mismatch', result['mismatch'])
+
+    def test_scoped_call_rejects_a_receipt_naming_another_target(self):
+        """A receipt that names another target contradicts the binding."""
+        requests = []
+        receipt = self._receipt(SCOPED_SHORT_KEY_REQUEST_ID,
+                                target='@bezrabotnyi:chat.bezrabotnyi.com')
+        result = self._sender(receipt, requests).send(self.payload, 'key')
+        self.assertIsNone(result['answered'])
+        self.assertTrue(result['uncertain'])
+        self.assertNotIn('safe_to_fallback', result)
+        self.assertEqual('target_mismatch', result['mismatch'])
+
+
+def test_expected_request_id_is_the_published_userio_identity():
+    """The derived request id is exactly the identity UserIO publishes."""
+    from notification_center.incident_call_chain import expected_request_id
+    assert expected_request_id('current-incident-20261024','current-delivery') == (
+        'noticeplace:42ec694cc1170b698fa1bade0389e060419b3f94b05145547c514eb84dfaa20b')
+    assert expected_request_id('current-incident-20261024','') == 'noticeplace:current-incident-20261024'
+    assert expected_request_id('current-incident-20261024','current-delivery') != (
+        'noticeplace:current-incident-20261024')
 
 
 def test_telegram_http_receipt_wait_covers_extended_native_startup():
@@ -625,3 +675,94 @@ def test_telegram_http_receipt_wait_covers_extended_native_startup():
     assert sender.timeout > 535
     matrix=IncidentCallSender('https://example.invalid/v1/calls/matrix/noticeplace','test',450)
     assert matrix.timeout==450
+
+
+class ScopedCallWorkerTests(unittest.TestCase):
+    """A receipt of another call never acknowledges the incident it claims."""
+
+    DESTINATION = {
+        'room_id': '!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com',
+        'account_ref': 'matrix:37698708b623db45e1bfe61f4d01',
+        'target': '@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com',
+        'participants': [
+            '@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com',
+            '@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com',
+        ],
+    }
+
+    @staticmethod
+    def userio_request_id(incident_id, delivery_key=''):
+        """The identity UserIO publishes, written out from its own source."""
+        request_id = 'noticeplace:' + incident_id
+        if delivery_key or not 16 <= len(request_id) <= 128:
+            identity = json.dumps([incident_id, delivery_key], ensure_ascii=False)
+            request_id = 'noticeplace:' + hashlib.sha256(identity.encode()).hexdigest()
+        return request_id
+
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory()
+        self.center=NotificationCenter(Path(self.temp.name)/'db',
+            {'legacy':{'project':'hermes','max_severity':'critical'}},default_quiet_hours=[])
+        self.consumer=self.center.create_consumer(project='hermes',name='Scoped call',
+            policy=[{'id':'step-1','platform':'matrix','action':'call',
+                     'target':dict(self.DESTINATION),
+                     'retry_interval_seconds':60,'max_repeats':1}])
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _deliver(self, receipt_for):
+        """Place the scoped call of the consumer and deliver it to the worker."""
+        sent=[]
+        class Response:
+            status=200
+            def __enter__(self): return self
+            def __exit__(self,*args): pass
+            def read(self,limit=None): return json.dumps(receipt_for(sent[-1])).encode()
+        def run(request,timeout):
+            sent.append(json.loads(request.data))
+            return Response()
+        class Message:
+            def send(this,payload): return {'message_id':17,'chat_id':'42'}
+        worker=DeliveryWorker(self.center,Message(),
+            matrix_call=MatrixCallSender('http://bridge/v1/calls/matrix/noticeplace','test',runner=run),
+            incident_call_order=ORDER,android_phone_quiet_start_hour=0,android_phone_quiet_end_hour=0)
+        created=self.center.create_event(self.consumer['intake_token'],'scoped-call',{
+            'schema':'notify.event.v1','project':'hermes','recipient':'operator','kind':'incident',
+            'severity':'critical','title':'Gateway unavailable','body':'probing','dedup_key':'scoped-call'})
+        rows=self.center.claim_due_deliveries(now_epoch=10**12,channel_group='call')
+        for row in rows: worker.deliver(row)
+        return created['incident_id'],sent
+
+    def _receipt(self,body,request_id,actor=None):
+        return {'ok':True,'answered':True,'acknowledged':False,'ended':False,'safe_to_fallback':False,
+            'status':'active','channel':'matrix','call_id':'3f6d2c4e-2b1a-4c7d-9e5f-0a1b2c3d4e5f',
+            'account_ref':body['destination']['account_ref'],
+            'room_id':body['destination']['room_id'],
+            'destination':dict(body['destination']),
+            'request_id':request_id,
+            'actor':actor or body['destination']['target']}
+
+    def test_a_receipt_of_another_call_never_acknowledges_the_incident(self):
+        """The stale receipt answers nothing: the incident stays open and unretried."""
+        incident_id,sent=self._deliver(lambda body: self._receipt(body,'noticeplace:OLD-DELIVERY'))
+        self.assertTrue(sent)
+        self.assertEqual('open',self.center.get_incident(incident_id)['state'])
+        rows=self.center._connection.execute(
+            "SELECT channel,status,result_json FROM deliveries WHERE incident_id=?",(incident_id,)).fetchall()
+        attempted=[row for row in rows if row['result_json']]
+        self.assertTrue(attempted)
+        for row in attempted:
+            self.assertEqual('matrix.call',row['channel'])
+            self.assertEqual('uncertain',row['status'])
+            receipt=json.loads(row['result_json'])
+            self.assertIsNone(receipt['answered'])
+            self.assertTrue(receipt['uncertain'])
+            self.assertNotIn('safe_to_fallback',receipt)
+
+    def test_the_receipt_of_the_sent_call_acknowledges_the_incident(self):
+        """The identity of the sent call answers exactly the incident it belongs to."""
+        incident_id,sent=self._deliver(lambda body: self._receipt(body,
+            self.userio_request_id(body['incident_id'],body.get('delivery_key',''))))
+        self.assertTrue(sent)
+        self.assertEqual('acknowledged',self.center.get_incident(incident_id)['state'])

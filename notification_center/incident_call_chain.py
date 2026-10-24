@@ -68,12 +68,31 @@ def scoped_destination(payload):
     return {key: destination.get(key) for key in DESTINATION_FIELDS}
 
 
-def destination_mismatch(destination, receipt):
+def expected_request_id(incident_id, delivery_key=''):
+    """Return the request id UserIO derives for the sent NoticePlace call.
+
+    The identity of a call is its incident and its delivery key. UserIO
+    hashes both whenever a delivery key is present, so the receipt of another
+    delivery never carries the id of this one.
+    """
+    incident_id = str(incident_id or '')
+    delivery_key = str(delivery_key or '')
+    request_id = 'noticeplace:' + incident_id
+    if delivery_key or not 16 <= len(request_id) <= 128:
+        identity = json.dumps([incident_id, delivery_key], ensure_ascii=False)
+        request_id = 'noticeplace:' + hashlib.sha256(identity.encode()).hexdigest()
+    return request_id
+
+
+def destination_mismatch(destination, receipt, expected_request_id=None):
     """Return why a call receipt does not belong to the requested destination.
 
     The receipt of a scoped call must name the same account, room and target,
-    echo the same destination and carry the call identity. Any other receipt
-    stays uncertainty: no acknowledgement, no replay and no fallback.
+    echo the same destination, carry the call identity, name the request id of
+    this very incident and delivery and answer for the target itself. A
+    participant of the room is not the target, so such a receipt is refused
+    too. Any other receipt stays uncertainty: no acknowledgement, no replay
+    and no fallback.
     """
     if not isinstance(destination, Mapping) or not isinstance(receipt, Mapping): return 'receipt_unreadable'
     for key in ('account_ref', 'room_id', 'target'):
@@ -92,10 +111,16 @@ def destination_mismatch(destination, receipt):
                 return 'destination_%s_mismatch' % key
         elif str(left or '') != str(right or ''):
             return 'destination_%s_mismatch' % key
+    if expected_request_id is not None:
+        if str(receipt.get('request_id') or '') != str(expected_request_id):
+            return 'request_id_mismatch'
+    target = str(destination.get('target') or '').strip()
     actor = str(receipt.get('actor') or '').strip()
     if not actor: return 'actor_missing'
-    participants = [str(item).strip() for item in destination.get('participants') or [] if str(item).strip()]
-    if participants and actor not in participants: return 'actor_not_a_participant'
+    if actor != target: return 'actor_target_mismatch'
+    echoed_target = receipt.get('target')
+    if isinstance(echoed_target, str) and echoed_target.strip() and echoed_target.strip() != target:
+        return 'target_mismatch'
     return None
 
 
@@ -282,7 +307,8 @@ class IncidentCallSender:
             return {'answered':False,'ended':True,'safe_to_fallback':True,'status':'unavailable'}
         if not isinstance(result, dict): raise RuntimeError('invalid call receipt')
         if destination is not None:
-            mismatch = destination_mismatch(destination, result)
+            mismatch = destination_mismatch(destination, result,
+                expected_request_id(body['incident_id'], body.get('delivery_key', '')))
             if mismatch:
                 # The receipt does not belong to the requested binding: the
                 # outcome stays unknown, nothing is acknowledged and nothing

@@ -17,6 +17,9 @@ from notification_center.core import NotificationCenter
 from notification_center.http_api import MatrixCallSender, build_handler
 from mcp.notify_mcp import TOOLS as STDIO_TOOLS
 
+# The request id UserIO publishes for the incident and the delivery key of this fixture.
+SCOPED_CALL_REQUEST_ID = "noticeplace:c87a232d36f21e74250440fccc64bc159ccf2c25a71b5f8a0acea64d199d086e"
+
 
 class HttpApiTests(unittest.TestCase):
     """Run real loopback requests without a reverse proxy or Telegram credentials."""
@@ -256,7 +259,7 @@ class HttpApiTests(unittest.TestCase):
             "account_ref": payload["destination"]["account_ref"],
             "room_id": payload["destination"]["room_id"],
             "destination": dict(payload["destination"]),
-            "request_id": "noticeplace:scoped",
+            "request_id": SCOPED_CALL_REQUEST_ID,
             "actor": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
             "ok": True,
         }
@@ -331,6 +334,44 @@ class HttpApiTests(unittest.TestCase):
         self.assertIsNone(result["answered"])
         self.assertTrue(result["uncertain"])
         self.assertEqual([], requests)
+
+    def test_matrix_call_receipt_of_another_delivery_never_answers(self) -> None:
+        """A receipt of an older delivery never answers the current incident."""
+        payload = self._scoped_call_payload()
+        for call_id in ("3f6d2c4e-2b1a-4c7d-9e5f-0a1b2c3d4e5f",
+                        "8a7b6c5d-4e3f-4a2b-9c8d-7e6f5a4b3c2d"):
+            with self.subTest(call_id=call_id):
+                receipt = {**self._scoped_receipt(payload), "call_id": call_id,
+                           "request_id": "noticeplace:OLD-DELIVERY"}
+                requests: list = []
+                result = self._matrix_call_sender(receipt, requests).send(payload)
+                self.assertIsNone(result["answered"])
+                self.assertTrue(result["uncertain"])
+                self.assertNotIn("safe_to_fallback", result)
+                self.assertEqual("request_id_mismatch", result["mismatch"])
+
+    def test_matrix_call_receipt_of_another_participant_never_answers(self) -> None:
+        """The caller is not the target: a participant receipt never answers."""
+        payload = self._scoped_call_payload()
+        receipt = {**self._scoped_receipt(payload),
+                   "actor": "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com"}
+        requests: list = []
+        result = self._matrix_call_sender(receipt, requests).send(payload)
+        self.assertIsNone(result["answered"])
+        self.assertTrue(result["uncertain"])
+        self.assertNotIn("safe_to_fallback", result)
+        self.assertEqual("actor_target_mismatch", result["mismatch"])
+
+    def test_matrix_call_receipt_naming_another_target_never_answers(self) -> None:
+        """A receipt that names another target contradicts the binding."""
+        payload = self._scoped_call_payload()
+        receipt = {**self._scoped_receipt(payload), "target": "@bezrabotnyi:chat.bezrabotnyi.com"}
+        requests: list = []
+        result = self._matrix_call_sender(receipt, requests).send(payload)
+        self.assertIsNone(result["answered"])
+        self.assertTrue(result["uncertain"])
+        self.assertNotIn("safe_to_fallback", result)
+        self.assertEqual("target_mismatch", result["mismatch"])
 
     def request_raw(self, path: str) -> tuple[int, str, bytes]:
         """Read a public representation without assuming the JSON API."""
