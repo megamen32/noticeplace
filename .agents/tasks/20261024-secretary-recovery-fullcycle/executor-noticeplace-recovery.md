@@ -557,3 +557,119 @@ the chain route).
   sender and target bindings. The NP side is ready for that join and fails closed until it happens: without the
   configured route the bridge answers no receipt that matches the binding, so the NP keeps the outcome uncertain
   and acknowledges nothing.
+
+## 10. REVISION of §9 — the receipt correlation of a scoped call (2026-10-24, fourth pass)
+
+### 10.1 The two confirmed defects and the minimal repair
+
+The independent review `advisor-np-call-review.md` (0600, 6161 bytes) confirmed two receipt-correlation defects
+of the published source `65713bdee8567d97c136103fea9d391442c9e206`:
+
+1. a receipt with the **same destination but a foreign request id** was accepted as the answer of the current
+   incident, and
+2. a receipt with the **correct request id** whose `actor` was the other participant of the room was accepted as
+   well, although the target of the call was the second participant.
+
+`destination_mismatch` compared only the binding (account, room, echoed destination) and the membership of the
+actor in `participants`; it never compared the request id of the call and it accepted the caller for the target.
+Both real NP call adapters call that one helper (`IncidentCallSender.send`, `MatrixCallSender.send`), and the
+worker acknowledges the incident whenever the receipt says `answered is True` — so the defect really reached the
+acknowledgement of the current incident, not only an unused helper.
+
+The minimal repair, exactly as the review prescribed:
+
+- `notification_center/incident_call_chain.py:71-85` — new `expected_request_id(incident_id, delivery_key)`: the
+  request id of the **sent** call, derived with the published UserIO formula of the source commit
+  `7c3793b2723cd3c2cb0a8043f255a31b6c760859` (`src/universal_userio/noticeplace_calls.py`, `_request`): the base
+  `noticeplace:` + incident id when no delivery key is sent and the base length is inside 16..128, otherwise
+  `noticeplace:` + sha256 of `json.dumps([incident_id, delivery_key], ensure_ascii=False)` with the **default JSON
+  separators**. The formula was read from the UserIO source, not invented; the length is measured on the full
+  `noticeplace:`+incident id string, exactly as UserIO measures it. The review fixture (`current-incident-20261024`
+  + `current-delivery`) reproduces its published identity
+  `noticeplace:42ec694cc1170b698fa1bade0389e060419b3f94b05145547c514eb84dfaa20b` exactly.
+- `notification_center/incident_call_chain.py:87-124` — `destination_mismatch(destination, receipt,
+  expected_request_id=None)`: the receipt must carry **exactly** the expected request id (`:116`
+  `request_id_mismatch`), the `actor` must be **exactly** `destination.target` (`:120` `actor_target_mismatch`), and
+  a top-level `receipt.target` that is present must match (`:123` `target_mismatch`). The participant-membership
+  rule is gone: a participant of the room is not the target.
+- `notification_center/incident_call_chain.py:310-311` (`IncidentCallSender.send`) and
+  `notification_center/http_api.py:668-669` (`MatrixCallSender.send`) pass the identity of the **actually sent**
+  request: the incident id and the delivery key that the very same request body carries. The legacy route without a
+  destination keeps the old fixed environment contract untouched.
+
+The top-level `receipt.target` is compared **when the receipt carries one**. The frozen typed contract
+(`typed-l09-userio-source-handoff.json`) lists `call_id, channel, status, ended, answered, acknowledged,
+safe_to_fallback, account_ref, room_id, destination, request_id, actor` — a top-level `target` is not part of it,
+so its absence is not a mismatch. The current UserIO implementation always sends it (`target=call['target']`), and
+that value is the callee of the call, so it equals `destination.target`.
+
+### 10.2 RED → fix → GREEN (actual output)
+
+RED, the new tests written before the source change, against the published source `65713bd` (no stash, no reset,
+no worktree: the tests were written first and the source was changed after):
+
+```
+FAILED tests/test_incident_call_chain.py::ScopedCallTests::test_scoped_call_rejects_a_receipt_answered_by_another_participant
+FAILED tests/test_incident_call_chain.py::ScopedCallTests::test_scoped_call_rejects_a_receipt_naming_another_target
+FAILED tests/test_incident_call_chain.py::ScopedCallTests::test_scoped_call_rejects_a_receipt_of_another_delivery
+FAILED tests/test_incident_call_chain.py::test_expected_request_id_is_the_published_userio_identity
+FAILED tests/test_http_api.py::HttpApiTests::test_matrix_call_receipt_naming_another_target_never_answers
+FAILED tests/test_http_api.py::HttpApiTests::test_matrix_call_receipt_of_another_delivery_never_answers
+FAILED tests/test_http_api.py::HttpApiTests::test_matrix_call_receipt_of_another_participant_never_answers
+7 failed, 64 passed in 100.61s (0:01:40)
+```
+with the concrete cause `AssertionError: True is not None` — the receipt of another delivery, and the receipt of
+the other participant, were both answered as the answer of the current incident — and the `ImportError` of the
+helper that did not exist yet. The stale-receipt case uses two distinct valid UUID call ids, so the scenario is
+the stale-valid-receipt one and not a malformed call id.
+
+RED at the level of the worker (the real production adapter, the real worker, the real scoped consumer policy):
+the two source files were reverted to the published state `88b57dd` for that run and restored in the same command
+(the fix was never lost; `sha256sum -c` confirmed the restore):
+
+```
+FAILED tests/test_incident_call_chain.py::ScopedCallWorkerTests::test_a_receipt_of_another_call_never_acknowledges_the_incident
+E       AssertionError: 'open' != 'acknowledged'
+1 failed, 1 passed, 40 deselected in 2.43s
+```
+The stale receipt **acknowledged the incident** end to end before the repair. The positive case
+(`test_the_receipt_of_the_sent_call_acknowledges_the_incident`) passed in that same reverted run, so the repair is
+not a blanket refusal.
+
+GREEN of the whole affected set: `pytest tests/test_consumer_policy.py tests/test_incident_call_chain.py
+tests/test_http_api.py tests/test_admin_console.py -q` → **117 passed in 148.20s (0:02:28)** (the previous pass
+of §9.3 had 108 passed; the nine new tests are the nine named above).
+
+Wider regression on the same tree: `tests/test_delivery_worker.py`, `tests/test_incident_outcomes.py` and
+`tests/test_notification_center.py` together → **3 failed, 94 passed**. The three failures are the same
+pre-existing `tests/test_incident_outcomes.py` ones of the baseline (health reconciliation counter,
+`tests/test_incident_outcomes.py:231`); no new failure and no new failure class.
+
+New tests: `tests/test_incident_call_chain.py:625-637` (a receipt of another delivery), `:639-648` (a receipt
+answered by the other participant), `:650-659` (a receipt that names another target) — the chain adapter;
+`:662-667` (the published UserIO identity of the helper); `:680-777` (the worker: the stale receipt leaves the
+incident open and only the Matrix channel, the receipt of the sent call acknowledges it);
+`tests/test_http_api.py:338-351`, `:353-363`, `:365-375` (the same three rules for the Matrix adapter). The
+existing fixtures now carry the real derived request ids instead of the arbitrary `noticeplace:scoped` label.
+
+### 10.3 Source handoff
+
+- Source commit: **`df7e0d6aa61d2e7fafe0da46bb15b3321f418452`**, author `Mavis <Mavis@local>`, canonical `main`,
+  `git commit --only`, exactly four owned paths: `notification_center/http_api.py` (+4/-2),
+  `notification_center/incident_call_chain.py` (+32/-6), `tests/test_http_api.py` (+42/-1),
+  `tests/test_incident_call_chain.py` (+147/-6). Published with a normal push: `88b57dd..df7e0d6 main -> main`.
+- Hashes of the published state:
+  `incident_call_chain.py 8b50e456cfc49c09c258f232d92a5b8cf4e65475696caea50f408af8dba4f021`,
+  `http_api.py ee48d27439bd3afade9ba49e41531a6c3ccfa9471dfacbe27c938ab10bb19914`.
+- The request schema, the token, the existing UserIO route and the frozen typed contract are unchanged. No new
+  caller, no new dispatcher, no new grant, no crypto, no config, no deploy, no live effect of any kind.
+
+### 10.4 Status
+
+- **Source READY**: the receipt of a scoped Matrix call is now correlated with the identity of the call that was
+  actually sent, on both real NP adapters, and proved RED → fix → GREEN.
+- **Live acceptance NOT RUN**: no Matrix call, no event, no delivery, no contact, no grant, no config change, no
+  deploy and no rollout was performed by this pass; the live release still runs the previous code.
+- **Still owed by others** (not mine, and not blocking this source pass): the UserIO route with the configured QA
+  binding (`USERIO_MATRIX_NOTICE_ROUTES_FILE`), the isolated room join and the scoped consumer senders/target for
+  the live acceptance of the call.
