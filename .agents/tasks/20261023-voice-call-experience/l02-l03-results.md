@@ -2,6 +2,34 @@
 
 Секретов нет: только идентификаторы, file:line и измерения.
 
+## АКТУАЛЬНО 2026-10-24 05:45 МСК — L14 починен и опубликован: живой voice-рантайм получил qa-код (образ `sha-eab2699`)
+
+### Причина `dubious ownership` (доказана и воспроизведена, не догадка)
+- Единственный git-вызов в swap-скрипте: `userio-voice-swap.py:101` — `git -C <SOURCE> show <REV>:<path>`. Он выполняется **от root** по клону, который принадлежит **roomhacker** (clone идёт как `run([...], user=BUILD_USER)` ⇒ каталог `/var/tmp/userio-voice-src-<sha>-<stamp>` принадлежит roomhacker). Это ровно сценарий, на котором git 2.34.1 отказывается работать.
+- Проверено на живом хосте: wildcard в `safe.directory` git 2.34.1 **не поддерживает** (`-c safe.directory='/var/tmp/rootgitsafe-*'` → та же ошибка), точный путь работает; в `/root/.gitconfig` у root уже 30 исключений `safe.directory` для других репозиториев. Путь клону меняется каждый прогон (метка времени) ⇒ статическое исключение не подходит.
+
+### Фикс (минимальный, без глобального git-конфига)
+- `/usr/local/lib/noticeplace-voice/userio-voice-swap.py:101` → добавлен `-c safe.directory=<SOURCE>` (точный, динамический путь): `['git','-c','safe.directory=%s' % SOURCE,'-C',str(SOURCE),'show',f'{REVISION}:{path}']`.
+- Бэкап файла: `/usr/local/lib/noticeplace-voice/userio-voice-swap.py.bak-20261024T023709Z` (откат = возврат копии). Больше ничего в проде не менялось.
+- Проверено изолированно до любого свопа: `expected_hashes()` на реальном клоне `eab2699` отдал sha256 обоих OWNED-файлов (мост `2bfe851fd2c6…`, fast-agent worker `1f2401cf120a…`) — раньше был отказ по ownership.
+
+### Публикация (штатный публикатор, без ручной сборки и без ручного свопа)
+- `systemctl start userio-voice-autoupdate.service` → `status: updated`, image `ghcr.io/megamen32/universal-userio-voice:sha-eab2699`, image_id `sha256:833bd4097afd…`, container_id `d5764cb06a64…`, revision `eab26997cdd627291fc30e9723d37d55cbf5f904`, manifest `8dd87894351ea80ea757a7262051a684f423ec3ac384ddaf679f412e4e09c31e`, `source_hashes_match: true`, `runtime_config_unchanged: true`, `backend_unchanged: true`, `frontend_unchanged: true`, `compose_override_updated: true`, rollback-контейнер `userio-voice-prev-eab2699` (sha-cf08c14), `trees_equal: false` (образ реально обновился).
+
+### Независимый readback (после свопа)
+- Живой движок `/usr/local/lib/agentcall/agentcall_realtime_bridge.py`: md5 `36c60ea961778172d6b43ef7eb3d1337` (было `bece40a7a2f0ad1fd34ab1bcaf52dea4`), qa-вхождений **4** (было 0); в файле `QA_TEST_SCOPE_ENV` (3651), `qa_test_admission` (3678), `qa_guest_promotion` (3723).
+- Релиз-манифест в контейнере: commit `eab2699…`, manifest `8dd87894…` (было `cf08c14…` / `6bba9401…`). Контейнер Up, движок жив (pid 31), rollback-контейнер на месте, старый `userio-voice-prev-cf08c14` не тронут.
+
+### Последствия и что открыто
+- **Контейнер пересоздан** ⇒ QA-кандидат `/tmp/qa_candidate` и логи пира в старом контейнере погибли; пир, работавший в момент свопа, прерван ⇒ mavis08 обязан пере-ставить фикстуру/кандидат в новый контейнер (теперь можно и против живого установленного моста — qa-код в образе есть).
+- **Живой рантайм по-прежнему БЕЗ `AGENTCALL_QA_SCOPE` в env** (0 вхождений) ⇒ для живого L10 привязку надо подать в окружение контейнера — это изменение production-конфигурации, отдельное решение владельца.
+- L10 live по-прежнему требует три условия одновременно: (а) promotion в живом образе — **теперь выполнено**; (б) окно живой NP-доставки 09:00–12:00 MSK (тихие часы consumer'а 01:00–09:00, сейчас 05:4x); (в) раздельные caller/callee в ступени consumer'а (сейчас `account_ref == target == бот B` ⇒ двухперсонный гейт `matrix_call_worker.py:100-102` отверг бы).
+- Таймер autoupdate (~32 мин) теперь отрабатывает успешно; следующие тики ничего не ломают.
+- L11 — после зелёного mavis08; L12 — строго после L11.
+
+### Что НЕ делал
+Ручную сборку/пуш образов, ручной своп контейнера, запись в глобальный git-конфиг, записи в `/opt/universal-userio`, изменения прод-конфигурации контейнера, правки чужих файлов (единственное изменение — одна строка в production swap-скрипте, с бэкапом).
+
 ## АКТУАЛЬНО 2026-10-24 04:35 МСК — L10 остаток закрыт: producer `AGENTCALL_QA_SCOPE` + привязка QA-пары (коммит `d531269`)
 
 ### Что сделано (исполнитель `bg_a526f1c7-2bd6-4a71-ac56-c81f3f7b8529`, сессия `mvs_300c99393e384931866df7e64f0e8696`)
