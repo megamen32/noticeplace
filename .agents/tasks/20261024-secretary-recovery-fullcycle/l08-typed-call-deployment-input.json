@@ -1,0 +1,193 @@
+{
+  "status": "PREPARED_NOT_APPLIED",
+  "leaf": "L08",
+  "owner_session": "mvs_2b489b9ad2364fcaa03f4687420699a1",
+  "read_at": "2026-10-24T20:45:44+03:00",
+  "source_revision": {
+    "sha": "df7e0d6aa61d2e7fafe0da46bb15b3321f418452",
+    "branch": "main",
+    "published": true,
+    "archive_command": "git archive --format=tar.gz --prefix=noticeplace/ df7e0d6aa61d2e7fafe0da46bb15b3321f418452",
+    "archive_sha256": "ddada1f580a491a6f882531ea03380a0c4e8f3e2629a9b552b5999234a09663e",
+    "archive_bytes": 10304723
+  },
+  "consumer": {
+    "consumer_id": "consumer_7ad31d4110d744259bde4ee7580890e4",
+    "project": "noticeplace-qa-stop-20261023b",
+    "protected_ref": "/home/roomhacker/.config/noticeplace/qa-stop-20261023b-consumer.json",
+    "intake_token": "not copied — stays in the protected ref"
+  },
+  "current_actual_policy_receipt": {
+    "read_only": true,
+    "stages": [
+      {
+        "stage": 1,
+        "kind": "matrix.message",
+        "enabled": 1,
+        "step_id": "step-1",
+        "platform": "matrix",
+        "action": "message",
+        "previous_step_id": null,
+        "retry_interval_seconds": 60,
+        "max_repeats": 1,
+        "target": {
+          "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"
+        }
+      }
+    ],
+    "matrix_only": true,
+    "forbidden_channels": 0,
+    "incidents": 1,
+    "deliveries": 1,
+    "derived_scope": {
+      "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+      "participants": [],
+      "senders": [],
+      "target": "",
+      "account_ref": ""
+    },
+    "derived_destination": {
+      "account_ref": "",
+      "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+      "target": "",
+      "participants": []
+    },
+    "gap": "the live policy yields no typed destination and its channel is matrix.message, so the typed CALL path cannot engage"
+  },
+  "prepared_policy": {
+    "applied_to_live_mesh": false,
+    "validated": "by the published source in an isolated database; the live mesh was never opened",
+    "policy": [
+      {
+        "id": "step-1",
+        "platform": "matrix",
+        "action": "call",
+        "target": {
+          "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+          "account_ref": "matrix:ab023a689e926bf99d924e933ebd",
+          "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+          "participants": [
+            "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"
+          ]
+        },
+        "retry_interval_seconds": 60,
+        "max_repeats": 1
+      }
+    ],
+    "server_readback": {
+      "stages": [
+        {
+          "stage": 1,
+          "kind": "matrix.call",
+          "enabled": 1,
+          "step_id": "step-1",
+          "platform": "matrix",
+          "action": "call",
+          "previous_step_id": null
+        }
+      ],
+      "matrix_only": true,
+      "forbidden_channels": 0,
+      "derived_scope": {
+        "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+        "participants": [
+          "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+          "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"
+        ],
+        "senders": [],
+        "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+        "account_ref": "matrix:ab023a689e926bf99d924e933ebd"
+      },
+      "derived_destination": {
+        "account_ref": "matrix:ab023a689e926bf99d924e933ebd",
+        "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+        "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+        "participants": [
+          "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+          "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"
+        ]
+      },
+      "delivery_channel": "matrix.call",
+      "delivery_key_pattern": "<incident_id>:matrix.call:step:step-1:repeat:1",
+      "producer_body_destination_ignored": true,
+      "whole_chain_matrix_only": true
+    },
+    "userio_contract_check": {
+      "userio_commit": "7c3793b2723cd3c2cb0a8043f255a31b6c760859",
+      "binding_accepted_by_userio": true,
+      "participants_exactly_two": true,
+      "participants_rule_satisfied_A_to_B": true
+    }
+  },
+  "deployment": {
+    "executed": false,
+    "gate": "Root's 100 backend / 88 control join",
+    "command": "NOTICEPLACE_PUBLISHED_SHA=df7e0d6aa61d2e7fafe0da46bb15b3321f418452 sudo ./deploy/noticeplace upgrade",
+    "run_from": "a clean checkout whose committed HEAD is df7e0d6aa61d2e7fafe0da46bb15b3321f418452, as root on roomhacker-server-100",
+    "expected_release_id": "<UTC>-df7e0d6a61d2-<pid>",
+    "restarts": [
+      "noticeplace-mesh-api.service"
+    ],
+    "leaves_untouched": [
+      "notification-center-admin.service"
+    ],
+    "preserves": [
+      "/etc/notification-center*.env",
+      "/var/lib/notification-center*"
+    ],
+    "publication_gate": "the runtime inputs bin notification_center deploy scripts package.json must be identical between df7e0d6aa61d2e7fafe0da46bb15b3321f418452 and the published main HEAD",
+    "rollback": {
+      "command": "sudo /opt/noticeplace/deploy/noticeplace rollback",
+      "target_after_upgrade": "/opt/noticeplace-releases/20261023T091306Z-b1944cd2b39c-2269751",
+      "previous_link_before_upgrade": "/opt/noticeplace-releases/previous -> /opt/noticeplace-releases/20261022T223804Z-22c8942db218-2271108"
+    },
+    "policy_update_operation": {
+      "seam": "AdminConfigStore.update_consumer_policy -> core.replace_consumer_policy",
+      "in_deployed_release": false,
+      "in_published_source": true,
+      "console_route": null,
+      "console_route_note": "the deployed console API exposes POST /consumers (create) only",
+      "operation": "import AdminConfigStore from /opt/noticeplace, require NOTIFY_CENTER_DB to start with 'mesh:', call update_consumer_policy(consumer_id, policy_json, actor), close the connection",
+      "run_after": "the df7e0d6aa61d2e7fafe0da46bb15b3321f418452 deploy"
+    },
+    "readback": [
+      "readlink -f /opt/noticeplace",
+      "systemctl is-active noticeplace-mesh-api.service",
+      "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8091/v1/instructions",
+      "the mesh must expose the matrix_reply_receipts table of the new release",
+      "the consumer_policy_stages row of consumer_7ad31d4110d744259bde4ee7580890e4 must be kind=matrix.call, platform=matrix, action=call, previous_step_id=null, enabled=1, with the four-field target",
+      "the enabled stages of that consumer must name Matrix only — forbidden channel count 0",
+      "the audit row consumer_policy_updated of that consumer"
+    ]
+  },
+  "blockers": [
+    {
+      "owner": "root / noticeplace",
+      "item": "live deploy of the approved source",
+      "endpoint_or_operation": "sudo ./deploy/noticeplace upgrade with NOTICEPLACE_PUBLISHED_SHA=df7e0d6aa61d2e7fafe0da46bb15b3321f418452",
+      "why": "the deployed release carries none of the typed scope, the whole-chain Matrix-only guard or the receipt correlation, so a live call before it would take the legacy owner route"
+    },
+    {
+      "owner": "root / noticeplace",
+      "item": "audited policy update of the QA consumer",
+      "endpoint_or_operation": "AdminConfigStore.update_consumer_policy (published source only)",
+      "why": "the deployed release has no such operation and the deployed console API can only create a consumer, which would mint a new consumer and a new intake token"
+    },
+    {
+      "owner": "communications / userio",
+      "item": "the QA route binding and the 88 control join",
+      "endpoint_or_operation": "USERIO_MATRIX_NOTICE_ROUTES_FILE with exactly one route whose binding equals the prepared target and whose user_id is the UserIO principal of A",
+      "why": "UserIO resolves the route by an exact binding match and refuses every owner default fallback"
+    }
+  ],
+  "prohibitions_honoured": [
+    "no personal Matrix",
+    "no owner identity",
+    "no phone or cellular call",
+    "no fallback channel",
+    "no new grant, token, caller or dispatcher",
+    "no producer body authority",
+    "no live deploy, event, call or incident creation"
+  ]
+}

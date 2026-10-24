@@ -673,3 +673,118 @@ existing fixtures now carry the real derived request ids instead of the arbitrar
 - **Still owed by others** (not mine, and not blocking this source pass): the UserIO route with the configured QA
   binding (`USERIO_MATRIX_NOTICE_ROUTES_FILE`), the isolated room join and the scoped consumer senders/target for
   the live acceptance of the call.
+
+## 11. L08 — the Matrix-only policy binding of the QA consumer (read, prepared, not applied)
+
+### 11.1 The actual admin configuration, read first
+
+The protected ref `/home/roomhacker/.config/noticeplace/qa-stop-20261023b-consumer.json` (0600) names the
+consumer `consumer_7ad31d4110d744259bde4ee7580890e4`, the project `noticeplace-qa-stop-20261023b` and its
+intake token; the token stays in that ref and is not copied anywhere. The live admin configuration was read
+through the mesh console, read only, no write:
+
+- the consumer is `custom`, `max_severity=notice`, with the quiet hours that suppress a call between 01:00 and
+  09:00 Europe/Moscow, and the operator note "L09 QA consumer: Matrix-only, single matrix.message step to
+  isolated test room; no phone, no telegram, no personal accounts";
+- **exactly one enabled stage**: `stage=1, kind=matrix.message, platform=matrix, action=message, step_id=step-1,
+  previous_step_id=null, retry_interval_seconds=60, max_repeats=1`, whose target carries the room only —
+  `{"room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"}`;
+- the consumer holds **1 incident and 1 delivery** (the accepted L09 run) and nothing else; the matrix-only
+  decision holds and the **forbidden channel count is 0** — there is no telegram and no phone stage.
+
+The gap is exact. The stage target carries the room only, so the server-validated scope of this consumer is
+`{room_id: "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com", participants: [], senders: [], target: "",
+account_ref: ""}` and the derived typed destination is `{account_ref: "", room_id: "!Zatz…", target: "",
+participants: []}`. Its delivery channel is `matrix.message`, so no destination is attached at all. A typed call
+cannot engage this policy: it would carry no target, no account and no participants.
+
+### 11.2 The prepared policy, validated by the server and by the shared typed-l09 handoff
+
+One enabled stage, Matrix only, with the exact two A/B identities of the isolated test room
+(`!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com`, joined members exactly A and B per the canonical `TEST_ACCESS`):
+
+```json
+[{"id": "step-1", "platform": "matrix", "action": "call",
+  "target": {"room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+             "account_ref": "matrix:ab023a689e926bf99d924e933ebd",
+             "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+             "participants": ["@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+                              "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"]},
+  "retry_interval_seconds": 60, "max_repeats": 1}]
+```
+
+Validated by the **published source** in an isolated database (a temporary file, never the live mesh): the server
+accepted and stored exactly one enabled stage `kind=matrix.call, platform=matrix, action=call,
+previous_step_id=null`; the matrix-only decision is true and the **forbidden channel count is 0**; the derived
+scope is the four-field binding above; the derived typed destination equals it; the delivery channel is
+`matrix.call` with the key `<incident_id>:matrix.call:step:step-1:repeat:1`; a producer body that names its own
+destination is ignored, so the **server policy is the only authority**; and the whole-chain matrix-only guard
+holds for the incident, so the chain can never advance to telegram or phone.
+
+The same binding was checked against the **real UserIO source** `7c3793b2723cd3c2cb0a8043f255a31b6c760859`:
+`noticeplace_calls._binding` accepts it and normalises it unchanged, the participants are exactly two distinct
+identities with the target among them, and the `matrix_calls` rule
+`set(participants) == {account owner identity, target}` holds for the A→B direction, because the `account_ref` is
+the account of A and the target is B. The direction matters: an `account_ref` of B with the target B would make
+the two sides the same identity and UserIO would refuse the participants — the prepared binding is the one that
+UserIO accepts.
+
+### 11.3 Deployment inputs, rollback and readback (prepared, not executed)
+
+- Source: `df7e0d6aa61d2e7fafe0da46bb15b3321f418452` on `main`, published; the reproducible source archive is
+  `git archive --format=tar.gz --prefix=noticeplace/ df7e0d6aa61d2e7fafe0da46bb15b3321f418452`, sha256
+  `ddada1f580a491a6f882531ea03380a0c4e8f3e2629a9b552b5999234a09663e`, 10304723 bytes.
+- Deployment command: `NOTICEPLACE_PUBLISHED_SHA=df7e0d6aa61d2e7fafe0da46bb15b3321f418452 sudo
+  ./deploy/noticeplace upgrade`, run as root on `roomhacker-server-100` from a checkout whose committed HEAD is
+  that revision. The release is cut from the committed HEAD, so the foreign working-tree changes stay out of
+  production; the expected release id is `<UTC>-df7e0d6a61d2-<pid>`.
+- What it touches on this host: `/etc/systemd/system/notification-center.service` is a symlink to
+  `noticeplace-mesh-api.service`, so the deploy restarts **that unit only** and leaves the operator console
+  alone; `/etc/notification-center*.env` and `/var/lib/notification-center*` are preserved. The publication gate
+  requires the runtime inputs `bin notification_center deploy scripts package.json` to be identical between the
+  agreed SHA and the published main — true today, because the follow-up commit changed only this report.
+- Rollback: `sudo /opt/noticeplace/deploy/noticeplace rollback`, which returns `/opt/noticeplace` to
+  `/opt/noticeplace-releases/previous`; after the upgrade that link is the currently live release
+  `20261023T091306Z-b1944cd2b39c-2269751` (before the upgrade it points at
+  `20261022T223804Z-22c8942db218-2271108`).
+- The audited policy update runs **after** the deploy: the seam `AdminConfigStore.update_consumer_policy` →
+  `core.replace_consumer_policy` exists in the published source and keeps the consumer id, its intake token, its
+  project and its severity; the deployed console API exposes only `POST /consumers` (create), so the operation is
+  to import the store from `/opt/noticeplace`, require `NOTIFY_CENTER_DB` to start with `mesh:`, call
+  `update_consumer_policy(consumer_id, policy_json, actor)` and close the connection.
+- Readback after both steps: the release symlink and the unit state; `GET /v1/instructions` returns 200; the mesh
+  exposes the `matrix_reply_receipts` table of the new release; the consumer stage row is `matrix.call` with the
+  four-field target; the enabled stages of that consumer name Matrix only (forbidden channels 0); and the audit
+  row `consumer_policy_updated` of that consumer exists.
+
+### 11.4 The exact blockers (endpoint/operation, no secrets)
+
+1. **Live deploy of the approved source** — owner: root / NoticePlace. Operation:
+   `sudo ./deploy/noticeplace upgrade` with `NOTICEPLACE_PUBLISHED_SHA=df7e0d6aa61d2e7fafe0da46bb15b3321f418452`.
+   Why it blocks the acceptance: the deployed release `20261023T091306Z-b1944cd2b39c-2269751` contains **none** of
+   `consumer_matrix_scope`, `consumer_policy_is_matrix_only`, `incident_is_matrix_only`,
+   `incident_matrix_destination`, `matrix_route_scope_denied`, `destination_mismatch` or `expected_request_id`
+   (each verified absent from the deployed file). A live call before that deploy would take the legacy fixed
+   environment route — an owner-identity call — and would have no whole-chain matrix-only guard.
+2. **The audited policy update of the QA consumer** — owner: root / NoticePlace. Operation:
+   `AdminConfigStore.update_consumer_policy` (published source only). Why it blocks: the deployed release has no
+   such operation, and the only deployed admin write path would create a **new consumer with a new intake token**,
+   which this leaf is not allowed to mint.
+3. **The QA route binding and the 88 control join** — owner: communications / UserIO. Operation: the
+   `USERIO_MATRIX_NOTICE_ROUTES_FILE` route with exactly one entry whose binding equals the prepared target and
+   whose `user_id` is the UserIO principal of A, plus the primary88 control join. Why it blocks: UserIO resolves
+   the route by an exact binding match and never falls back to the owner defaults.
+
+### 11.5 Status
+
+- **Prepared, not applied.** The policy binding, the deployment inputs, the rollback handle and the readback list
+  are ready and published; the deploy, the policy write, the event, the call and the incident creation were **not**
+  performed, exactly as the gate requires.
+- **No live effect of this pass**: the live mesh was only read (SELECT), the live release and its units were not
+  touched, the source was never opened against the live mesh (which would have created the not-yet-deployed
+  `matrix_reply_receipts` table there), no delivery was produced, and the consumer still holds its one incident
+  and one delivery.
+- **Next ready**: the deploy of `df7e0d6` needs no 88 conversation and no UserIO change — it is one command with a
+  known rollback. The policy update follows it immediately. The live call waits for the route and the 88 join.
+- The machine-readable form of this section is
+  `.agents/tasks/20261024-secretary-recovery-fullcycle/l08-typed-call-deployment-input.json` (0600).
