@@ -2,6 +2,24 @@
 
 Секретов нет: только идентификаторы, file:line и измерения.
 
+## АКТУАЛЬНО 2026-10-24 04:35 МСК — L10 остаток закрыт: producer `AGENTCALL_QA_SCOPE` + привязка QA-пары (коммит `d531269`)
+
+### Что сделано (исполнитель `bg_a526f1c7-2bd6-4a71-ac56-c81f3f7b8529`, сессия `mvs_300c99393e384931866df7e64f0e8696`)
+- Коммит **`d531269`** в ветку `mavis/qa-module-proof-20261023` (3 файла, +242/−4, автор `Mavis <Mavis@local>`), base `98f1c5c` поверх `4ec71d7`.
+- **Producer привязки (был пробел).** Peer-фикстура `tests/manual/matrix_rtc_ai_live_peer.py` теперь сама строит scope и выставляет его в окружение пира до старта движка: room `!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com`, transport `matrix`, participants `@lhc_voice_tester_a_20261021:…` + `@lhc_voice_tester_b_20261021:…`, `expires_at = now + TTL` (по умолчанию 900 c — живой, не протухший), `identity_map{A→9b4ab5e7-546e-4df9-a4c9-5c28f850cd26}`. Deny-by-default: при любом несовпадении комнаты/транспорта/пары builder отказывается. Readback-событие в stdout пира: `{"event":"qa_scope", "room":…, "transport":…, "participants":[…], "expires_at":…, "ttl_seconds":…}`.
+- **Привязка пары в МОЕМ шове** `qa_test_admission` (моя `a24b4fc`): совпавшая scope-entry обязана содержать непустой `participants`, совпадающий с объявленной QA-парой, иначе deny `qa_scope_pair_incomplete`. `qa_guest_promotion` владельца (`4ec71d7`) НЕ тронут; второй механизм рядом не заведён; без scope поведение прод-путей побайтово прежнее.
+
+### Чем проверено
+- `pytest tests/test_voice_qa_scope.py -q` → **31 passed** (было 17; +14 кейсов: точная пара ⇒ admitted; неверная комната / транспорт / participants / пустой participants ⇒ deny; протухший expiry ⇒ deny; owner-identity ⇒ deny; builder ⇒ ожидаемые значения и `expires_at > now`).
+- Расширенный прогон voice/agentcall: **148 passed**, 2 падения — предсуществующие (не из этой правки).
+- Новый md5 моста: `1222247369da07bac29a6cb4e826ac4b`. В контейнерах кандидат **не перезалит** (файл `bridge`): pair-binding заработает, когда кандидат обновится; для QA-пути этого достаточно, публикация образа не требуется.
+- Живых звонков не было: комната `!ZatzpywRZSemgAaPju` не тронута (занята прогоном mavis08), публикаций/сборок нет, записей в `/opt/universal-userio` нет, рестартов нет, чужие worktree/main/процессы/таймеры/БД не тронуты.
+
+### Что открыто
+- **L11** (цельный сценарий L01+L06+L07+L08+L10) — после зелёного mavis08; **L12** (независимый Tester A) — строго после L11.
+- **L10 live call** — три условия одновременно: (а) promotion в живом образе (L14 — решение владельца; `userio-voice-autoupdate` падает на `dubious ownership`, 02:45/03:16, таймер снова 03:49 ⇒ `4ec71d7` не доезжает до образа); (б) окно живой NP-доставки 09:00–12:00 MSK (тихие часы consumer'а 01:00–09:00); (в) раздельные caller/callee в ступени consumer'а (сейчас `account_ref == target == бот B` ⇒ двухперсонный гейт `matrix_call_worker.py:100-102` отверг бы).
+- `request_id lhc_matrixrtc_20261024_a2b_mavis07` не израсходован — если mavis08 его не возьмёт, его можно использовать с новым call id и новым nonce.
+
 ## АКТУАЛЬНО 2026-10-24 03:55 МСК — канарей ПЕРЕДАН (mavis08), L10 остаток в моей зоне: найден пробел scope-привязки
 
 ### 1) Канарей mavis07 — ПЕРЕДАН владельцем, мой исполнитель остановлен, второго прогона нет
