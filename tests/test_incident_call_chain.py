@@ -461,6 +461,46 @@ class ChainTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual([('matrix', 'call')], [(row['platform'], row['action']) for row in stages])
 
+    def test_scoped_matrix_route_denies_the_unscoped_voice_chain_episode(self):
+        """A scoped consumer cannot leave its explicit Matrix route through the chain."""
+        consumer = self.center.create_consumer(
+            project='test', name='Scoped Matrix call',
+            policy=[{'id': 'step-1', 'platform': 'matrix', 'action': 'call',
+                     'target': {'room_id': '!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com',
+                                'participants': ['@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com',
+                                                '@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com'],
+                                'target': '@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com'},
+                     'retry_interval_seconds': 60, 'max_repeats': 1}],
+        )
+        created = self.center.create_event(consumer['intake_token'], 'scoped-call', self.event)
+        incident_id = created['incident_id']
+        rows = self.center._connection.execute(
+            "SELECT channel, target_json FROM deliveries WHERE incident_id=? ORDER BY created_at, rowid", (incident_id,)
+        ).fetchall()
+        self.assertEqual(['matrix.call'], [row['channel'] for row in rows])
+        self.assertIn('!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com', rows[0]['target_json'])
+
+        # The chain episode carries no room: it may not start for a scoped route.
+        self.assertIsNone(self.center.schedule_incident_call_chain_if_active(incident_id, 0))
+
+        claimed = self.center.claim_due_deliveries(now_epoch=10**12, channel_group='call')
+        self.assertEqual(1, len(claimed))
+        for row in claimed:
+            self.center.complete_delivery(row['id'], 'failed', result=MISSED)
+
+        after = self.center._connection.execute(
+            "SELECT channel, target_json FROM deliveries WHERE incident_id=? ORDER BY created_at, rowid", (incident_id,)
+        ).fetchall()
+        self.assertEqual(['matrix.call'], [row['channel'] for row in after])
+        self.assertEqual([], [row['channel'] for row in after if not row['channel'].startswith('matrix.')])
+        for row in after:
+            self.assertIn('!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com', row['target_json'])
+        denied = self.center._connection.execute(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE incident_id=? AND type='delivery_denied' "
+            "AND json_extract(payload_json, '$.reason')='matrix_route_scope'", (incident_id,)
+        ).fetchone()
+        self.assertEqual(1, denied['count'])
+
 class SenderTests(unittest.TestCase):
     payload={'incident':{'id':'incident-test','title':'Проверка','body':'Связь','project':'test','severity':'critical'}}
 

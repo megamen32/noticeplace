@@ -2206,11 +2206,86 @@ class NotificationCenter:
             return False
         return self.incident_is_matrix_only(incident_id)
 
+    def consumer_matrix_scope(self, consumer_id: str) -> dict[str, Any] | None:
+        """Return the explicit Matrix route of a consumer, if it declares one.
+
+        An explicit Matrix stage that names a room is the operator route of
+        this recipient: every Matrix delivery of that consumer stays in that
+        room, and only the identities that route declares may answer there.
+        """
+        row = self._connection.execute(
+            "SELECT target_json FROM consumer_policy_stages "
+            "WHERE consumer_id = ? AND enabled = 1 AND platform = ? "
+            "AND previous_step_id IS NULL ORDER BY stage LIMIT 1",
+            (consumer_id, MATRIX_ONLY_POLICY_PLATFORM),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            target = json.loads(row["target_json"] or "{}")
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(target, dict):
+            return None
+        room_id = str(target.get("room_id") or "").strip()
+        if not room_id:
+            return None
+        participants: list[str] = []
+        for item in target.get("participants") or []:
+            value = str(item).strip()
+            if value and value not in participants:
+                participants.append(value)
+        return {
+            "room_id": room_id,
+            "participants": participants,
+            "target": str(target.get("target") or "").strip(),
+            "account_ref": str(target.get("account_ref") or "").strip(),
+        }
+
+    def incident_matrix_scope(self, incident_id: str) -> dict[str, Any] | None:
+        """Return the explicit Matrix route of the consumer that owns an incident."""
+        row = self._connection.execute(
+            "SELECT consumer_id FROM incidents WHERE id = ?", (incident_id,)
+        ).fetchone()
+        if row is None or not row["consumer_id"]:
+            return None
+        return self.consumer_matrix_scope(str(row["consumer_id"]))
+
+    def matrix_route_scope_denied(self, incident_id: str, channel: str, target: Mapping[str, Any] | None) -> bool:
+        """Deny a Matrix delivery that would leave the explicit route of its consumer.
+
+        The room of the delivery must be the declared room, and a declared
+        callee must be one of the declared participants. An unscoped delivery,
+        the one the incident call chain would create, is denied as well, so the
+        call, the retry and the advance chain cannot leave the route.
+        """
+        if not str(channel or "").startswith("matrix."):
+            return False
+        scope = self.incident_matrix_scope(incident_id)
+        if scope is None:
+            return False
+        payload = target if isinstance(target, Mapping) else {}
+        if str(payload.get("room_id") or "").strip() != scope["room_id"]:
+            return True
+        callee = str(payload.get("target") or "").strip()
+        if scope["participants"] and callee and callee not in scope["participants"]:
+            return True
+        return False
+
+    def _delivery_denial_reason(self, incident_id: str, channel: str, target: Mapping[str, Any] | None) -> str | None:
+        """Return why one delivery may not be scheduled, or None when it may."""
+        if self.channel_denied_by_matrix_only_policy(incident_id, channel):
+            return "matrix_only_policy"
+        if self.matrix_route_scope_denied(incident_id, channel, target):
+            return "matrix_route_scope"
+        return None
+
     def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float, target: Mapping[str, Any] | None = None, policy_step_id: str | None = None, repeat_number: int | None = None) -> str | None:
         """Create a stable scheduled delivery and return its identity."""
-        if self.channel_denied_by_matrix_only_policy(incident_id, channel):
+        denial = self._delivery_denial_reason(incident_id, channel, target)
+        if denial is not None:
             self._audit(incident_id, "delivery_denied", "policy", {
-                "channel": channel, "step": step, "reason": "matrix_only_policy"})
+                "channel": channel, "step": step, "reason": denial})
             return None
         delivery_key = f"{incident_id}:{channel}:{step}"
         row = self._connection.execute("SELECT id FROM deliveries WHERE delivery_key = ?", (delivery_key,)).fetchone()
@@ -2733,6 +2808,50 @@ class NotificationCenter:
         if result is None:
             raise ValidationError("cannot acknowledge an inactive incident")
         return result
+
+    def bind_matrix_reply(self, token: str, incident_id: str, room_id: str, answerer: str, answer: str = "") -> dict[str, Any]:
+        """Bind one Matrix answer of the explicit route to its incident.
+
+        The answer must arrive in the room that the explicit Matrix route of
+        the consumer declares and from an identity that route declares. An
+        answer from any other room or identity never binds, and a late answer
+        never resurrects a closed incident.
+        """
+        incident_id = str(incident_id or "").strip()
+        room_id = str(room_id or "").strip()
+        answerer = str(answerer or "").strip()
+        answer = str(answer or "")
+        if not incident_id or not room_id or not answerer:
+            raise ValidationError("a matrix reply needs an incident, a room and an answerer")
+        self.authorize_incident(token, incident_id)
+        scope = self.incident_matrix_scope(incident_id)
+        if scope is None:
+            raise ValidationError("the incident has no explicit Matrix route")
+        if room_id != scope["room_id"]:
+            raise ValidationError("the matrix reply room is outside the explicit route")
+        allowed = set(scope["participants"])
+        if scope["target"]:
+            allowed.add(scope["target"])
+        if not allowed:
+            raise ValidationError("the explicit Matrix route declares no answerer")
+        if answerer not in allowed:
+            raise ValidationError("the matrix reply answerer is not a declared participant")
+        incident = self.get_incident(incident_id)
+        if incident is None:
+            raise ValidationError("incident not found")
+        if str(incident["state"]) not in DELIVERABLE_STATES:
+            return {"incident_id": incident_id, "state": str(incident["state"]), "bound": False, "actor": None}
+        bound = self.acknowledge_if_active(incident_id, f"matrix:{answerer}")
+        self._audit(incident_id, "matrix_reply_bound", f"matrix:{answerer}", {
+            "room_id": room_id,
+            "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else None,
+        })
+        return {
+            "incident_id": incident_id,
+            "state": str((bound or incident)["state"]),
+            "bound": bool(bound),
+            "actor": f"matrix:{answerer}",
+        }
 
     def acknowledge_if_active(self, incident_id: str, actor: str) -> dict[str, Any] | None:
         """ACK only an open or snoozed incident; never resurrect a resolved one."""

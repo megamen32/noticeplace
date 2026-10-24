@@ -53,6 +53,85 @@ class HttpApiTests(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
 
+    def test_matrix_reply_route_binds_inside_the_route_and_refuses_outside(self) -> None:
+        """The reply route binds one answer and refuses every other room or identity."""
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Scoped Matrix reply",
+            policy=[
+                {
+                    "id": "step-1",
+                    "platform": "matrix",
+                    "action": "message",
+                    "target": {
+                        "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                        "participants": [
+                            "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+                            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                        ],
+                    },
+                    "retry_interval_seconds": 60,
+                    "max_repeats": 1,
+                },
+            ],
+        )
+        created = self.center.create_event(
+            consumer["intake_token"],
+            "scoped-reply",
+            {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "operator",
+                "kind": "incident",
+                "severity": "critical",
+                "title": "Gateway unavailable",
+                "dedup_key": "scoped-reply",
+            },
+        )
+        incident_id = created["incident_id"]
+        headers = {"Authorization": "Bearer secret-token"}
+
+        status, body = self.request(
+            "POST",
+            "/v1/matrix/reply",
+            {
+                "incident_id": incident_id,
+                "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                "answerer": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                "answer": "подтверждаю",
+            },
+            **headers,
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(body["bound"])
+        self.assertEqual("acknowledged", body["state"])
+
+        status, body = self.request(
+            "POST",
+            "/v1/matrix/reply",
+            {
+                "incident_id": incident_id,
+                "room_id": "!SGgCRDRJRnTYTQvKAG:chat.bezrabotnyi.com",
+                "answerer": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                "answer": "не та комната",
+            },
+            **headers,
+        )
+        self.assertEqual(400, status)
+
+        status, body = self.request(
+            "POST",
+            "/v1/matrix/reply",
+            {
+                "incident_id": incident_id,
+                "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                "answerer": "@bezrabotnyi:chat.bezrabotnyi.com",
+                "answer": "не тот",
+            },
+            **headers,
+        )
+        self.assertEqual(400, status)
+
     def request_raw(self, path: str) -> tuple[int, str, bytes]:
         """Read a public representation without assuming the JSON API."""
         with urllib.request.urlopen(self.base_url + path, timeout=2) as response:

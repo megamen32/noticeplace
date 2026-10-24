@@ -2425,6 +2425,23 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     # plain ingress event never becomes a second question card.
                     self._reply(HTTPStatus.ACCEPTED, center.create_event(token, key, body, request_meta=self._request_meta()))
                     return
+                if self.path == "/v1/matrix/reply":
+                    # An answer inside the explicit Matrix route of a consumer
+                    # binds to its incident. Any other room or identity is
+                    # refused, so a reply can never bind across the route.
+                    try:
+                        self._reply(HTTPStatus.OK, center.bind_matrix_reply(
+                            token,
+                            str(body.get("incident_id") or ""),
+                            str(body.get("room_id") or ""),
+                            str(body.get("answerer") or ""),
+                            str(body.get("answer") or ""),
+                        ))
+                    except AuthorizationError as error:
+                        self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
+                    except ValidationError as error:
+                        self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                    return
                 if self.path == "/v1/human-requests":
                     # Agent Herder dedups its retries with this key, so a repeat
                     # must describe exactly the same question.
