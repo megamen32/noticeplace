@@ -2,6 +2,42 @@
 
 Секретов нет: только идентификаторы, file:line и измерения.
 
+## АКТУАЛЬНО 2026-10-24 03:55 МСК — канарей ПЕРЕДАН (mavis08), L10 остаток в моей зоне: найден пробел scope-привязки
+
+### 1) Канарей mavis07 — ПЕРЕДАН владельцем, мой исполнитель остановлен, второго прогона нет
+- Канарь не состоялся: peer поднялся (engine md5 `36c60ea961778172d6b43ef7eb3d1337` ✓, `ready`, `reply_turns=2`), но инициатор упал — `python3: can't open file '/tmp/start_fixture_call_mavis07.py'`. Звонка не было; `request_id lhc_matrixrtc_20261024_a2b_mavis07` НЕ израсходован.
+- Лист канаря (L04/L05/L06) забрал отдельный исполнитель владельца `bg_9f5a92fe` (свой worktree, `request_id` mavis08). Мой исполнитель `bg_5f1a385f` — **остановлен** (canceled), чтобы не дублировать прогон и не драться за комнату.
+- Readback чистоты после передачи (проверено 03:45–03:55): живой peer отсутствует — `peer.pid=5747` (процесс мёртв), в `/tmp/lhc-matrixrtc-live-peer/` свежайший файл — mavis06 21:38, mavis07-логов нет; в `userio-backend` инициаторов нет; единственный Matrix-слот UserIO (`matrix_calls.py:123`) свободен. Комната не занята моим прогоном.
+
+### 2) L10 остаток (моя зона): конкретный пробел — `AGENTCALL_QA_SCOPE` никто не производит
+- Шов мой: `qa_test_admission(call_mode, prepared, now=None)` — мой коммит `a24b4fc` «Scoped QA voice session: explicit caller+room+transport admission» (в main через `a24b4fc→4ec71d7`). Требует `call_mode=='qa_incoming'`, `agent_context{qa_caller, qa_room, voice_transport}` и env `QA_TEST_SCOPE_ENV='AGENTCALL_QA_SCOPE'` (**inline JSON**, читается `json.loads(raw)`, не путь) с entry, совпадающей по caller+room+transport и `expires_at > now`; owner-id в `identity_map` ⇒ deny.
+- Шов owner's: `qa_guest_promotion(prepared)` (коммит `4ec71d7`) — для другого `call_mode` (`incoming_guest`). **Не трогаю, второй механизм рядом не пишу.**
+- Пробел найден и подтверждён: peer-фикстура `tests/manual/matrix_rtc_ai_live_peer.py` импортирует движок in-process (`importlib.import_module('agentcall_realtime_bridge')`, ~стр. 169) и **нигде не выставляет `AGENTCALL_QA_SCOPE`** ⇒ env обязан прийти извне, а в прогоне его не было; единственный артефакт `/tmp/qa_candidate/scope.json` ПРОСРОЧЕН (`expires_at=1792792336` < текущее ~`1792806000`). Следствие: `qa_scope_missing` ⇒ admission не проходит.
+- Шов при этом исправен — доказано прогоном mavis06: в engine-log пира `qa_admission=qa_scope_admitted` и `voice_mode turn=1 mode=secretary`.
+- Исполнитель запущен: `bg_a526f1c7-2bd6-4a71-ac56-c81f3f7b8529` (сессия `mvs_300c99393e384931866df7e64f0e8696`, роль worker). Три файла, всё в моём worktree `.worktrees/qa-integration-20261023` (ветка `mavis/qa-module-proof-20261023`):
+  1. `tests/manual/matrix_rtc_ai_live_peer.py` — построитель scope при старте пира: room `!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com`, transport `matrix`, participants `@lhc_voice_tester_a_20261021:…` + `@lhc_voice_tester_b_20261021:…`, `expires_at = now + TTL` (по умолчанию 900 c), `identity_map{A→9b4ab5e7-546e-4df9-a4c9-5c28f850cd26}`; экспорт `os.environ['AGENTCALL_QA_SCOPE']`; deny-by-default (не та комната/пара ⇒ отказ); readback-событие `{"event":"qa_scope", …}` в stdout пира.
+  2. `src/universal_userio/voice/agentcall_realtime_bridge.py` — **усиление моего** `qa_test_admission`: совпавшая entry обязана привязывать ПАРУ (`participants` непустой и содержит обоих участников QA-пары), иначе deny (`qa_scope_pair_incomplete`). `qa_guest_promotion` и прод-ветки не трогаю; без scope поведение прежнее.
+  3. `tests/test_voice_qa_scope.py` — кейсы: точный room+transport+пара+живой expiry ⇒ admitted; неверная комната/транспорт/participants ⇒ deny; пустой participants ⇒ deny; протухший expiry ⇒ deny; owner-identity ⇒ deny; builder ⇒ ожидаемые значения и `expires_at > now`.
+- Без живых звонков, без входа в комнату (занята прогоном mavis08), без рестартов, без изменения production `USERIO_MATRIX_NOTICE_*`, без `@aiadmin`/личного Matrix/телефона.
+
+### 3) Поправки к фактам (моя проверка 03:38–03:50 МСК)
+- **Живой backend НЕ «старше repo».** В контейнере `userio-backend` `matrix_calls.py` от 23.10 (13635 Б) УЖЕ содержит `incoming_guest` — не-owner вызов разрешён. Хостовый `/opt/universal-userio/src/…/matrix_calls.py` от 15.10 (owner-only, 12299 Б) сервисом не используется: `/opt/universal-userio` **не bind-mount** в боевые контейнеры (это поправка 1 из предложения Lead'а `.reports/20261024-l14-image-rollout/proposal.md`, 16 448 Б, 03:13).
+- В **живых** контейнерах `userio-voice` и `userio-backend` переменной `AGENTCALL_QA_SCOPE` НЕТ (проверено 03:38) ⇒ привязку обязан производить сам QA-путь (п. 2), а не прод-конфиг.
+- Установленный в бою движок: md5 `bece40a7a2f0ad1fd34ab1bcaf52dea4`, qa-вхождений 0 ⇒ `qa_test_admission`/`qa_guest_promotion` в бою отсутствуют. `origin/main` мост md5 `36c60ea961778172d6b43ef7eb3d1337` (4 вхождения) — это ровно мой кандидат ⇒ **L14 не нужен для mavis08**: peer работает на кандидате из `/tmp/qa_candidate`, caller-side идёт через живой установленный движок в guest-ветке (guest-ветка приветствие озвучивает — как в mavis06).
+- `userio-voice-autoupdate.service` — `refused` в 02:45 и 03:16: `fatal: detected dubious ownership in repository at '/var/tmp/userio-voice-src-4ec71d7-…'` (клон под root, git-команды под roomhacker). Таймер снова в 03:49 ⇒ `4ec71d7` не доезжает до образа. Чинить = запись в git-конфиг + swap боевого контейнера ⇒ **решение владельца**, я не чинил, публикаций/сборок/записей в `/opt/universal-userio` не делал.
+- Тихие часы: у QA-consumer'а `noticeplace-qa-voice-20261024` `quiet_hours_json` = 01:00–09:00 MSK suppress `call`, глобальные phone quiet 00:00–12:00 ⇒ **окно живой NP-доставки 09:00–12:00 MSK**. Сейчас 03:5x — доставка отложена сама.
+- Ступень consumer'а в живой dqlite (`target_json`): `account_ref` == `target` == бот B ⇒ двухперсонный гейт `matrix_call_worker.py:100-102` (joined == {caller, target}) отверг бы вызов: caller и callee должны быть РАЗНЫЕ. Это правка БД/консоли — зона Lead'а, не моя.
+- Один активный Matrix-вызов во всей UserIO (`matrix_calls.py:123`) ⇒ прогон mavis08 может занять слот.
+
+### 4) Что открыто
+- L14 (образ): публикация `4ec71d7` в живой voice-рантайм — решение владельца; из предложения Lead'а беру измерительный результат, дублирую путь измерения — нет.
+- L10 live call: требует 3 условий одновременно — (а) promotion в живом образе (L14), (б) окно 09:00–12:00 MSK (тихие часы), (в) раздельные caller/callee в ступени consumer'а.
+- L11 (цельный сценарий L01+L06+L07+L08+L10) — только после зелёного mavis08; L12 (независимый Tester A) — строго после L11.
+- `request_id` mavis07 остаётся неизрасходованным; новые прогоны — с новым `request_id`/nonce; принятые/UNKNOWN не переигрываются.
+
+### 5) Что НЕ делал
+Публикаций, сборок образа, записей в `/opt/universal-userio`, рестартов контейнеров/сервисов, живых звонков, входа в комнату, приглашений `@aiadmin`, касания личного Matrix владельца и телефона, изменений в чужих worktree/main/процессах/таймерах/БД, правок чужих правок `AGENTS.md`/`.agents/TEST_ACCESS.md`.
+
 ## АКТУАЛЬНО 2026-10-24 02:40 МСК — L10 source-часть закрыта, mavis06 разобран по транскриптам, идёт mavis07
 
 ### 1) L10: source-часть закрыта NP-child'ом; live call — доказанный safety-stop (шов в моей зоне)
