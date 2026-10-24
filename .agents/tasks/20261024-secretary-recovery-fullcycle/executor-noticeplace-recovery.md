@@ -190,3 +190,212 @@ Line anchors of the new tests: `tests/test_consumer_policy.py:403` (route scope)
   `graphify-out`, `.tmp/`, the `*.bak-mavis-*` files and the foreign worktrees are untouched. The historical
   consumer `consumer_2dea1f679372443eaa2c757088e5fc70` and its event, incident and delivery were not replayed,
   and no unknown or accepted result was repeated.
+
+
+## 8. REVISION after the independent review — SOURCE-FIX-NEEDED / REVISE (2026-10-24, second pass)
+
+Lead: Root `01a1653b`, review `advisor-noticeplace-recovery-review.md` (id 11548B), verdict
+SOURCE-FIX-NEEDED/REVISE, `770d95e` not releasable. The whole-chain guard was **confirmed by the review and
+was not rewritten**; only the remaining reply binding was repaired, and the policy update seam was added.
+
+### 8.1 FINDING 1 — the body was the authority; now the binding comes from the notice
+
+The revoked route trusted `incident_id`, `room_id` and `answerer` from the body, and the consumer bearer only
+proved the project, so a producer could acknowledge a real notice for itself. The repair follows the model the
+product already uses for answers (`human_request_for_reply` resolves the target from the sent message record
+and `allowed_actors` decides who may answer, `core.py:1364-1400`): the reply is resolved against the notice
+that NoticePlace itself sent.
+
+- `notification_center/core.py:2827-2918` — `bind_matrix_reply(reply_event_id, reply_to_event_id, sender,
+  room_id, answer)`. The binding is resolved from the notice: the delivery record of the sent Matrix message
+  (`deliveries.result_json.event_id`, the receipt the Matrix sender already returns at
+  `http_api.py:706-709`), its incident, its consumer and the explicit route of that consumer. The body cannot
+  name an incident, a room or an incident id at all.
+- `notification_center/core.py:301-309` — `matrix_reply_receipts` with `reply_event_id` as the primary key:
+  one answer event is consumed once. The receipt insert, the acknowledgement and the audit happen in one
+  transaction; a repeat hits the primary key and returns the idempotent result without a second
+  acknowledgement, without a second event and without a second audit.
+- `notification_center/core.py:2218-2253` — the route scope now carries the declared `senders` next to the
+  room, the participants and the callee. Only a declared sender may answer; the callee (`target`) is not an
+  answerer by itself.
+- `notification_center/http_api.py:2428-2458` — `POST /v1/matrix/reply` now requires the **transport
+  capability** `NOTIFY_MATRIX_REPLY_TOKEN` (`hmac.compare_digest` against the bearer), rejects a body that
+  carries anything but `reply_event_id`, `reply_to_event_id`, `sender`, `room_id`, `answer`, and answers
+  `403` when no capability is configured, `401` for another bearer, `400` for every denial. A denial never
+  acknowledges anything.
+
+Boundaries now enforced, each with a test:
+
+| boundary | behaviour | test |
+|---|---|---|
+| producer bearer | `401`, incident stays `open` | `tests/test_http_api.py:102` |
+| capability not configured | `403`, nothing acknowledged | `tests/test_http_api.py:139` |
+| body names the incident | `400`, the field is refused | `tests/test_http_api.py:120` |
+| undeclared sender (owner identity included) | `400`, incident stays `open` | `tests/test_http_api.py:161`, `tests/test_consumer_policy.py:549` |
+| foreign room | `400`, incident stays `open` | `tests/test_http_api.py:161` |
+| unknown notice | `400`, nothing acknowledged | `tests/test_consumer_policy.py:549` |
+| route without declared senders | `400`, nothing acknowledged | `tests/test_consumer_policy.py:565` |
+| answer for another consumer route | `400`, incident stays `open` | `tests/test_consumer_policy.py:607` |
+| the same answer event again | `200 idempotent`, one audit, one delivery, no second event | `tests/test_consumer_policy.py:577`, `tests/test_http_api.py:161` |
+
+### 8.2 FINDING 2 — a narrow admin owned policy update seam
+
+The live QA consumer `consumer_7ad31d4110d744259bde4ee7580890e4` declares only the room, so it has no sender
+binding, and the release had no way to change a policy. The seam is now in the source and is not applied live.
+
+- `notification_center/core.py:2920-2968` — `replace_consumer_policy(consumer_id, policy, actor)`: the consumer
+  keeps its id, its intake token, its project and its severity; only the stages are replaced, the policy goes
+  through the same validator as creation, a builtin profile is refused, and the change is audited as
+  `consumer_policy_updated`.
+- `notification_center/admin.py:664-687` — `AdminConfigStore.update_consumer_policy(consumer_id, policy_json,
+  actor)`: the audited admin operation, same shape as `create_consumer`.
+- Tests: `tests/test_admin_console.py:535` keeps identity, token fingerprint and the consumer count, and proves
+  the old intake token still works after the update (no new grant, no new consumer);
+  `tests/test_admin_console.py:587` refuses a builtin profile, an unknown consumer, invalid JSON and an invalid
+  policy.
+
+No policy was changed live, no consumer was created, no SQL was written.
+
+### 8.3 RED → fix → GREEN (actual output)
+
+RED, the new tests against the committed vulnerable state `770d95e`
+(`git stash push -- notification_center/core.py notification_center/http_api.py notification_center/admin.py`,
+the tests kept in the worktree):
+
+```
+FAILED tests/test_consumer_policy.py::ConsumerPolicyTests::test_matrix_reply_binds_only_to_the_notice_it_answers
+FAILED tests/test_consumer_policy.py::ConsumerPolicyTests::test_matrix_reply_is_consumed_once_and_never_acks_twice
+FAILED tests/test_consumer_policy.py::ConsumerPolicyTests::test_matrix_reply_needs_a_declared_sender_in_the_route
+FAILED tests/test_consumer_policy.py::ConsumerPolicyTests::test_matrix_reply_needs_a_known_notice_and_a_declared_sender
+FAILED tests/test_consumer_policy.py::ConsumerPolicyTests::test_matrix_reply_never_binds_across_consumers
+FAILED tests/test_http_api.py::HttpApiTests::test_matrix_reply_route_binds_inside_the_route_and_refuses_outside
+FAILED tests/test_http_api.py::HttpApiTests::test_matrix_reply_route_refuses_a_producer_bearer
+FAILED tests/test_http_api.py::HttpApiTests::test_matrix_reply_route_requires_the_transport_capability
+FAILED tests/test_admin_console.py::AdminConsoleTests::test_consumer_policy_update_keeps_identity_and_replaces_stages
+FAILED tests/test_admin_console.py::AdminConsoleTests::test_consumer_policy_update_refuses_builtin_profiles_and_invalid_policy
+10 failed, 1 passed, 56 deselected in 16.42s
+```
+with the concrete causes `AttributeError: 'NotificationCenter' object has no attribute 'bind_matrix_reply'`
+(the old body driven signature), `AttributeError: 'AdminConfigStore' object has no attribute
+'update_consumer_policy'`, and on the HTTP seam the old route answering `200` where the attack cases expect
+`401`/`400`/`403`.
+
+Fix: the source changes of §8.1 and §8.2. The fix was restored right after the RED run and verified with
+`sha256sum -c` (all three sources `ЦЕЛ`).
+
+GREEN:
+
+```
+$ python3 -m pytest tests/test_consumer_policy.py tests/test_incident_call_chain.py tests/test_http_api.py tests/test_admin_console.py -q
+100 passed in 148.13s (0:02:28)
+```
+
+### 8.4 Provenance proof
+
+The acknowledgement is no longer derivable from a caller supplied claim:
+
+1. The bearer must be the transport capability `NOTIFY_MATRIX_REPLY_TOKEN`; the producer consumer bearer is
+   rejected with `401` (`http_api.py:2434-2441`).
+2. The body may not name an incident; only the reply fields are accepted, everything else is `400`
+   (`http_api.py:2442-2445`).
+3. The binding target is the delivery record of the notice NoticePlace sent
+   (`deliveries.result_json.event_id = reply_to_event_id`, `core.py:2849-2857`), so the incident, the consumer
+   and the route are server facts, never caller claims.
+4. The sender must be in the `senders` of that route and the room must be the route room
+   (`core.py:2870-2881`); an owner identity is not a declared sender of any scoped route.
+5. The answer event is consumed exactly once by the primary key of `matrix_reply_receipts`
+   (`core.py:2874-2890`), so a replayed receipt cannot produce a second acknowledgement or a second event.
+
+What is still trusted: the transport capability holder attests that the Matrix event exists and who authored
+it, because only the transport holds a Matrix session of the scoped room. That trust boundary is the UserIO
+seam of §8.6 and is deliberately not implemented on the NoticePlace side.
+
+### 8.5 Source commit, paths and hashes
+
+Source commit: **`a43ef988380ce330f43152bed57eb28e5ac835bd`** ("NoticePlace: the reply binding is resolved
+from the notice, never from the body"), author `Mavis <Mavis@local>`, canonical `main`, `git commit --only`,
+exactly six paths:
+
+1. `notification_center/core.py` (`+181/-47`; `:301-309`, `:2218-2253`, `:2827-2918`, `:2920-2968`)
+2. `notification_center/http_api.py` (`+26/-13`; `:2428-2458`)
+3. `notification_center/admin.py` (`+22`; `:664-687`)
+4. `tests/test_consumer_policy.py` (`tests/test_consumer_policy.py:493`, `:531`, `:549`, `:565`, `:577`, `:607`)
+5. `tests/test_http_api.py` (`tests/test_http_api.py:56`, `:102`, `:120`, `:139`, `:161`)
+6. `tests/test_admin_console.py` (`tests/test_admin_console.py:535`, `:587`)
+
+Hashes of the published state:
+
+```
+0580ea6726e18834690f9639e820968b5b1faa0f0c1abbb2db04230334cb0f9d  notification_center/core.py
+bce59806006e42e443512df91da5cf5f365589ee51ba583574d4fd934e8b6593  notification_center/http_api.py
+62ef243c65a7896a57d44d303d429d8faa718063e62a87513d34272d19e474e6  notification_center/admin.py
+19f2617cb5999e51445c9826022978bb98b09c011501d11711d77fbd5934f6b1  tests/test_consumer_policy.py
+12a9beceea3ba13990ddd83770dd438df5c187d11f50b524e7e7ef201a358aab  tests/test_http_api.py
+d4ce9bf021eb2426c283e74221e8595161cd8b65b37469fd511fb2df4f0a92fe  tests/test_admin_console.py
+```
+
+The revoked body driven contract was removed from the tree: the tests of the previous revision that encoded it
+were deleted, not weakened.
+
+### 8.6 Typed minimal contract for the UserIO dispatcher seam (executable subtask)
+
+NoticePlace side is ready and needs no more source. The transport side must emit one receipt per answer. This
+is the whole contract:
+
+```
+POST http://127.0.0.1:8091/v1/matrix/reply
+Authorization: Bearer <NOTIFY_MATRIX_REPLY_TOKEN>       # transport capability, never a consumer bearer
+Content-Type: application/json
+
+{
+  "reply_event_id":    "$<event id of the answer in the room>",
+  "reply_to_event_id": "$<event id of the NoticePlace notice that it answers>",
+  "sender":            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+  "room_id":           "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+  "answer":            "<optional text>"
+}
+
+200 {"bound": bool, "idempotent": bool, "incident_id": str, "delivery_id": str,
+     "state": str, "actor": "matrix:@...", "reply_event_id": str}
+400 {"error": str}   # unknown notice, foreign room, undeclared sender, no declared sender, bad body
+401 {"error": str}   # the bearer is not the transport capability
+403 {"error": str}   # NOTIFY_MATRIX_REPLY_TOKEN is not configured on the NoticePlace side
+
+Transport obligations:
+  - `sender` is the authenticated author of the Matrix event, not a client supplied string;
+  - `reply_to_event_id` is the event id of a message NoticePlace sent in that room (it is in the receipt
+    `deliveries.result_json.event_id`, and the notice text carries `Source: <correlation_id>`);
+  - one receipt per answer event; a retry of the same event id is idempotent;
+  - the receipt is emitted only for an event that the transport read from the scoped room.
+
+Failure types the transport must distinguish and report without emitting a receipt:
+  reply_event_not_in_room | sender_not_in_room | notice_event_not_found | room_scope_mismatch
+  | capability_missing | transport_unavailable
+```
+
+NoticePlace prerequisites for the live join, both owned by Root:
+
+1. `NOTIFY_MATRIX_REPLY_TOKEN` must be set in the live service environment (`/etc/notification-center.env` for
+   `noticeplace-mesh-api.service`). While it is unset the route denies everything, so the live surface is safe
+   by default.
+2. The policy of `consumer_7ad31d4110d744259bde4ee7580890e4` must gain its sender and target bindings through
+   the new admin seam (`AdminConfigStore.update_consumer_policy`). Until then a reply of that route is denied
+   by design, because the route declares no sender.
+
+The console route that calls the admin seam is not part of this leaf: the canonical console source belongs to
+the console owner (L14). The caller contract is one audited call, `update_consumer_policy(consumer_id,
+policy_json, actor)`, with the policy stage target
+`{"room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com", "senders": ["@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+"@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"], "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"}`.
+
+### 8.7 Status
+
+- **Source READY**: the reply binding is resolved from the notice, the capability is the transport one, every
+  cross consumer, cross project, cross incident and cross route case denies, one answer event is consumed once,
+  and the narrow policy update seam exists. RED -> fix -> GREEN is proved (10 failed -> 100 passed).
+- **Live acceptance NOT RUN**: no event was posted, no delivery was created, no Matrix call or message was
+  sent, no contact, role or consumer was created, no policy was changed live, no SQL was written, no service was
+  restarted and no production rollout was performed. The live release still runs the previous code.
+- **Resource join PENDING**: the UserIO dispatcher of §8.6 plus the two NoticePlace prerequisites of §8.6.
+- The room was not taken, the 88 session heard by UserIO was not touched, and no S21 lease, voice runtime or
+  foreign path was modified.
