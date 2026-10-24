@@ -788,3 +788,21 @@ UserIO accepts.
   known rollback. The policy update follows it immediately. The live call waits for the route and the 88 join.
 - The machine-readable form of this section is
   `.agents/tasks/20261024-secretary-recovery-fullcycle/l08-typed-call-deployment-input.json` (0600).
+
+## 12. BOUNDARY / STOP — owner budget narrowing (2026-10-24, 18:41 UTC)
+
+- **STOP.** New work is deferred by owner budget: no investigation, no deploy, no application of the prepared
+  policy, no event, no call, no token, no consumer, no grant, no child session, no new session.
+- **Kept as is:** the published source fix `df7e0d6` (Root APPROVE, `advisor-np-call-review.md`), its tests,
+  report §10 and §11, the machine-readable L08 deployment input, and the prepared-but-unapplied typed CALL
+  policy candidate of §11.2.
+- **Accepted effect readback (read once, not repeated, not rolled back):** `origin/main` = `ad97ceb`; the live
+  release stays `20261023T091306Z-b1944cd2b39c-2269751` and the unit stays up since `2026-10-23 12:48:04 MSK`;
+  consumer `consumer_7ad31d4110d744259bde4ee7580890e4` still holds exactly one enabled stage `matrix.message`
+  (room only), 1 incident, 1 delivery and 0 `consumer_policy_updated` audit rows.
+- **The exact remaining dependency:** the existing consumer's typed CALL policy is **prepared, not applied**. For
+  one Matrix incident receipt to stop that same incident by ACK, Root's join is needed — the deploy of the
+  approved source, then the audited policy update of that same consumer, then the UserIO route with exactly that
+  binding and the 88 control join (§11.4). Nothing further is required for that one result.
+- **Deferred:** the application of the prepared policy, the live call, the repository graph refresh, and every
+  other improvement.
