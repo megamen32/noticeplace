@@ -14,6 +14,7 @@ import urllib.request
 from collections.abc import Mapping
 
 ORDER = ('matrix.call', 'telegram.call', 'android.phone.call')
+DESTINATION_FIELDS = ('account_ref', 'room_id', 'target', 'participants')
 HTTP_ERROR_BODY_LIMIT = 64 * 1024
 HTTP_ERROR_METADATA_KEYS = ('code', 'error', 'type', 'status', 'message', 'detail')
 
@@ -55,6 +56,49 @@ def metadata(row):
         return None
 
 
+def scoped_destination(payload):
+    """Return the typed Matrix destination of a payload, or None for the legacy route.
+
+    The destination is the server owned binding of the consumer policy. A
+    payload without one keeps the legacy fixed environment contract.
+    """
+    if not isinstance(payload, Mapping): return None
+    destination = payload.get('destination')
+    if not isinstance(destination, Mapping): return None
+    return {key: destination.get(key) for key in DESTINATION_FIELDS}
+
+
+def destination_mismatch(destination, receipt):
+    """Return why a call receipt does not belong to the requested destination.
+
+    The receipt of a scoped call must name the same account, room and target,
+    echo the same destination and carry the call identity. Any other receipt
+    stays uncertainty: no acknowledgement, no replay and no fallback.
+    """
+    if not isinstance(destination, Mapping) or not isinstance(receipt, Mapping): return 'receipt_unreadable'
+    for key in ('account_ref', 'room_id', 'target'):
+        if not str(destination.get(key) or '').strip(): return 'destination_%s_missing' % key
+    if not str(receipt.get('call_id') or '').strip(): return 'call_id_missing'
+    if str(receipt.get('channel') or '').strip() != 'matrix': return 'channel_mismatch'
+    for key in ('account_ref', 'room_id'):
+        if str(receipt.get(key) or '').strip() != str(destination.get(key) or '').strip():
+            return '%s_mismatch' % key
+    echoed = receipt.get('destination')
+    if not isinstance(echoed, Mapping): return 'destination_not_echoed'
+    for key in DESTINATION_FIELDS:
+        left, right = echoed.get(key), destination.get(key)
+        if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
+            if [str(item) for item in (left or [])] != [str(item) for item in (right or [])]:
+                return 'destination_%s_mismatch' % key
+        elif str(left or '') != str(right or ''):
+            return 'destination_%s_mismatch' % key
+    actor = str(receipt.get('actor') or '').strip()
+    if not actor: return 'actor_missing'
+    participants = [str(item).strip() for item in destination.get('participants') or [] if str(item).strip()]
+    if participants and actor not in participants: return 'actor_not_a_participant'
+    return None
+
+
 def safe_missed(receipt):
     return (isinstance(receipt, Mapping) and receipt.get('answered') is False
             and receipt.get('safe_to_fallback') is True and receipt.get('ended') is True
@@ -66,7 +110,8 @@ def receipt_projection(value):
     if not isinstance(value, Mapping): return {}
     result = {k: value[k] for k in ('ok','answered','acknowledged','safe_to_fallback','ended','uncertain')
               if k in value and (type(value[k]) is bool or value[k] is None)}
-    for key in ('actor','status','call_id','callId','channel','target','error'):
+    for key in ('actor','status','call_id','callId','channel','target','error',
+                'account_ref','room_id','request_id'):
         if isinstance(value.get(key), str): result[key] = value[key][:256]
     http_status=value.get('http_status')
     if type(http_status) is int and 100 <= http_status <= 599:
@@ -198,6 +243,15 @@ class IncidentCallSender:
         body['incident_id'] = str(incident['id'])
         if delivery_key is not None:
             body['delivery_key'] = delivery_key
+        destination = scoped_destination(payload)
+        if destination is not None:
+            missing = [key for key in ('account_ref', 'room_id', 'target')
+                       if not str(destination.get(key) or '').strip()]
+            if missing:
+                # A scoped consumer never falls back to the shared owner route.
+                return {'answered': None, 'uncertain': True, 'status': 'unknown',
+                        'error': 'scoped_destination_incomplete'}
+            body['destination'] = destination
         request = urllib.request.Request(self.url, method='POST',
             data=json.dumps(body, ensure_ascii=False).encode(),
             headers={'Content-Type':'application/json','Authorization':'Bearer '+self.token})
@@ -227,6 +281,15 @@ class IncidentCallSender:
             if not isinstance(error.reason, ConnectionRefusedError): raise
             return {'answered':False,'ended':True,'safe_to_fallback':True,'status':'unavailable'}
         if not isinstance(result, dict): raise RuntimeError('invalid call receipt')
+        if destination is not None:
+            mismatch = destination_mismatch(destination, result)
+            if mismatch:
+                # The receipt does not belong to the requested binding: the
+                # outcome stays unknown, nothing is acknowledged and nothing
+                # is replayed or escalated.
+                return {'answered': None, 'uncertain': True, 'status': 'unknown',
+                        'error': 'call_receipt_mismatch', 'mismatch': mismatch,
+                        'call_id': str(result.get('call_id') or '')[:256]}
         if result.get('ok') is True and result.get('answered') is True:
             actor = result.get('actor') or result.get('target')
             if not actor: raise RuntimeError('answered call has no recipient')

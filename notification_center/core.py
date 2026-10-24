@@ -2192,6 +2192,23 @@ class NotificationCenter:
                 return False
         return explicit
 
+    def incident_matrix_destination(self, incident_id: str) -> dict[str, Any] | None:
+        """Return the typed Matrix destination of the incident consumer policy.
+
+        The destination comes from the validated server policy of the consumer,
+        never from a producer body. A consumer without an explicit Matrix route
+        has no destination and keeps the legacy fixed environment contract.
+        """
+        scope = self.incident_matrix_scope(incident_id)
+        if scope is None:
+            return None
+        return {
+            "account_ref": scope["account_ref"],
+            "room_id": scope["room_id"],
+            "target": scope["target"],
+            "participants": list(scope["participants"]),
+        }
+
     def incident_is_matrix_only(self, incident_id: str) -> bool:
         """True when the incident belongs to a consumer with a Matrix only policy."""
         row = self._connection.execute(
@@ -4867,7 +4884,12 @@ class NotificationCenter:
         incident = self.get_incident(str(delivery["incident_id"]))
         if incident is None:
             raise ValidationError("delivery references missing incident")
-        payload = {"delivery": dict(delivery), "incident": incident}
+        delivery_map = dict(delivery)
+        payload = {"delivery": delivery_map, "incident": incident}
+        if str(delivery_map.get("channel") or "") == "matrix.call":
+            # A Matrix call of a scoped consumer carries the server resolved
+            # destination of its policy; the legacy route stays unchanged.
+            payload["destination"] = self.incident_matrix_destination(str(incident["id"]))
         identity = self.latest_execution_identity(str(incident["id"]))
         if identity is not None:
             payload["execution_identity"] = identity
@@ -4894,7 +4916,7 @@ class NotificationCenter:
                                       if (question := self.incident_human_question(member['id'])) is not None]
         payload['human_questions'].extend(question for member in members
                                           if (question := self.incident_human_choices(member['id'])) is not None)
-        target_json = delivery.get("target_json")
+        target_json = delivery_map.get("target_json")
         incident_model = ""
         if isinstance(target_json, str):
             try:

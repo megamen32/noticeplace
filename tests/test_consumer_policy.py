@@ -622,5 +622,66 @@ class ConsumerPolicyTests(unittest.TestCase):
         self.assertEqual("open", self.center.get_incident(incident_id)["state"])
         self.assertIsNotNone(second)
 
+    def test_incident_matrix_destination_comes_from_the_server_policy(self) -> None:
+        """The typed destination is derived from the validated policy, not from the body."""
+        consumer = self.center.create_consumer(
+            project="hermes",
+            name="Scoped call",
+            policy=[
+                {
+                    "id": "step-1",
+                    "platform": "matrix",
+                    "action": "call",
+                    "target": {
+                        "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                        "account_ref": "matrix:37698708b623db45e1bfe61f4d01",
+                        "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                        "participants": [
+                            "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+                            "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                        ],
+                    },
+                    "retry_interval_seconds": 60,
+                    "max_repeats": 1,
+                },
+            ],
+        )
+        created = self.center.create_event(
+            consumer["intake_token"], "scoped-call",
+            {
+                "schema": "notify.event.v1",
+                "project": "hermes",
+                "recipient": "operator",
+                "kind": "incident",
+                "severity": "critical",
+                "title": "Gateway unavailable",
+                "body": "probing",
+                "dedup_key": "scoped-call",
+                # a producer may try to name its own destination
+                "destination": {"account_ref": "matrix:evil", "room_id": "!evil:chat.bezrabotnyi.com"},
+            },
+        )
+        incident_id = created["incident_id"]
+        delivery = self.center._connection.execute(
+            "SELECT * FROM deliveries WHERE incident_id=? ORDER BY created_at LIMIT 1", (incident_id,)
+        ).fetchone()
+        payload = self.center.delivery_payload(dict(delivery))
+        self.assertEqual(
+            {
+                "account_ref": "matrix:37698708b623db45e1bfe61f4d01",
+                "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+                "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                "participants": [
+                    "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+                    "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+                ],
+            },
+            payload["destination"],
+        )
+        self.assertEqual(
+            "matrix:37698708b623db45e1bfe61f4d01",
+            payload["destination"]["account_ref"],
+        )
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from notification_center.core import NotificationCenter
-from notification_center.http_api import build_handler
+from notification_center.http_api import MatrixCallSender, build_handler
 from mcp.notify_mcp import TOOLS as STDIO_TOOLS
 
 
@@ -226,6 +226,111 @@ class HttpApiTests(unittest.TestCase):
             (incident_id,),
         ).fetchone()
         self.assertEqual(1, audits["count"])
+
+    def _scoped_call_payload(self) -> dict:
+        destination = {
+            "account_ref": "matrix:37698708b623db45e1bfe61f4d01",
+            "room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com",
+            "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+            "participants": [
+                "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+                "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+            ],
+        }
+        return {
+            "incident": {"id": "incident-call", "project": "hermes", "severity": "critical",
+                         "title": "Проверка", "body": "Связь"},
+            "delivery": {"delivery_key": "incident-call:matrix.call:step:step-1:repeat:1"},
+            "destination": destination,
+        }
+
+    def _scoped_receipt(self, payload: dict) -> dict:
+        return {
+            "call_id": "call-1",
+            "channel": "matrix",
+            "status": "completed",
+            "ended": True,
+            "answered": True,
+            "acknowledged": True,
+            "safe_to_fallback": False,
+            "account_ref": payload["destination"]["account_ref"],
+            "room_id": payload["destination"]["room_id"],
+            "destination": dict(payload["destination"]),
+            "request_id": "noticeplace:scoped",
+            "actor": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+            "ok": True,
+        }
+
+    def _matrix_call_sender(self, response_body: dict, requests: list):
+        class Response:
+            status = 200
+
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, limit=None): return json.dumps(response_body).encode()
+
+        def run(request, timeout):
+            requests.append(json.loads(request.data))
+            return Response()
+        return MatrixCallSender("http://bridge/v1/calls/matrix/noticeplace", "test", runner=run)
+
+    def test_matrix_call_sender_carries_the_scoped_destination(self) -> None:
+        """A scoped call sends the typed destination of the frozen contract."""
+        requests: list = []
+        payload = self._scoped_call_payload()
+        result = self._matrix_call_sender(self._scoped_receipt(payload), requests).send(payload)
+        self.assertTrue(result["answered"])
+        self.assertEqual("matrix:@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com", result["actor"])
+        self.assertEqual("call-1", result["call_id"])
+        self.assertEqual(1, len(requests))
+        self.assertEqual(payload["destination"], requests[0]["destination"])
+        self.assertEqual(payload["delivery"]["delivery_key"], requests[0]["delivery_key"])
+        self.assertEqual(payload["incident"]["id"], requests[0]["incident_id"])
+
+    def test_matrix_call_sender_keeps_the_legacy_request_without_a_destination(self) -> None:
+        """A legacy call keeps the old fixed environment contract."""
+        requests: list = []
+        payload = {"incident": {"id": "incident-legacy", "project": "hermes", "severity": "critical",
+                                "title": "Проверка", "body": "Связь"}}
+        receipt = {"ok": True, "answered": True, "call_id": "call-legacy", "channel": "matrix",
+                   "target": "@bezrabotnyi:chat.bezrabotnyi.com"}
+        result = self._matrix_call_sender(receipt, requests).send(payload)
+        self.assertTrue(result["answered"])
+        self.assertNotIn("destination", requests[0])
+        self.assertNotIn("delivery_key", requests[0])
+
+    def test_matrix_call_receipt_must_match_the_destination(self) -> None:
+        """A receipt that does not belong to the requested destination never answers."""
+        payload = self._scoped_call_payload()
+        good = self._scoped_receipt(payload)
+        for changed in (
+            {**good, "actor": "@bezrabotnyi:chat.bezrabotnyi.com"},
+            {**good, "room_id": "!SGgCRDRJRnTYTQvKAG:chat.bezrabotnyi.com"},
+            {**good, "account_ref": "matrix:3a38caa1e8ac2eeb77443b275466"},
+            {**good, "channel": "telegram"},
+            {**good, "call_id": ""},
+            {**good, "destination": {**good["destination"], "target": "@bezrabotnyi:chat.bezrabotnyi.com"}},
+            {**good, "destination": {**good["destination"], "room_id": "!SGgCRDRJRnTYTQvKAG:chat.bezrabotnyi.com"}},
+            {key: value for key, value in good.items() if key != "destination"},
+            {key: value for key, value in good.items() if key != "account_ref"},
+            {key: value for key, value in good.items() if key != "actor"},
+        ):
+            with self.subTest(receipt=sorted(changed)):
+                requests: list = []
+                result = self._matrix_call_sender(changed, requests).send(payload)
+                self.assertIsNone(result["answered"])
+                self.assertTrue(result["uncertain"])
+                self.assertNotIn("actor", result)
+
+    def test_scoped_call_without_a_complete_destination_is_not_placed(self) -> None:
+        """An incomplete scoped destination never falls back to the shared owner route."""
+        payload = self._scoped_call_payload()
+        payload["destination"] = {"room_id": "!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com"}
+        requests: list = []
+        result = self._matrix_call_sender(self._scoped_receipt(self._scoped_call_payload()), requests).send(payload)
+        self.assertIsNone(result["answered"])
+        self.assertTrue(result["uncertain"])
+        self.assertEqual([], requests)
 
     def request_raw(self, path: str) -> tuple[int, str, bytes]:
         """Read a public representation without assuming the JSON API."""

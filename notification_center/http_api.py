@@ -25,7 +25,7 @@ from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import DirectHealthRemediationAdapter, DurableHealthRemediationAdapter, GptAdminAgentJobAdapter
 from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, normalize_health_recommendation, sanitize_bounded_text, validate_health_plans
 from .instructions import noticeplace_instructions
-from .incident_call_chain import metadata as call_chain_metadata
+from .incident_call_chain import destination_mismatch, metadata as call_chain_metadata, scoped_destination
 from .human_request_original import render_human_request_original
 from .selected_card import apply_selection_receipt, canonical_choice_ref
 from .telegram_interactions import TelegramActionCodec, TelegramInteractionPoller, agent_herder_choice_callback, telegram_api
@@ -631,6 +631,18 @@ class MatrixCallSender:
             "title": str(incident["title"]),
             "body": str(incident["body"]),
         }
+        destination = scoped_destination(payload)
+        if destination is not None:
+            missing = [key for key in ("account_ref", "room_id", "target")
+                       if not str(destination.get(key) or "").strip()]
+            if missing:
+                # A scoped consumer never falls back to the shared owner route.
+                return {"answered": None, "uncertain": True, "status": "unknown",
+                        "error": "scoped_destination_incomplete"}
+            request["destination"] = destination
+            delivery_key = str((payload.get("delivery") or {}).get("delivery_key") or "")
+            if delivery_key:
+                request["delivery_key"] = delivery_key
         bridge_request = urllib.request.Request(
             self._url,
             data=json.dumps(request, ensure_ascii=False).encode(),
@@ -648,8 +660,28 @@ class MatrixCallSender:
             raise RuntimeError("Matrix call bridge did not start a call")
         answered = result.get("answered") is True
         target = str(result.get("target") or "")
-        if answered and not target.startswith("@"):
+        actor = str(result.get("actor") or target)
+        if destination is None and answered and not actor.startswith("@"):
             raise RuntimeError("Matrix call bridge did not identify the answerer")
+        if destination is not None:
+            mismatch = destination_mismatch(destination, result)
+            if mismatch:
+                # The receipt does not belong to the requested binding: the
+                # outcome stays unknown, nothing is acknowledged and nothing is
+                # replayed or escalated.
+                return {"answered": None, "uncertain": True, "status": "unknown",
+                        "error": "call_receipt_mismatch", "mismatch": mismatch,
+                        "call_id": str(result.get("call_id") or "")[:256]}
+            if not answered:
+                return {"answered": False, "status": str(result.get("status") or ""),
+                        "call_id": str(result.get("call_id") or ""),
+                        "safe_to_fallback": bool(result.get("safe_to_fallback"))}
+            return {"answered": True, "actor": f"matrix:{actor}",
+                    "call_id": str(result.get("call_id") or ""),
+                    "channel": str(result.get("channel") or "matrix"),
+                    "account_ref": str(result.get("account_ref") or ""),
+                    "room_id": str(result.get("room_id") or ""),
+                    "request_id": str(result.get("request_id") or "")}
         return {"answered": answered, "actor": f"matrix:{target}" if answered else None}
 
 

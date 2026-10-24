@@ -545,6 +545,80 @@ class SenderTests(unittest.TestCase):
         self.assertFalse(result['safe_to_fallback'])
 
 
+class ScopedCallTests(unittest.TestCase):
+    """The scoped Matrix call carries the typed destination and correlates its receipt."""
+
+    payload = {
+        'incident': {'id': 'incident-call', 'title': 'Проверка', 'body': 'Связь', 'project': 'test', 'severity': 'critical'},
+        'delivery': {'delivery_key': 'incident-call:matrix.call:step:step-1:repeat:1'},
+        'destination': {
+            'account_ref': 'matrix:37698708b623db45e1bfe61f4d01',
+            'room_id': '!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com',
+            'target': '@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com',
+            'participants': [
+                '@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com',
+                '@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com',
+            ],
+        },
+    }
+
+    def _receipt(self, **changes):
+        receipt = {
+            'call_id': 'call-1', 'channel': 'matrix', 'status': 'completed', 'ended': True,
+            'answered': True, 'acknowledged': True, 'safe_to_fallback': False,
+            'account_ref': self.payload['destination']['account_ref'],
+            'room_id': self.payload['destination']['room_id'],
+            'destination': dict(self.payload['destination']),
+            'request_id': 'noticeplace:scoped',
+            'actor': '@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com',
+            'ok': True,
+        }
+        receipt.update(changes)
+        return receipt
+
+    def _sender(self, receipt, requests):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, limit): return json.dumps(receipt).encode()
+
+        def run(request, timeout):
+            requests.append(json.loads(request.data))
+            return Response()
+        return IncidentCallSender('http://bridge/v1/calls/matrix/noticeplace', 'test', runner=run)
+
+    def test_scoped_call_sends_the_typed_destination(self):
+        requests = []
+        result = self._sender(self._receipt(), requests).send(self.payload, 'incident-call:matrix.call:step:step-1:repeat:1')
+        self.assertTrue(result['answered'])
+        self.assertEqual('matrix:@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com', result['actor'])
+        self.assertEqual(self.payload['destination'], requests[0]['destination'])
+
+    def test_scoped_call_receipt_must_match_the_destination(self):
+        for changes in (
+            {'actor': '@bezrabotnyi:chat.bezrabotnyi.com'},
+            {'room_id': '!SGgCRDRJRnTYTQvKAG:chat.bezrabotnyi.com'},
+            {'account_ref': 'matrix:3a38caa1e8ac2eeb77443b275466'},
+            {'call_id': ''},
+            {'destination': {**self.payload['destination'], 'target': '@bezrabotnyi:chat.bezrabotnyi.com'}},
+        ):
+            with self.subTest(changes=changes):
+                requests = []
+                result = self._sender(self._receipt(**changes), requests).send(self.payload, 'key')
+                self.assertIsNone(result['answered'])
+                self.assertTrue(result['uncertain'])
+                self.assertNotIn('safe_to_fallback', result)
+
+    def test_scoped_call_without_a_complete_destination_is_not_placed(self):
+        payload = dict(self.payload)
+        payload['destination'] = {'room_id': '!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com'}
+        requests = []
+        result = self._sender(self._receipt(), requests).send(payload, 'key')
+        self.assertIsNone(result['answered'])
+        self.assertTrue(result['uncertain'])
+        self.assertEqual([], requests)
+
+
 def test_telegram_http_receipt_wait_covers_extended_native_startup():
     """Fast unit expected1s/max10s: cannot lose the receipt before UserIO535s bound."""
     sender=IncidentCallSender('https://example.invalid/v1/calls/telegram/noticeplace','test',450)
