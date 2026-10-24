@@ -1,388 +1,352 @@
 {
   "schema_version": 2,
-  "title": "Task",
-  "goal": "довести до проверенного выпуска надёжный русский голосовой помощник и корректную эскалацию Matrix → Telegram → телефон; автоматические QA-проверки выполнять на существующих ботах Matrix A/B, а отдельную owner/phone авторизацию использовать только в её точных пределах.",
-  "business_result": "связный русский разговор без перебивания и устаревшего ответа, входящий режим секретаря, остановка цепочки после ответа и корректное поведение после достоверных пропусков; версии можно восстановить.",
-  "current_progress": "Verified snapshot 2026-10-23: UserIO backend main=origin/main 925a47a; focused checks 20 passed. Owner MatrixRTC history proves two-way Russian audio/product-name pronunciation, but prior SDK turn lacked terminal receipt because effective URL pointed to Airlock. Stable SDK transport is currently owned externally by /root/voice_delivery, independent of the older UNKNOWN request; root applies returned URL/config and owns subsequent dialogue acceptance. Exact request owner-matrix-secretary-after-sdk-route-20261023-01 remains UNKNOWN/no replay; separate GET after DNS repair returned not found and is recorded, not a transport prerequisite. Separate direct Matrix call answered=false/actor=null/no dialogue; no repeat absent material readiness/need. Notice Place b1944cd installed/read back on server-100/+44, readiness HTTP 200, classifier SHA256 4f24c3e21656406d72fdc51a3f8560989b89dff8cf861d013da900a8757612c0; server-88 remains blocked by live deliveries. Owner authorization for one direct owner/phone call has been active since 09:15; the only request was rejected pre-dial because no phone gateway is active. No automatic retry or call series; after material gateway/recipient-route readiness, one fresh deliberate attempt remains within that authorization. Automated QA A/B is separate and Matrix-isolated. Voice-only archive PASS at /var/backups/universal-userio/voice-f199406-29a2c4d-20261023; manifest d098c7889f695acc75160ee68f492aecf874ff95e91e9cbaa38ba47586da0b4c and receipt 327c2a1d1d6b0421d7357954851ff9ae9a137d0b3943123af0fc761c3b258394; hashes/root-only permissions/readback PASS, live container unchanged. BotFather fix db1eeff on main/head fae2743, tests 4/4, QA A/B registry exists. Overall release/acceptance remains open.",
-  "external_waits": "Stable SDK transport is being handled by external /root/voice_delivery; it does not depend on or replay owner-matrix-secretary-after-sdk-route-20261023-01, which remains UNKNOWN. Root owns applying the returned URL/config and subsequent dialogue acceptance. Notice Place server-88 is blocked by live deliveries. Direct owner/phone authorization is active for one call; the only request was rejected pre-dial due to no active gateway. No retry/series until material readiness/need, then only one fresh deliberate attempt within current authorization. Separate direct Matrix answered=false/actor=null remains no-dialogue and is not repeated absent material readiness/need. Cross-service release evidence and remaining Matrix acceptance are incomplete.",
-  "slots": 2,
-  "updated_at": "2026-10-23T12:32:43",
+  "title": "Пригодный голосовой секретарь и управление инцидентами — C2",
+  "goal": "владелец получает пригодного голосового секретаря, действия на разрешённых компьютерах и управление инцидентами Notice Place; агенты проверяют полный сценарий на отдельной Matrix bot-паре без человека.",
+  "business_result": "секретарь понимает поручение, выполняет разрешённое действие, ясно отвечает и закрывает уведомление; агенты проверяют это через Matrix без человека.",
+  "business_results": [
+    "секретарь понимает поручение, выполняет разрешённое действие, ясно отвечает и закрывает уведомление; агенты проверяют это через Matrix без человека."
+  ],
+  "current_progress": "SDK вернул первый текстовый ответ, но он частичный; проверяем фактическую модель и ограничение длины. Тестовый получатель готов, проверка ответа и остановки эскалации возобновлена тем же исполнителем. Полезный голосовой разговор и инструменты секретаря ещё не приняты.",
+  "external_waits": "Фактическая модель существующего SDK run и ограничение вывода проверяются без replay. Голосовой ответ и инструменты не приняты. Notice Place проверяет Matrix-only цепочку; живая эскалация не принята. 120-минутный обзор завершён, reuse/readback метода pending. Неизвестные ожидания отдельно, ETA не обещан.",
+  "slots": 4,
+  "updated_at": "2026-10-23T22:06:37+00:00",
   "tasks": [
     {
       "id": "L01",
-      "label": "сверить факты по Notice Place, UserIO, AgentCall и BotFather, текущий WIP и права путей",
+      "label": "План обновляется каждый час штатным механизмом",
       "status": "done",
       "depends_on": [],
       "estimate_minutes": {
-        "minimum": 8.0,
-        "maximum": 12.0
+        "minimum": 10.0,
+        "maximum": 15.0
       },
-      "actual_minutes": 6.0,
-      "started_at": "00:32",
-      "finished_at": "00:38",
-      "owner": "Codex gpt-6-luna",
-      "session": "codex:01a16587-54a6-7d33-bb25-4848227d42b4",
-      "harness": "codex",
-      "model": "gpt-6-luna",
-      "model_class": "gpt-6-luna",
-      "role": "Worker research",
-      "acceptance": "A fresh evidence table names each current source head, dirty paths, active owner, permitted target and next shortest fix; no changes made.",
-      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "started_at": "22:33",
+      "finished_at": "22:52",
+      "acceptance": "Одна активная запись target Root01a1653b-d774-73b3-9c0a-09cced76ea9e; реальный scheduled trigger → получение Root → обновление того же проверенного плана; next_run почасовой, dedup и cleanup при Stop/конце. Ручной send и одноразовый join wait не доказывают scheduler.",
+      "description": "/root/hourly_control настраивает одну task-owned поддержанную native automation/reminder. Это отдельный support worker, не второй Lead. Relay может только будить Root, план пишет только /root/planner. Raw cron/daemon/SQLite writes запрещены.",
+      "role": "/root/hourly_control",
+      "affected_files": [],
+      "note": "поиск штатного platform run_id для SDK; точное активное время не измерено",
       "read_paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion",
-        "/home/roomhacker/matrix-synapse/matrix-botfather"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion",
-        "/home/roomhacker/matrix-synapse/matrix-botfather"
-      ]
+      "paths": []
     },
     {
       "id": "L02",
-      "label": "проверить разрешённые удалённые ветки и совпадение локальной main с origin/main",
+      "label": "Подготовить изолированную пару тестовых Matrix ботов",
       "status": "done",
       "depends_on": [],
       "estimate_minutes": {
-        "minimum": 8.0,
-        "maximum": 12.0
+        "minimum": 10.0,
+        "maximum": 15.0
       },
-      "actual_minutes": 4.0,
-      "started_at": "00:40",
-      "finished_at": "00:44",
-      "role": "Lead",
-      "acceptance": "Scoped code review/tests pass, BotFather security change is published to its permitted target.",
-      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "acceptance": "До набора подтверждены два отдельных test bot account_ref, target и room_id; текущий состав комнаты — ровно эти боты, capabilities разрешают явный прямой Matrix route, фактический fallback равен нулю. Нет личного Matrix владельца, PSTN/GSM/SIP. Прямой UserIO звонок не зависит от consumer или contact policy Notice Place.",
+      "description": "MiniMax UserIO — mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2. До набора подтверждены два отдельных test bot account_ref, target и room_id; текущий состав комнаты — ровно эти боты, capabilities разрешают явный прямой Matrix route, фактический fallback равен нулю. Нет личного Matrix владельца, PSTN/GSM/SIP. Прямой UserIO звонок не зависит от consumer или contact policy Notice Place.",
+      "role": "MiniMax UserIO: mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2",
+      "affected_files": [],
+      "note": "поиск штатного platform run_id для SDK; точное активное время не измерено",
       "read_paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion"
-      ]
+      "paths": []
     },
     {
       "id": "L03",
-      "label": "сверить опубликованный MatrixRTC путь UserIO, его проверки и активные ограничения",
+      "label": "Провести самостоятельный разговор между ботами",
       "status": "done",
-      "depends_on": [],
+      "depends_on": [
+        "L02"
+      ],
       "estimate_minutes": {
-        "minimum": 8.0,
-        "maximum": 12.0
+        "minimum": 10.0,
+        "maximum": 15.0
       },
-      "actual_minutes": 4.0,
-      "started_at": "00:44",
-      "finished_at": "00:48",
-      "role": "Lead research",
-      "acceptance": "Per-user MatrixRTC call uses the caller model without persisting secrets; audio/STT regression tests pass and source is published to the permitted target.",
-      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "started_at": "22:58",
+      "acceptance": "Боты принимают и передают речь: вопрос распознан, ответ услышан. Есть конечная квитанция и cleanup; секреты не раскрываются.",
+      "description": "MiniMax UserIO — mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2. Боты принимают и передают речь: вопрос распознан, ответ услышан. Есть конечная квитанция и cleanup; секреты не раскрываются.",
+      "role": "MiniMax UserIO: mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2",
+      "affected_files": [],
+      "note": "поиск штатного platform run_id для SDK; точное активное время не измерено",
       "read_paths": [
-        "/home/roomhacker/agents-projects/universal-userio/docs/COMMUNICATIONS-ARCHITECTURE.md",
-        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/matrix_calls.py",
-        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/matrix_call_worker.py",
-        "/home/roomhacker/agents-projects/universal-userio/tests/test_matrix_calls.py",
-        "/home/roomhacker/agents-projects/universal-userio/tests/manual/matrix_rtc_ai_peer.py",
-        "/home/roomhacker/agents-projects/universal-userio/tests/test_matrix_rtc_ai_peer.py"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/universal-userio"
-      ]
+      "paths": []
     },
     {
       "id": "L04",
-      "label": "сверить и использовать существующие Matrix test fixtures вместо выпуска новых аккаунтов",
+      "label": "Подготовить получателя только для тестовой Matrix комнаты",
       "status": "done",
-      "depends_on": [],
+      "depends_on": [
+        "L02"
+      ],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "started_at": "00:44",
-      "finished_at": "01:10",
-      "role": "Lead test",
-      "acceptance": "An incoming call enters secretary mode and the mode transition is observable on the actual consumer path.",
-      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "started_at": "22:58",
+      "acceptance": "Создан или использован consumer с явной непустой Matrix-only contact policy для ботов L02. Нет личных аккаунтов, телефонов и Telegram fallback. Использованы существующие SSO/CSRF/AdminAPI без bypass; token сохранён в protected reference.",
+      "description": "MiniMax Notice Place — делегат UserIO mvs_2b489b9ad2364fcaa03f4687420699a1 (task bg_fed94466-68a6-4e9d-85d7-623120f3a5f3). Создан или использован consumer с явной непустой Matrix-only contact policy для ботов L02. Нет личных аккаунтов, телефонов и Telegram fallback. Использованы существующие SSO/CSRF/AdminAPI без bypass; token сохранён в protected reference.",
+      "role": "MiniMax Notice Place: mvs_2b489b9ad2364fcaa03f4687420699a1 / bg_fed94466-68a6-4e9d-85d7-623120f3a5f3",
+      "affected_files": [],
+      "note": "поиск штатного platform run_id для SDK; точное активное время не измерено",
       "read_paths": [
-        "/home/roomhacker/agents-projects/universal-userio/.agents/TEST_ACCESS.md",
-        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/matrix_calls.py",
-        "/home/roomhacker/agents-projects/universal-userio/tests/manual/matrix_rtc_ai_peer.py"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/universal-userio"
-      ]
+      "paths": []
     },
     {
       "id": "L05",
-      "label": "подтвердить read-only selector probes SecretaryBrain/mode=secretary для owner и QA B",
-      "status": "done",
+      "label": "Получить полезный ответ SDK через выбранную модель",
+      "status": "running",
       "depends_on": [],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "started_at": "01:51",
-      "role": "Lead runtime verification",
-      "acceptance": "The original utterance completes before response; no stale response starts; Russian names/terms survive and remain speakable.",
-      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
+      "started_at": "22:27",
+      "acceptance": "Рабочий OmniRoute сохраняется. Чтение фактической выбранной модели и маршрута совпадает с запросом; SDK возвращает непустой осмысленный ответ на текущий вопрос. Приветствие, HTTP200 и token256 не доказательство.",
+      "description": "MiniMax ExManager — mvs_f70ce650bbf94d789e4e4a2669f6743a. Рабочий OmniRoute сохраняется. Чтение фактической выбранной модели и маршрута совпадает с запросом; SDK возвращает непустой осмысленный ответ на текущий вопрос. Приветствие, HTTP200 и token256 не доказательство.",
+      "note": "поиск штатного platform run_id для SDK; точное активное время не измерено",
+      "role": "MiniMax ExManager: mvs_f70ce650bbf94d789e4e4a2669f6743a",
+      "affected_files": [],
       "read_paths": [
-        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/voice"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/voice"
-      ]
+      "paths": []
     },
     {
       "id": "L06",
-      "label": "создать и read back voice-only archive с подтверждённым rollback receipt",
-      "status": "done",
-      "depends_on": [],
+      "label": "Проверить нейтрального секретаря и полезный ответ",
+      "status": "running",
+      "depends_on": [
+        "L03"
+      ],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "role": "Lead archive verification",
-      "acceptance": "Voice-only archive for image f199406/source 29a2c4d has verified manifest/receipt; hashes, root-only permissions and readback pass, live container unchanged. Not final release acceptance.",
-      "note": "Archive: /var/backups/universal-userio/voice-f199406-29a2c4d-20261023. Manifest SHA256 d098c7889f695acc75160ee68f492aecf874ff95e91e9cbaa38ba47586da0b4c; receipt SHA256 327c2a1d1d6b0421d7357954851ff9ae9a137d0b3943123af0fc761c3b258394.",
-      "blocker": "Guest outbound acceptance is still incomplete; the owner MatrixRTC history proves two-way Russian/product-name audio, but the SDK ended before terminal receipt because effective URL pointed to Airlock Platform. Current config points to SDK app 192.168.128.7:8080; only userio-voice restarted. Stable tunnel and a terminal SDK receipt remain unproven.",
+      "started_at": "23:16",
+      "acceptance": "Входящий тестовый вызов начинает нейтральный секретарь и отвечает по существу производственной моделью на текущий вопрос. Echo, скрипт, статическая реплика и чтение инструкции не принимаются.",
+      "description": "UserIO ищет разрешённый узкий QA вход к настоящему SDK секретаря. Последний разговор использовал incoming_guest и guestSystemPrompt, SDK не был задействован. Обычный guest403, owner identity и root permissions сохраняются. Сначала явный QA admission, затем только один новый тест; старый completed call не admit задним числом и не replay. Если штатного seam нет — только минимальная собственная source правка с положительным/отрицательным proof и отдельным test scope, не global guest allow.",
+      "role": "MiniMax UserIO: mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2",
+      "affected_files": [],
       "read_paths": [
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion"
-      ]
+      "paths": []
     },
     {
       "id": "L07",
-      "label": "завершить раздельную приёмку MatrixRTC guest и Secretary SDK на тестовых ботах A/B",
+      "label": "Получить фактический компьютер и безопасный результат Bash",
       "status": "running",
       "depends_on": [],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "started_at": "04:05",
-      "role": "Lead test",
-      "acceptance": "Separate guest and Secretary SDK behavior is proven on existing isolated QA Matrix A/B accounts; no owner identity or phone is used.",
-      "note": "Owner MatrixRTC history proves two-way Russian audio/product name but not terminal SDK receipt. Separate Matrix receipt answered=false, actor=null; no dialogue; do not repeat.",
+      "started_at": "23:16",
+      "acceptance": "Через фактический разрешённый профиль GPTAdmin подтверждены host, hostname и id -u. Root команда только если действующая политика разрешает; отсутствие root или approval — честное препятствие, не DONE. Не подменять owner identity. Проверка отказа guest только на уже разрешённом QA principal, без создания ACL/личности ради отчёта.",
+      "description": "MiniMax ExManager — mvs_f70ce650bbf94d789e4e4a2669f6743a. Через GPTAdmin определён фактический host, выполнен разрешённый read-only hostname/id -u и возвращён результат. Права/root/подтверждения соблюдены; deny/pending не назван execution. SSH дополнительный маршрут, не обязательная подмена.",
+      "role": "MiniMax ExManager: mvs_f70ce650bbf94d789e4e4a2669f6743a",
+      "affected_files": [],
       "read_paths": [
-        "/home/roomhacker/agents-projects/universal-userio"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/universal-userio"
-      ]
+      "paths": []
     },
     {
       "id": "L08",
-      "label": "завершить Notice Place rollout/readback и phone-consumer review",
+      "label": "Файлы и управление собственным AI-агентом через GPTAdmin",
       "status": "running",
-      "depends_on": [],
+      "depends_on": [
+        "L07"
+      ],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "role": "Lead rollout verification",
-      "acceptance": "Notice Place b1944cd reads readiness HTTP 200 on server-100 and server-44 with verified classifier SHA; server-88 must also converge and phone-consumer review must complete.",
-      "note": "Server-88 is blocked by live deliveries. Classifier SHA256 4f24c3e21656406d72fdc51a3f8560989b89dff8cf861d013da900a8757612c0.",
+      "acceptance": "Наблюдаемые результаты файловых операций и native управления собственным AI агентом подтверждены. Приёмка этого участка завершается до цельного сценария L11. Tester B позднее может только повторно подтвердить возможность; его назначение и receipt не являются условием L08.",
+      "description": "MiniMax ExManager. В разрешённом каталоге создать, прочитать и удалить свой безопасный тестовый файл; штатно управлять собственным тестовым AI агентом. До цельного сценария проверить native управление отдельным собственным безопасным тестовым агентом либо уже созданным собственным агентом. Не запускать лишние дубликаты. Чужие агенты и WIP не затрагиваются.",
+      "role": "MiniMax ExManager: mvs_f70ce650bbf94d789e4e4a2669f6743a",
+      "affected_files": [],
       "read_paths": [
-        "/home/roomhacker/agents-projects/noticeplace"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/noticeplace"
-      ]
+      "paths": []
     },
     {
       "id": "L09",
-      "label": "довести stable SDK transport к приложению",
+      "label": "Подтвердить ответ и прекращение тестовой эскалации",
       "status": "running",
-      "depends_on": [],
+      "depends_on": [
+        "L04"
+      ],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "role": "External transport owner",
-      "acceptance": "Deliver a stable transport path to the SDK app and return the effective URL/config; do not perform or claim dialogue acceptance. This work is independent of the older UNKNOWN request.",
-      "note": "External work is already running under /root/voice_delivery; root applies returned URL/config and owns the separate dialogue acceptance.",
-      "blocker": "No stable returned route is available yet; current evidence shows config target 192.168.128.7:8080 but stable tunnel 127.0.0.1:18086 absent. This work does not depend on the old UNKNOWN call.",
+      "acceptance": "Уведомление пришло в изолированный Matrix, ответ связан с нужным событием. Состояние и независимое чтение подтверждают прекращение эскалации. UNKNOWN/accepted не повторены.",
+      "description": "MiniMax Notice Place — делегат UserIO mvs_2b489b9ad2364fcaa03f4687420699a1 (возобновлённая task bg_e6fc5ddd-10ca-404e-901e-c10183a4dd6d). Нужно проверить и при необходимости исправить привязку тестового answered-call пути и Matrix-only policy всей цепочки до нового уникального события. Затем подтвердить доставку, связанный Matrix ответ и прекращение эскалации. Старый resolved incident не повторять. Возобновление того же делегата подтверждено его собственными checkpoint и тестами. Проверка всей цепочки на Matrix-only идёт; живая доставка, ответ и остановка ещё не приняты. Комната доступна только после конечной квитанции текущего mavis06.",
+      "role": "MiniMax Notice Place: mvs_2b489b9ad2364fcaa03f4687420699a1 / bg_fed94466-68a6-4e9d-85d7-623120f3a5f3",
+      "affected_files": [],
       "read_paths": [
-        "/etc/agentcall-secretary-voice.json",
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion"
-      ],
-      "owner": "/root/voice_delivery"
+      "paths": []
     },
     {
       "id": "L10",
-      "label": "получить Secretary SDK dialogue acceptance после готовности транспорта",
-      "status": "blocked",
+      "label": "Проверить домен, ошибку 502 и перебивание",
+      "status": "queued",
       "depends_on": [
-        "L09"
+        "L06"
       ],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "blocker": "No terminal SDK receipt or dialogue proof yet. Root owns applying the external transport result and subsequent acceptance.",
-      "role": "Root dialogue acceptance",
-      "acceptance": "After transport readiness, root applies returned URL/config and obtains an authoritative terminal SDK receipt plus dialogue evidence; no claim of acceptance before that evidence.",
-      "note": "Does not depend on replaying the old UNKNOWN request; any fresh action must be deliberate and separately authorized.",
+      "acceptance": "Полностью произнесены notify.bezrabotnyi.com и «ошибка 502». Перебивание принято; после нового вопроса старая очередь не отвечает.",
+      "description": "MiniMax UserIO — mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2. Полностью произнесены notify.bezrabotnyi.com и «ошибка 502». Перебивание принято; после нового вопроса старая очередь не отвечает.",
+      "role": "MiniMax UserIO: mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2",
+      "affected_files": [],
       "read_paths": [
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/agents-projects/noticeplace"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/agents-projects/noticeplace"
-      ],
-      "owner": "root"
+      "paths": []
     },
     {
       "id": "L11",
-      "label": "сохранить результат запроса `owner-matrix-secretary-after-sdk-route-20261023-01` без повтора",
-      "status": "blocked",
-      "depends_on": [],
+      "label": "Пройти переходы между секретарём и инцидентами",
+      "status": "queued",
+      "depends_on": [
+        "L10"
+      ],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "blocker": "request остаётся UNKNOWN; старый GET после DNS repair вернул not found, dispatcher call receipt не подтверждён. Это только recorded operation и не prerequisite для build stable route",
-      "role": "Lead call receipt review",
-      "acceptance": "A direct Matrix dialogue receipt proves a real answer; current attempt was an explicit no-answer and must not be repeated.",
-      "note": "The Notice Place source review is still in progress; contract/runtime alignment alone is not live canary proof.",
+      "acceptance": "Секретарь → инциденты → секретарь: контекст сохранён, persona корректна. Последовательно из-за общего voice/prompt runtime.",
+      "description": "MiniMax UserIO — mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2. Секретарь → инциденты → секретарь: контекст сохранён, persona корректна. Последовательно из-за общего voice/prompt runtime.",
+      "role": "MiniMax UserIO: mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2",
+      "affected_files": [],
       "read_paths": [
-        "/home/roomhacker/agents-projects/universal-userio"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
       "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/universal-userio"
-      ]
+      "paths": []
     },
     {
       "id": "L12",
-      "label": "зафиксировать отдельный direct Matrix результат без повтора",
-      "status": "blocked",
-      "depends_on": [],
-      "estimate_minutes": {
-        "minimum": 10.0,
-        "maximum": 15.0
-      },
-      "blocker": "`answered=false`, `actor=null`, диалога нет; не повторять без материального изменения готовности/необходимости",
-      "role": "Lead escalation acceptance",
-      "acceptance": "Verify phone-escalation policy through a non-dialing test sink only; actual phone delivery remains unaccepted.",
-      "note": "Estimates are active work; external phone-recipient wait is tracked at graph level.",
-      "read_paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio"
-      ],
-      "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio"
-      ]
-    },
-    {
-      "id": "L13",
-      "label": "подтвердить phone escalation после достоверных Matrix/Telegram пропусков",
-      "status": "blocked",
-      "depends_on": [],
-      "estimate_minutes": {
-        "minimum": 10.0,
-        "maximum": 15.0
-      },
-      "blocker": "авторизованный владельцем direct owner/phone request был один раз отклонён до набора из-за отсутствия активного gateway; без серии и слепых повторов",
-      "role": "Lead test",
-      "acceptance": "A permitted isolated QA Matrix A/B scenario with a confirmed answer stops escalation; no phone leg is dialed.",
-      "read_paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio"
-      ],
-      "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio"
-      ]
-    },
-    {
-      "id": "L14",
-      "label": "на разрешённом тестовом Matrix A/B сценарии подтвердить, что ответ останавливает цепочку",
+      "label": "Пройти цельный установленный пользовательский сценарий",
       "status": "queued",
       "depends_on": [
-        "L07",
-        "L08"
-      ],
-      "estimate_minutes": {
-        "minimum": 10.0,
-        "maximum": 15.0
-      },
-      "role": "Lead test",
-      "acceptance": "On isolated existing QA A/B Matrix accounts, prove a confirmed answer stops the escalation chain; keep this distinct from owner dialogue and direct phone authorization.",
-      "read_paths": [
-        "/home/roomhacker/agents-projects/universal-userio/.agents/TEST_ACCESS.md",
-        "/home/roomhacker/agents-projects/noticeplace"
-      ],
-      "write_paths": [],
-      "paths": [
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/agents-projects/noticeplace"
-      ],
-      "owner": null,
-      "note": "Separate automated QA scenario; use existing fixtures only.",
-      "blocker": "No stable returned route is available yet; current evidence shows config target 192.168.128.7:8080 but stable tunnel 127.0.0.1:18086 absent. This work does not depend on the old UNKNOWN call."
-    },
-    {
-      "id": "L15",
-      "label": "завершить общий release/rollback archive с точными receipts и digest",
-      "status": "queued",
-      "depends_on": [
+        "L11",
         "L07",
         "L08",
         "L09",
-        "L10",
-        "L11",
-        "L12",
-        "L13",
-        "L14"
+        "L05"
       ],
       "estimate_minutes": {
         "minimum": 10.0,
         "maximum": 15.0
       },
-      "role": "Lead release",
-      "acceptance": "Record exact source/image revisions, immutable digests, complete receipts and rollback evidence across every changed service; voice-only archive alone is insufficient.",
+      "acceptance": "Один связанный bot↔bot сценарий: приветствие → вопрос о компьютере → безопасная команда → домен/502 → перебивание → переключение → ответ на инцидент → конец. Результаты и квитанции связаны; одних аудиобайтов недостаточно.",
+      "description": "MiniMax UserIO — mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2. Один связанный bot↔bot сценарий: приветствие → вопрос о компьютере → безопасная команда → домен/502 → перебивание → переключение → ответ на инцидент → конец. Результаты и квитанции связаны; одних аудиобайтов недостаточно.",
+      "role": "MiniMax UserIO: mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2",
+      "affected_files": [],
       "read_paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion"
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
       ],
-      "write_paths": [
-        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/release-manifest.json"
+      "write_paths": [],
+      "paths": []
+    },
+    {
+      "id": "L13",
+      "label": "Независимо решить задачу обычного оператора",
+      "status": "queued",
+      "depends_on": [
+        "L12"
       ],
-      "paths": [
-        "/home/roomhacker/agents-projects/noticeplace",
-        "/home/roomhacker/agents-projects/universal-userio",
-        "/home/roomhacker/ServersAdministartion"
-      ]
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "acceptance": "Не текущий автор: без кода и истории самостоятельно решает задачу обычного оператора через реальный Matrix; наблюдаемый результат содержателен.",
+      "description": "Свежий MiniMax Tester A — назначает UserIO после L11. Не текущий автор: без кода и истории самостоятельно решает задачу обычного оператора через реальный Matrix; наблюдаемый результат содержателен.",
+      "role": "Свежий независимый MiniMax Tester A — назначает UserIO",
+      "affected_files": [],
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
+      ],
+      "write_paths": [],
+      "paths": []
+    },
+    {
+      "id": "L14",
+      "label": "Независимо проверить прерывание и отсутствие повторов",
+      "status": "queued",
+      "depends_on": [
+        "L13"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "acceptance": "На установленном пути проверяет смену вопроса, отказ/недоступность инструмента, прерывание и отсутствие повторного действия. UserIO выдаёт тестовую комнату единым ресурсом; вызовы строго последовательны.",
+      "description": "Свежий MiniMax Tester B — назначает ExManager, не автор и не Tester A. На установленном пути проверяет смену вопроса, отказ/недоступность инструмента, прерывание и отсутствие повторного действия. UserIO выдаёт тестовую комнату единым ресурсом; вызовы строго последовательны.",
+      "role": "Свежий независимый MiniMax Tester B — назначает ExManager",
+      "affected_files": [],
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
+      ],
+      "write_paths": [],
+      "paths": []
+    },
+    {
+      "id": "L15",
+      "label": "Свести публикацию, установленный результат и cleanup",
+      "status": "queued",
+      "depends_on": [
+        "L14"
+      ],
+      "estimate_minutes": {
+        "minimum": 5.0,
+        "maximum": 10.0
+      },
+      "acceptance": "Свои изменения опубликованы в разрешённом default target; фактический runtime/readback соответствует протестированному. Затронутый smoke повторяется только после изменения. Свои процессы закрыты, foreign WIP сохранён.",
+      "description": "UserIO и ExManager — каждый свои пути; /root — итоговый join. Свои изменения опубликованы в разрешённом default target; фактический runtime/readback соответствует протестированному. Затронутый smoke повторяется только после изменения. Свои процессы закрыты, foreign WIP сохранён.",
+      "role": "UserIO и ExManager каждый свои пути; Root — join",
+      "affected_files": [],
+      "read_paths": [
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/task.md",
+        "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261023-voice-call-experience/ownership.md"
+      ],
+      "write_paths": [],
+      "paths": []
     }
   ],
   "leaf_count": 15
