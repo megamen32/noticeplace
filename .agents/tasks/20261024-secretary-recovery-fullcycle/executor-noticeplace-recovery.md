@@ -290,6 +290,14 @@ $ python3 -m pytest tests/test_consumer_policy.py tests/test_incident_call_chain
 100 passed in 148.13s (0:02:28)
 ```
 
+Wider regression on the same tree: `tests/test_delivery_worker.py`, `tests/test_incident_outcomes.py` and
+`tests/test_notification_center.py` together → **3 failed, 94 passed**. The three failures are the same
+pre-existing `tests/test_incident_outcomes.py` ones of the pre-change baseline
+(`test_failed_job_after_ack_has_terminal_outcome_and_copyable_session`,
+`test_plans_ready_has_real_choices_and_does_not_claim_fixed`,
+`test_session_cards_are_not_duplicate_alarm_cards_for_plan_migration`, all at the health reconciliation
+counter, `tests/test_incident_outcomes.py:231`). No new failure and no new failure class was introduced.
+
 ### 8.4 Provenance proof
 
 The acknowledgement is no longer derivable from a caller supplied claim:
