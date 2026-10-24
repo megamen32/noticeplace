@@ -407,3 +407,153 @@ policy_json, actor)`, with the policy stage target
 - **Resource join PENDING**: the UserIO dispatcher of §8.6 plus the two NoticePlace prerequisites of §8.6.
 - The room was not taken, the 88 session heard by UserIO was not touched, and no S21 lease, voice runtime or
   foreign path was modified.
+
+
+## 9. L09 CALL path — the NP side of the typed destination (2026-10-24, third pass)
+
+Lead: Root `01a1653b`, contract `advisor-noticeplace-shortest-path.md` (the accepted shortest **CALL** path:
+answered call → ACK/stop, no separate verbal confirmation) and the frozen cross repo schema
+`typed-l09-userio-source-handoff.json` (communications, source commit `7c3793b2723cd3c2cb0a8043f255a31b6c760859`).
+This leaf implements the NoticePlace side only: sender, tests and report. No dispatcher, no new token, no new
+caller, no live anything.
+
+### 9.1 What changed in the NP source
+
+- `notification_center/core.py:2195-2215` — `incident_matrix_destination(incident_id)`: the typed destination
+  `{account_ref, room_id, target, participants}` of the incident's consumer, taken from
+  `consumer_matrix_scope` — the validated **server** policy. A producer body can never influence it: the
+  destination is read from the policy of the consumer that owns the incident.
+- `notification_center/core.py:4888-4893` — `delivery_payload()` attaches that destination to a `matrix.call`
+  payload only. A consumer without an explicit Matrix route gets no destination and keeps the legacy contract.
+- `notification_center/incident_call_chain.py:17` — `DESTINATION_FIELDS = ('account_ref','room_id','target','participants')`.
+- `notification_center/incident_call_chain.py:59-68` — `scoped_destination(payload)`: the typed destination of a
+  payload, or `None` for the legacy route.
+- `notification_center/incident_call_chain.py:71-108` — `destination_mismatch(destination, receipt)`: the
+  correlation rules (below). Any deviation is a mismatch, never an answer.
+- `notification_center/http_api.py:614-680` — `MatrixCallSender.send()`: sends the typed destination and the
+  stable delivery key with the call, then correlates the receipt before it may answer.
+- `notification_center/incident_call_chain.py:236-268` — `IncidentCallSender.send()`: the same destination and
+  the same correlation for the chain route.
+- `notification_center/incident_call_chain.py:86-87` — the bounded receipt projection now keeps `account_ref`,
+  `room_id` and `request_id` as the binding evidence of the delivery.
+
+### 9.2 The wire contract, exactly as the frozen handoff declares it
+
+Request to the existing route `POST /v1/calls/matrix/noticeplace`, existing capability, no new grant:
+
+```
+{
+  "incident_id": "<existing stable incident ID>",
+  "delivery_key": "<existing stable step delivery key>",
+  "title": "...",
+  "body": "...",
+  "destination": {
+    "account_ref": "matrix:<validated bot account_ref>",
+    "room_id": "!<validated isolated room>",
+    "target": "@<validated callee>",
+    "participants": ["@<sender>", "@<target>"]
+  }
+}
+```
+
+Receipt that the NP correlates, before any acknowledgement:
+
+```
+call_id, channel, status, ended, answered, acknowledged, safe_to_fallback,
+account_ref, room_id, destination, request_id, actor
+```
+
+Correlation rules of `destination_mismatch()` — every one of them is a denial, none of them acknowledges:
+
+| rule | denial |
+|---|---|
+| the requested destination lacks account_ref, room_id or target | `destination_<key>_missing` |
+| the receipt has no call identity | `call_id_missing` |
+| the receipt channel is not `matrix` | `channel_mismatch` |
+| the receipt account or room differs from the requested one | `account_ref_mismatch`, `room_id_mismatch` |
+| the receipt does not echo the destination | `destination_not_echoed` |
+| any echoed destination field differs | `destination_<key>_mismatch` |
+| the receipt has no answerer | `actor_missing` |
+| the answerer is not one of the declared participants | `actor_not_a_participant` |
+
+A mismatch or an unknown receipt becomes `{answered: None, uncertain: True}`; the delivery then ends as
+`uncertain`, and the product semantics of `uncertain` are exactly "no repeat and no transition to another
+channel" (`notification_center/core.py:2740-2743`: the failure neighbours are not scheduled for an uncertain
+call). A scoped consumer whose destination is incomplete is **never placed at all**, so it can never fall back
+to the shared owner route.
+
+The stable identity is the frozen one: the delivery key travels with the call, the UserIO side derives the
+request id from `(incident_id, delivery_key)`, its own call fingerprint already contains the destination
+(`matrix_calls.py:92-95`), and a changed route under the same request id returns a conflict instead of a
+second admission (`noticeplace_calls.py:60-63`). The NP side does not invent a fingerprint field.
+
+### 9.3 RED → fix → GREEN (actual output)
+
+RED, the new tests against the source without the typed destination (no stash, no reset: the tests were written
+first and failed against the previous behaviour):
+
+```
+FAILED tests/test_consumer_policy.py::ConsumerPolicyTests::test_incident_matrix_destination_comes_from_the_server_policy
+FAILED tests/test_incident_call_chain.py::ScopedCallTests::test_scoped_call_receipt_must_match_the_destination
+FAILED tests/test_incident_call_chain.py::ScopedCallTests::test_scoped_call_sends_the_typed_destination
+FAILED tests/test_incident_call_chain.py::ScopedCallTests::test_scoped_call_without_a_complete_destination_is_not_placed
+FAILED tests/test_http_api.py::HttpApiTests::test_matrix_call_receipt_must_match_the_destination
+FAILED tests/test_http_api.py::HttpApiTests::test_matrix_call_sender_carries_the_scoped_destination
+FAILED tests/test_http_api.py::HttpApiTests::test_matrix_call_sender_keeps_the_legacy_request_without_a_destination
+FAILED tests/test_http_api.py::HttpApiTests::test_scoped_call_without_a_complete_destination_is_not_placed
+7 failed, 1 passed, 76 deselected in 10.57s
+```
+with the concrete causes `KeyError: 'destination'` on the request body, the missing `payload['destination']` and
+`RuntimeError: Matrix call bridge did not identify the answerer` (the frozen receipt names the answerer in
+`actor`, the previous sender only read `target`).
+
+GREEN of the CALL work: `pytest tests/test_consumer_policy.py tests/test_incident_call_chain.py
+tests/test_http_api.py -q -k "destination or scoped_call or ScopedCall"` → **8 passed**.
+
+GREEN of the whole affected set: `pytest tests/test_consumer_policy.py tests/test_incident_call_chain.py
+tests/test_http_api.py tests/test_admin_console.py -q` → **108 passed in 184.11s (0:03:04)**.
+
+Wider regression on the same tree: `tests/test_delivery_worker.py`, `tests/test_incident_outcomes.py` and
+`tests/test_notification_center.py` together → **3 failed, 94 passed**. The three failures are the same
+pre-existing `tests/test_incident_outcomes.py` ones of the baseline (health reconciliation counter,
+`tests/test_incident_outcomes.py:231`); no new failure and no new failure class.
+
+New tests: `tests/test_consumer_policy.py:625` (the destination comes from the server policy, and a producer
+body that names its own destination is ignored), `tests/test_http_api.py:277` (the scoped request carries the
+typed destination and the delivery key), `:290` (the legacy request keeps the old fixed environment contract,
+without destination and without delivery key), `:302` (ten receipt variants never answer), `:325` (an
+incomplete destination is never placed), `tests/test_incident_call_chain.py:548-620` (the same three rules for
+the chain route).
+
+### 9.4 Source handoff
+
+- Source commit: **`65713bdee8567d97c136103fea9d391442c9e206`**, author `Mavis <Mavis@local>`, canonical `main`,
+  `git commit --only`, exactly six owned paths: `notification_center/core.py` (+26/-1),
+  `notification_center/http_api.py` (+36/-1), `notification_center/incident_call_chain.py` (+65/-1),
+  `tests/test_consumer_policy.py` (+61), `tests/test_http_api.py` (+107/-1), `tests/test_incident_call_chain.py`
+  (+74).
+- Hashes of the published state:
+  `core.py 4e302054addec350be26a16682f28f62ec4a6718478310bd78311b320b76cf95`,
+  `http_api.py 46b162ccc4d0c77584453df1d3dac7fa9ea438f6ed7ad31061778ddbbc3f6267`,
+  `incident_call_chain.py a56968684317a9a382dff0aa9287045c48e92fb5ae173e87ddf9f279456fe75f`.
+- What the UserIO side still owes (their owned paths, communications): the route must accept the server owned
+  destination binding, resolve it against the private `USERIO_MATRIX_NOTICE_ROUTES_FILE` with exactly one
+  complete match, place the call as the trusted account owner of that `account_ref` (never a UUID from the
+  body), never fall back to the owner defaults when a binding is present, verify account ownership, provider,
+  enabled credential, whoami identity and that the joined room membership equals exactly the two participants,
+  and echo `call_id, channel, status, ended, answered, acknowledged, safe_to_fallback, account_ref, room_id,
+  destination, request_id, actor`. Their source commit is `7c3793b2723cd3c2cb0a8043f255a31b6c760859`.
+- What the NP side therefore does **not** need: no new dispatcher, no new token, no new caller, no change of
+  the shared owner defaults, no owner SDK grants.
+
+### 9.5 Status
+
+- **Source READY**: the NP side of the accepted CALL contract is implemented and proved (RED → fix → GREEN).
+- **Live acceptance NOT RUN**: no Matrix call, no event, no delivery, no contact, no grant, no config change,
+  no deploy and no rollout was performed; the live release still runs the previous code, and the live mesh shows
+  no new audit rows from this work.
+- **Room join PENDING**: the live criterion of the accepted contract still needs the UserIO route with the
+  configured QA binding and the isolated room resource, plus the one scoped consumer whose policy carries the
+  sender and target bindings. The NP side is ready for that join and fails closed until it happens: without the
+  configured route the bridge answers no receipt that matches the binding, so the NP keeps the outcome uncertain
+  and acknowledges nothing.
