@@ -1,8 +1,5 @@
-# Fast Agent projection: client-managed bearer token stays in fast-agent.secrets.yaml.
+# Fast Agent projection: the canonical HTTP point is registered by the GPTAdmin installer
+# in the Fast Agent client config, because Fast Agent cannot resolve a bearer from the
+# environment. The package carries the skill only.
 mcp:
-  servers:
-    NoticePlace:
-      command: /opt/noticeplace/bin/ask-human-mcp
-      args: []
-      env:
-        ASK_HUMAN_ENV_FILE: /home/roomhacker/.config/ask-human/env
+  servers: {}

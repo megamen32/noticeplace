@@ -42,9 +42,20 @@ target harness → Preview → Apply**. Native Codex and ZCode marketplaces are
 included at the paths above and point to the same versioned package. Native CLI
 installation and consumer acceptance belong to the release owner.
 
-Portable clients resolve `./bin/ask-human-mcp` inside the versioned package; it forwards to the existing `/opt/noticeplace/bin/ask-human-mcp`. Native Codex/ZCode/OpenCode/FastAgent projections keep their original absolute runtime command, using the existing
-protected `ASK_HUMAN_ENV_FILE` path. The bundle contains no secret values and
-requires no manual skill copies. Validate it with:
+Portable clients and the native projections all reach the same shared Notice
+Place MCP over Streamable HTTP at `https://notify.bezrabotnyi.com/mcp`. No
+client starts a Notice Place server of its own, and the bundle contains no
+secret values:
+
+* Codex and ZCode read the bearer from the environment
+  (`bearer_token_env_var: NOTIFY_MCP_TOKEN`), so the package only names the
+  reference;
+* OpenCode and Fast Agent cannot resolve a bearer from the environment, so
+  their registration is written by the GPTAdmin installer
+  (`gptadmin notice-place install`) into the client config, and the package
+  keeps the skill only.
+
+Validate it with:
 
 ```bash
 python3 noticeplace-plugin/packages/noticeplace/0.1.1/scripts/validate_plugin.py

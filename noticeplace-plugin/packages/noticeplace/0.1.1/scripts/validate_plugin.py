@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Small dependency-free Agent Plugins 1.0 package validator."""
+"""Small dependency-free Agent Plugins 1.0 package validator.
+
+The package registers the one shared Notice Place MCP over Streamable HTTP.
+The bearer is referenced from the environment, so the package holds no secret
+and no client ever starts a Notice Place server of its own.
+"""
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -16,7 +20,9 @@ MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 SEMVER = re.compile(r"^0\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 TOOLS = ("noticeplace_ask_human", "noticeplace_pending_questions", "noticeplace_answer",
-        "noticeplace_question_result", "noticeplace_incident_progress")
+         "noticeplace_question_result", "noticeplace_incident_progress")
+ENDPOINT = "https://notify.bezrabotnyi.com/mcp"
+CREDENTIAL_ENV = "NOTIFY_MCP_TOKEN"
 
 
 def load(name: str) -> dict:
@@ -24,6 +30,23 @@ def load(name: str) -> dict:
     if not isinstance(value, dict):
         raise ValueError(f"{name}: object required")
     return value
+
+
+def check_http_server(name: str, server: dict, require_type: bool = True) -> None:
+    """The canonical point is the shared HTTPS endpoint with an env reference."""
+    transport = server.get("type")
+    if require_type and transport != "streamable-http":
+        raise ValueError(f"{name}: the canonical point must use the shared Streamable HTTP endpoint")
+    if transport is not None and transport != "streamable-http":
+        raise ValueError(f"{name}: the canonical point must use the shared Streamable HTTP endpoint")
+    url = server.get("url")
+    if not isinstance(url, str) or not url.startswith("https://") or url != ENDPOINT:
+        raise ValueError(f"{name}: must use the published Notice Place endpoint")
+    if "headers" in server or "env" in server:
+        raise ValueError(f"{name}: must not embed credentials")
+    reference = server.get("bearer_token_env_var")
+    if reference != CREDENTIAL_ENV:
+        raise ValueError(f"{name}: the bearer must be read from the environment by name")
 
 
 def validate() -> str:
@@ -43,32 +66,12 @@ def validate() -> str:
     mcp = load("mcp.json")
     if mcp.get("$schema") != MCP_SCHEMA or not isinstance(mcp.get("mcpServers"), dict):
         raise ValueError("mcp.json: Agent Plugins 1.0 MCP schema is required")
+    if len(mcp["mcpServers"]) != 1:
+        raise ValueError("mcp.json: exactly one Notice Place server is registered")
     for server_name, server in mcp["mcpServers"].items():
         if not isinstance(server, dict):
             raise ValueError(f"mcp.json: {server_name} must be an object")
-        if server.get("type") == "streamable-http":
-            if not isinstance(server.get("url"), str) or not server["url"].startswith("https://"):
-                raise ValueError(f"mcp.json: {server_name} must use HTTPS")
-            if "headers" in server or "env" in server:
-                raise ValueError(f"mcp.json: {server_name} must not embed credentials")
-        elif server.get("type") == "stdio":
-            command = server.get("command")
-            if not isinstance(command, str) or not command or any(char.isspace() for char in command):
-                raise ValueError(f"mcp.json: {server_name} must use one executable token")
-            if command.startswith("./"):
-                executable = (PACKAGE / command[2:]).resolve()
-                if not executable.is_relative_to(PACKAGE.resolve()) or not executable.is_file() or not os.access(executable, os.X_OK):
-                    raise ValueError(f"mcp.json: {server_name} requires an executable inside the package")
-            elif "/" in command or "\\" in command or command in {".", ".."}:
-                raise ValueError(f"mcp.json: {server_name} command must be bare or plugin-relative")
-            # Only protected file paths are named; no secret values, ever.
-            for key, value in (server.get("env") or {}).items():
-                if not isinstance(value, str) or not value.startswith("/") or len(value) > 4096:
-                    raise ValueError(f"mcp.json: {server_name}.env.{key} must be a protected path")
-                if re.search(r"(?i)(bearer|token|secret|password)\s*=", value):
-                    raise ValueError(f"mcp.json: {server_name}.env.{key} must not embed a credential")
-        else:
-            raise ValueError(f"mcp.json: {server_name} has an unsupported transport")
+        check_http_server(f"mcp.json: {server_name}", server)
 
     skill_dirs = list((PACKAGE / "skills").iterdir())
     if len(skill_dirs) != 1 or not (skill_dirs[0] / "SKILL.md").is_file():
@@ -95,17 +98,26 @@ def validate() -> str:
         if native.get("skills") != "./skills/" or native.get("mcpServers") != "./mcp.codex.json":
             raise ValueError(f"{filename}: native skill/MCP source must stay in this package")
     native_mcp = load("mcp.codex.json")
+    if len(native_mcp.get("mcpServers") or {}) != 1:
+        raise ValueError("mcp.codex.json: exactly one Notice Place server is registered")
     server = native_mcp["mcpServers"]["noticeplace"]
     portable = mcp["mcpServers"]["NoticePlace"]
-    # Native clients keep their existing absolute runtime projection. Portable
-    # clients resolve this package-owned launcher, which forwards the same argv.
-    wrapper = PACKAGE / "bin/ask-human-mcp"
-    if portable.get("command") != "./bin/ask-human-mcp" or server.get("command") != "/opt/noticeplace/bin/ask-human-mcp":
-        raise ValueError("portable/native MCP must retain the existing runtime seam")
-    if any(server.get(key) != portable.get(key) for key in ("args", "env")) or portable.get("args") != []:
-        raise ValueError("portable/native authentication and arguments differ")
-    if wrapper.read_text() != '#!/bin/sh\nset -eu\nexec /opt/noticeplace/bin/ask-human-mcp "$@"\n':
-        raise ValueError("portable launcher must forward only to the existing runtime")
+    check_http_server("mcp.codex.json: noticeplace", server, require_type=False)
+    if server.get("url") != portable.get("url"):
+        raise ValueError("native and portable MCP must use the same shared endpoint")
+    if server.get("bearer_token_env_var") != portable.get("bearer_token_env_var"):
+        raise ValueError("native and portable MCP must use the same credential reference")
+
+    # OpenCode and Fast Agent cannot resolve a bearer from the environment, so
+    # their registration is written by the installer into the client config and
+    # the package keeps the skill only.
+    opencode = load("opencode.json")
+    if opencode.get("mcp"):
+        raise ValueError("opencode.json: the client config owns the registration")
+    fast_agent = (PACKAGE / "fast-agent.yaml").read_text(encoding="utf-8")
+    if re.search(r"(?m)^\s{2,}\S+:\s*$", fast_agent.split("servers:", 1)[-1]):
+        raise ValueError("fast-agent.yaml: the client config owns the registration")
+
     root = PACKAGE.parents[2]
     codex_market = json.loads((root / ".agents/plugins/marketplace.json").read_text())
     zcode_market = json.loads((root / ".claude-plugin/marketplace.json").read_text())
