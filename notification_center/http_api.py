@@ -687,6 +687,19 @@ class MatrixCallSender:
         return {"answered": answered, "actor": f"matrix:{target}" if answered else None}
 
 
+class MatrixDeliveryRejected(RuntimeError):
+    """A definitive Matrix refusal that a retry cannot repair.
+
+    The identity may not use that room, the token is not accepted or the room
+    does not exist. Sending again would produce the same refusal, so the
+    delivery ends here instead of looping.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 class MatrixMessageSender:
     """Send one idempotent text message through the Matrix Client-Server API."""
 
@@ -734,7 +747,12 @@ class MatrixMessageSender:
         try:
             with self._runner(request, timeout=self._timeout_seconds) as response:
                 if not 200 <= int(response.status) < 300:
-                    raise RuntimeError(f"Matrix message send returned HTTP {response.status}")
+                    status = int(response.status)
+                    if status in {401, 403, 404}:
+                        raise MatrixDeliveryRejected(
+                            f"Matrix message send returned HTTP {status}", status=status,
+                        )
+                    raise RuntimeError(f"Matrix message send returned HTTP {status}")
                 result = json.loads(response.read())
         except json.JSONDecodeError as error:
             raise RuntimeError("Matrix message send returned invalid JSON") from error
@@ -1467,6 +1485,17 @@ class DeliveryWorker:
                 return
             if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
                 self._center.schedule_health_outcome(str(delivery["incident_id"]), "interrupted", f"agent-interrupted:{delivery['id']}")
+            attempt = int(delivery.get("attempt") or 0)
+            ceiling = None if isinstance(error, MatrixDeliveryRejected) else self._center.delivery_attempt_ceiling(delivery)
+            if isinstance(error, MatrixDeliveryRejected) or (ceiling is not None and attempt >= ceiling):
+                # A definitive refusal is never repeated, and a policy step never
+                # exceeds the attempt ceiling it states. A failing dependency
+                # ends the step instead of looping forever.
+                self._center.complete_delivery(
+                    delivery["id"], "failed", str(error),
+                    claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                )
+                return
             delay = min(300, 5 * (2 ** min(int(delivery["attempt"]), 6)))
             self._center.complete_delivery(
                 delivery["id"],

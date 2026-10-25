@@ -2312,6 +2312,32 @@ class NotificationCenter:
             return "matrix_route_scope"
         return None
 
+    def delivery_attempt_ceiling(self, delivery: Mapping[str, Any]) -> int | None:
+        """Return the attempt ceiling of the policy step of one delivery.
+
+        A generic consumer step states how many times it may be attempted. A
+        delivery of such a step never exceeds that number, so a failing
+        dependency ends the step instead of looping forever. A delivery
+        without a policy step keeps its own lifecycle.
+        """
+        policy_step_id = str(delivery.get("policy_step_id") or "")
+        incident_id = str(delivery.get("incident_id") or "")
+        if not policy_step_id or not incident_id:
+            return None
+        row = self._connection.execute(
+            "SELECT s.max_repeats FROM consumer_policy_stages s "
+            "JOIN incidents i ON i.consumer_id = s.consumer_id "
+            "WHERE s.step_id = ? AND s.enabled = 1 AND i.id = ?",
+            (policy_step_id, incident_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            repeats = int(row["max_repeats"])
+        except (TypeError, ValueError):
+            return None
+        return repeats if repeats >= 1 else None
+
     def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float, target: Mapping[str, Any] | None = None, policy_step_id: str | None = None, repeat_number: int | None = None) -> str | None:
         """Create a stable scheduled delivery and return its identity."""
         denial = self._delivery_denial_reason(incident_id, channel, target)
