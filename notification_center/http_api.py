@@ -2402,11 +2402,52 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
             if self.path.startswith("/v1/incidents/"):
                 try:
                     incident_id = self.path.rsplit("/", 1)[-1]
-                    center.authorize_incident(_bearer(self), incident_id)
-                    incident = center.get_incident(incident_id)
-                    self._reply(HTTPStatus.OK if incident else HTTPStatus.NOT_FOUND, incident or {"error": "incident not found"})
+                    token = _bearer(self)
+                    capability = os.environ.get("NOTIFY_CONTEXT_READ_TOKEN", "").strip()
+                    context_reader = bool(capability) and hmac.compare_digest(capability, token)
+                    if context_reader:
+                        # A read capability sees the owner's own audiences only.
+                        incident = center.get_incident(incident_id)
+                        if incident is None:
+                            self._reply(HTTPStatus.NOT_FOUND, {"error": "incident not found"})
+                            return
+                        if str(incident.get("recipient") or "") not in {"me", "health"}:
+                            self._reply(HTTPStatus.FORBIDDEN, {"error": "the incident is outside the owner audiences"})
+                            return
+                    else:
+                        center.authorize_incident(token, incident_id)
+                        incident = center.get_incident(incident_id)
+                        if incident is None:
+                            self._reply(HTTPStatus.NOT_FOUND, {"error": "incident not found"})
+                            return
+                    incident.update(center.incident_session_binding(incident_id))
+                    self._reply(HTTPStatus.OK, incident)
                 except NotificationCenterError as error:
                     self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
+                return
+            if parsed_path.path == "/v1/incidents":
+                # A read-only context view of one project: the bounded incident
+                # list a person-facing caller needs, scoped by its own bearer.
+                # The audiences are the owner's own; a caller never widens them.
+                try:
+                    query = urllib.parse.parse_qs(parsed_path.query)
+                    project = str(query.get("project", ["*"])[0]).strip() or "*"
+                    token = _bearer(self)
+                    capability = os.environ.get("NOTIFY_CONTEXT_READ_TOKEN", "").strip()
+                    if capability and hmac.compare_digest(capability, token):
+                        project = "*"
+                    else:
+                        center.authorize_project(token, project)
+                    include_resolved = str(query.get("include_resolved", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                    limit = int(query.get("limit", ["20"])[0])
+                    self._reply(HTTPStatus.OK, center.list_incidents_for_context(
+                        project, ("me", "health"), str(query.get("query", [""])[0]),
+                        include_resolved=include_resolved, limit=limit,
+                    ))
+                except AuthorizationError as error:
+                    self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
+                except ValidationError as error:
+                    self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             if parsed_path.path == "/v1/human-requests":
                 try:

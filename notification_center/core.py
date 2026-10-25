@@ -15,7 +15,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 
@@ -4533,6 +4533,85 @@ class NotificationCenter:
             raise ValidationError("health incident requires useful progress for the selected plan before resolution")
         if not self._healthy_verification_matches(incident_id):
             raise ValidationError("health incident requires independent healthy verification before resolution")
+
+    def list_incidents_for_context(self, project: str, recipients: Sequence[str], query: str = "",
+                                   include_resolved: bool = False, limit: int = 20) -> dict[str, Any]:
+        """Return the bounded incident context of one project for a read-only client.
+
+        A caller that answers a person about incidents needs the same bounded
+        view: the incidents of its own recipients, newest and most severe
+        first. The scope comes from the caller, never from a body, and the
+        result carries no credential and no delivery instruction.
+        """
+        audiences = [str(item).strip() for item in recipients if str(item).strip()]
+        if not audiences:
+            raise ValidationError("at least one recipient is required")
+        bound = max(1, min(int(limit), 50))
+        where = "recipient IN (" + ",".join("?" for _ in audiences) + \
+            ") AND kind = 'incident' AND event_type IS NOT 'operator.call_test'"
+        params: list[Any] = [*audiences]
+        if str(project) != "*":
+            where = "project = ? AND " + where
+            params.insert(0, str(project))
+        if include_resolved:
+            where += " AND (state != 'resolved' OR resolved_at >= ?)"
+            params.append(time.time() - 86400)
+        else:
+            where += " AND state != 'resolved'"
+        terms = [term for term in str(query or "").casefold().split() if term][:8]
+        for term in terms:
+            where += " AND (lower(COALESCE(title,'')) LIKE ? OR lower(COALESCE(body,'')) LIKE ? OR lower(project) LIKE ?)"
+            pattern = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            params.extend([pattern, pattern, pattern])
+        with self._lock:
+            total = self._connection.execute(
+                "SELECT count(*) FROM incidents WHERE " + where, params).fetchone()[0]
+            rows = self._connection.execute(
+                "SELECT id, project, state, severity, title, body, updated_at, resolved_at FROM incidents WHERE "
+                + where + " ORDER BY CASE severity WHEN 'emergency' THEN 6 WHEN 'critical' THEN 5 "
+                "WHEN 'important' THEN 4 WHEN 'notice' THEN 3 WHEN 'info' THEN 2 ELSE 1 END DESC, updated_at DESC LIMIT ?",
+                (*params, bound)).fetchall()
+        items = []
+        for row in rows:
+            items.append({
+                "id": str(row["id"]), "project": str(row["project"]), "state": str(row["state"]),
+                "severity": str(row["severity"]), "title": str(row["title"] or "")[:600],
+                "body": str(row["body"] or "")[:2000],
+                "updated_at": float(row["updated_at"] or 0),
+                "resolved_at": float(row["resolved_at"]) if row["resolved_at"] else None,
+            })
+        return {
+            "schema": "noticeplace.incident.context.v1", "project": str(project),
+            "audiences": audiences, "total_in_scope": int(total), "returned": len(items),
+            "truncated": int(total) > len(items), "includes_recent_resolved": bool(include_resolved),
+            "incidents": items,
+        }
+
+    def incident_session_binding(self, incident_id: str) -> dict[str, Any]:
+        """Return the investigation session that is really linked to one incident.
+
+        The session is read from the incident's own events, never from a
+        supplied identifier, so a caller cannot name a foreign session.
+        """
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload_json FROM events WHERE incident_id = ? AND event_type IN "
+                "('health.diagnosis_session_started', 'health.orchestrator_session_started', "
+                "'health.remediation_session_started') ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (str(incident_id),)).fetchone()
+        payload: Mapping[str, Any] = {}
+        if row is not None:
+            try:
+                value = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                value = {}
+            if isinstance(value, Mapping):
+                payload = value
+        harness = str(payload.get("harness") or "").lower()
+        session_id = str(payload.get("session_id") or "")[:256]
+        linked = bool(session_id and harness in {"codex", "hermes", "opencode", "zcode"})
+        return {"has_session": linked, "session_id": session_id if linked else "",
+                "session_harness": harness if linked else ""}
 
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
         """Return the current incident record, or None when it has never existed."""
