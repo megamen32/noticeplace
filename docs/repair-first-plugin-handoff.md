@@ -43,8 +43,11 @@ Idempotency-Key: <stable per probe>
    the incident open. No second executor and no planner is involved.
 ## 2. Launch: one Agent Herder admission call
 
-Notice Place no longer picks a harness and no longer loops over fallbacks. For
-every health stage it makes exactly one call:
+Notice Place makes exactly one admission call for every health stage. The
+selected route is the initial request; Agent Herder and the provider may apply
+their configured OmniRoute/provider/model fallbacks automatically. The native
+receipt is authoritative for the effective harness and model. An accepted or
+unknown admission is never replayed just to try another route. The request is:
 
 ```http
 POST /api/automation/project-launch
@@ -83,44 +86,51 @@ Project routes are read from `GET /api/automation/launch-policy`
 (`projectRoutes: {path: {harnesses[], models?{}, aliases[]}}`). Matching is
 case-insensitive and accepts the card project id, the canonical name, an alias,
 or the absolute workspace root. Notice Place matches exactly what Agent Herder
-matches and never guesses a route from a similar component name; an undeclared
-project keeps the pinned OpenCode/minimax route. AutoSellBot-style names that
-nobody declared stay on that default.
+matches and never guesses a route from a similar component name. For an
+unconfigured project, the current Agent Herder profile default applies; no
+OpenCode or provider is hard-coded by this integration. Project routes remain
+the authority for configured projects.
 
-### 2a. The operator's incident model
+### 2a. The project's incident route
 
-The operator picks the model that analyses a health incident in the admin
-dashboard. Notice Place owns that preference; Agent Herder still owns admission
-and execution. The choice is a closed list of two exact routes:
+The project route in Agent Herder owns the harness, initial model and allowed
+or denied model lists for that project. Notice Place passes the project
+identity and health purpose; it does not force OpenCode or replace a configured
+project model with one global health model. For a project without a route, the
+current Agent Herder profile default applies. GLM 5.3 Flash is the preferred
+economical default when the owner has not selected another route. OmniRoute and
+configured automatic provider/model fallbacks are allowed.
 
-| route | role |
-| --- | --- |
-| `omniroute/minimax/MiniMax-M3.1-Flash` | the default; used when nothing is saved |
-| `minimax-coding-plan/MiniMax-M3.1-Flash` | manual only; never selected automatically |
-
-The saved value lives in the `health_incident_model` runtime setting. An unset
-value and an unrecognized persisted value both resolve to the approved default
-route above; they never fall back to the legacy subscription route.
+The existing `health_incident_model` runtime setting is only a compatibility
+default for an unconfigured project while the project-route integration is
+being consolidated. It must not override a configured `projectRoutes` entry.
+Current source limitation: the health-launch gate still restricts this path to
+OpenCode and its legacy model families. The active Agent Herder release owner
+has the requested project-route correction; until it lands and is installed,
+the contract above is not runtime proof.
 
 **The snapshot is durable and taken at scheduling time.** Every new
 `gptadmin.agent:health-diagnosis` and `gptadmin.agent:health-remediation`
-delivery stores `target_json.incident_model`. A delivery scheduled before the
-operator saved a route keeps its empty target and therefore the legacy pinned
-behaviour: an existing job is never rerouted and never replayed under another
-model. The snapshot travels only inside the signed agent-job health context.
+delivery stores the selected project route in its signed health context. An
+existing job is never rerouted or replayed under another project/model choice.
+If the provider applies an allowed fallback, the native receipt records the
+effective model separately from the selected project route.
 
-**A selected-route launch is a protected, purpose-bound call.** It keeps
-harness `opencode`, sends `purpose=noticeplace.health-analysis`, and carries a
-dedicated `Authorization: Bearer <health_launch_token>` read from the
+**A selected-route launch is a protected, purpose-bound call.** It lets the
+Agent Herder project route select the harness and model, sends
+`purpose=noticeplace.health-analysis`, and carries a dedicated
+`Authorization: Bearer <health_launch_token>` read from the
 `health_launch_token` field of the protected 0600 agent-jobs profile. The direct
 remediation route reuses that same protected field. The value appears only in
 the launch request; it never reaches a receipt, an audit row or an error
 message.
 
-**It fails closed before the launch.** A missing token, a model outside the
-closed list, or a project whose Agent Herder policy does not allow OpenCode
-stops the launch with a named error. There is no provider fallback, no harness
-fallback, and no write to the Agent Herder launch policy.
+**It validates the launch before admission.** A missing token, an invalid
+initial model, or a project whose Agent Herder policy has no eligible harness
+stops the launch with a named error. After admission, configured provider/model
+fallbacks (including OmniRoute) are allowed; the durable receipt and native
+readback determine what actually ran. The launch does not override the
+project's harness/model route or write to the Agent Herder launch policy.
 
 ## 3. One question, one card, one native resume
 
