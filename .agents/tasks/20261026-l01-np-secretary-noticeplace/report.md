@@ -83,14 +83,15 @@ Agent Herder-сессия `01a1653b-d774-73b3-9c0a-09cced76ea9e` (codex, lead г
 
 `notification_center/http_api.py` + `notification_center/core.py`:
 
-- новый тип `MatrixDeliveryRejected` — окончательный отказ Matrix (401/403/404): «этим аккаунтом эту комнату использовать нельзя», повтор не поможет;
-- `MatrixMessageSender.send` различает окончательный отказ (401/403/404) и временный сбой (429, 5xx, таймаут);
+- новый тип `MatrixDeliveryRejected` — окончательный отказ Matrix: 401 (токен не принят), 403 (этим аккаунтом комнату использовать нельзя), 404 (комнаты нет). Повтор не поможет, поэтому доставка заканчивается сразу;
+- `MatrixMessageSender.send` различает окончательный отказ и временный сбой (429, 5xx, таймаут) в **обоих** путях ответа homeserver-а: и когда он отвечает статусом, и когда бросает `HTTPError`;
 - `core.delivery_attempt_ceiling(delivery)` — потолок попыток, который объявляет сама политика шага (`max_repeats`);
-- `DeliveryWorker.deliver`: окончательный отказ → доставка завершается `failed` сразу; временный сбой → повтор только если попытки ещё остались по потолку политики. Сбой шага больше не крутится бесконечно.
+- решение о потолке принимает **сохранённая строка** доставки внутри `complete_delivery`, а не копия строки у воркера: квитанция меша отдаёт воркеру более старую копию только что забранной строки, и по этой копии шаг получал лишнюю попытку;
+- `DeliveryWorker.deliver`: окончательный отказ → доставка завершается `failed` сразу; временный сбой → повтор, пока потолок политики не исчерпан.
 
-Тесты (`tests/test_matrix_delivery_failure.py`, 4 теста): окончательный 403 → `failed`, `attempt=1`, второй тик ничего не отправляет; временный сбой → `queued` → `failed` на потолке `max_repeats=2`, третий тик молчит; Matrix-only потребитель → ни одного `telegram.*` и ни одного `*.call`; 429 остаётся временным.
+Тесты (`tests/test_matrix_delivery_failure.py`, 5 тестов): окончательный 403 (реальный путь `HTTPError`) → `failed`, одна попытка, второй тик ничего не отправляет; временный сбой → `queued` → `failed` на потолке `max_repeats=2`, третий тик молчит; Matrix-only потребитель → ни одного `telegram.*` и ни одного `*.call`; 429 остаётся временным; сохранённый счётчик попыток решает потолок.
 
-Регрессия: 161 тест проходит; 9 падений (`test_delivery_worker.py` × 6, `test_http_api.py` × 3) — **предсуществующие на `HEAD`**, проверено откатом моих двух файлов и повторным прогоном (тот же набор).
+Регрессия: 162 теста проходят; 9 падений (`test_delivery_worker.py` × 6, `test_http_api.py` × 3) — **предсуществующие на `HEAD`**, проверено откатом моих двух файлов и повторным прогоном (тот же набор).
 
 ### 2.4 Транспортная возможность ответа
 
@@ -113,9 +114,156 @@ Agent Herder-сессия `01a1653b-d774-73b3-9c0a-09cced76ea9e` (codex, lead г
 
 ---
 
+## 2A. Read-only API контекста (вторая половина L01, разрешена владельцем)
+
+### 2A.1 Notice Place: минимальный read-only API
+
+`notification_center/core.py` + `notification_center/http_api.py`, публикация `d4ac8fb`, релиз `20261025T215340Z-d4ac8fb74bcf`:
+
+- `GET /v1/incidents?project=&query=&include_resolved=&limit=` → bounded список инцидентов аудиторий владельца (`me`, `health`) в пределах проектов токена;
+- `GET /v1/incidents/{id}` → тот же инцидент плюс `has_session` / `session_id` / `session_harness` — сессия расследования читается из собственных событий инцидента, чужую сессию назвать нельзя;
+- отдельная возможность чтения `NOTIFY_CONTEXT_READ_TOKEN` (сгенерирована, значение не печатается): даёт **только** чтение контекста, аудитории не расширяются, чужие получатели не видны (`404`).
+
+Живой readback:
+
+```
+GET /v1/incidents?project=*  → 200, total_in_scope=1771, audiences=['me','health']
+  - inc_6d78b7e7… open emergency | Проба области токена emergency
+  - inc_d42bd0c7… open emergency | OmniRoute недоступен: roomhacker-server-44
+  - inc_aebc255a… open emergency | roomhacker-server-100-canary-v4: DISK is above threshold
+GET /v1/incidents/inc_88eebf97c2ca46b1 (чужая аудитория) → 404 incident not found
+```
+
+Тесты: `tests/test_incident_context_api.py` (5) — аудитории владельца, запрет чужого проекта, фильтр запроса, скрытие решённого, привязка только связанной сессии.
+
+### 2A.2 UserIO: чтение контекста через API, а не через чужое хранилище
+
+`/home/roomhacker/agents-projects/universal-userio/src/universal_userio/voice/noticeplace_voice_context.py`, публикация `e3a96c5`:
+
+- `NoticePlaceVoiceStore` больше не открывает хранилище Notice Place: ни `sqlite3`, ни `notification_center`, ни `NOTICEPLACE_DB` в модуле нет (проверено тестом по исходнику);
+- чтение идёт по аутентифицированному API (`NOTICEPLACE_API_URL`, `NOTICEPLACE_API_TOKEN`, `NOTICEPLACE_API_PROJECT`), тот же охват аудиторий `me`/`health`, тот же автоматический алиас `autosell`;
+- недоступность API — явная ошибка `NoticePlaceContextError`, а не молчаливый пустой список.
+
+Тесты: `tests/test_noticeplace_voice_context_api.py` (7) — чтение по API с bearer, запрет чтения хранилища, недоступность/401/нет конфигурации, привязка сессии, алиасы.
+
+`agentcall_secretary_api.py` **не менялся**: это телефонный путь (`recipient_e164`, шаг `phone.call`), он не лежит на пути L01 (Matrix и чтение контекста секретарём).
+
+## 2B. Живые привязки тестовых ботов (прочитаны из установленного хранилища UserIO)
+
+| | account_ref | matrix-идентификатор | user_id | capability send |
+| --- | --- | --- | --- | --- |
+| A (вызывающий) | `matrix:ab023a689e926bf99d924e933ebd` | `@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com` | `user_b0fa237eee8f4793aad037971be582a3` | включена (значение по умолчанию, отдельного предпочтения нет) |
+| B (вызываемый) | `matrix:37698708b623db45e1bfe61f4d01` | `@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com` | `user_ee857eff8b2e45f3887a33db98441519` | — |
+
+Файл маршрута типизированного адресата установлен на 100: `/etc/userio-containers/noticeplace-matrix-routes.json` (root:root 0600, виден в контейнере backend, форма проверена: ровно пять ключей, участники — два разных идентификатора, цель среди участников).
+
+**Доказательство маршрута владельца в установленном UserIO** (живые квитанции вызова через штатный read-only `GET /v1/calls/matrix/{call_id}`):
+
+```
+5dcd7248… status=completed room=!IfwZsTlPzouoIDHQez:chat.bezrabotnyi.com target=@bezrabotnyi:chat.bezrabotnyi.com account_ref=matrix:3a38caa1e8ac2eeb77443b275466
+f45f73c7… status=completed  (то же)
+f5e4e801… status=completed  (то же)
+f9fb56d3… status=completed  (то же)
+```
+
+Установленный backend (`universal-userio-backend:957baa04be34`) игнорирует типизированный адресат: его `noticeplace_calls.py` (sha256 `0fcaef0facab27105ca8333628ca16334f5eb1467f882e5b7a56bd1973ecc138`) не содержит `_binding`, поэтому вызов уходит в комнату владельца к его личному идентификатору. Поддержка адресата есть в каноническом UserIO (`7c3793b`, затем `dbbda34` — маршрут через primary88), но в установленном образе её нет.
+
+**Состояние простоя доказано двумя штатными поверхностями:** в очереди Notice Place нет ни одной доставки звонка в состояниях `claimed`/`sending`/`queued`, и все четыре последние известные квитанции вызова — `status=completed`. Перезапуск голосового runtime на 88 до установки нового образа не выполняется.
+
+## 2C. Сборка образа: блокер инфраструктуры пула
+
+Сборка ведётся из канонического источника UserIO (коммит `e3a96c5`) через штатный релиз-контекст `scripts/container_release.py context` (контекст собран из `git archive` опубликованной ревизии, sha256 `4021f65d7d3fffb753cb2a52efa0ec7592b92305d70d62b6253ba426335c54eb`).
+
+Общий пул `k3s-ci-shared` недоступен: его драйвер обращается к API k3s по `192.168.2.100:6443`, а k3s на этом хосте слушает `192.168.2.100:16443` (6443 — connection refused). Сборка через пул падает с `rpc error: Unavailable … EOF` и `Copying stdin failed`. Поэтому сборка ведётся локальным драйвером docker с `--load` — образ нужен локально, в локальное хранилище. Нагрузка хоста при этом: load ~46 при 104 CPU, доступно 44 ГБ RAM, 212 ГБ диска.
+
+---
+
 ## 4. Что доказано на живом пути
 
-(см. §5 — заполняется после установки второго релиза и живой прогона)
+Живой путь: `POST /v1/events` (проектный токен QA-потребителя) → инцидент → доставка `matrix.message` в изолированную комнату `!ZatzpywRZSemgAaPju:chat.bezrabotnyi.com` → ответ по тому же инциденту. Всё — в живом хранилище меша, ничего не моделировалось.
+
+### 4.0 Типизированный вызов к тестовым ботам — состояние на сейчас
+
+Установлен новый backend UserIO (штатный релиз-механизм `scripts/container_release.py replace-backend`):
+
+```
+{"status":"installed","revision":"e3a96c53a4f90458c63c28c0ca572381339472e5",
+ "image":"universal-userio-backend:e3a96c53a4f9",
+ "image_id":"sha256:2ce3a678ac6a399c746e84ce56fd4c74ecbeb544dac4885f4e81773b7208ebb2",
+ "previous_image_id":"sha256:8fe5b5e92fc8c9cc10bb121f74462fb37d8ad61b0ef2812a92219940e4b25789",
+ "supervisor_healthy":true,"account_ids_unchanged":true,"frontend_voice_configuration_unchanged":true}
+```
+
+Readback установленного runtime: `noticeplace_calls.py` содержит `_binding` и `_policy_destination`, маршрут по умолчанию `/etc/userio-containers/noticeplace-matrix-routes.json`, файл виден в работающем контейнере.
+
+Живой прогон (инцидент `inc_5d7789a07d4f41f7a68697bf6492f24c`, проект QA, только тестовые боты):
+
+| доставка | канал | итог | что это значит |
+| --- | --- | --- | --- |
+| `dlv_e1f5259370e749bc` | `matrix.message` | failed, `Matrix message send returned HTTP 403` | отправитель Notice Place не состоит в изолированной комнате; окончательный отказ, повторов нет |
+| `dlv_41d30af7a61843bd` | `matrix.call` | failed, `Matrix call was not answered` | **типизированный адресат принят установленным UserIO**: отказ маршрута дал бы `HTTP 403 Notice Place policy route is not authorized`, а звонок был поставлен и остался без ответа |
+
+⇒ Звонок **не ушёл** ни в комнату владельца (`!IfwZsTlPzouoIDHQez`), ни к его идентификатору (`@bezrabotnyi`): установленный UserIO прочитал файл маршрута и позвонил в изолированную комнату тестовых ботов.
+
+Детерминированная идентичность запроса (тот же расчёт, что у Notice Place и у UserIO):
+
+```
+request_id = noticeplace:3823aabdd1dd42d0ff92bd9b5c3ff1745a5e99087a57dd41825f9b47f06537cb
+             = noticeplace:sha256(json([incident_id, delivery_key]))
+call_id    = uuid5(NAMESPACE_URL, "user_owner\0" + request_id) = 7348ae60-dc76-5b6c-9b7f-c437ab9e3496
+```
+
+Квитанция звонка принадлежит **пользователю A** (`user_b0fa237eee8f4793aad037971be582a3`), а не владельцу: поэтому её нет в рабочем пространстве владельца (`GET /v1/calls/matrix/7348ae60-…` → `call not found`) — это правильное разделение, а не потеря квитанции.
+
+**Чего не хватает для ответа бота:** backend UserIO не имеет маршрута управления к primary88 (в контейнере нет `AGENTCALL_CONTROL_ROUTE` и конфигурации control), поэтому голосовой приёмник на 88 не подключён к этому вызову, и тестовый бот B не ответил. Это последний недостающий узел: маршрут primary88 плюс действующий QA-scope на 88 для комнаты `!ZatzpywRZSemgAaPju` и пары A/B.
+
+Изменённое состояние тестового потребителя (только он, matrix_only, телефон по политике недостижим): `max_severity` поднят до `emergency` (иначе тихие часы 01:00–09:00 МСК отменяют любой автоматический вызов) и его `quiet_hours_json` очищен. Исходные значения: `notice` и правило 01:00–09:00 Europe/Moscow.
+
+### 4.1 Отказ зависимости заканчивается после одной попытки
+
+Релиз `20261025T213111Z-78f3aa647ba0-2473909` (ревизия `78f3aa6`, коммит «the stored attempt count ends a failing policy step»). Чистая запись после установки этого релиза:
+
+```
+INCIDENT: inc_ddd181599b55405cbac9ff1ecf741331  delivery: dlv_0d9b2e8f52cd44f6934af3d076464169
+   queued attempt=0 channel=matrix.message err=None
+   queued attempt=1 channel=matrix.message err=HTTP Error 403: Forbidden
+   failed attempt=2 channel=matrix.message err=Matrix message send returned HTTP 403
+```
+
+Одна отправка → окончательный отказ распознан → доставка `failed`, дальнейших попыток нет.
+
+До починки тот же путь выглядел так (замер до установки второго релиза, `inc_b4524d8da9444e89b6f68b11c2b53d1e`): `delivery_retry` в 21:18:35, 21:18:46, 21:19:07, 21:19:48 — повтор каждые 10–40 секунд, `attempt` рос без ограничения. Эта запись (`attempt=5`) после починки тоже завершилась `failed`, то есть раскрученный шаг остановлен.
+
+### 4.2 Эскалации к владельцу нет — ни одного другого канала
+
+Все четыре проверочных инцидента этого листа, чтение из живого меша после всех действий:
+
+| инцидент | состояние | доставок | канал/статус |
+| --- | --- | --- | --- |
+| `inc_8d97d6a212ff4b2981fcf5125987ef44` | resolved | 1 | `matrix.message` / failed |
+| `inc_b4524d8da9444e89b6f68b11c2b53d1e` | resolved | 1 | `matrix.message` / failed |
+| `inc_136de420ea654c3cb1b7396ec67751c3` | resolved | 1 | `matrix.message` / failed |
+| `inc_ddd181599b55405cbac9ff1ecf741331` | resolved | 1 | `matrix.message` / failed |
+
+Ни одного `telegram.main`, ни одного `*.call`, ни одного `android.phone.call` по этим инцидентам нет. Это и есть требование владельца «Ошибка Notice Place не приводит к бессмысленному звонку или бесконечной эскалации», выполненное на живом пути: отказ зависимости завершает шаг, а не превращается в звонок.
+
+### 4.3 Один ответ по тому же инциденту
+
+`POST /v1/events` с `action=resolve` по инциденту `inc_ddd181599b55405cbac9ff1ecf741331`:
+
+```
+ANSWER: 200 {"incident_id": "inc_ddd181599b55405cbac9ff1ecf741331", "resolved": true, "state": "resolved"}
+```
+
+Ответ закрывает **тот же** инцидент и **тот же** dedup-ключ `l01-np-secretary-20261026-room-notice-4`, чья доставка была единственной. Остальные три проверочных инцидента закрыты тем же способом, чтобы не оставлять открытых карточек.
+
+### 4.4 Чего живой прогон не доказывает
+
+- **Уведомление не дошло в комнату.** Доставка падает с `403` по существенной причине: отправитель Notice Place (`@aiadmin:chat.bezrabotnyi.com`) не состоит в изолированной комнате, где живут тестовые боты A и B. Это не дефект повтора, а отсутствие отправителя в комнате (п. 3, пункт 5).
+- **Привязка ответа из комнаты к инциденту (`POST /v1/matrix/reply`) не проверена вживую:** для неё нужен доставленный уведомляющий `event_id`, а уведомление не доходит. Механизм в коде есть и развёрнут (`bind_matrix_reply`), транспортная возможность `NOTIFY_MATRIX_REPLY_TOKEN` настроена, но производителя ответа на стороне UserIO нет (п. 3, пункт 4).
+- **Голосового ответа нет.** Голосовой путь целиком упирается в UserIO (п. 3): установленный UserIO игнорирует типизированный адресат и ушёл бы на личный идентификатор владельца, поэтому звонок не выполнялся.
+
+Итог: **одна ошибка Notice Place больше не превращается в звонок владельцу и не крутится бесконечно — это доказано на живом пути.** Доведение изолированной комнаты до настоящего разговора (уведомление дошло, ответ из комнаты привязался к тому же инциденту, голосовой ответ секретаря) требует правок UserIO, перечисленных в п. 3, и в зоне Notice Place сделано всё, что можно сделать без них.
 
 ---
 
