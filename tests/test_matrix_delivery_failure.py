@@ -10,6 +10,7 @@ Telegram card and never becomes a phone call.
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -73,22 +74,9 @@ class MatrixDeliveryFailureTests(unittest.TestCase):
     def test_definitive_matrix_refusal_fails_once_and_is_never_retried(self) -> None:
         calls: list[object] = []
 
-        class Response:
-            status = 403
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return None
-
-            @staticmethod
-            def read() -> bytes:
-                return b'{"errcode":"M_FORBIDDEN"}'
-
         def runner(request, *, timeout):
             calls.append(request)
-            return Response()
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
 
         _consumer, created = self._consumer()
         worker = self._worker(runner)
@@ -140,21 +128,8 @@ class MatrixDeliveryFailureTests(unittest.TestCase):
         self.assertEqual(2, len(calls))
 
     def test_failed_matrix_step_of_a_matrix_only_consumer_never_reaches_the_owner(self) -> None:
-        class Response:
-            status = 403
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return None
-
-            @staticmethod
-            def read() -> bytes:
-                return b'{"errcode":"M_FORBIDDEN"}'
-
         def runner(request, *, timeout):
-            return Response()
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
 
         _consumer, created = self._consumer()
         worker = self._worker(runner)
@@ -169,6 +144,30 @@ class MatrixDeliveryFailureTests(unittest.TestCase):
         self.assertNotIn("telegram.main", channels)
         self.assertFalse([name for name in channels if name.endswith(".call")])
         self.assertEqual([], [row for row in rows if row["status"] not in {"failed", "sent", "cancelled"}])
+
+    def test_the_stored_attempt_count_decides_the_ceiling(self) -> None:
+        """The stored count decides, not a counter the caller brings along.
+
+        A claim may hand the worker an older copy of its own row, so the
+        ceiling is read from the stored row of the delivery.
+        """
+        _consumer, created = self._consumer(max_repeats=2)
+        delivery_id = created["initial_delivery_id"]
+        claimed_at = time.time()
+        self.center._connection.execute(
+            "UPDATE deliveries SET status = 'claimed', claimed_at = ?, attempt = 2 WHERE id = ?",
+            (claimed_at, delivery_id))
+        self.center._connection.commit()
+
+        self.center.complete_delivery(
+            delivery_id, "retry", "dependency refused", 30,
+            claimed_at=claimed_at, attempt=2,
+        )
+        stored = self.center._connection.execute(
+            "SELECT status, attempt FROM deliveries WHERE id = ?", (delivery_id,)
+        ).fetchone()
+        self.assertEqual("failed", stored["status"])
+        self.assertEqual(2, stored["attempt"])
 
     def test_a_definitive_refusal_is_not_a_transient_retry(self) -> None:
         class Response:

@@ -754,6 +754,15 @@ class MatrixMessageSender:
                         )
                     raise RuntimeError(f"Matrix message send returned HTTP {status}")
                 result = json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            # The homeserver answers a refusal with an error, not with a
+            # response body: 401, 403 and 404 are final for this binding.
+            status = int(getattr(error, "code", 0) or 0)
+            if status in {401, 403, 404}:
+                raise MatrixDeliveryRejected(
+                    f"Matrix message send returned HTTP {status}", status=status,
+                ) from None
+            raise
         except json.JSONDecodeError as error:
             raise RuntimeError("Matrix message send returned invalid JSON") from error
         event_id = result.get("event_id") if isinstance(result, dict) else None
@@ -1485,12 +1494,9 @@ class DeliveryWorker:
                 return
             if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
                 self._center.schedule_health_outcome(str(delivery["incident_id"]), "interrupted", f"agent-interrupted:{delivery['id']}")
-            attempt = int(delivery.get("attempt") or 0)
-            ceiling = None if isinstance(error, MatrixDeliveryRejected) else self._center.delivery_attempt_ceiling(delivery)
-            if isinstance(error, MatrixDeliveryRejected) or (ceiling is not None and attempt >= ceiling):
-                # A definitive refusal is never repeated, and a policy step never
-                # exceeds the attempt ceiling it states. A failing dependency
-                # ends the step instead of looping forever.
+            if isinstance(error, MatrixDeliveryRejected):
+                # A definitive refusal is never repeated: the same room will
+                # refuse the same way. The step ends here.
                 self._center.complete_delivery(
                     delivery["id"], "failed", str(error),
                     claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),

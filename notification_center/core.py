@@ -2320,8 +2320,14 @@ class NotificationCenter:
         dependency ends the step instead of looping forever. A delivery
         without a policy step keeps its own lifecycle.
         """
-        policy_step_id = str(delivery.get("policy_step_id") or "")
-        incident_id = str(delivery.get("incident_id") or "")
+        def field(name: str) -> Any:
+            try:
+                value = delivery[name]
+            except (KeyError, IndexError, TypeError):
+                return None
+            return value
+        policy_step_id = str(field("policy_step_id") or "")
+        incident_id = str(field("incident_id") or "")
         if not policy_step_id or not incident_id:
             return None
         row = self._connection.execute(
@@ -2736,6 +2742,15 @@ class NotificationCenter:
                 return
             if outcome == "retry" and str(row["status"]) not in {"claimed", "sending"}:
                 return
+            if outcome == "retry":
+                # The attempt count of the authoritative row decides the ceiling:
+                # a claim that buffers its own increment must not buy extra
+                # attempts. A policy step never repeats beyond its own ceiling,
+                # so a failing dependency ends the step instead of looping.
+                ceiling = self.delivery_attempt_ceiling(row)
+                if ceiling is not None and int(row["attempt"] or 0) >= ceiling:
+                    outcome = "failed"
+                    safe_error = safe_error or "the policy step reached its attempt ceiling"
             if (claimed_at is not None or attempt is not None) and str(row["status"]) not in {"claimed", "sending"}:
                 return
             if claimed_at is not None and float(row["claimed_at"] or 0) != float(claimed_at):
