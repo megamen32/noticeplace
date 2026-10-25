@@ -1795,6 +1795,48 @@ def complete_human_request(
     }
 
 
+def complete_bound_matrix_question(
+    center: NotificationCenter,
+    bound: Mapping[str, Any],
+    answer: str,
+    runner: Any = urllib.request.urlopen,
+) -> dict[str, Any] | None:
+    """Complete the pending free-text question of a matrix-answered incident.
+
+    The isolated room answer is one answer surface: the same verified sender
+    that bound the notice completes the incident's own pending free-text
+    question, and the owed native resume follows the canonical completion
+    path. A choice question stays for a surface that can name one exact
+    option, and a sender the question does not declare completes nothing.
+    """
+    incident_id = str(bound.get("incident_id") or "")
+    actor = str(bound.get("actor") or "")
+    request = center.incident_human_question(incident_id) if incident_id else None
+    if request is None:
+        return None
+    pending = {
+        "request_id": str(request.get("request_id") or ""),
+        "state": str(request.get("state") or ""),
+        "mode": str(request.get("mode") or ""),
+    }
+    if pending["state"] != "pending":
+        return {**pending, "status": "already_settled"}
+    if pending["mode"] != "question":
+        return {**pending, "status": "skipped_unsupported_mode"}
+    if actor not in set(request.get("allowed_actors") or []):
+        return {**pending, "status": "sender_not_allowed"}
+    if not str(answer or "").strip():
+        return {**pending, "status": "no_answer_text"}
+    completed = complete_human_request(center, request, str(answer), actor, "matrix", runner=runner)
+    return {
+        "request_id": completed.get("request_id"),
+        "state": completed.get("state"),
+        "answer_status": completed.get("answer_status"),
+        "value": completed.get("value"),
+        "native": completed.get("native"),
+    }
+
+
 def _deliver_human_completion_card(center: NotificationCenter, request: Mapping[str, Any], actor: str,
                                   api: Any | None = None, **kwargs: Any) -> dict[str, Any]:
     # Use the existing send lock to exclude another worker/answer while editing
@@ -2552,15 +2594,24 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         self._reply(HTTPStatus.BAD_REQUEST, {"error": "a matrix reply accepts only the reply fields"})
                         return
                     try:
-                        self._reply(HTTPStatus.OK, center.bind_matrix_reply(
+                        bound = center.bind_matrix_reply(
                             str(body.get("reply_event_id") or ""),
                             str(body.get("reply_to_event_id") or ""),
                             str(body.get("sender") or ""),
                             str(body.get("room_id") or ""),
                             str(body.get("answer") or ""),
-                        ))
+                        )
                     except ValidationError as error:
                         self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                        return
+                    # The room answer is one answer surface: the same verified
+                    # sender may complete the incident's own pending question,
+                    # and the idempotent repeat never resumes a session twice.
+                    question = None
+                    if bound.get("bound"):
+                        question = complete_bound_matrix_question(
+                            center, bound, str(body.get("answer") or ""))
+                    self._reply(HTTPStatus.OK, {**bound, "question": question})
                     return
                 if self.path == "/v1/human-requests":
                     # Agent Herder dedups its retries with this key, so a repeat
