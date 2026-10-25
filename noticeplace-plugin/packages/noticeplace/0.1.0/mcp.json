@@ -1,13 +1,11 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "$comment": "Canonical Notice Place point: the shared Streamable HTTP MCP of the running service. The bearer is read from the environment by the harness; the package holds no secret.",
   "mcpServers": {
     "NoticePlace": {
-      "type": "stdio",
-      "command": "/opt/noticeplace/bin/ask-human-mcp",
-      "args": [],
-      "env": {
-        "ASK_HUMAN_ENV_FILE": "/home/roomhacker/.config/ask-human/env"
-      }
+      "type": "streamable-http",
+      "url": "https://notify.bezrabotnyi.com/mcp",
+      "bearer_token_env_var": "NOTIFY_MCP_TOKEN"
     }
   }
 }
