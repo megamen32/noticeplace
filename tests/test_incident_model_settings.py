@@ -1,10 +1,4 @@
-"""Focused tests for the operator-controlled health incident analysis route.
-
-The operator types the route by hand: any OmniRoute gateway route of the form
-``omniroute/<model>`` or ``omniroute/<provider>/<model>``. The paid MiniMax
-subscription route stays forbidden, and an invalid stored value stays visible
-instead of being silently replaced.
-"""
+"""Focused tests for the pinned health-incident subscription route."""
 
 from __future__ import annotations
 
@@ -36,14 +30,18 @@ from notification_center.incident_model_policy import (
     read_incident_model,
 )
 
-DEFAULT_ROUTE = "omniroute/minimax-combo-m3.1"
-HAND_ROUTE = "omniroute/openai/gpt-5.1"
+DEFAULT_ROUTE = "minimax-coding-plan/MiniMax-M3.1-Flash"
+HAND_ROUTE = DEFAULT_ROUTE
 SECOND_HAND_ROUTE = "omniroute/qwen/qwen3-max"
-PAID_ROUTES = (
-    "minimax-coding-plan/MiniMax-M3.1-Flash",
+DISALLOWED_ROUTES = (
+    "omniroute/minimax-combo-m3.1",
+    "omniroute/minimax-combo.m3.1",
     "omniroute/minimax-coding-plan/MiniMax-M3.1-Flash",
     "minimax/MiniMax-M3.1-Flash",
     "omniroute/minimax/MiniMax-M3.1-Flash",
+    "omniroute/openai/gpt-5.1",
+    "omniroute/qwen/qwen3-max",
+    "omniroute/some-model",
 )
 HEALTH_JOB_NAMES = ("health-diagnosis", "health-remediation")
 
@@ -170,33 +168,35 @@ class IncidentModelSettingTests(unittest.TestCase):
 
     # --- the route contract ---------------------------------------------
 
-    def test_the_canonical_free_route_is_the_default(self) -> None:
+    def test_the_pinned_subscription_route_is_the_default(self) -> None:
         self.assertEqual(DEFAULT_ROUTE, default_incident_model())
         self.assertEqual(DEFAULT_ROUTE, DEFAULT_INCIDENT_MODEL)
         options = incident_model_options()
         self.assertEqual([DEFAULT_ROUTE], [option["value"] for option in options])
         self.assertTrue(options[0]["default"])
         self.assertFalse(options[0]["manual_only"])
-        self.assertEqual("OpenCode · OmniRoute · MiniMax M3.1 (combo)", options[0]["label"])
+        self.assertEqual("OpenCode · MiniMax по подписке · M3.1 Flash", options[0]["label"])
 
-    def test_any_hand_typed_omniroute_route_is_valid(self) -> None:
-        for route in (DEFAULT_ROUTE, HAND_ROUTE, SECOND_HAND_ROUTE, "omniroute/some-model"):
+    def test_only_the_pinned_subscription_route_is_valid(self) -> None:
+        self.assertTrue(is_incident_model(DEFAULT_ROUTE))
+        self.assertEqual(DEFAULT_ROUTE, normalize_incident_model(DEFAULT_ROUTE))
+        for route in DISALLOWED_ROUTES:
             with self.subTest(route=route):
-                self.assertTrue(is_incident_model(route))
-                self.assertEqual(route, normalize_incident_model(route))
-        self.assertEqual(HAND_ROUTE, incident_model_label(HAND_ROUTE))
+                self.assertFalse(is_incident_model(route))
+                with self.assertRaises(ValueError):
+                    normalize_incident_model(route)
+        self.assertEqual("OpenCode · MiniMax по подписке · M3.1 Flash", incident_model_label(HAND_ROUTE))
 
     def test_a_saved_route_is_trimmed_but_not_rewritten(self) -> None:
         self.assertEqual(HAND_ROUTE, normalize_incident_model(f"  {HAND_ROUTE}  "))
 
-    def test_a_route_of_the_maximum_length_is_accepted(self) -> None:
-        """The signed launch context bounds the route, so the bound is exact."""
+    def test_a_noncanonical_route_is_rejected_even_when_within_length_bounds(self) -> None:
         route = "omniroute/" + "x" * (MAX_LAUNCH_ROUTE_LENGTH - len("omniroute/"))
         self.assertEqual(MAX_LAUNCH_ROUTE_LENGTH, len(route))
-        self.assertTrue(is_incident_model(route))
+        self.assertFalse(is_incident_model(route))
 
-    def test_the_paid_minimax_subscription_route_stays_rejected(self) -> None:
-        for route in PAID_ROUTES:
+    def test_other_routes_are_rejected(self) -> None:
+        for route in DISALLOWED_ROUTES:
             with self.subTest(route=route):
                 self.assertFalse(is_incident_model(route))
                 with self.assertRaises(ValueError):
@@ -222,8 +222,8 @@ class IncidentModelSettingTests(unittest.TestCase):
 
     # --- persistence ------------------------------------------------------
 
-    def test_a_hand_typed_route_is_stored_and_read_back(self) -> None:
-        for route in (HAND_ROUTE, SECOND_HAND_ROUTE, DEFAULT_ROUTE):
+    def test_the_pinned_subscription_route_is_stored_and_read_back(self) -> None:
+        for route in (DEFAULT_ROUTE,):
             with self.subTest(route=route):
                 self.assertEqual(route, self.store.set_incident_model(route, "sso:operator"))
                 self.assertEqual(route, self._stored_value())
@@ -240,8 +240,23 @@ class IncidentModelSettingTests(unittest.TestCase):
         self.assertIsNone(state["stored_error"])
         self.assertIsNone(self._stored_value())
 
+    def test_legacy_default_is_migrated_for_future_reads_without_rewriting_storage(self) -> None:
+        self._force_stored_value("omniroute/minimax-combo.m3.1")
+        state = self.store.incident_model_setting()
+        self.assertEqual("omniroute/minimax-combo.m3.1", state["stored"])
+        self.assertTrue(state["stored_recognized"])
+        self.assertTrue(state["migration_pending"])
+        self.assertEqual(DEFAULT_ROUTE, state["value"])
+        self.assertEqual(DEFAULT_ROUTE, read_incident_model(self._center()))
+        self.assertEqual(DEFAULT_ROUTE, selected_incident_model(self._center()))
+        self.assertEqual("omniroute/minimax-combo.m3.1", self._stored_value())
+        status, page = self._request("GET", "/admin/")
+        self.assertEqual(200, status)
+        self.assertIn("Старый маршрут omniroute/minimax-combo.m3.1 заменён".encode(), page)
+        self.assertIn(f'value="{DEFAULT_ROUTE}"'.encode(), page)
+
     def test_an_invalid_route_is_rejected_without_mutation(self) -> None:
-        invalid = ("", "   ", "codex/gpt-6.1-sol", "omniroute/a/b/c", "omniroute/\x00null") + PAID_ROUTES
+        invalid = ("", "   ", "codex/gpt-6.1-sol", "omniroute/a/b/c", "omniroute/\x00null") + DISALLOWED_ROUTES
         for value in invalid:
             with self.subTest(value=value):
                 with self.assertRaises(ValidationError):
@@ -290,7 +305,7 @@ class IncidentModelSettingTests(unittest.TestCase):
         self.assertEqual("sso:operator", record["actor"])
         self.assertEqual("incident_model_changed", record["action"])
         self.assertEqual(HAND_ROUTE, record["model"])
-        self.assertEqual(HAND_ROUTE, record["label"])
+        self.assertEqual("OpenCode · MiniMax по подписке · M3.1 Flash", record["label"])
         self.assertNotIn("secret", json.dumps(record).lower())
         self.assertNotIn("password", json.dumps(record).lower())
 
@@ -309,7 +324,7 @@ class IncidentModelSettingTests(unittest.TestCase):
         self.assertIn(b"Access denied", page)
         self.assertIsNone(self._stored_value())
 
-    def test_http_save_accepts_a_hand_typed_route(self) -> None:
+    def test_http_save_accepts_the_pinned_subscription_route(self) -> None:
         csrf = self._csrf()
         status, location, _ = self._request_no_redirect("POST", "/admin/health-model", {"csrf": csrf, "model": HAND_ROUTE})
         self.assertEqual(303, status)
@@ -319,14 +334,14 @@ class IncidentModelSettingTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertIn(f'value="{HAND_ROUTE}"'.encode(), page)
 
-    def test_http_save_rejects_a_paid_route_without_mutation(self) -> None:
+    def test_http_save_rejects_other_routes_without_mutation(self) -> None:
         csrf = self._csrf()
-        for route in PAID_ROUTES:
+        for route in DISALLOWED_ROUTES:
             with self.subTest(route=route):
                 status, page = self._request("POST", "/admin/health-model", {"csrf": csrf, "model": route})
                 self.assertEqual(400, status)
                 self.assertIn(b"Configuration rejected", page)
-                self.assertIn("Платный маршрут MiniMax по подписке".encode(), page)
+                self.assertIn("разрешён только маршрут".encode(), page)
                 self.assertIsNone(self._stored_value())
 
     def test_http_save_rejects_a_malformed_route_without_mutation(self) -> None:

@@ -24,16 +24,19 @@ from notification_center.health_workflow import (HEALTH_LAUNCH_DEFAULT, HEALTH_L
                                                 HealthWorkflow, health_launch_execution,
                                                 normalize_incident_model, selected_incident_model)
 
-DEFAULT_ROUTE = "omniroute/minimax-combo-m3.1"
-HAND_ROUTE = "omniroute/openai/gpt-5.1"
+DEFAULT_ROUTE = "minimax-coding-plan/MiniMax-M3.1-Flash"
+HAND_ROUTE = DEFAULT_ROUTE
 SECOND_HAND_ROUTE = "omniroute/qwen/qwen3-max"
 PAID_ROUTES = (
-    "minimax-coding-plan/MiniMax-M3.1-Flash",
+    "omniroute/minimax-combo-m3.1",
+    "omniroute/minimax-combo.m3.1",
     "omniroute/minimax-coding-plan/MiniMax-M3.1-Flash",
     "minimax/MiniMax-M3.1-Flash",
     "omniroute/minimax/MiniMax-M3.1-Flash",
+    "omniroute/openai/gpt-5.1",
+    "omniroute/qwen/qwen3-max",
 )
-LEGACY_MODEL = "minimax-coding-plan/MiniMax-M3.1-Flash"
+LEGACY_MODEL = DEFAULT_ROUTE
 
 
 class _Response:
@@ -91,7 +94,7 @@ class IncidentModelSnapshotTests(unittest.TestCase):
         self.assertEqual(1, len(rows))
         return dict(rows[0])
 
-    def test_a_hand_typed_route_is_snapshotted_into_the_new_delivery(self) -> None:
+    def test_the_pinned_subscription_route_is_snapshotted_into_the_new_delivery(self) -> None:
         self.center.set_runtime_setting("health_incident_model", HAND_ROUTE)
         result = health_event(self.center, "producer-token", "evt-1")
         delivery = self._agent_delivery(str(result["incident_id"]))
@@ -100,8 +103,8 @@ class IncidentModelSnapshotTests(unittest.TestCase):
         self.assertEqual(HAND_ROUTE, payload["health_context"]["incident_model"])
 
     def test_the_delivery_re_filter_accepts_the_same_routes_as_the_write_path(self) -> None:
-        """A hand-picked route is not dropped by the delivery read path."""
-        for route in (DEFAULT_ROUTE, HAND_ROUTE, SECOND_HAND_ROUTE):
+        """The sole approved route is not dropped by the delivery read path."""
+        for route in (DEFAULT_ROUTE,):
             with self.subTest(route=route):
                 self.assertEqual(route, self.center._delivery_incident_model({"incident_model": route}))
 
@@ -163,9 +166,21 @@ class IncidentModelSnapshotTests(unittest.TestCase):
         delivery = self._agent_delivery(str(result["incident_id"]))
         self.assertEqual({"incident_model": HEALTH_LAUNCH_DEFAULT}, json.loads(delivery["target_json"]))
 
-    def test_every_hand_typed_route_is_accepted_by_the_shared_normalizer(self) -> None:
+    def test_legacy_saved_default_migrates_only_for_new_deliveries(self) -> None:
+        self.center.set_runtime_setting("health_incident_model", "omniroute/minimax-combo.m3.1")
+        self.assertEqual(DEFAULT_ROUTE, selected_incident_model(self.center))
+        result = health_event(self.center, "producer-token", "evt-setting-migration")
+        delivery = self._agent_delivery(str(result["incident_id"]))
+        self.assertEqual({"incident_model": DEFAULT_ROUTE}, json.loads(delivery["target_json"]))
+        self.assertEqual(DEFAULT_ROUTE, self.center.delivery_payload(delivery)["health_context"]["incident_model"])
+        # A migration read does not mutate persisted settings or any old delivery.
+        self.assertEqual("omniroute/minimax-combo.m3.1", self.center.get_runtime_setting("health_incident_model"))
+        with self.assertRaises(ValidationError):
+            self.center._delivery_incident_model({"incident_model": "omniroute/minimax-combo.m3.1"})
+
+    def test_only_the_pinned_subscription_route_is_accepted(self) -> None:
         self.assertEqual((DEFAULT_ROUTE,), HEALTH_LAUNCH_MODELS)
-        for route in (DEFAULT_ROUTE, HAND_ROUTE, SECOND_HAND_ROUTE):
+        for route in (DEFAULT_ROUTE,):
             with self.subTest(route=route):
                 self.assertEqual(route, normalize_incident_model(route))
                 self.assertEqual(route, selected_incident_model(_SettingCenter(route)))
@@ -173,11 +188,17 @@ class IncidentModelSnapshotTests(unittest.TestCase):
             with self.subTest(route=invalid), self.assertRaises(Exception):
                 normalize_incident_model(invalid)
 
-    def test_the_route_round_trips_through_its_execution_profile(self) -> None:
-        for route in (DEFAULT_ROUTE, HAND_ROUTE, SECOND_HAND_ROUTE):
+    def test_subscription_route_round_trips_to_the_exact_execution_profile(self) -> None:
+        for route in (DEFAULT_ROUTE,):
             with self.subTest(route=route):
                 execution = health_launch_execution(route)
-                self.assertEqual("opencode", execution["runtime"])
+                self.assertEqual({
+                    "runtime": "opencode",
+                    "provider": "minimax-coding-plan",
+                    "model": "MiniMax-M3.1-Flash",
+                    "reasoning": "default",
+                    "topic": "health",
+                }, execution)
                 self.assertEqual(route, agent_job_helper._health_model_route(execution))
 
     def test_the_snapshot_rides_only_in_the_signed_health_context(self) -> None:
@@ -270,7 +291,7 @@ class SelectedRouteLaunchTests(unittest.TestCase):
             "version": 1,
             "allowedHarnesses": ["opencode", "codex"],
             "preferredHarness": "opencode",
-            "models": {"opencode": "omniroute/minimax/other", "codex": "gpt-6.1-sol"},
+            "models": {"opencode": DEFAULT_ROUTE, "codex": "gpt-6.1-sol"},
             "incidentExecution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"},
         }
         policy.update(overrides)
@@ -291,6 +312,15 @@ class SelectedRouteLaunchTests(unittest.TestCase):
             calls.append(request)
             if request.full_url.endswith("/api/automation/launch-policy"):
                 return _Response(policy)
+            if request.full_url.endswith("/api/settings/automation/disarm"):
+                return _Response({
+                    "ok": True,
+                    "state": {"disarmed": False, "records": [{"scope": "*", "forbidden": False}]},
+                    "nodes": [{"hostId": host, "status": "confirmed"} for host in ("server-100", "server-44", "server-88")],
+                })
+            if "/api/autopilot/sessions/" in request.full_url:
+                session_id = request.full_url.rsplit("/", 1)[-1]
+                return _Response({"enabled": True, "sessionId": session_id})
             body = json.loads(request.data) if request.data else {}
             return _Response({"outcome": "accepted", "operation_id": "op-1", "project": "fleet-health",
                               "selected_harness": body.get("harness") or "opencode",
@@ -344,7 +374,7 @@ class SelectedRouteLaunchTests(unittest.TestCase):
         self.assertEqual(HAND_ROUTE, body["model"])
         self.assertEqual(HAND_ROUTE, receipt["model"])
 
-    def test_a_delivery_without_a_snapshot_keeps_the_legacy_launch(self) -> None:
+    def test_a_delivery_without_a_snapshot_uses_the_pinned_route(self) -> None:
         calls: list = []
         with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
              mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
@@ -353,8 +383,9 @@ class SelectedRouteLaunchTests(unittest.TestCase):
         launch = [call for call in calls if call.full_url.endswith("/api/automation/project-launch")]
         self.assertEqual(1, len(launch))
         body = json.loads(launch[0].data)
-        self.assertNotIn("purpose", body)
-        self.assertIsNone(launch[0].get_header("Authorization"))
+        self.assertEqual(HEALTH_LAUNCH_PURPOSE, body["purpose"])
+        self.assertEqual("opencode", body["harness"])
+        self.assertEqual("Bearer test-health-launch-token", launch[0].get_header("Authorization"))
         self.assertEqual(LEGACY_MODEL, body["model"])
         self.assertEqual(LEGACY_MODEL, receipt["model"])
 
@@ -386,32 +417,39 @@ class SelectedRouteLaunchTests(unittest.TestCase):
                                     profile_override=self._profile(), runner=self._runner(self._policy(), calls))
                 self.assertEqual([], [call for call in calls if call.full_url.endswith("/api/automation/project-launch")])
 
-    def test_the_project_route_harness_owns_the_selected_launch(self) -> None:
-        """The project route declares the harness; OpenCode is not required."""
+    def test_a_non_opencode_project_route_fails_closed(self) -> None:
         calls: list = []
         policy = self._policy(projectRoutes={"fleet-health": {"harnesses": ["codex"]}})
         with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
              mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
-            run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
-                        profile_override=self._profile(), runner=self._runner(policy, calls))
+            with self.assertRaisesRegex(RuntimeError, "requires OpenCode with no harness fallback"):
+                run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
+                            profile_override=self._profile(), runner=self._runner(policy, calls))
         launch = [call for call in calls if call.full_url.endswith("/api/automation/project-launch")]
-        self.assertEqual(1, len(launch))
-        body = json.loads(launch[0].data)
-        self.assertEqual("codex", body["harness"])
-        self.assertEqual(["codex"], body["harness_order"])
-        self.assertEqual(HAND_ROUTE, body["model"])
+        self.assertEqual([], launch)
 
-    def test_the_project_route_declares_the_fallback_order(self) -> None:
+    def test_any_project_harness_fallback_fails_closed(self) -> None:
         calls: list = []
-        policy = self._policy(projectRoutes={"fleet-health": {"harnesses": ["codex", "opencode"]}})
+        policy = self._policy(projectRoutes={"fleet-health": {"harnesses": ["opencode", "codex"]}})
         with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
              mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
-            run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
-                        profile_override=self._profile(), runner=self._runner(policy, calls))
+            with self.assertRaisesRegex(RuntimeError, "requires OpenCode with no harness fallback"):
+                run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
+                            profile_override=self._profile(), runner=self._runner(policy, calls))
         launch = [call for call in calls if call.full_url.endswith("/api/automation/project-launch")]
-        body = json.loads(launch[0].data)
-        self.assertEqual("codex", body["harness"])
-        self.assertEqual(["codex", "opencode"], body["harness_order"])
+        self.assertEqual([], launch)
+
+    def test_a_conflicting_herder_incident_execution_fails_closed(self) -> None:
+        calls: list = []
+        policy = self._policy(incidentExecution={
+            "runtime": "opencode", "provider": "omniroute", "model": "minimax-combo.m3.1",
+            "reasoning": "default", "topic": "health",
+        })
+        with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")):
+            with self.assertRaisesRegex(ValidationError, "incidentExecution conflicts"):
+                run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
+                            profile_override=self._profile(), runner=self._runner(policy, calls))
+        self.assertEqual([], [call for call in calls if call.full_url.endswith("/api/automation/project-launch")])
 
     def test_a_policy_without_opencode_and_without_a_project_route_keeps_the_legacy_gate(self) -> None:
         """No project route: the legacy pinned default stays policy-gated."""

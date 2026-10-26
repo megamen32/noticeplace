@@ -11,9 +11,9 @@ from typing import Any, Mapping
 from .core import NotificationCenter, ValidationError
 from .incident_model_policy import (
     DEFAULT_INCIDENT_MODEL,
-    INCIDENT_MODEL_SETTING_KEY,
     incident_model_options,
     normalize_incident_model,
+    read_incident_model,
 )
 
 _PLAN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -32,11 +32,9 @@ HEALTH_EXECUTION_PROFILE = {
     "topic": "health",
 }
 
-# The operator chooses the route that analyses a health incident by hand. The
-# route contract lives in one module: incident_model_policy owns the setting
-# key, the default, the known-route suggestions, the forbidden paid routes
-# and the normalizer. Agent Herder keeps the admission decision and accepts
-# every "omniroute/..." route.
+# Incident execution is pinned to this project's exact subscription route.
+# Agent Herder keeps the launch/admission decision; it must declare the same
+# project route, and a mismatch fails closed rather than falling back.
 HEALTH_LAUNCH_MODELS: tuple[str, ...] = tuple(
     str(option["value"]) for option in incident_model_options()
 )
@@ -62,17 +60,13 @@ def health_launch_execution(route: str) -> dict[str, str]:
 
 
 def selected_incident_model(center: Any) -> str:
-    """Return the operator-selected route for a new health delivery.
+    """Return the approved route for a new health delivery.
 
-    The stored route is used exactly as the operator saved it. An invalid
-    stored value fails closed with the operator reason instead of silently
-    launching another model behind the operator's back.
+    The exact legacy default is migrated only for future deliveries. Any other
+    stored mismatch fails closed; no provider/model fallback is attempted.
     """
-    stored = center.get_runtime_setting(INCIDENT_MODEL_SETTING_KEY)
-    if stored is None or not str(stored).strip():
-        return HEALTH_LAUNCH_DEFAULT
     try:
-        return normalize_incident_model(stored)
+        return read_incident_model(center)
     except ValueError as error:
         raise ValidationError(str(error)) from error
 
@@ -202,10 +196,22 @@ def health_execution_profile(harness: str, model: str, topic: str = "health", re
 def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, str], ...]:
     """Return the declared preference for one incident project.
 
-    The route order lives in the Agent Herder launch policy and is applied by
-    Agent Herder at launch time; Notice Place only reports the declared
-    preference so the request is well formed.
+    The route order lives in the Agent Herder launch policy. This NoticePlace
+    project also requires the global ``incidentExecution`` declaration to
+    match its pinned route, and fails closed when it does not.
     """
+    global_execution = policy.get("incidentExecution") if isinstance(policy, Mapping) else None
+    if isinstance(global_execution, Mapping):
+        expected = dict(HEALTH_EXECUTION_PROFILE)
+        observed = {
+            "runtime": _bounded_text(global_execution.get("runtime"), 32).lower(),
+            "provider": _bounded_text(global_execution.get("provider"), 64).lower(),
+            "model": _bounded_text(global_execution.get("model"), 256),
+            "reasoning": _bounded_text(global_execution.get("reasoning") or expected["reasoning"], 16).lower(),
+            "topic": _bounded_text(global_execution.get("topic") or expected["topic"], 64).lower(),
+        }
+        if observed != expected:
+            raise ValidationError("Agent Herder incidentExecution conflicts with NoticePlace's pinned OpenCode MiniMax route")
     routes_map = policy.get("projectRoutes") if isinstance(policy, Mapping) else None
     route = resolve_project_route(routes_map, policy.get("projectAliases") if isinstance(policy, Mapping) else None, project) if project else None
     raw_harnesses: Any = []

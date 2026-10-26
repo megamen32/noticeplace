@@ -1,17 +1,16 @@
-"""Hand-picked operator choice for the model that analyses health incidents.
+"""Pinned subscription route for NoticePlace health-incident analysis.
 
-The operator types the route by hand: any OmniRoute gateway route of the form
-``omniroute/<model>`` or ``omniroute/<provider>/<model>``. Notice Place stores
-that exact string and launches it with the next incident analysis. Agent
-Herder stays the launch and admission runtime and keeps its own allow/deny
-decision.
+NoticePlace sends incident analysis through the OpenCode MiniMax subscription
+provider. It does not use OmniRoute or provider/model fallbacks. Agent Herder
+stays the launch and admission runtime and keeps its own allow/deny decision.
 
 This module is the single source of truth for the route contract:
 
-- the settings key, the default route and the known-route suggestions;
-- the forbidden paid MiniMax subscription routes;
-- the one normalizer used by the write path, the read path, the delivery
-  snapshot and the signed launch event.
+- the settings key, the one permitted route and the console suggestion;
+- a one-way migration for the former OmniRoute combo default when reading the
+  saved preference for future incidents; and
+- the strict normalizer used by settings writes and delivery snapshots.
+  Existing delivery snapshots are never migrated.
 
 Nothing here resolves credentials, talks to a provider, or starts a session.
 """
@@ -23,31 +22,26 @@ from typing import Any, Mapping
 
 INCIDENT_MODEL_SETTING_KEY = "health_incident_model"
 
-# The canonical free route: the only route that both the Agent Herder
-# health-launch gate and the OpenCode catalog accept.
-DEFAULT_INCIDENT_MODEL = "omniroute/minimax-combo-m3.1"
+# This NoticePlace project is explicitly pinned to its MiniMax subscription.
+DEFAULT_INCIDENT_MODEL = "minimax-coding-plan/MiniMax-M3.1-Flash"
+LEGACY_INCIDENT_MODELS = (
+    "omniroute/minimax-combo.m3.1",
+    "omniroute/minimax-combo-m3.1",
+)
 
-ROUTE_PREFIX = "omniroute/"
 MAX_INCIDENT_MODEL_LENGTH = 256
 # The signed health context carries the route in a bounded 128-character
 # field. A longer route would reach the launch truncated and would run a
 # different model than the operator saved, so it is rejected instead.
 MAX_LAUNCH_ROUTE_LENGTH = 128
 
-# The paid MiniMax subscription stays forbidden: M3.1 is free inside MM Code.
-# The check runs on the route id behind the optional gateway prefix, so the
-# paid route cannot be smuggled in as "omniroute/minimax-coding-plan/...".
-FORBIDDEN_ROUTE_PROVIDERS = ("minimax-coding-plan",)
-FORBIDDEN_ROUTE_IDS = ("minimax/minimax-m3.1-flash",)
-
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 
-# Known routes offered as suggestions. The operator is not limited to them:
-# the console field accepts every route the contract below allows.
+# The console shows the same single route that the launch contract permits.
 KNOWN_INCIDENT_MODELS: tuple[dict[str, Any], ...] = (
     {
         "value": DEFAULT_INCIDENT_MODEL,
-        "label": "OpenCode · OmniRoute · MiniMax M3.1 (combo)",
+        "label": "OpenCode · MiniMax по подписке · M3.1 Flash",
         "default": True,
         "manual_only": False,
     },
@@ -67,14 +61,12 @@ def default_incident_model() -> str:
 def incident_model_error(value: Any) -> str | None:
     """Return why a route is not allowed, or None when the route is usable.
 
-    The rules are identical at every boundary (write path, read path, delivery
-    snapshot, signed event):
+    The route contract is identical at every boundary (write path, read path,
+    delivery snapshot, signed event):
 
     - the value is not empty and carries no control characters;
     - it is trimmed and at most 256 characters long;
-    - it starts with the ``omniroute/`` gateway prefix;
-    - it names one model or one provider and one model;
-    - it is not a forbidden paid MiniMax subscription route.
+    - it is exactly the project-approved MiniMax subscription route.
     """
     raw = "" if value is None else str(value)
     if not raw.strip():
@@ -89,23 +81,10 @@ def incident_model_error(value: Any) -> str | None:
             f"Маршрут модели анализа инцидентов длиннее {MAX_LAUNCH_ROUTE_LENGTH} символов: "
             "более длинное значение обрезается в подписанном контексте запуска"
         )
-    # The paid-route rule runs on the route id behind the optional gateway
-    # prefix, so the paid route is named as paid and not as a malformed one.
-    route_id = route[len(ROUTE_PREFIX):] if route.startswith(ROUTE_PREFIX) else route
-    parts = [part.strip() for part in route_id.split("/")]
-    if parts and parts[0].lower() in FORBIDDEN_ROUTE_PROVIDERS:
-        return "Платный маршрут MiniMax по подписке (minimax-coding-plan) запрещён"
-    if "/".join(part.lower() for part in parts) in FORBIDDEN_ROUTE_IDS:
-        return "Платный маршрут MiniMax по подписке (minimax/MiniMax-M3.1-Flash) запрещён"
-    if not route.startswith(ROUTE_PREFIX):
+    if route != DEFAULT_INCIDENT_MODEL:
         return (
-            "Маршрут модели анализа инцидентов должен начинаться с "
-            f"{ROUTE_PREFIX} (например {DEFAULT_INCIDENT_MODEL})"
-        )
-    if not all(parts) or len(parts) > 2:
-        return (
-            "Маршрут модели анализа инцидентов должен быть вида "
-            "omniroute/<model> или omniroute/<provider>/<model>"
+            "Для диагностики инцидентов разрешён только маршрут "
+            f"{DEFAULT_INCIDENT_MODEL}; OmniRoute и другие маршруты запрещены"
         )
     return None
 
@@ -135,12 +114,14 @@ def incident_model_label(value: Any) -> str:
 def read_incident_model(center: Any) -> str:
     """Return the effective route for future health analyses.
 
-    A stored route is used exactly as the operator saved it. An invalid stored
-    value is never silently replaced: the read fails with the operator reason
-    so the launch fails closed and the console can show what is wrong.
+    The exact former default is migrated in memory for future incidents only.
+    Existing delivery snapshots still use the strict normalizer and fail
+    closed, so this cannot reroute an already scheduled incident.
     """
     stored = center.get_runtime_setting(INCIDENT_MODEL_SETTING_KEY)
     if stored is None or not str(stored).strip():
+        return default_incident_model()
+    if str(stored).strip() in LEGACY_INCIDENT_MODELS:
         return default_incident_model()
     return normalize_incident_model(stored)
 
@@ -163,8 +144,9 @@ def write_incident_model(center: Any, value: Any) -> str:
 def incident_model_state(center: Any) -> dict[str, Any]:
     """Return the display-safe model state for the operator console."""
     stored = saved_incident_model(center)
-    error = incident_model_error(stored) if stored is not None else None
-    effective = default_incident_model() if stored is None else ("" if error else stored)
+    migration_pending = stored in LEGACY_INCIDENT_MODELS
+    error = incident_model_error(stored) if stored is not None and not migration_pending else None
+    effective = default_incident_model() if stored is None or migration_pending else ("" if error else normalize_incident_model(stored))
     return {
         "value": effective,
         "label": incident_model_label(effective),
@@ -174,6 +156,12 @@ def incident_model_state(center: Any) -> dict[str, Any]:
         "stored": stored,
         "stored_recognized": error is None,
         "stored_error": error,
+        "migration_pending": migration_pending,
+        "migration_message": (
+            f"Старый маршрут {stored} заменён для новых разборов на "
+            f"{DEFAULT_INCIDENT_MODEL}; сохранённые события не перенаправляются."
+            if migration_pending else ""
+        ),
         "options": incident_model_options(),
     }
 

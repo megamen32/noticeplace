@@ -441,6 +441,8 @@ def _incident_model_block(model: dict[str, Any], csrf: str) -> str:
     effective = str(state.get("effective") or state.get("value") or "").strip()
     default = str(state.get("default") or "").strip()
     error = str(state.get("stored_error") or "").strip()
+    migration_message = str(state.get("migration_message") or "").strip()
+    migration_pending = bool(state.get("migration_pending"))
     suggestions: list[str] = []
     options = state.get("options") if isinstance(state.get("options"), list) else []
     for option in options:
@@ -449,7 +451,7 @@ def _incident_model_block(model: dict[str, Any], csrf: str) -> str:
         value = str(option.get("value") or "").strip()
         if value and value not in suggestions:
             suggestions.append(value)
-    if stored and stored not in suggestions:
+    if stored and stored not in suggestions and not migration_pending:
         suggestions.append(stored)
     datalist = "".join(f'<option value="{html.escape(value)}"></option>' for value in suggestions)
     if error:
@@ -463,7 +465,10 @@ def _incident_model_block(model: dict[str, Any], csrf: str) -> str:
     else:
         saved_value = stored or effective or default or "не выбрана"
         effective_value = effective or default or "не выбрана"
-        banner = ""
+        banner = (
+            f'<p class="model-warning" role="status">{html.escape(migration_message)}</p>'
+            if migration_message else ""
+        )
     last_used = state.get("last_used") if isinstance(state.get("last_used"), dict) else None
     if last_used and str(last_used.get("model") or "").strip():
         used_label = html.escape(str(last_used.get("label") or last_used.get("model") or ""))
@@ -487,14 +492,13 @@ def _incident_model_block(model: dict[str, Any], csrf: str) -> str:
         f'<input type="hidden" name="csrf" value="{html.escape(csrf)}">'
         '<label>Маршрут модели для новых разборов инцидентов'
         f'<input type="text" name="model" list="incident-model-routes"'
-        f' value="{html.escape(stored or effective or default)}"'
-        ' placeholder="omniroute/minimax-combo-m3.1" autocomplete="off" spellcheck="false"></label>'
+        f' value="{html.escape(effective or default)}"'
+        ' placeholder="minimax-coding-plan/MiniMax-M3.1-Flash" autocomplete="off" spellcheck="false"></label>'
         f'<datalist id="incident-model-routes">{datalist}</datalist>'
         '<button>Сохранить модель</button></form>'
-        '<p class="hint">Маршрут вводится руками: <code>omniroute/&lt;model&gt;</code> или '
-        '<code>omniroute/&lt;provider&gt;/&lt;model&gt;</code>, до 128 символов. Платные маршруты '
-        'MiniMax по подписке (<code>minimax-coding-plan/*</code> и '
-        '<code>minimax/MiniMax-M3.1-Flash</code>) запрещены. Выбор применяется только к новым '
+        '<p class="hint">Для разборов инцидентов используется только точный маршрут '
+        '<code>opencode / minimax-coding-plan / MiniMax-M3.1-Flash</code>. OmniRoute и '
+        'provider/model fallbacks не используются. Выбор применяется только к новым '
         'разборам инцидентов. Уже созданные задачи не переигрываются и не перезапускаются, '
         'сервис не перезапускается. Сохранённый выбор считается использованным только после '
         'квитанции реального запуска.</p>'

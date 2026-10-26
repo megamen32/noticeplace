@@ -26,7 +26,7 @@ _HEALTH_JOB_IDS = {"health-diagnosis", "health-orchestrator", "health-remediatio
 _HEALTH_STAGE_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
 _REPAIR_FIRST_JOB_IDS = {"health-diagnosis", "health-orchestrator"}
 _HEALTH_PLAN_IDS = ("observe", "repair", "verify")
-from .health_workflow import (HEALTH_EXECUTION_PROFILE, HEALTH_LAUNCH_HARNESS, HEALTH_LAUNCH_PURPOSE,
+from .health_workflow import (HEALTH_EXECUTION_PROFILE, HEALTH_LAUNCH_DEFAULT, HEALTH_LAUNCH_HARNESS, HEALTH_LAUNCH_PURPOSE,
                                health_execution_routes, health_launch_execution, normalize_incident_model,
                                resolve_project_route)
 
@@ -481,7 +481,8 @@ def _project_harness_order(policy: Mapping[str, Any], project: str) -> list[str]
     return order
 
 
-def _selected_route_profile(profile: dict[str, str], policy: Mapping[str, Any], project: str, route: str) -> dict[str, str]:
+def _selected_route_profile(profile: dict[str, str], policy: Mapping[str, Any], project: str, route: str,
+                            *, require_opencode: bool = False) -> dict[str, str]:
     """Build the launch profile for one operator-selected incident route.
 
     The operator's saved route owns the model. The project route owns the
@@ -497,6 +498,8 @@ def _selected_route_profile(profile: dict[str, str], policy: Mapping[str, Any], 
     if not order:
         raise RuntimeError(
             "the launch policy allows none of the harnesses this project can launch; no launch-policy write")
+    if require_opencode and order != [HEALTH_LAUNCH_HARNESS]:
+        raise RuntimeError("NoticePlace health diagnosis requires OpenCode with no harness fallback")
     execution = health_launch_execution(route)
     return {
         **profile,
@@ -1489,10 +1492,18 @@ def run_profile(
     policy = _launch_policy(profile, runner) if profile_id in _HEALTH_JOB_IDS else {}
     allowed_routes = health_execution_routes(policy, incident_project)
     incident_model = _selected_incident_model(event) if profile_id in _HEALTH_JOB_IDS else ""
+    if profile_id == "health-diagnosis" and not incident_model:
+        # New delivery code pins the project route in its snapshot. For older
+        # unsnapshotted deliveries, use this same approved route; never inherit
+        # a stale profile model or provider fallback.
+        incident_model = HEALTH_LAUNCH_DEFAULT
     if incident_model:
         # The operator's selected route owns this launch. The legacy pinned
         # route stays in force for every delivery without a snapshot.
-        profile = _selected_route_profile(profile, policy, incident_project, incident_model)
+        profile = _selected_route_profile(
+            profile, policy, incident_project, incident_model,
+            require_opencode=profile_id == "health-diagnosis",
+        )
     elif profile_id in _REPAIR_FIRST_JOB_IDS:
         profile = _incident_profile(profile, runner, incident_project, policy)
     if profile_id == "health-remediation":

@@ -97,10 +97,19 @@ class AgentJobHelperTests(unittest.TestCase):
 
     def test_automatic_diagnosis_launches_the_declared_route_without_a_saved_execution(self) -> None:
         """No saved incidentExecution is advisory: the declared route launches."""
-        runner = mock.Mock(return_value=_Response({}))
+        def respond(request, **_kwargs):
+            if str(getattr(request, "full_url", "")).endswith("/api/automation/launch-policy"):
+                return _Response({"version": 1, "preferredHarness": "opencode", "allowedHarnesses": ["opencode"],
+                                  "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"},
+                                  "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE)})
+            return _Response({})
+        runner = mock.Mock(side_effect=respond)
         with self.assertRaisesRegex(RuntimeError, "session identity"):
             run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis", "incident": {"id": "inc-denied"}}, Path("unused"),
-                        profile_override={"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode", "name": "denied", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "Read only."}, runner=owner_aware_runner(runner))
+                        profile_override={"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
+                                          "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "health_launch_token": "test-token",
+                                          "name": "denied", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "Read only."},
+                        runner=owner_aware_runner(runner))
         self.assertGreaterEqual(runner.call_count, 2)
         self.assertTrue(runner.call_args_list[0][0][0].full_url.endswith("/api/automation/launch-policy"))
         self.assertTrue(any(call[0][0].full_url.endswith("/api/automation/project-launch") for call in runner.call_args_list))
@@ -146,6 +155,7 @@ class AgentJobHelperTests(unittest.TestCase):
             self.fail(f"owner preflight should block before launch or arm: {url}")
         event["health"]["automatic_health_diagnosis"] = False
         profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
+                   "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "health_launch_token": "test-token",
                    "name": "manual", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "repair"}
         result = run_profile("health-diagnosis", event, Path("unused"), profile_override=profile, runner=runner)
         self.assertEqual("source_blocked", result["status"])
@@ -232,19 +242,31 @@ class AgentJobHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             config = Path(tempdir) / "profiles.json"
             config.write_text(json.dumps({"profiles": {"health-diagnosis": {
-                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "codex",
-                "orchestrator_name": "planner", "orchestrator_model": "gpt-5.6-sol", "orchestrator_requested_model": "gpt-5.6-sol",
-                "name": "diagnosis-test", "cwd": tempdir, "mode": "queue", "instruction": "Read only.",
+                "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
+                "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health",
+                "health_launch_token": "test-health-launch-token", "name": "diagnosis-test", "cwd": tempdir,
+                "mode": "queue", "instruction": "Read only.",
             }}}))
             config.chmod(0o600)
             callback = mock.Mock()
+            def runner(request: object, **_kwargs: object) -> _Response:
+                url = str(getattr(request, "full_url", ""))
+                if url.endswith("/api/automation/launch-policy"):
+                    return _Response({"version": 1, "preferredHarness": "opencode", "allowedHarnesses": ["opencode"],
+                                      "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"},
+                                      "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE)})
+                if url.endswith("/api/automation/project-launch"):
+                    return _Response(project_launch_response("session-live", model="minimax-coding-plan/MiniMax-M3.1-Flash", created=True))
+                if "/api/autopilot/sessions/" in url:
+                    return _Response({"enabled": True, "sessionId": "session-live"})
+                self.fail(f"unexpected Agent Herder URL: {url}")
             with mock.patch.object(agent_job_helper, "_incident_profile", side_effect=lambda profile, *_a, **_k: profile), \
                  mock.patch.object(agent_job_helper, "_load_health_callback"), \
                  mock.patch.object(agent_job_helper, "_run_health_diagnosis", side_effect=RuntimeError("later failure")):
                 with self.assertRaisesRegex(RuntimeError, "later failure"):
                     run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
                                 "incident": {"id": "incident-test", "project": "test"}}, config,
-                                runner=owner_aware_runner(lambda *_a, **_k: _Response({"ok": True, "sessionId": "session-live", "created": True})),
+                                runner=owner_aware_runner(runner),
                                 session_callback=callback)
             callback.assert_called_once()
             self.assertEqual("session-live", callback.call_args[0][0]["session_id"])
@@ -266,6 +288,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "opencode", "name": "health_diagnosis_test", "cwd": str(root), "mode": "queue",
                 "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health",
+                "health_launch_token": "test-health-launch-token",
                 "callback_file": str(callback), "diagnosis_timeout_seconds": "5", "poll_seconds": "0.2",
                 "instruction": "Return exactly one diagnosis JSON object.",
                 "orchestrator_name": "health_orchestrator_test",
@@ -302,25 +325,25 @@ class AgentJobHelperTests(unittest.TestCase):
                 if "/api/models?" in request.full_url:
                     return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "opencode", "allowedHarnesses": ["opencode"], "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"}})
                 nonlocal session_calls
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if "/api/autopilot/sessions/" in url:
-                    return _Response({"enabled": True, "sessionId": "codex-health-diagnosis-1"})
+                    return _Response({"enabled": True, "sessionId": "opencode-health-diagnosis-1"})
                 if "/api/automation/project-launch" in url:
-                    return _Response(project_launch_response("codex-health-diagnosis-1"))
+                    return _Response(project_launch_response("opencode-health-diagnosis-1"))
                 if url.endswith("/api/sessions/new-or-resume"):
                     body = json.loads(getattr(request, "data").decode())
                     self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", body["model"])
                     self.assertEqual("queue", body["mode"])
                     self.assertIn("bounded synthetic diagnosis", body["message"])
-                    return _Response({"ok": True, "created": True, "sessionId": "codex-health-orchestrator-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash"})
+                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-orchestrator-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash"})
                 if "/progress?" in url:
-                    fingerprint = "progress:diagnosis-1" if "codex-health-diagnosis-1" in url else "progress:orchestrator-1"
+                    fingerprint = "progress:diagnosis-1" if "opencode-health-diagnosis-1" in url else "progress:orchestrator-1"
                     return _Response({"session": {"status": "idle"}, "fingerprint": fingerprint})
                 if "/details?" in url:
-                    text = diagnosis if "codex-health-diagnosis-1" in url else plans
+                    text = diagnosis if "opencode-health-diagnosis-1" in url else plans
                     return _Response({"messages": [{"role": "assistant", "text": text}]})
                 self.assertTrue(url.endswith("/v1/incidents/inc-health-1/health/plans"))
                 self.assertEqual("Bearer health-callback-token", getattr(request, "headers", {}).get("Authorization"))
@@ -328,7 +351,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", body["orchestration"]["orchestrator_requested_model"])
                 self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", body["orchestration"]["orchestrator_effective_model"])
                 self.assertEqual(["observe", "repair", "verify"], [plan["plan_id"] for plan in body["plans"]])
-                self.assertRegex(getattr(request, "headers", {}).get("Idempotency-key", ""), r"^health-diagnosis:inc-health-1:codex-health-orchestrator-1:[0-9a-f]{12}$")
+                self.assertRegex(getattr(request, "headers", {}).get("Idempotency-key", ""), r"^health-diagnosis:inc-health-1:opencode-health-orchestrator-1:[0-9a-f]{12}$")
                 return _Response({"event_id": "evt-plans-1"})
 
             result = run_profile(
@@ -342,7 +365,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 config,
                 runner=owner_aware_runner(runner),
             )
-            self.assertEqual("codex-health-diagnosis-1", result["session_id"])
+            self.assertEqual("opencode-health-diagnosis-1", result["session_id"])
             self.assertNotIn("orchestrator_session_id", result)
             self.assertTrue(result["autopilot_armed"])
             self.assertEqual("repair-first", result["path"])
@@ -513,7 +536,9 @@ class AgentJobHelperTests(unittest.TestCase):
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
                 if "/api/automation/project-launch" in url:
-                    return _Response(project_launch_response("hermes-timeout-1"))
+                    return _Response(project_launch_response("hermes-timeout-1", created=True))
+                if "/api/autopilot/sessions/" in url:
+                    return _Response({"enabled": True, "sessionId": url.rsplit("/", 1)[-1]})
                 if "/progress?" in url:
                     progress_calls += 1
                     return _Response({"session": {"status": "running" if progress_calls == 1 else "idle"}, "fingerprint": f"progress:{progress_calls}"})
@@ -527,7 +552,7 @@ class AgentJobHelperTests(unittest.TestCase):
             ):
                 result = run_profile(
                     "health-remediation",
-                    {"schema": "notify.agent-job.v1", "job_id": "health-remediation", "incident": {"id": "inc-timeout"},
+                    {"schema": "notify.agent-job.v1", "job_id": "health-remediation", "incident": {"id": "inc-timeout", "project": "fleet-health"},
                      "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"}}}},
                     config,
                     runner=owner_aware_runner(runner),
@@ -565,7 +590,9 @@ class AgentJobHelperTests(unittest.TestCase):
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
                 if "/api/automation/project-launch" in url:
-                    return _Response(project_launch_response("codex-1" if "codex" in url else "opencode-1"))
+                    return _Response(project_launch_response("codex-1" if "codex" in url else "opencode-1", created=True))
+                if "/api/autopilot/sessions/" in url:
+                    return _Response({"enabled": True, "sessionId": url.rsplit("/", 1)[-1]})
                 if url.endswith("/api/sessions/new-or-resume"):
                     return _Response({"ok": True, "created": True, "sessionId": "codex-retry-1", "delivery": "accepted"})
                 if "/progress?" in url:
@@ -582,7 +609,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "health-remediation",
                     {
                         "schema": "notify.agent-job.v1", "job_id": "health-remediation",
-                        "incident": {"id": "inc-retry"},
+                        "incident": {"id": "inc-retry", "project": "fleet-health"},
                         "health": {"selection": {"plan_id": "observe", "execution": {
                             "runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash",
                             "reasoning": "default", "topic": "health",
