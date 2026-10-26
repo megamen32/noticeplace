@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""AskHuman stdio MCP server with legacy Notify compatibility.
+"""Notice Place unified MCP server.
 
-The canonical ``ask_human`` tool says or asks something in one call. Existing
-Notify tools remain available so installed callers do not break.
+The canonical ``noticeplace`` tool is the one agent-facing entry: its
+``action`` dispatches to every Notice Place operation through the existing
+handlers. Legacy names (``ask_human``, the notify watchers and job helpers)
+stay dispatchable for internal callers but are hidden from the public
+manifest.
 """
 from __future__ import annotations
 
