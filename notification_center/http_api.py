@@ -2055,20 +2055,49 @@ def send_human_request_telegram(
             center.queue_incident_card_refresh(str(request['incident_id']))
             return {'status': 'queued', **card, 'edited_in_place': True}
     destination: dict[str, str] = {"chat_id": default_chat_id}
-    raw_routes = center.get_runtime_setting("telegram_topics_json")
-    if raw_routes:
+    project = str(request.get("project") or "")
+    project_route = None
+    project_route_found = False
+    explicit_routes = center.get_runtime_setting("human_request_telegram_routes_json")
+    if explicit_routes is not None:
         try:
-            routes = json.loads(raw_routes)
-        except json.JSONDecodeError:
-            routes = {}
-        project_route = routes.get(str(request.get("project") or "")) if isinstance(routes, dict) else None
-        if isinstance(project_route, dict):
-            if project_route.get("enabled") is False:
-                raise RuntimeError("Telegram HumanRequest project route is disabled")
-            route_chat_id = str(project_route.get("chat_id") or "").strip()
-            route_thread_id = project_route.get("message_thread_id")
-            if not re.fullmatch(r"-?[0-9]+", route_chat_id):
-                raise RuntimeError("Telegram HumanRequest project route has an invalid chat_id")
+            routes = json.loads(explicit_routes)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Telegram HumanRequest route configuration is invalid JSON") from error
+        if not isinstance(routes, dict):
+            raise RuntimeError("Telegram HumanRequest route configuration is invalid")
+        if project in routes:
+            project_route = routes[project]
+            project_route_found = True
+
+    project_route_is_explicit = project_route_found
+    if not project_route_found:
+        legacy_routes = center.get_runtime_setting("telegram_topics_json")
+        if legacy_routes is not None:
+            try:
+                routes = json.loads(legacy_routes)
+            except json.JSONDecodeError as error:
+                raise RuntimeError("Telegram project topic configuration is invalid JSON") from error
+            if not isinstance(routes, dict):
+                raise RuntimeError("Telegram project topic configuration is invalid")
+            if project in routes:
+                project_route = routes[project]
+                project_route_found = True
+
+    if project_route_found:
+        if not isinstance(project_route, dict):
+            raise RuntimeError("Telegram HumanRequest project route is invalid")
+        if project_route.get("enabled") is False:
+            raise RuntimeError("Telegram HumanRequest project route is disabled")
+        route_chat_id = str(project_route.get("chat_id") or "").strip()
+        route_thread_id = project_route.get("message_thread_id")
+        if not re.fullmatch(r"-?[0-9]+", route_chat_id):
+            raise RuntimeError("Telegram HumanRequest project route has an invalid chat_id")
+        if project_route_is_explicit and project_route.get("chat_only") is True:
+            if route_thread_id is not None:
+                raise RuntimeError("Telegram HumanRequest chat-only project route cannot include a message_thread_id")
+            destination = {"chat_id": route_chat_id}
+        else:
             if type(route_thread_id) is not int or route_thread_id <= 0:
                 raise RuntimeError("Telegram HumanRequest project route has an invalid message_thread_id")
             destination = {

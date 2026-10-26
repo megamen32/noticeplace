@@ -156,6 +156,24 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
+                if self.path in ("/human-request-routes/save", "/admin/human-request-routes/save"):
+                    store.save_human_request_route(
+                        form.get("project", ""), form.get("chat_id", ""),
+                        form.get("message_thread_id", ""), form.get("chat_only") == "true",
+                        form.get("enabled") == "true", actor,
+                    )
+                    self.send_response(HTTPStatus.SEE_OTHER)
+                    self.send_header("Location", "/admin/")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
+                if self.path in ("/human-request-routes/delete", "/admin/human-request-routes/delete"):
+                    store.delete_human_request_route(form.get("project", ""), actor)
+                    self.send_response(HTTPStatus.SEE_OTHER)
+                    self.send_header("Location", "/admin/")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
                 if self.path in ("/topics/delete", "/admin/topics/delete"):
                     store.delete_topic(form.get("topic_id", ""), actor)
                     self.send_response(HTTPStatus.SEE_OTHER)
@@ -522,6 +540,16 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         for topic in topics
     )
     topic_forms += f'<div class="topic-card"><form method="post" action="/admin/topics/save"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="topic_id" value="new-topic"><input required name="name" placeholder="New topic name"><input required name="chat_id" placeholder="-100…"><input name="message_thread_id" placeholder="blank = create" inputmode="numeric"><label><input type="checkbox" name="enabled" value="true" checked> active</label><button>Create topic</button></form></div>'
+    human_routes = snapshot.get("human_request_routes", [])
+    human_route_rows = "".join(
+        f'<tr><td>{html.escape(route["project"])}</td><td>{html.escape(route["chat_id"])}</td><td>{"chat only" if route.get("chat_only") else html.escape(str(route.get("message_thread_id") or ""))}</td><td>{"active" if route.get("enabled", True) else "disabled"}</td></tr>'
+        for route in human_routes
+    ) or '<tr><td colspan="4">No explicit HumanRequest destinations. Exact project Telegram topics remain the fallback.</td></tr>'
+    human_route_forms = "".join(
+        f'<div class="topic-card"><form id="human-route-{html.escape(route["project"])}" method="post" action="/admin/human-request-routes/save"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" value="{html.escape(route["project"])}" pattern="[a-z0-9][a-z0-9_-]{{0,63}}"><input required name="chat_id" value="{html.escape(route["chat_id"])}" placeholder="numeric chat id"><input name="message_thread_id" value="{html.escape(str(route.get("message_thread_id") or ""))}" placeholder="positive topic id"><label><input type="checkbox" name="chat_only" value="true" {"checked" if route.get("chat_only") else ""}> chat only</label><label><input type="checkbox" name="enabled" value="true" {"checked" if route.get("enabled", True) else ""}> active</label><button>Save destination</button></form><form method="post" action="/admin/human-request-routes/delete"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="project" value="{html.escape(route["project"])}"><button class="danger">Remove destination</button></form></div>'
+        for route in human_routes
+    )
+    human_route_forms += '<div class="topic-card"><form method="post" action="/admin/human-request-routes/save"><input type="hidden" name="csrf" value="' + html.escape(csrf) + '"><input required name="project" placeholder="qa-herder" pattern="[a-z0-9][a-z0-9_-]{0,63}"><input required name="chat_id" placeholder="numeric chat id"><input name="message_thread_id" placeholder="positive topic id"><label><input type="checkbox" name="chat_only" value="true"> chat only (no forum topic)</label><label><input type="checkbox" name="enabled" value="true" checked> active</label><button>Add HumanRequest destination</button></form></div>'
     consumer_rows = "".join(
         f'<tr><td>{html.escape(item["name"])}</td><td>{html.escape(item.get("profile_key") or "custom")}</td><td>{html.escape(item["project"])}</td><td><code>{html.escape(item["token_fingerprint"])}</code></td><td>{html.escape(_policy_display(item["policy"]))}</td><td>{html.escape(_quiet_hours_display(item.get("quiet_hours", [])))}</td><td>{html.escape(item.get("operator_note") or "")}</td></tr>'
         for item in snapshot["consumers"]
@@ -603,7 +631,8 @@ document.getElementById('add-adapter-step').onclick = addStep;
 <section class="card"><div class="card-head"><h2>Add scoped consumer</h2><p class="hint">Create the delivery chain visually. Choose platform, action, target, retry interval, repeats, optional predecessor, and an operator note.</p></div><form class="consumer-form" method="post" action="/admin/consumers"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="name" placeholder="Gateway producer"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="hermes"><input name="operator_note" maxlength="500" placeholder="Optional operator note"><select name="max_severity">{options}</select><input type="hidden" name="policy_json" id="policy-json"><div id="adapter-builder">{adapter_builder}</div><button type="submit" onclick="return buildPolicy()">Create consumer intake</button></form><p class="hint">Target example: <code>{{"chat_id":-100123,"topic_id":122}}</code> or <code>{{"phone_number":"+79990000000"}}</code>.</p></section>
 <section class="card"><div class="card-head"><h2>Delivery profiles</h2></div><div class="table-wrap"><table><tr><th>Name</th><th>Profile</th><th>Project</th><th>Token fingerprint</th><th>Ordered delivery policy</th><th>Quiet hours</th><th>Operator note</th></tr>{consumer_rows}</table></div></section>
 <section class="card" id="event-history"><div class="card-head"><h2>Event history</h2><p class="hint">Ingress, parent/child links, source/proxy metadata, notifications, and final state. Bearer tokens and secrets are never shown.</p></div><form class="toolbar" method="get" action="/admin/"><input name="history" value="{html.escape(str(snapshot.get("event_history_query") or ""))}" placeholder="event type, producer, plugin, correlation, incident"><button>Filter</button><a href="/admin/#event-history">Reset</a></form><div class="table-wrap"><table><tr><th>Event / incident / time</th><th>Type / title / project</th><th>Producer / plugin</th><th>Source IP / proxy</th><th>Parent / children</th><th>Notifications</th><th>Outcome / correlation</th></tr>{history_rows}</table></div></section>
-<section class="card"><div class="card-head"><h2>Telegram topics</h2><p class="hint">All topics are equal. Some were created by the initial configuration, but they can be edited or deleted exactly like any other topic. Changes apply live without restarting Notify.</p></div><div class="table-wrap"><table><tr><th>Name</th><th>Key</th><th>Chat</th><th>Topic</th><th>Action</th></tr>{topic_rows}</table></div><div class="topic-forms">{topic_forms}</div></section></main><script>
+<section class="card"><div class="card-head"><h2>HumanRequest Telegram destinations</h2><p class="hint">Separate from project event topics. An explicit project destination sends question cards to this chat, with either a positive forum topic ID or chat-only mode. If absent, an exact legacy project topic is used; invalid or disabled explicit routes never fall back.</p></div><div class="table-wrap"><table><tr><th>Project</th><th>Chat</th><th>Topic</th><th>Status</th></tr>{human_route_rows}</table></div><div class="topic-forms">{human_route_forms}</div></section>
+<section class="card"><div class="card-head"><h2>Telegram topics</h2><p class="hint">These routes remain for project events and as the exact-project HumanRequest fallback. A forum topic ID is required. Changes apply live without restarting Notify.</p></div><div class="table-wrap"><table><tr><th>Name</th><th>Key</th><th>Chat</th><th>Topic</th><th>Action</th></tr>{topic_rows}</table></div><div class="topic-forms">{topic_forms}</div></section></main><script>
 function buildPolicy() {{ const rows = [...document.querySelectorAll('#adapter-steps [data-step]')]; const policy = rows.map((row, index) => {{ let target; try {{ target = JSON.parse(row.querySelector('[data-target]').value); }} catch (_) {{ target = {{}}; }} return {{id:`step-${{index + 1}}`, platform:row.querySelector('[data-platform]').value, action:row.querySelector('[data-action]').value, target, retry_interval_seconds:Number(row.querySelector('[data-retry]').value), max_repeats:Number(row.querySelector('[data-repeats]').value), previous_step_id:row.querySelector('[data-previous]').value || null}}; }}); document.getElementById('policy-json').value = JSON.stringify(policy); return policy.length > 0; }}
 addStep();
 </script></body></html>"""

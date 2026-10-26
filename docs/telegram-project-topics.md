@@ -7,6 +7,17 @@ Other projects keep their severity/Health routing. This uses the existing
 `telegram_topics_json` runtime setting and does not accept destinations from
 producer event payloads.
 
+HumanRequest destinations are configured separately in the admin console and
+stored in `human_request_telegram_routes_json`; they never write to the event
+topic registry. An explicit project destination can select
+**chat only** with a numeric `chat_id` and no `message_thread_id`, or a forum
+topic with a positive thread ID. It applies only to HumanRequest cards; it does
+not alter the project's event route. If no explicit HumanRequest destination
+exists, Notice uses the exact project's legacy forum topic when configured.
+Invalid or disabled explicit destinations fail closed and do not fall back to
+another project or the default chat. Producer requests still cannot choose or
+override a destination.
+
 Active-mode restrictions still apply. A disabled or incomplete project topic
 does not fall back to another topic. Existing explicit custom consumer targets
 remain authoritative. Telegram topic edits apply live; deploying a code change

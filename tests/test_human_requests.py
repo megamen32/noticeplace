@@ -330,6 +330,63 @@ class HumanRequestTests(unittest.TestCase):
         self.assertEqual("42", calls[1]["chat_id"])
         self.assertNotIn("message_thread_id", calls[1])
 
+    def test_explicit_chat_only_project_route_omits_forum_topic(self) -> None:
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "chat-only-routes.sqlite3",
+            {"wildcard": {"project": "*", "max_severity": "critical"}},
+        )
+        center.set_runtime_setting("human_request_telegram_routes_json", json.dumps({
+            "agent-herder": {
+                "chat_id": "-1004308060380",
+                "chat_only": True, "enabled": True,
+            },
+        }))
+        center.set_runtime_setting("telegram_topics_json", json.dumps({
+            "agent-herder": {"chat_id": "-1001", "message_thread_id": 900, "enabled": True},
+        }))
+        request = center.create_human_request(
+            "wildcard", self.request(request_id="qa-chat-only", project="agent-herder")
+        )
+        calls: list[dict[str, object]] = []
+
+        def send_api(_method: str, payload: dict[str, object]) -> dict[str, object]:
+            calls.append(payload)
+            return {"ok": True, "result": {"message_id": 503, "chat": {"id": payload["chat_id"]}}}
+
+        with mock.patch.dict(os.environ, {
+            "TELEGRAM_BOT_TOKEN": "fixture-bot", "TELEGRAM_CHAT_ID": "42",
+            "TELEGRAM_CALLBACK_SECRET": "x" * 32,
+        }, clear=False):
+            send_human_request_telegram(center, "wildcard", request, api=send_api)
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual("-1004308060380", calls[0]["chat_id"])
+        self.assertNotIn("message_thread_id", calls[0])
+
+    def test_chat_only_project_route_rejects_a_topic_id(self) -> None:
+        center = NotificationCenter(
+            Path(self.tempdir.name) / "invalid-chat-only-routes.sqlite3",
+            {"wildcard": {"project": "*", "max_severity": "critical"}},
+        )
+        center.set_runtime_setting("human_request_telegram_routes_json", json.dumps({
+            "agent-herder": {
+                "chat_id": "-1004308060380",
+                "chat_only": True, "message_thread_id": 900, "enabled": True,
+            },
+        }))
+        center.set_runtime_setting("telegram_topics_json", json.dumps({
+            "agent-herder": {"chat_id": "-1001", "message_thread_id": 900, "enabled": True},
+        }))
+        request = center.create_human_request(
+            "wildcard", self.request(request_id="qa-chat-only-invalid", project="agent-herder")
+        )
+        with mock.patch.dict(os.environ, {
+            "TELEGRAM_BOT_TOKEN": "fixture-bot", "TELEGRAM_CHAT_ID": "42",
+            "TELEGRAM_CALLBACK_SECRET": "x" * 32,
+        }, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "chat-only project route"):
+                send_human_request_telegram(center, "wildcard", request, api=lambda *_: self.fail("must reject"))
+
 class HumanRequestHttpTests(unittest.TestCase):
     """Prove the same contract through the real loopback HTTP surface."""
 

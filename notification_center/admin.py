@@ -156,6 +156,7 @@ class AdminConfigStore:
             "telegram_cleanup_projects": cleanup_projects,
             "routes": self._topic_routes(),
             "topics": self.topics(),
+            "human_request_routes": self.human_request_routes(),
             "consumers": self._consumers(),
             "event_history": self._consumer_notification_center().list_event_history(limit=100, query=history_query),
             "event_history_query": str(history_query or ""),
@@ -346,6 +347,59 @@ class AdminConfigStore:
         self._consumer_notification_center().set_runtime_setting("telegram_topics_json", json.dumps(routes, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
         self._audit({"timestamp": int(time.time()), "actor": actor, "action": "topic_changed", "subject": topic_id, "created": not bool(existing)})
         return next(topic for topic in self.topics() if topic["id"] == topic_id)
+
+    def human_request_routes(self) -> list[dict[str, Any]]:
+        """Return explicit project destinations used only for HumanRequest cards."""
+        routes = self._human_request_route_map()
+        return [{"project": project, **route} for project, route in sorted(routes.items())]
+
+    def save_human_request_route(
+        self, project: str, chat_id: str, message_thread_id: str,
+        chat_only: bool, enabled: bool, actor: str,
+    ) -> dict[str, Any]:
+        project = project.strip()
+        chat_id = chat_id.strip()
+        message_thread_id = message_thread_id.strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", project):
+            raise ValidationError("HumanRequest project must contain lowercase letters, numbers, _ or -")
+        if not re.fullmatch(r"-?[0-9]+", chat_id):
+            raise ValidationError("HumanRequest chat_id must be numeric")
+        if type(chat_only) is not bool or type(enabled) is not bool:
+            raise ValidationError("HumanRequest route flags must be boolean")
+        if chat_only:
+            if message_thread_id:
+                raise ValidationError("chat-only HumanRequest route cannot include a topic id")
+            route: dict[str, Any] = {"chat_id": chat_id, "chat_only": True, "enabled": enabled}
+        else:
+            try:
+                thread_id = int(message_thread_id)
+            except (TypeError, ValueError) as error:
+                raise ValidationError("HumanRequest topic id must be a positive integer") from error
+            if thread_id <= 0:
+                raise ValidationError("HumanRequest topic id must be a positive integer")
+            route = {"chat_id": chat_id, "message_thread_id": thread_id, "enabled": enabled}
+        routes = self._human_request_route_map()
+        routes[project] = route
+        self._consumer_notification_center().set_runtime_setting(
+            "human_request_telegram_routes_json",
+            json.dumps(routes, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+        self._audit({"timestamp": int(time.time()), "actor": actor,
+                     "action": "human_request_telegram_route_changed", "subject": project})
+        return {"project": project, **route}
+
+    def delete_human_request_route(self, project: str, actor: str) -> None:
+        project = project.strip()
+        routes = self._human_request_route_map()
+        if project not in routes:
+            raise ValidationError("HumanRequest project route not found")
+        del routes[project]
+        self._consumer_notification_center().set_runtime_setting(
+            "human_request_telegram_routes_json",
+            json.dumps(routes, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+        self._audit({"timestamp": int(time.time()), "actor": actor,
+                     "action": "human_request_telegram_route_deleted", "subject": project})
 
     def delete_topic(self, topic_id: str, actor: str) -> None:
         """Remove any topic from live Notify routing without deleting Telegram history."""
@@ -831,6 +885,19 @@ class AdminConfigStore:
         except json.JSONDecodeError:
             return self._routes()
         return {str(key): dict(route) for key, route in value.items() if isinstance(route, dict)} if isinstance(value, dict) else self._routes()
+
+    def _human_request_route_map(self) -> dict[str, dict[str, Any]]:
+        """Read HumanRequest destinations from their isolated live runtime setting."""
+        raw = self._consumer_notification_center().get_runtime_setting("human_request_telegram_routes_json")
+        if raw is None:
+            return {}
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValidationError("HumanRequest route configuration is invalid JSON") from error
+        if not isinstance(value, dict) or any(not isinstance(route, dict) for route in value.values()):
+            raise ValidationError("HumanRequest route configuration is invalid")
+        return {str(key): dict(route) for key, route in value.items()}
 
     def _apply_primary(self, scopes: Mapping[str, Mapping[str, Any]], actor: str, action: str, project: str, token: str) -> None:
         encoded = json.dumps(scopes, sort_keys=True, separators=(",", ":"))
