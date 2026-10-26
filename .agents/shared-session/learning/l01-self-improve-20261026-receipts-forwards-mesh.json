@@ -1,0 +1,19 @@
+{
+  "class": "lhc_improvement",
+  "created_at_utc": "2026-10-26T01:20:00Z",
+  "session": "ses_e8ab5312bffeEAnYY7mRS2WVfP",
+  "task": "L01 np-secretary continuation",
+  "trigger": "route_failure_and_repeated_friction",
+  "observations": [
+    "A false report claim ('звонок не ушёл к владельцу') survived into the canonical L01 report because the conclusion was drawn from the owner-scope API (call not found) instead of reading the UserIO call receipt store directly. A direct receipt read disproved it within minutes.",
+    "A durable SSH remote forward of a unix socket fails repeatedly for two non-obvious reasons: (1) sshd keeps the stale socket file after the client dies (StreamLocalBindUnlink=no), so every later bind fails 'remote port forwarding failed'; (2) the forwarded target socket root:notification-center 0660 is not accessible to the unit's User=roomhacker, producing 'administratively prohibited' on the 100 side while the real error is 'Permission denied' on the 88 client side.",
+    "Mesh delivery workers exist on multiple hosts; deploying a fix to one host (100) leaves another host (88) executing old code with different semantics. The QA incident call was executed by the stale 88 worker and hit the legacy owner-room route."
+  ],
+  "corrections": [
+    "For any disputed call receipt, read the durable receipt store (call.json in /var/lib/universal-userio/matrix-calls) before publishing any claim about where a call went.",
+    "For durable unix-socket forwards: run the unit as root when the target socket is root-group-owned, and ExecStartPre-remove the stale remote socket file; check the CLIENT ssh logs on the forwarding host for the real connect error.",
+    "NoticePlace mesh rollouts must verify the active release on every mesh host (100/44/88), not just the API host; workers on other hosts execute deliveries."
+  ],
+  "verification": "Applied during this same session: receipt read corrected the report (commit 32b3100); the forward unit with User=root + ExecStartPre clean connected and carried the successful live typed-call test; 88 mesh worker upgraded to 402451c before the repeat test, which then reached only the isolated test bots.",
+  "reuse_path": "noticeplace/.agents/shared-session/learning/ (this file) + L01 report sections 4.0 correction and 6.6"
+}
