@@ -804,7 +804,13 @@ class AdminConfigStore:
         scopes[token]["max_severity"] = max_severity
         self._apply_primary(scopes, actor, "project_severity_changed", project, token)
 
-    def set_project_health_diagnosis(self, project: str, enabled: bool, actor: str) -> None:
+    def set_project_health_diagnosis(
+        self,
+        project: str,
+        enabled: bool,
+        actor: str,
+        expected_current: bool | None = None,
+    ) -> None:
         """Toggle automatic diagnosis only for an existing health-enabled project."""
         self._validate_project(project)
         if not isinstance(enabled, bool):
@@ -813,6 +819,11 @@ class AdminConfigStore:
         token = self._token_for_project(scopes, project)
         if not scopes[token].get("agent_jobs"):
             raise ValidationError("project is not eligible for automatic health diagnosis")
+        current = bool(scopes[token].get("automatic_health_diagnosis", True))
+        if expected_current is not None and current is not expected_current:
+            raise ValidationError("project policy changed since fleet preflight")
+        if current is enabled:
+            return
         scopes[token]["automatic_health_diagnosis"] = enabled
         self._apply_primary(scopes, actor, "project_health_diagnosis_changed", project, token)
 

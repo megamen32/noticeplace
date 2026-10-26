@@ -110,6 +110,23 @@ class AutomaticDiagnosisScopeTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             store._scopes()
 
+    def test_project_setter_uses_core_default_true_and_cas(self):
+        primary = self.root / 'primary.env'
+        primary.write_text('NOTIFY_CENTER_TOKENS_JSON=' + json.dumps({'fixture-token': {
+            'project': 'noticeplace.qa-default', 'max_severity': 'important',
+            'agent_jobs': ['health-diagnosis']}}) + '\n')
+        restarts = []
+        store = AdminConfigStore(primary, self.root / 'routes.env', self.root / 'setter-state', restart=lambda: restarts.append(True))
+        store.set_project_health_diagnosis('noticeplace.qa-default', False, 'fixture-request', expected_current=True)
+        persisted = json.loads(primary.read_text().split('=', 1)[1])
+        self.assertIs(persisted['fixture-token']['automatic_health_diagnosis'], False)
+        self.assertEqual(len(restarts), 1)
+        self.assertTrue(list((self.root / 'setter-state' / 'rollbacks').glob('*')))
+        self.assertNotIn('fixture-token', store.audit_path.read_text())
+        with self.assertRaisesRegex(ValidationError, 'changed since fleet preflight'):
+            store.set_project_health_diagnosis('noticeplace.qa-default', True, 'fixture-request-2', expected_current=True)
+        self.assertEqual(len(restarts), 1)
+
     def test_actual_health_contract_rejects_missing_recipient(self):
         center = self.center(False)
         event = self.signal()
