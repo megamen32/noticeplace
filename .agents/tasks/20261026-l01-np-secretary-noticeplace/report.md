@@ -341,16 +341,6 @@ ANSWER: 200 {"incident_id": "inc_ddd181599b55405cbac9ff1ecf741331", "resolved": 
 - Тихие часы автоматических звонков задаются runtime-настройкой `android_phone_quiet_start_hour=0 / end_hour=12` (Europe/Moscow), а не `quiet_hours_json` потребителя.
 - QA-токен потребителя: `/home/roomhacker/.config/noticeplace/qa-stop-20261023b-consumer.json` (`intake_token`); потребитель `consumer_7ad31d4110d744259bde4ee7580890e4`, проект `noticeplace-qa-stop-20261023b`, маршрут — изолированная комната, senders = боты A/B, `matrix_only`.
 
-### 6.7 Telegram-актёрский тест (26.10 ~05:00–05:10 МСК, изолированный скоуп)
-
-Follow-up владельца: добавить `telegram:8810909089` (Секретарь, @deus_excode) разрешённым тестовым актёром **только в изолированный тестовый request** (per-request `allowed_actors`, не глобальный allowlist), затем проверить «запрос → карточка владельцу → ответ → один native resume». UserIO readback: оба аккаунта живые (`telegram:540308572` — владелец, `telegram:8810909089` — Секретарь; can_read+can_reply).
-
-1. `human_request_create` (Herder-реестр, metadata-only) → `9a555e51-70d2-4e8a-81c7-b94a752b1307`, `pending`, native_target = сессия исполнителя.
-2. Инцидент-вопрос `inc_3fa0deba…` (QA-потребитель) → `matrix.message` **sent** (attempt=1); канонический NP-intake создал вопрос с тем же UUID, привязанный к инциденту, `allowed_actors=["telegram:8810909089"]` (скоуп), карточка владельцу в очереди (разрешено).
-3. Ответ разрешённого тестового актёра через канонический resolve-API (`actor=telegram:8810909089`) → вопрос `resolved`, `accepted`, канонический ответ в `/result` (`result_ref 546102cf…`).
-4. Нативный resume: шов NP→Herder — firewall-пауза (`retryable`, durable-строка); демонстрация допуска разрешённым uid → Herder `claimResume`: `resumed`, квитанция `resume-e72d16ee…`, **конверт возобновления доставлен в родную сессию исполнителя**. Один resume (single-winner, дубль невозможен).
-5. Инцидент закрыт (`resolved`); личный телефон/PSTN не затронуты.
-
 ### 6.8 Scoped-токен Секретаря (26.10 ~05:30–05:50 МСК, follow-up владельца)
 
 Владелец: не устанавливать глобальный `read_only`; перевести токен в `scoped_messenger` с `access=read_only`, `chats=null` для назначенных Секретарю аккаунтов; sender-токены не менять.
