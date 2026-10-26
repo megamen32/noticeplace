@@ -351,7 +351,15 @@ Follow-up владельца: добавить `telegram:8810909089` (Секре
 4. Нативный resume: шов NP→Herder — firewall-пауза (`retryable`, durable-строка); демонстрация допуска разрешённым uid → Herder `claimResume`: `resumed`, квитанция `resume-e72d16ee…`, **конверт возобновления доставлен в родную сессию исполнителя**. Один resume (single-winner, дубль невозможен).
 5. Инцидент закрыт (`resolved`); личный телефон/PSTN не затронуты.
 
-### 6.8 Продолжение L01 (03:00–04:10 МСК 26.10, сессия np_secretary_glm, маршрут zai-coding-plan/glm-5.3)
+### 6.8 Scoped-токен Секретаря (26.10 ~05:30–05:50 МСК, follow-up владельца)
+
+Владелец: не устанавливать глобальный `read_only`; перевести токен в `scoped_messenger` с `access=read_only`, `chats=null` для назначенных Секретарю аккаунтов; sender-токены не менять.
+
+- Исполнено штатным `PersonalTokens.update_permissions`: `token_023a79e8…` → `scope=scoped_messenger`, гранты `read_only` (все чаты, `chats=null`) ровно на `telegram:8810909089`, `max`, `gmail-careviolan`, `gmail-megamen932` (все enabled в provider_accounts). Readback principal: `messenger_grants` = ровно эти 4 записи. Sender-токены (`messenger_actions`) не менялись; автообработка/workspace defaults не менялись (scoped-токен — credential, не policy).
+- Enforcement подтверждён живым MCP: чат грантованного аккаунта (inherit-группа БЕЗ allow-правила) читается `userio.messenger.history` под этим токеном; чат негрантованного аккаунта → `chat_or_account_outside_token_scope` (isError). Право на чатах без allow-правила — через грант аккаунта (маршрутное доверие не требуется).
+- Runtime-монтаж: в секретарском runtime (`qa-mavis09-voice`, engine `agentcall_session_mcp.py`) **нет** инструмента чтения UserIO-чатов и **нет** существующего конфига, потребляющего UserIO MCP credential — изобретать сервис не стал (по директиве). Токен сохранён: `/var/lib/universal-userio/secretary-readonly-runtime.token` (0600, root); точный существующий конфиг для будущей интеграции — `/etc/agentcall-secretary-voice.json` (шаблон `*_TOKEN_FILE` уже поддержан секретарским конфигом). Установка в runtime — за активной сессией листа/владельца в её окно; voice SDK/telephony не тронуты.
+
+### 6.9 Продолжение L01 (03:00–04:10 МСК 26.10, сессия np_secretary_glm, маршрут zai-coding-plan/glm-5.3)
 
 #### Исправление корневой причины звонка владельцу (§4.0)
 
