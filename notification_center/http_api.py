@@ -15,7 +15,7 @@ import urllib.request
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 from zoneinfo import ZoneInfo
 
 from .agentcall_phone import AgentCallPhoneAdapter
@@ -1741,6 +1741,7 @@ def complete_human_request(
     message_id: Any = None,
     runner: Any = urllib.request.urlopen,
     choice_codec: TelegramActionCodec | None = None,
+    extra_allowed_actors: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """One canonical completion for every answer surface.
 
@@ -1756,7 +1757,8 @@ def complete_human_request(
         raise ValidationError("completion requires a request id and an answer")
     # Re-read under the answer transaction. The handler's snapshot can already
     # be stale when another surface wins, expires or cancels this question.
-    resolved = center.resolve_human_request_for_surface(request_id, actor, answer)
+    resolved = center.resolve_human_request_for_surface(
+        request_id, actor, answer, extra_allowed_actors=extra_allowed_actors)
     was_pending = bool(resolved.get("answer_accepted"))
     state = str(resolved.get("state") or "")
     response_value = resolved.get("response_value")
@@ -1806,8 +1808,10 @@ def complete_bound_matrix_question(
     The isolated room answer is one answer surface: the same verified sender
     that bound the notice completes the incident's own pending free-text
     question, and the owed native resume follows the canonical completion
-    path. A choice question stays for a surface that can name one exact
-    option, and a sender the question does not declare completes nothing.
+    path. The sender must be an actor the producer declared or a sender the
+    incident's own consumer Matrix route declares — an answerer outside both
+    declarations completes nothing. A choice question stays for a surface
+    that can name one exact option.
     """
     incident_id = str(bound.get("incident_id") or "")
     actor = str(bound.get("actor") or "")
@@ -1824,10 +1828,18 @@ def complete_bound_matrix_question(
     if pending["mode"] != "question":
         return {**pending, "status": "skipped_unsupported_mode"}
     if actor not in set(request.get("allowed_actors") or []):
-        return {**pending, "status": "sender_not_allowed"}
+        incident = center.get_incident(incident_id) or {}
+        scope = center.consumer_matrix_scope(str(incident.get("consumer_id") or "")) if incident.get("consumer_id") else None
+        declared = {f"matrix:{str(sender).strip()}" for sender in ((scope or {}).get("senders") or [])}
+        if actor not in declared:
+            return {**pending, "status": "sender_not_allowed"}
+        verified_actor = True
+    else:
+        verified_actor = False
     if not str(answer or "").strip():
         return {**pending, "status": "no_answer_text"}
-    completed = complete_human_request(center, request, str(answer), actor, "matrix", runner=runner)
+    completed = complete_human_request(center, request, str(answer), actor, "matrix", runner=runner,
+                                       extra_allowed_actors=[actor] if verified_actor else None)
     return {
         "request_id": completed.get("request_id"),
         "state": completed.get("state"),

@@ -156,17 +156,6 @@ class MatrixReplyQuestionTests(unittest.TestCase):
         self.assertEqual("opencode", resume.call_args[0][1])
         self.assertEqual("ses_executor", resume.call_args[0][2])
 
-    def test_foreign_sender_binds_the_incident_but_never_completes_the_question(self) -> None:
-        consumer, incident_id, request_id = self._notice_with_question(actors=["matrix:@someone-else"])
-        with mock.patch("notification_center.agent_job_helper.resume_bound_native_session") as resume:
-            status, body = self._reply(self._reply_payload("$reply-2"))
-        self.assertEqual(200, status)
-        self.assertTrue(body["bound"])
-        self.assertEqual("sender_not_allowed", body["question"]["status"])
-        pending = self.center.get_human_request(consumer["intake_token"], request_id)
-        self.assertEqual("pending", pending["state"])
-        resume.assert_not_called()
-
     def test_choice_question_stays_for_a_surface_that_names_one_option(self) -> None:
         consumer, incident_id, request_id = self._notice_with_question(
             mode="choice",
@@ -183,6 +172,19 @@ class MatrixReplyQuestionTests(unittest.TestCase):
         pending = self.center.get_human_request(consumer["intake_token"], request_id)
         self.assertEqual("pending", pending["state"])
         resume.assert_not_called()
+
+    def test_route_declared_sender_completes_a_question_that_names_other_actors(self) -> None:
+        """The incident's own consumer route declares who may answer in that room."""
+        consumer, incident_id, request_id = self._notice_with_question(actors=["telegram:owner"])
+        with mock.patch("notification_center.agent_job_helper.resume_bound_native_session") as resume:
+            resume.side_effect = lambda rid, harness, session, cwd, result_ref, runner: {"status": "resuming"}
+            status, body = self._reply(self._reply_payload("$reply-6"))
+        self.assertEqual(200, status)
+        self.assertTrue(body["bound"])
+        self.assertEqual("accepted", body["question"]["answer_status"])
+        resolved = self.center.get_human_request(consumer["intake_token"], request_id)
+        self.assertEqual("resolved", resolved["state"])
+        resume.assert_called_once()
 
     def test_repeat_reply_event_never_resumes_twice(self) -> None:
         consumer, incident_id, request_id = self._notice_with_question()

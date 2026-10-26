@@ -15,7 +15,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 
@@ -1225,12 +1225,14 @@ class NotificationCenter:
             current = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
             return self._human_request_result(current)
 
-    def _resolve_human_request_row(self, row: sqlite3.Row, actor: str, value: str) -> dict[str, Any]:
+    def _resolve_human_request_row(self, row: sqlite3.Row, actor: str, value: str, *,
+                                   extra_allowed_actors: Collection[str] | None = None) -> dict[str, Any]:
         """Resolve an already selected row; caller owns the lock and transport trust."""
         if row["kind"] != "user":
             raise ValidationError("secret requests require AskSecret/SSS, not an ordinary answer")
+        verified = {str(item).strip() for item in (extra_allowed_actors or []) if str(item).strip()}
         actors = json.loads(str(row["allowed_actors_json"]))
-        if actor not in actors:
+        if actor not in actors and actor not in verified:
             raise ValidationError("human response actor is not allowed")
         if row["task_context_json"] and not self.task_decisions.actor_allowed_now(str(row["request_id"]), actor):
             raise AuthorizationError("current task actor policy does not allow this decision")
@@ -1389,16 +1391,21 @@ class NotificationCenter:
                 raise ValidationError("human response actor is not allowed")
             return self._human_request_result(self._expire_human_request(row))
 
-    def resolve_human_request_for_surface(self, request_id: str, actor: str, value: str) -> dict[str, Any]:
+    def resolve_human_request_for_surface(self, request_id: str, actor: str, value: str, *,
+                                          extra_allowed_actors: Collection[str] | None = None) -> dict[str, Any]:
         """Resolve one request from any surface, keeping the first accepted value.
 
         Telegram buttons, free-text replies, HTTP, and voice all use this, so a
-        later conflicting answer can never replace the accepted one.
+        later conflicting answer can never replace the accepted one. A surface
+        that verified an actor against its own explicit contract — such as a
+        Matrix route that declares the room's senders — may pass that one
+        verified actor as an extra allowed actor; the surface owns that proof.
         """
         actor = str(actor).strip()
         value = str(value).strip()
         if not actor or not value or len(value) > 4000:
             raise ValidationError("human response actor and value are required")
+        verified = {str(item).strip() for item in (extra_allowed_actors or []) if str(item).strip()}
         with self._lock, self._connection:
             self._connection.execute('UPDATE human_requests SET request_id=request_id WHERE request_id=?', (request_id,))
             row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
@@ -1406,7 +1413,7 @@ class NotificationCenter:
                 raise ValidationError("human request not found")
             if row["kind"] != "user":
                 raise ValidationError("secret requests require AskSecret/SSS, not an ordinary answer")
-            if actor not in json.loads(str(row["allowed_actors_json"])):
+            if actor not in json.loads(str(row["allowed_actors_json"])) and actor not in verified:
                 raise ValidationError("human response actor is not allowed")
             if row["task_context_json"]:
                 if value in {"stop", "hold"}:
@@ -1422,7 +1429,7 @@ class NotificationCenter:
                 if row["state"] == "resolved" and not closed:
                     self._enqueue_human_completion(result)
                 return {**result, "answer_accepted": False, 'incident_closed': closed}
-            return {**self._resolve_human_request_row(row, actor, value), "answer_accepted": True}
+            return {**self._resolve_human_request_row(row, actor, value, extra_allowed_actors=verified), "answer_accepted": True}
 
     def resolve_human_reply_from_telegram(self, chat_id: str, message_id: int, actor: str, value: str) -> dict[str, Any] | None:
         """Resolve only a reply correlated to the exact sent Telegram question."""
