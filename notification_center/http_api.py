@@ -1867,6 +1867,29 @@ def _deliver_human_completion_card(center: NotificationCenter, request: Mapping[
         return card
 
 
+def _human_completion_runner(runner: Any) -> Any:
+    """Use a separate loopback-only route for answers while health launches stay paused."""
+    override = os.environ.get("NOTIFY_HUMAN_COMPLETION_URL", "").strip()
+    if not override:
+        return runner
+    parsed = urllib.parse.urlsplit(override)
+    if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}
+            or parsed.port is None or parsed.username or parsed.password or parsed.query or parsed.fragment
+            or parsed.path != "/internal/human-requests/ask-user-completion"):
+        raise ValueError("human completion route must be the exact loopback callback endpoint")
+
+    def send(request: urllib.request.Request, timeout: float) -> Any:
+        if (request.get_method() != "POST"
+                or urllib.parse.urlsplit(request.full_url).path != "/internal/human-requests/ask-user-completion"):
+            raise ValueError("human completion route cannot forward another action")
+        forwarded = urllib.request.Request(
+            override, data=request.data, headers=dict(request.header_items()), method="POST",
+        )
+        return runner(forwarded, timeout=timeout)
+
+    return send
+
+
 def deliver_human_completion(
     center: NotificationCenter,
     request: Mapping[str, Any],
@@ -1884,6 +1907,11 @@ def deliver_human_completion(
         return {"status": "not_bound"}
     if str(pending.get("state")) in {"sent", "unknown", "sending", 'cancelled'}:
         return {"status": str(pending["state"]), "result_ref": str(pending.get("result_ref") or "")}
+    try:
+        completion_runner = _human_completion_runner(runner)
+    except ValueError:
+        center.mark_human_completion(request_id, "retryable", "human completion route misconfigured")
+        return {"status": "retryable", "reason": "human completion route misconfigured"}
     if not center.claim_human_completion(request_id):
         return {"status": str(center.human_request_completion(request_id).get("state") or "unknown")}
     from .agent_job_helper import NativeCompletionUnavailable, resume_bound_native_session
@@ -1891,7 +1919,7 @@ def deliver_human_completion(
     try:
         outcome = resume_bound_native_session(
             request_id, str(pending["harness"]), str(pending["session_id"]), str(pending["cwd"]),
-            str(pending["result_ref"]), runner,
+            str(pending["result_ref"]), completion_runner,
         )
     except NativeCompletionUnavailable as error:
         center.mark_human_completion(request_id, "retryable", str(error))
