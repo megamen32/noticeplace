@@ -186,6 +186,22 @@ class MatrixReplyQuestionTests(unittest.TestCase):
         self.assertEqual("resolved", resolved["state"])
         resume.assert_called_once()
 
+    def test_the_guard_refuses_an_actor_outside_both_question_and_route(self) -> None:
+        """Defensive guard: a sender declared by neither the question nor the
+        incident's consumer route completes nothing. On the HTTP surface the
+        bind gate refuses such a sender first (see test_http_api); this pins
+        the helper itself against route-less or crafted bindings."""
+        from notification_center.http_api import complete_bound_matrix_question
+
+        consumer, incident_id, request_id = self._notice_with_question(actors=["telegram:owner"])
+        bound = {"incident_id": incident_id, "actor": "matrix:@stranger:example", "bound": True}
+        with mock.patch("notification_center.agent_job_helper.resume_bound_native_session") as resume:
+            out = complete_bound_matrix_question(self.center, bound, "да, подтверждаю")
+        self.assertEqual("sender_not_allowed", out["status"])
+        pending = self.center.get_human_request(consumer["intake_token"], request_id)
+        self.assertEqual("pending", pending["state"])
+        resume.assert_not_called()
+
     def test_repeat_reply_event_never_resumes_twice(self) -> None:
         consumer, incident_id, request_id = self._notice_with_question()
         with mock.patch("notification_center.agent_job_helper.resume_bound_native_session") as resume:
