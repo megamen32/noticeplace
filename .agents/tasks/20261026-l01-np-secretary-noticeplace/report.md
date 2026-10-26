@@ -325,12 +325,22 @@ ANSWER: 200 {"incident_id": "inc_ddd181599b55405cbac9ff1ecf741331", "resolved": 
 - **Голосовое плечо**: successor `matrix.call` корректно отменён тихими часами; живой звонок требует окна вне 00:00–12:00 МСК и маршрута управления UserIO к primary88 (последний недостающий узел голоса, см. §4.0).
 - **Раскрытие**: в ходе диагностики в транскрипт сессии был выведен список ключей `NOTIFY_CENTER_TOKENS_JSON` (значения токенов). Транскрипт не покидал хост; ротация токенов — на решение владельца.
 
-### 6.5 Зафиксированные факты конфигурации
+### 6.5 Канонический Herder-контур (26.10 ~04:40–04:50 МСК, по подтверждению владельца)
+
+Владелец подтвердил: Telegram-карточку тестового Human Request можно слать; продолжать через Herder `human_request_create` + тестовый Matrix-актёр; synthetic/UNKNOWN не повторять; личный телефон — только production-инциденты. Выполнен канонический прогон:
+
+1. `human_request_create` (Herder-реестр, metadata-only) → `7f575031-1628-4bf9-a82f-4270c7adaf4c`, `pending`, native_target = сессия исполнителя.
+2. Инцидент-вопрос `inc_3f18d8c7…` (QA-потребитель) → `matrix.message` **sent** (attempt=1); канонический NP-intake `POST /v1/human-requests` создал вопрос с тем же UUID, привязанный к инциденту (native_target совпадает); карточка инцидента поставлена в очередь владельцу (разрешено).
+3. Тестовый бот B ответил в комнате (`m.in_reply_to`) → `bound=true` → инцидент `acknowledged` → вопрос **resolved**, ответ принят (route-scoped trust, актёр — объявленный отправитель маршрута).
+4. Нативный resume → Herder `claimResume` допустил (`attemptId 36c27690…`, `resultRef d88b87aa…` совпал) → **конверт возобновления доставлен в родную сессию исполнителя** → `status=resumed`, квитанция `resume-c732804f…`. Канонический ответ прочитан исполнителем по `/result` (state=resolved).
+5. Инцидент закрыт (`resolved`); `matrix.call`-successor корректно отменён тихими часами; ни одного агент-job `telegram.*`, ни одного набора.
+
+### 6.6 Зафиксированные факты конфигурации
 
 - Тихие часы автоматических звонков задаются runtime-настройкой `android_phone_quiet_start_hour=0 / end_hour=12` (Europe/Moscow), а не `quiet_hours_json` потребителя.
 - QA-токен потребителя: `/home/roomhacker/.config/noticeplace/qa-stop-20261023b-consumer.json` (`intake_token`); потребитель `consumer_7ad31d4110d744259bde4ee7580890e4`, проект `noticeplace-qa-stop-20261023b`, маршрут — изолированная комната, senders = боты A/B, `matrix_only`.
 
-### 6.6 Продолжение L01 (03:00–04:10 МСК 26.10, сессия np_secretary_glm, маршрут zai-coding-plan/glm-5.3)
+### 6.7 Продолжение L01 (03:00–04:10 МСК 26.10, сессия np_secretary_glm, маршрут zai-coding-plan/glm-5.3)
 
 #### Исправление корневой причины звонка владельцу (§4.0)
 
