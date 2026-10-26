@@ -642,6 +642,12 @@ class NotificationCenter:
         """Resolve producer intent plus the central deterministic diagnosis policy."""
         explicit = str(event.get("agent_job") or "")
         if explicit:
+            # A producer cannot bypass the project-level automatic-diagnosis
+            # switch by naming the same job explicitly. Trusted operator
+            # actions use their separate action handler and remain available.
+            if (explicit == HEALTH_DIAGNOSIS_AGENT_JOB
+                    and scope.get("automatic_health_diagnosis", True) is False):
+                return ""
             return explicit
         if scope.get("automatic_health_diagnosis", True) is False:
             return ""
@@ -1850,10 +1856,12 @@ class NotificationCenter:
             raise ValidationError("Idempotency-Key is required")
         self._validate_event(event)
         scope = self._token(token, event)
+        requested_agent_job = str(event.get("agent_job") or "")
         agent_job = self._effective_agent_job(event, scope)
-        if agent_job:
+        authorized_job = agent_job or requested_agent_job
+        if authorized_job:
             allowed_jobs = scope.get("agent_jobs", [])
-            if not isinstance(allowed_jobs, (list, tuple)) or agent_job not in {str(value) for value in allowed_jobs}:
+            if not isinstance(allowed_jobs, (list, tuple)) or authorized_job not in {str(value) for value in allowed_jobs}:
                 raise AuthorizationError("token is not allowed to start this agent job")
         now = time.time()
         event_type = str(event.get("event_type") or event.get("kind") or "")[:128]

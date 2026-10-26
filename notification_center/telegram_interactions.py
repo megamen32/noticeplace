@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import urllib.parse
 import urllib.request
 from typing import Any, Callable, Mapping
@@ -110,6 +111,125 @@ class TelegramActionCodec:
 TelegramApi = Callable[[str, dict[str, Any]], dict[str, Any]]
 ChoiceCallback = Callable[[str, str, str], Mapping[str, Any]]
 InboxSink = Callable[[dict[str, object]], Mapping[str, Any]]
+EmergencyPauseReader = Callable[[], Mapping[str, Any] | None]
+
+
+class TelegramConsoleOwnerControl:
+    """Adapt the existing root-owned NoticePlace Console API owner controls."""
+
+    BASE_URL = "http://127.0.0.1:8094"
+
+    def __init__(self, opener: Callable[..., Any] | None = None) -> None:
+        self._opener = opener or urllib.request.urlopen
+
+    @classmethod
+    def from_environment(cls) -> "TelegramConsoleOwnerControl":
+        # The canonical root-owned service is loopback-only on this fixed port;
+        # it owns admin/CSRF checks and the inner Herder calls.
+        return cls()
+
+    def _request(self, method: str, path: str, csrf: str = "") -> dict[str, Any]:
+        headers = {"Accept": "application/json", "X-Notify-Admin": "1"}
+        if method == "POST":
+            if not csrf:
+                csrf_payload = self._request("GET", "/api/csrf")
+                csrf = str(csrf_payload.get("token") or "")
+                if not csrf:
+                    raise RuntimeError("NoticePlace Console API did not issue a CSRF token")
+            headers["X-Notify-CSRF"] = csrf
+        request = urllib.request.Request(self.BASE_URL + path, headers=headers, method=method)
+        with self._opener(request, timeout=10) as response:
+            status = int(response.status)
+            raw = response.read()
+        if not 200 <= status < 300:
+            raise RuntimeError(f"NoticePlace Console API returned HTTP {status}")
+        try:
+            result = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError("NoticePlace Console API returned invalid JSON") from error
+        if not isinstance(result, dict):
+            raise RuntimeError("NoticePlace Console API returned invalid data")
+        return result
+
+    def _read_ai(self) -> dict[str, Any]:
+        return self._request("GET", "/api/ai")
+
+    @staticmethod
+    def _adapt_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
+        ai = payload.get("ai") if isinstance(payload.get("ai"), Mapping) else {}
+        owner = ai.get("owner") if isinstance(ai.get("owner"), Mapping) else {}
+        forbidden = owner.get("forbidden")
+        nodes = owner.get("nodes")
+        records = ([{"scope": "*", "forbidden": forbidden}] if type(forbidden) is bool else [])
+        return {
+            "ok": owner.get("confirmed") is True and type(forbidden) is bool,
+            "etag": str(owner.get("etag") or ""),
+            "state": {"disarmed": forbidden, "records": records},
+            "nodes": [dict(node) for node in nodes if isinstance(node, Mapping)] if isinstance(nodes, list) else [],
+        }
+
+    @staticmethod
+    def _adapt_active_sessions(payload: Mapping[str, Any]) -> dict[str, Any]:
+        ai = payload.get("ai") if isinstance(payload.get("ai"), Mapping) else {}
+        current = ai.get("current_sessions") if isinstance(ai.get("current_sessions"), Mapping) else {}
+        count = current.get("count")
+        confirmed = current.get("confirmed") is True and type(count) is int and count >= 0
+        return {
+            "confirmed": confirmed,
+            # On a partial snapshot the console's count is still useful as a
+            # lower bound; keep it visible while preserving the uncertainty.
+            "count": count if type(count) is int and count >= 0 else None,
+            "hosts": [str(host)[:128] for host in current.get("hosts", [])] if isinstance(current.get("hosts"), list) else [],
+            "partial": current.get("partial") is True or not confirmed,
+        }
+
+    @staticmethod
+    def _adapt_emergency_pause(payload: Mapping[str, Any]) -> dict[str, Any]:
+        ai = payload.get("ai") if isinstance(payload.get("ai"), Mapping) else {}
+        pause = ai.get("emergency_network_pause") if isinstance(ai.get("emergency_network_pause"), Mapping) else {}
+        state = str(pause.get("state") or "unknown")
+        confirmed = state in {"active", "inactive"}
+        return {
+            "confirmed": confirmed,
+            "active": state == "active" if confirmed else None,
+            "unit_active": pause.get("unit_active"),
+            "firewall_rule": pause.get("firewall_rule"),
+        }
+
+    def read_policy(self) -> dict[str, Any]:
+        return self._adapt_policy(self._read_ai())
+
+    def read_active_sessions(self) -> dict[str, Any]:
+        return self._adapt_active_sessions(self._read_ai())
+
+    def read_emergency_pause(self) -> dict[str, Any]:
+        return self._adapt_emergency_pause(self._read_ai())
+
+    def read_snapshot(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        payload = self._read_ai()
+        return (self._adapt_policy(payload), self._adapt_active_sessions(payload),
+                self._adapt_emergency_pause(payload))
+
+    def _post_control(self, path: str) -> dict[str, Any]:
+        result = self._request("POST", path)
+        return result
+
+    def stop_current(self) -> dict[str, Any]:
+        result = self._post_control("/api/ai/disarm")
+        still_running = result.get("still_running", result.get("stillRunning"))
+        return {
+            **result,
+            "ok": result.get("ok") is True,
+            "applied": result.get("ok") is True,
+            "stopped": result.get("stopped") if isinstance(result.get("stopped"), list) else [],
+            "stillRunning": still_running if isinstance(still_running, list) else None,
+        }
+
+    def allow_new_operations(self, etag: str) -> dict[str, Any]:
+        if not etag:
+            raise RuntimeError("Herder owner policy has no revision; Start was not applied")
+        result = self._post_control("/api/ai/arm")
+        return {**result, "ok": result.get("ok") is True, "applied": result.get("ok") is True}
 
 
 def agent_herder_choice_callback(url: str, token: str, request_id: str, choice_id: str, _actor: str) -> dict[str, Any]:
@@ -145,7 +265,7 @@ def telegram_api(token: str, method: str, payload: dict[str, Any]) -> dict[str, 
 class TelegramInteractionPoller:
     """Poll Bot API callbacks in-process; no public webhook or second daemon exists."""
 
-    def __init__(self, center: NotificationCenter, token: str, allowed_user_ids: set[str], codec: TelegramActionCodec, health_plan_codec: TelegramHealthPlanCodec | None = None, api: TelegramApi | None = None, choice_callback: ChoiceCallback | None = None, human_request_token: str | None = None, inbox_sink: InboxSink | None = None, inbox_chat_ids: set[str] | None = None, inbox_sender_ids: set[str] | None = None) -> None:
+    def __init__(self, center: NotificationCenter, token: str, allowed_user_ids: set[str], codec: TelegramActionCodec, health_plan_codec: TelegramHealthPlanCodec | None = None, api: TelegramApi | None = None, choice_callback: ChoiceCallback | None = None, human_request_token: str | None = None, inbox_sink: InboxSink | None = None, inbox_chat_ids: set[str] | None = None, inbox_sender_ids: set[str] | None = None, owner_user_ids: set[str] | None = None, owner_control: Any = None, emergency_pause_reader: EmergencyPauseReader | None = None) -> None:
         self._center = center
         self._token = token
         self._allowed_user_ids = allowed_user_ids
@@ -157,6 +277,17 @@ class TelegramInteractionPoller:
         self._inbox_sink = inbox_sink
         self._inbox_chat_ids = set(inbox_chat_ids or ())
         self._inbox_sender_ids = set(inbox_sender_ids or allowed_user_ids)
+        # Reuse the existing trusted Telegram identity/chat allowlists. Do not
+        # fall back to the bot's destination chat as a sender identity.
+        if owner_user_ids is None:
+            owner_user_ids = {
+                part.strip() for part in os.environ.get("TELEGRAM_CALLBACK_ALLOWED_USER_IDS", "").split(",")
+                if part.strip()
+            }
+        self._owner_user_ids = set(owner_user_ids)
+        self._owner_chat_ids = set(self._inbox_chat_ids)
+        self._owner_control = owner_control or TelegramConsoleOwnerControl.from_environment()
+        self._emergency_pause_reader = emergency_pause_reader
 
     def _answer(self, callback_id: str, text: str) -> None:
         self._api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:180]})
@@ -170,6 +301,232 @@ class TelegramInteractionPoller:
 
     def _allowed(self, user_id: Any) -> bool:
         return str(user_id) in self._allowed_user_ids
+
+    def _audit_owner_command(self, action: str, actor_id: Any, chat_id: str, message_id: Any,
+                             outcome: str, detail: Mapping[str, Any] | None = None) -> None:
+        payload = {"action": action, "chat_id": chat_id[:128],
+                   "message_id": message_id if isinstance(message_id, int) else None,
+                   "outcome": outcome}
+        if detail:
+            payload.update(dict(detail))
+        with self._center._lock, self._center._connection:
+            self._center._audit(None, "telegram.owner_command", f"telegram:{str(actor_id)[:128]}", payload)
+
+    @staticmethod
+    def _owner_host_key(value: Any) -> str:
+        normalized = "-".join(filter(None, "".join(ch.lower() if ch.isalnum() else " " for ch in str(value or "")).split()))
+        for host in ("server-100", "server-44", "server-88"):
+            if normalized == host or normalized.endswith("-" + host):
+                return host
+        return ""
+
+    @classmethod
+    def _owner_policy_state(cls, result: Mapping[str, Any]) -> tuple[str, dict[str, str], str]:
+        if result.get("ok") is not True:
+            return "неизвестно", {}, "ответ Herder не подтверждён"
+        state = result.get("state")
+        records = state.get("records") if isinstance(state, Mapping) else None
+        global_records = [row for row in records if isinstance(row, Mapping) and row.get("scope") == "*"] if isinstance(records, list) else []
+        if (len(global_records) != 1 or type(global_records[0].get("forbidden")) is not bool
+                or type(state.get("disarmed")) is not bool
+                or state.get("disarmed") != global_records[0]["forbidden"]):
+            policy = "неизвестно"
+            reason = "глобальная политика отсутствует, неоднозначна или противоречива"
+        else:
+            policy = "запрещены" if global_records[0]["forbidden"] else "разрешены"
+            reason = ""
+        node_results: dict[str, list[str]] = {host: [] for host in ("server-100", "server-44", "server-88")}
+        nodes = result.get("nodes")
+        if isinstance(nodes, list):
+            for node in nodes:
+                if isinstance(node, Mapping):
+                    host = cls._owner_host_key(node.get("hostId"))
+                    if host:
+                        node_results[host].append(str(node.get("status") or "неизвестно"))
+        confirmations = {
+            host: "подтвердил" if statuses == ["confirmed"] else "неизвестно"
+            for host, statuses in node_results.items()
+        }
+        return policy, confirmations, reason
+
+    def _read_owner_snapshot(self) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None, Mapping[str, Any] | None]:
+        snapshot_reader = getattr(self._owner_control, "read_snapshot", None)
+        if callable(snapshot_reader):
+            try:
+                snapshot = snapshot_reader()
+                if isinstance(snapshot, tuple) and len(snapshot) == 3:
+                    return snapshot
+            except Exception:
+                return None, None, None
+        try:
+            policy = self._owner_control.read_policy()
+        except Exception:
+            policy = None
+        try:
+            sessions = self._owner_control.read_active_sessions()
+        except Exception:
+            sessions = None
+        emergency_reader = getattr(self._owner_control, "read_emergency_pause", None)
+        try:
+            emergency = emergency_reader() if callable(emergency_reader) else (
+                self._emergency_pause_reader() if self._emergency_pause_reader else None
+            )
+        except Exception:
+            emergency = None
+        return policy, sessions, emergency
+
+    @classmethod
+    def _owner_status_text(cls, policy: Mapping[str, Any] | None, sessions: Mapping[str, Any] | None,
+                           emergency: Mapping[str, Any] | None) -> tuple[str, dict[str, Any]]:
+        policy_state, nodes, reason = cls._owner_policy_state(policy or {})
+        node_confirmation_complete = all(value == "подтвердил" for value in nodes.values())
+        if policy_state == "неизвестно" or not node_confirmation_complete:
+            effective = "неизвестно: состояние Herder или подтверждения узлов неполные"
+        elif isinstance(emergency, Mapping) and emergency.get("confirmed") is True and emergency.get("active") is True:
+            effective = "заблокированы аварийной сетевой паузой"
+        elif not (isinstance(emergency, Mapping) and emergency.get("confirmed") is True
+                  and type(emergency.get("active")) is bool):
+            effective = "неизвестно: аварийная сетевая пауза не подтверждена"
+        else:
+            effective = policy_state
+        lines = [f"Политика Herder для новых запусков: {policy_state}.",
+                 f"Фактическая доступность автоматических запусков: {effective}."]
+        if reason:
+            lines.append(f"Herder: {reason}.")
+        lines.append("Подтверждение узлов: " + "; ".join(f"{host} — {state}" for host, state in nodes.items()) + ".")
+        if (isinstance(sessions, Mapping) and type(sessions.get("count")) is int
+                and sessions["count"] >= 0):
+            count = sessions["count"]
+            if sessions.get("confirmed") is True and sessions.get("partial") is not True:
+                session_state = f"{count} активных сессий"
+            else:
+                session_state = f"неполные данные, видно не менее {count} сессий"
+            session_details = []
+            hosts = sessions.get("hosts")
+            if isinstance(hosts, list) and hosts:
+                lines.append("Узлы с сессиями: " + ", ".join(str(host)[:128] for host in hosts[:8]) + ".")
+        elif isinstance(sessions, Mapping) and isinstance(sessions.get("sessions"), list) and type(sessions.get("partial")) is bool:
+            active = sessions["sessions"]
+            session_state = f"{len(active)} активных сессий" if not sessions["partial"] else f"неполные данные: найдено {len(active)} сессий"
+            session_details = [
+                {key: str(row.get(key) or "")[:128] for key in ("id", "harness", "runtimeHostId")}
+                for row in active[:5] if isinstance(row, Mapping)
+            ]
+        else:
+            session_state, session_details = "неизвестно", []
+        lines.append(f"Текущие сессии: {session_state}.")
+        if session_details:
+            lines.append("Сессии: " + "; ".join(
+                "/".join(value for value in (row["harness"], row["id"], row["runtimeHostId"]) if value)
+                for row in session_details
+            ) + ("; …" if len(sessions["sessions"]) > 5 else ""))
+        if isinstance(emergency, Mapping) and emergency.get("confirmed") is True and type(emergency.get("active")) is bool:
+            emergency_state = "активна" if emergency["active"] else "не активна"
+        else:
+            emergency_state = "неизвестно"
+        lines.append(f"Аварийная сетевая пауза Notice Place: {emergency_state}.")
+        if isinstance(emergency, Mapping):
+            unit = "активна" if emergency.get("unit_active") is True else "не активна" if emergency.get("unit_active") is False else "неизвестно"
+            firewall = "правило найдено" if emergency.get("firewall_rule") is True else "правило не найдено" if emergency.get("firewall_rule") is False else "неизвестно"
+            lines.append(f"Служба паузы: {unit}; firewall: {firewall}.")
+        detail = {"policy": policy_state, "effective": effective, "nodes": nodes,
+                  "sessions": session_state, "emergency_pause": emergency_state}
+        return "\n".join(lines), detail
+
+    def _handle_owner_command(self, message: dict[str, Any], command: str) -> None:
+        sender = message.get("from") if isinstance(message.get("from"), dict) else {}
+        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+        actor_id, chat_id, message_id = sender.get("id"), str(chat.get("id") or ""), message.get("message_id")
+        action = command.split("@", 1)[0].lower()
+        if (action not in {"/stop", "/start", "/status"} or sender.get("is_bot") is True
+                or str(actor_id) not in self._owner_user_ids or chat_id not in self._owner_chat_ids):
+            self._audit_owner_command(action, actor_id, chat_id, message_id, "denied")
+            return
+        arguments = str(message.get("text") or "").strip().split()
+        if len(arguments) != 1:
+            self._audit_owner_command(action, actor_id, chat_id, message_id, "invalid_arguments")
+            self._safe_owner_reply(chat_id, "Используй команду без аргументов: /stop, /start или /status.")
+            return
+        if action == "/status":
+            policy, sessions, emergency = self._read_owner_snapshot()
+            text, detail = self._owner_status_text(policy, sessions, emergency)
+            self._audit_owner_command(action, actor_id, chat_id, message_id, "read", detail)
+            self._safe_owner_reply(chat_id, text)
+            return
+        if action == "/stop":
+            try:
+                before_policy, before_sessions, before_emergency = self._read_owner_snapshot()
+                before_state, before_nodes, _ = self._owner_policy_state(before_policy or {})
+                if (before_state == "запрещены"
+                        and all(value == "подтвердил" for value in before_nodes.values())):
+                    text, detail = self._owner_status_text(before_policy, before_sessions, before_emergency)
+                    self._audit_owner_command(action, actor_id, chat_id, message_id, "already_stopped", detail)
+                    self._safe_owner_reply(chat_id, "Запрет новых автозапусков уже подтверждён в Herder; повторного действия не было.\n" + text)
+                    return
+                result = self._owner_control.stop_current()
+                if not isinstance(result, Mapping) or result.get("ok") is not True or result.get("applied") is not True:
+                    raise RuntimeError("Herder did not confirm owner stop")
+                policy, sessions, emergency = self._read_owner_snapshot()
+                status, detail = self._owner_status_text(policy, sessions, emergency)
+                if (not isinstance(policy, Mapping) or detail["policy"] != "запрещены"
+                        or any(value != "подтвердил" for value in detail["nodes"].values())):
+                    raise RuntimeError("Herder STOP readback is not confirmed")
+                stopped = result.get("stopped")
+                still_running = result.get("stillRunning")
+                if not isinstance(stopped, list) or not isinstance(still_running, list) or still_running:
+                    raise RuntimeError("Herder live-session stop is incomplete or unknown")
+                self._audit_owner_command(action, actor_id, chat_id, message_id, "confirmed", detail)
+                self._safe_owner_reply(chat_id, "Остановлено: новые автозапуски запрещены; Herder не сообщает оставшихся работающих автозадач. Общие нативные сессии показаны отдельно.\n" + status)
+            except Exception:
+                self._audit_owner_command(action, actor_id, chat_id, message_id, "unknown")
+                self._safe_owner_reply(chat_id, "Не удалось подтвердить остановку в Herder. Считай состояние неизвестным; автоматический повтор не выполнялся.")
+            return
+        try:
+            policy = self._owner_control.read_policy()
+            policy_state, before_nodes, reason = self._owner_policy_state(policy if isinstance(policy, Mapping) else {})
+            if (policy_state == "неизвестно" or not isinstance(policy, Mapping)
+                    or any(value != "подтвердил" for value in before_nodes.values())):
+                raise RuntimeError(reason or "Herder owner state is unknown")
+            if policy_state == "разрешены":
+                fresh_policy, fresh_sessions, emergency = self._read_owner_snapshot()
+                fresh_state, fresh_nodes, fresh_reason = self._owner_policy_state(fresh_policy or {})
+                if fresh_state != "разрешены" or any(value != "подтвердил" for value in fresh_nodes.values()):
+                    raise RuntimeError(fresh_reason or "Herder owner state changed during readback")
+                status, status_detail = self._owner_status_text(fresh_policy, fresh_sessions, emergency)
+                detail = {"policy": policy_state, "effective": status_detail["effective"],
+                          "nodes": fresh_nodes, "sessions_resumed": False}
+                self._audit_owner_command(action, actor_id, chat_id, message_id, "already_started", detail)
+                self._safe_owner_reply(chat_id, "Herder уже разрешает новые запуски. Сессии не возобновлялись.\n"
+                                       + status.splitlines()[1])
+                return
+            etag = str(policy.get("etag") or "")
+            result = self._owner_control.allow_new_operations(etag)
+            if not isinstance(result, Mapping) or result.get("ok") is not True or result.get("applied") is not True:
+                raise RuntimeError("Herder did not confirm Start")
+            readback = self._owner_control.read_policy()
+            final_state, nodes, reason = self._owner_policy_state(readback if isinstance(readback, Mapping) else {})
+            if final_state != "разрешены" or any(value != "подтвердил" for value in nodes.values()):
+                raise RuntimeError(reason or "Herder fleet Start readback is unknown")
+            fresh_policy, fresh_sessions, emergency = self._read_owner_snapshot()
+            fresh_state, fresh_nodes, fresh_reason = self._owner_policy_state(fresh_policy or {})
+            if fresh_state != "разрешены" or any(value != "подтвердил" for value in fresh_nodes.values()):
+                raise RuntimeError(fresh_reason or "Herder owner state changed during readback")
+            status, status_detail = self._owner_status_text(fresh_policy, fresh_sessions, emergency)
+            detail = {"policy": fresh_state, "effective": status_detail["effective"],
+                      "nodes": fresh_nodes, "sessions_resumed": False}
+            self._audit_owner_command(action, actor_id, chat_id, message_id, "confirmed", detail)
+            self._safe_owner_reply(chat_id, "Herder разрешает новые запуски. Ранее остановленные сессии не возобновлялись.\n"
+                                   + status.splitlines()[1])
+        except Exception:
+            self._audit_owner_command(action, actor_id, chat_id, message_id, "unknown")
+            self._safe_owner_reply(chat_id, "Не удалось подтвердить разрешение новых запусков в Herder. Состояние неизвестно; сессии не запускались.")
+
+    def _safe_owner_reply(self, chat_id: str, text: str) -> None:
+        try:
+            self._message(chat_id, text)
+        except Exception:
+            # A failed Telegram reply must not replay a completed owner action.
+            return
 
     @staticmethod
     def _health_plan_label(plan_id: str, title: Any) -> str:
@@ -474,6 +831,10 @@ class TelegramInteractionPoller:
         message_id = message.get("message_id")
         sender = message.get("from") if isinstance(message.get("from"), dict) else {}
         allowed_actor = self._allowed(actor_id)
+        command = text.split(maxsplit=1)[0] if text else ""
+        if command.split("@", 1)[0].lower() in {"/stop", "/start", "/status"}:
+            self._handle_owner_command(message, command)
+            return
         reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else {}
         reply_message_id = reply.get("message_id")
         if allowed_actor and chat_id and isinstance(reply_message_id, int) and text:

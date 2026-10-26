@@ -44,17 +44,20 @@ class AutomaticDiagnosisScopeTests(unittest.TestCase):
 
     def test_default_existing_producers_keep_automatic_diagnosis_and_review(self):
         center = self.center()
+        # Review quieting is opt-in; the product default keeps all Telegram
+        # notifications visible. Exercise the review policy explicitly here.
+        center.set_runtime_setting('telegram_all_notifications_enabled', '0')
         created = HealthWorkflow(center).intake_signal('fixture-token', 'fixture-create', self.signal())
         self.assertIsNotNone(created['agent_job_delivery_id'])
         self.assertIsNone(created['initial_delivery_id'])
         self.assertTrue(center.health_notification_review_required(created['incident_id']))
 
-    def test_explicit_authorized_manual_diagnosis_remains_allowed(self):
+    def test_explicit_inbound_diagnosis_cannot_bypass_disabled_automatic_policy(self):
         center = self.center(False)
         event = self.signal()
         event['agent_job'] = 'health-diagnosis'
-        created = center.create_event('fixture-token', 'fixture-manual', event)
-        self.assertIsNotNone(created['agent_job_delivery_id'])
+        created = center.create_event('fixture-token', 'fixture-explicit-inbound', event)
+        self.assertIsNone(created['agent_job_delivery_id'])
         self.assertIsNotNone(created['initial_delivery_id'])
 
     def test_explicit_unscoped_job_stays_forbidden(self):
@@ -67,8 +70,17 @@ class AutomaticDiagnosisScopeTests(unittest.TestCase):
     def test_manual_ai_button_remains_available(self):
         center = self.center(False)
         created = HealthWorkflow(center).intake_signal('fixture-token', 'fixture-create', self.signal())
-        action = center.apply_telegram_action(created['incident_id'], 'ai', 'fixture-human')
-        self.assertIsNotNone(action['agent_job_delivery_id'])
+        first = center.apply_telegram_action(created['incident_id'], 'ai', 'fixture-human')
+        second = center.apply_telegram_action(created['incident_id'], 'ai', 'fixture-human')
+        self.assertIsNotNone(first['agent_job_delivery_id'])
+        self.assertEqual(second['agent_job_delivery_id'], first['agent_job_delivery_id'])
+        self.assertTrue(second['idempotent'])
+        with center._lock:
+            count = center._connection.execute(
+                "SELECT COUNT(*) FROM deliveries WHERE incident_id=? AND channel=?",
+                (created['incident_id'], 'gptadmin.agent:health-diagnosis'),
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
 
     def test_old_waiting_review_audit_does_not_suppress_external_project(self):
         center = self.center(False)

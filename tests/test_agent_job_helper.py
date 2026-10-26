@@ -28,6 +28,24 @@ class _Response:
         return json.dumps(self._payload).encode()
 
 
+def owner_open_payload(*, forbidden: bool = False, statuses: dict[str, str] | None = None) -> dict[str, object]:
+    statuses = statuses or {"server-100": "confirmed", "server-44": "confirmed", "server-88": "confirmed"}
+    return {
+        "ok": True,
+        "state": {"disarmed": forbidden, "records": [{"scope": "*", "forbidden": forbidden}]},
+        "nodes": [{"hostId": host, "status": status} for host, status in statuses.items()],
+    }
+
+
+def owner_aware_runner(runner):
+    """Inject a confirmed Herder read while preserving each test's other fakes."""
+    def wrapped(request, **kwargs):
+        if str(getattr(request, "full_url", "")).endswith("/api/settings/automation/disarm"):
+            return _Response(owner_open_payload())
+        return runner(request, **kwargs)
+    return wrapped
+
+
 def project_launch_response(session_id: str, harness: str = "opencode",
                             model: str = "minimax-coding-plan/MiniMax-M3.1-Flash",
                             outcome: str = "accepted", **extra: object) -> dict:
@@ -82,10 +100,63 @@ class AgentJobHelperTests(unittest.TestCase):
         runner = mock.Mock(return_value=_Response({}))
         with self.assertRaisesRegex(RuntimeError, "session identity"):
             run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis", "incident": {"id": "inc-denied"}}, Path("unused"),
-                        profile_override={"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode", "name": "denied", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "Read only."}, runner=runner)
+                        profile_override={"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode", "name": "denied", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "Read only."}, runner=owner_aware_runner(runner))
         self.assertGreaterEqual(runner.call_count, 2)
         self.assertTrue(runner.call_args_list[0][0][0].full_url.endswith("/api/automation/launch-policy"))
         self.assertTrue(any(call[0][0].full_url.endswith("/api/automation/project-launch") for call in runner.call_args_list))
+
+    def test_owner_preflight_requires_global_open_and_three_confirmed_nodes(self) -> None:
+        profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume"}
+        for payload in (
+            owner_open_payload(forbidden=True),
+            {"ok": True, "state": {"disarmed": False, "records": [{"scope": "project-a", "forbidden": False}]},
+             "nodes": [{"hostId": host, "status": "confirmed"} for host in ("server-100", "server-44", "server-88")]},
+            owner_open_payload(statuses={"server-100": "confirmed", "server-44": "unknown", "server-88": "confirmed"}),
+            {"ok": True, "state": {"disarmed": False, "records": [{"scope": "*", "forbidden": False}]}, "nodes": []},
+        ):
+            with self.subTest(payload=payload), self.assertRaises(agent_job_helper.HerderOwnerStateBlocked):
+                agent_job_helper.require_herder_owner_running(profile, lambda *_a, **_k: _Response(payload))
+        agent_job_helper.require_herder_owner_running(profile, lambda *_a, **_k: _Response(owner_open_payload()))
+
+    def test_project_launch_owner_stop_blocks_before_post(self) -> None:
+        requests: list[object] = []
+        def runner(request: object, **_kwargs: object) -> _Response:
+            requests.append(request)
+            return _Response(owner_open_payload(forbidden=True))
+        profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume"}
+        with self.assertRaises(agent_job_helper.HerderOwnerStateBlocked) as caught:
+            agent_job_helper.project_launch(profile, "project-a", "/work", "repair", runner, operation_id="stable-op")
+        self.assertEqual("herder_owner_stop", caught.exception.reason)
+        self.assertEqual(["GET"], [request.get_method() for request in requests])
+        self.assertTrue(requests[0].full_url.endswith("/api/settings/automation/disarm"))
+
+    def test_unknown_owner_preflight_returns_terminal_receipt_with_same_operation_and_request(self) -> None:
+        event = {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
+                 "incident": {"id": "inc-held", "project": "manual-test", "title": "Manual repair"},
+                 "health": {"manual_request_id": "req-held"}}
+        calls: list[object] = []
+        def runner(request: object, **_kwargs: object) -> _Response:
+            calls.append(request)
+            url = str(getattr(request, "full_url", ""))
+            if url.endswith("/api/automation/launch-policy"):
+                return _Response({"version": 1, "preferredHarness": "opencode", "allowedHarnesses": ["opencode"],
+                                  "models": {"opencode": "glm-5.3-flash"}})
+            if url.endswith("/api/settings/automation/disarm"):
+                return _Response(owner_open_payload(statuses={"server-100": "confirmed", "server-44": "declined", "server-88": "confirmed"}))
+            self.fail(f"owner preflight should block before launch or arm: {url}")
+        event["health"]["automatic_health_diagnosis"] = False
+        profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
+                   "name": "manual", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "repair"}
+        result = run_profile("health-diagnosis", event, Path("unused"), profile_override=profile, runner=runner)
+        self.assertEqual("source_blocked", result["status"])
+        self.assertTrue(result["human_held"])
+        self.assertFalse(result["retryable"])
+        self.assertTrue(result["non_retryable"])
+        self.assertEqual(agent_job_helper._operation_id(event, "health-diagnosis"), result["operation_id"])
+        self.assertEqual("inc-held", result["incident"]["id"])
+        self.assertEqual("req-held", result["request"]["health"]["manual_request_id"])
+        self.assertEqual(["/api/automation/launch-policy", "/api/settings/automation/disarm"],
+                         [request.full_url.removeprefix("http://127.0.0.1:18787") for request in calls])
 
     def test_session_result_accepts_bounded_history_metadata(self) -> None:
         payload = {"history": {"metadata": "x" * 132_000}, "messages": [{"role": "assistant", "text": json.dumps({"status": "diagnosis_complete", "diagnosis": "Проверка завершена", "evidence_refs": ["evidence:read-only"]})}]}
@@ -173,7 +244,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "later failure"):
                     run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
                                 "incident": {"id": "incident-test", "project": "test"}}, config,
-                                runner=lambda *_a, **_k: _Response({"ok": True, "sessionId": "session-live", "created": True}),
+                                runner=owner_aware_runner(lambda *_a, **_k: _Response({"ok": True, "sessionId": "session-live", "created": True})),
                                 session_callback=callback)
             callback.assert_called_once()
             self.assertEqual("session-live", callback.call_args[0][0]["session_id"])
@@ -269,7 +340,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "health": {"correlation_id": "corr-health-1", "trace_refs": ["trace:source-1"], "evidence_refs": ["probe:disk"]},
                 },
                 config,
-                runner=runner,
+                runner=owner_aware_runner(runner),
             )
             self.assertEqual("codex-health-diagnosis-1", result["session_id"])
             self.assertNotIn("orchestrator_session_id", result)
@@ -326,7 +397,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"}}},
                 },
                 config,
-                runner=runner,
+                runner=owner_aware_runner(runner),
             )
             self.assertEqual("codex-health-1", result["session_id"])
             self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", result["model"])
@@ -396,7 +467,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     },
                 },
                 config,
-                runner=runner,
+                    runner=owner_aware_runner(runner),
             )
 
             self.assertEqual("completed", result["status"])
@@ -459,7 +530,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     {"schema": "notify.agent-job.v1", "job_id": "health-remediation", "incident": {"id": "inc-timeout"},
                      "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"}}}},
                     config,
-                    runner=runner,
+                    runner=owner_aware_runner(runner),
                 )
             self.assertEqual("completed", result["status"])
             self.assertEqual(2, progress_calls)
@@ -518,7 +589,7 @@ class AgentJobHelperTests(unittest.TestCase):
                         }}},
                     },
                     config,
-                    runner=runner,
+                    runner=owner_aware_runner(runner),
                 )
 
             self.assertEqual("completed", result["status"])
@@ -625,7 +696,7 @@ class AgentJobHelperTests(unittest.TestCase):
                         "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"}}},
                     },
                     config,
-                    runner=runner,
+                    runner=owner_aware_runner(runner),
                 )
             body = json.loads(requests[0].data)
             self.assertEqual("opencode", body["harness"])
@@ -807,7 +878,7 @@ class HealthAutoselectAndAutopilotTests(unittest.TestCase):
                 self.assertTrue(result["needs_human"])
 
     def test_arm_session_autopilot_puts_the_durable_switch(self) -> None:
-        runner = mock.Mock(return_value=_Response({"harness": "opencode", "sessionId": "ses-arm-1", "enabled": True, "source": "session"}))
+        runner = mock.Mock(side_effect=[_Response(owner_open_payload()), _Response({"harness": "opencode", "sessionId": "ses-arm-1", "enabled": True, "source": "session"})])
         self.assertTrue(agent_job_helper.arm_session_autopilot("opencode", "ses-arm-1", "/home/roomhacker/ServersAdministration", runner))
         request = runner.call_args[0][0]
         self.assertEqual("PUT", request.get_method())
@@ -820,6 +891,16 @@ class HealthAutoselectAndAutopilotTests(unittest.TestCase):
         self.assertFalse(agent_job_helper.arm_session_autopilot("unknown-harness", "ses-arm-1", "/cwd", runner))
         self.assertFalse(agent_job_helper.arm_session_autopilot("opencode", "", "/cwd", runner))
         self.assertEqual(1, runner.call_count)
+
+    def test_arm_session_autopilot_does_not_put_when_owner_read_is_unknown(self) -> None:
+        requests: list[object] = []
+        def runner(request: object, **_kwargs: object) -> _Response:
+            requests.append(request)
+            return _Response(owner_open_payload(statuses={"server-100": "confirmed", "server-44": "unknown", "server-88": "confirmed"}))
+        self.assertFalse(agent_job_helper.arm_session_autopilot("opencode", "ses-arm-1", "/cwd", runner))
+        self.assertEqual(1, len(requests))
+        self.assertEqual("GET", requests[0].get_method())
+        self.assertTrue(requests[0].full_url.endswith("/api/settings/automation/disarm"))
 
     def test_relay_operator_reply_resumes_the_session_with_human_flag(self) -> None:
         runner = mock.Mock(return_value=_Response({"ok": True, "sessionId": "ses-relay-1"}))

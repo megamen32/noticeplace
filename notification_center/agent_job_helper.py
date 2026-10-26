@@ -48,6 +48,15 @@ class HealthStartPlanUnavailable(RuntimeError):
     """Start Plan accepted a turn but produced no executable progress."""
 
 
+class HerderOwnerStateBlocked(RuntimeError):
+    """The fleet owner-level automation lever is stopped or cannot be read."""
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        self.reason = reason
+        self.detail = str(detail or "")[:200]
+        super().__init__(reason)
+
+
 def _zcode_quota_exhausted(error: BaseException) -> bool:
     if not isinstance(error, HealthAgentEndpointError):
         return False
@@ -537,6 +546,7 @@ def project_launch(profile: Mapping[str, str], project: str, cwd: str, message: 
     bearer is sent as an authorization header only; it never appears in the
     request body, the receipt or an error message.
     """
+    require_herder_owner_running(profile, runner)
     parsed = urllib.parse.urlsplit(profile["url"])
     base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
     payload = {"project": project, "cwd": cwd, "message": message, "mode": mode or "queue"}
@@ -563,6 +573,89 @@ def project_launch(profile: Mapping[str, str], project: str, cwd: str, message: 
         method="POST",
     )
     return _read_json_request(request, runner, timeout=90)
+
+
+_REQUIRED_HERDER_NODES = ("server-100", "server-44", "server-88")
+
+
+def _herder_node_key(value: Any) -> str:
+    """Normalize a fleet host id without accepting an ambiguous partial match."""
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    for host in _REQUIRED_HERDER_NODES:
+        if normalized == host or normalized.endswith("-" + host):
+            return host
+    return ""
+
+
+def require_herder_owner_running(profile: Mapping[str, str], runner: Any) -> None:
+    """Fail closed unless the owner-level Herder lever is confirmed open fleet-wide.
+
+    This is a read-only check of Herder's canonical disarm API. NoticePlace's
+    automatic-health policy is intentionally not consulted here: a trusted
+    manual incident action may run while that policy is off, provided the
+    owner has not stopped automation in Herder.
+    """
+    parsed = urllib.parse.urlsplit(profile["url"])
+    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    request = urllib.request.Request(
+        f"{base}/api/settings/automation/disarm",
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        result = _read_json_request(request, runner, timeout=10)
+    except Exception as error:
+        raise HerderOwnerStateBlocked("herder_owner_state_unknown", "owner state read failed") from error
+
+    if result.get("ok") is not True:
+        raise HerderOwnerStateBlocked("herder_owner_state_unknown", "Herder did not confirm the fleet read")
+    state = result.get("state")
+    if not isinstance(state, Mapping):
+        raise HerderOwnerStateBlocked("herder_owner_state_unknown", "global owner state is missing")
+    records = state.get("records")
+    if not isinstance(records, list):
+        raise HerderOwnerStateBlocked("herder_owner_state_unknown", "owner records are missing")
+    global_records = [record for record in records if isinstance(record, Mapping) and record.get("scope") == "*"]
+    if len(global_records) != 1 or type(global_records[0].get("forbidden")) is not bool:
+        raise HerderOwnerStateBlocked("herder_owner_state_unknown", "global owner decision is missing or ambiguous")
+    if global_records[0]["forbidden"]:
+        raise HerderOwnerStateBlocked("herder_owner_stop", "owner STOP is active for all automatic launches")
+    if state.get("disarmed") is not False:
+        raise HerderOwnerStateBlocked("herder_owner_state_unknown", "global owner state is inconsistent")
+
+    nodes = result.get("nodes")
+    if not isinstance(nodes, list):
+        raise HerderOwnerStateBlocked("herder_owner_state_unknown", "fleet node confirmations are missing")
+    by_host: dict[str, list[Mapping[str, Any]]] = {}
+    for node in nodes:
+        if isinstance(node, Mapping):
+            key = _herder_node_key(node.get("hostId"))
+            if key:
+                by_host.setdefault(key, []).append(node)
+    for host in _REQUIRED_HERDER_NODES:
+        reports = by_host.get(host, [])
+        if len(reports) != 1 or reports[0].get("status") != "confirmed":
+            raise HerderOwnerStateBlocked("herder_owner_state_unknown", f"{host} is not uniquely confirmed")
+
+
+def _owner_blocked_receipt(error: HerderOwnerStateBlocked, event: Mapping[str, Any],
+                           profile_id: str, operation_id: str) -> dict[str, Any]:
+    incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
+    health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
+    return {
+        "status": "source_blocked",
+        "source": "agent-herder-owner-disarm",
+        "reason": error.reason,
+        "detail": error.detail,
+        "human_held": True,
+        "retryable": False,
+        "non_retryable": True,
+        "operation_id": operation_id,
+        "incident_id": str(incident.get("id") or "")[:128],
+        "incident": dict(incident),
+        "request": {"schema": str(event.get("schema") or "")[:64], "job_id": profile_id,
+                    "health": dict(health)},
+    }
 
 
 def _launch_receipt(result: Mapping[str, Any], profile: Mapping[str, str], operation_id: str, project: str) -> dict[str, Any]:
@@ -673,6 +766,10 @@ def arm_session_autopilot(harness: str, session_id: str, cwd: str, runner: Any =
     if safe_harness not in {"opencode", "codex", "zcode", "claude", "hermes"} or not safe_session or len(safe_session) > 128:
         return False
     profile = _herder_loopback_profile()
+    try:
+        require_herder_owner_running(profile, runner)
+    except HerderOwnerStateBlocked:
+        return False
     parsed = urllib.parse.urlsplit(profile["url"])
     base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
     payload: dict[str, Any] = {"enabled": True, "cwd": cwd}
@@ -1411,12 +1508,17 @@ def run_profile(
     started_at = time.monotonic()
     if profile_id == "health-remediation" and not incident_model:
         profile = _incident_profile(profile, runner, incident_project, policy)
+    plan_for_operation = str((health_result or {}).get("plan_id") or "")
+    operation_id = _operation_id(event, profile_id, plan_for_operation)
+    if profile_id in _HEALTH_JOB_IDS:
+        try:
+            require_herder_owner_running(profile, runner)
+        except HerderOwnerStateBlocked as error:
+            return _owner_blocked_receipt(error, event, profile_id, operation_id)
     if profile_id in _REPAIR_FIRST_JOB_IDS:
         # Validate the callback credential before creating a session, avoiding
         # an untracked agent if the result sink is unavailable.
         _load_health_callback(profile, str(incident.get("project") or ""))
-    plan_for_operation = str((health_result or {}).get("plan_id") or "")
-    operation_id = _operation_id(event, profile_id, plan_for_operation)
     request_body = {
         "harness": profile["harness"],
         "name": _health_session_name(profile, profile_id, event),
@@ -1447,13 +1549,19 @@ def run_profile(
         # One admission call decides harness, model, and retry. Agent Herder
         # stops on accepted, unknown, or human hold; only a pre-admission
         # rejection is retryable, and it retries inside Agent Herder.
-        result = project_launch(
-            profile, incident_project, profile["cwd"], request_body["message"], runner,
-            operation_id=operation_id, harness=profile["harness"], model=profile["model"], mode=profile["mode"],
-            harness_order=str(profile.get("harness_order") or ""),
-            purpose=HEALTH_LAUNCH_PURPOSE if incident_model else "",
-            health_launch_token=str(profile.get("health_launch_token") or "") if incident_model else "",
-        )
+        try:
+            result = project_launch(
+                profile, incident_project, profile["cwd"], request_body["message"], runner,
+                operation_id=operation_id, harness=profile["harness"], model=profile["model"], mode=profile["mode"],
+                harness_order=str(profile.get("harness_order") or ""),
+                purpose=HEALTH_LAUNCH_PURPOSE if incident_model else "",
+                health_launch_token=str(profile.get("health_launch_token") or "") if incident_model else "",
+            )
+        except HerderOwnerStateBlocked as error:
+            # This is a terminal, durable hold for this exact operation. It
+            # preserves the request context and must never be re-enqueued as a
+            # new executor after an owner STOP or an unknown fleet read.
+            return _owner_blocked_receipt(error, event, profile_id, operation_id)
     else:
         request = urllib.request.Request(
             profile["url"],
