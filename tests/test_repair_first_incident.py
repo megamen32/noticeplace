@@ -50,6 +50,13 @@ class _Response:
 class RepairFirstExecutorTests(unittest.TestCase):
     """The executor session repairs first; no planner and no mandatory plan card."""
 
+    def setUp(self) -> None:
+        # These tests exercise the admitted execution path. Fleet owner STOP
+        # fail-closed behavior is covered separately in test_agent_job_helper.
+        owner_gate = patch.object(agent_job_helper, "require_herder_owner_running", return_value=None)
+        owner_gate.start()
+        self.addCleanup(owner_gate.stop)
+
     def test_monitor_context_reaches_the_actual_launch_message(self):
         from notification_center.gptadmin_agent import _agent_job_event
         event = _agent_job_event('health-diagnosis', {
@@ -81,7 +88,7 @@ class RepairFirstExecutorTests(unittest.TestCase):
         self.assertEqual('', facts['source_fingerprint'], 'missing source evidence must not be invented')
 
     @staticmethod
-    def _runner(texts: dict[str, str], requests: list[object]) -> object:
+    def _runner(texts: dict[str, str], requests: list[object], *, created: bool = True) -> object:
         def runner(request, **_kwargs):
             url = str(getattr(request, "full_url", ""))
             if "/coordination/context?" in url:
@@ -97,9 +104,14 @@ class RepairFirstExecutorTests(unittest.TestCase):
             requests.append(request)
             if "/api/autopilot/sessions/" in url:
                 return _Response({"enabled": True, "sessionId": "executor-native"})
+            if url.endswith("/api/sessions/opencode/executor-native/stop"):
+                return _Response({"ok": True})
+            if url.endswith("/api/sessions/opencode/executor-native/terminate"):
+                return _Response({"ok": True})
             if url.endswith("/api/automation/project-launch"):
                 return _Response({
                     "outcome": "accepted", "operation_id": json.loads(request.data)["operation_id"],
+                    "created": created,
                     "project": json.loads(request.data)["project"],
                     "selected_harness": json.loads(request.data)["harness"],
                     "model": json.loads(request.data)["model"], "mode": "queue",
@@ -149,6 +161,58 @@ class RepairFirstExecutorTests(unittest.TestCase):
     def _health_actions(self, requests: list[object]) -> list[str]:
         return [str(getattr(r, "full_url", "")).rsplit("/health/", 1)[-1]
                 for r in requests if "/health/" in str(getattr(r, "full_url", ""))]
+
+    def test_repair_session_must_assess_real_severity_before_mutating(self) -> None:
+        event = self._event()
+        message = agent_job_helper._repair_first_message({}, event, event["incident"])
+        self.assertIn("Сначала оцени, действительно ли проблема серьёзна", message)
+        self.assertIn("Если исходный отказ не воспроизводится или нет подтверждённого влияния", message)
+        self.assertIn("не выполняй изменения", message)
+        self.assertIn("Если проблема серьёзна и подтверждена, продолжай ремонт в этой же сессии", message)
+        self.assertIn("не создавай и не запускай вторую сессию", message)
+
+    def test_autopilot_failure_is_terminal_and_does_not_continue_or_publish_session(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            requests: list[object] = []
+            session_notices: list[object] = []
+            with patch.object(agent_job_helper, "_load_health_callback",
+                              return_value=("http://127.0.0.1:8091", "callback-token")), \
+                 patch.object(agent_job_helper, "require_herder_owner_running", return_value=None), \
+                 patch.object(agent_job_helper, "arm_session_autopilot", return_value=False), \
+                 patch.object(agent_job_helper, "_run_health_diagnosis",
+                              side_effect=AssertionError("repair observer must not run without autopilot")):
+                receipt = agent_job_helper.run_profile(
+                    "health-diagnosis", self._event(), Path("unused"),
+                    runner=self._runner({"executor": "unused"}, requests, created=True),
+                    profile_override=self._profile(root), session_callback=session_notices.append,
+                )
+        self.assertEqual("source_blocked", receipt["status"])
+        self.assertFalse(receipt["autopilot_armed"])
+        self.assertFalse(receipt["retryable"])
+        self.assertTrue(receipt["non_retryable"])
+        self.assertEqual("executor-native", receipt["session_id"])
+        self.assertEqual("stop_requested", receipt["new_session_stop"])
+        self.assertEqual(1, sum(r.full_url.endswith("/api/automation/project-launch") for r in requests))
+        self.assertEqual(1, sum(r.full_url.endswith("/api/sessions/opencode/executor-native/stop") for r in requests))
+        self.assertEqual([], session_notices)
+
+    def test_autopilot_failure_does_not_stop_a_deduplicated_existing_session(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            requests: list[object] = []
+            with patch.object(agent_job_helper, "_load_health_callback",
+                              return_value=("http://127.0.0.1:8091", "callback-token")), \
+                 patch.object(agent_job_helper, "require_herder_owner_running", return_value=None), \
+                 patch.object(agent_job_helper, "arm_session_autopilot", return_value=False), \
+                 patch.object(agent_job_helper, "_run_health_diagnosis",
+                              side_effect=AssertionError("repair observer must not run without autopilot")):
+                receipt = agent_job_helper.run_profile(
+                    "health-diagnosis", self._event(), Path("unused"),
+                    runner=self._runner({"executor": "unused"}, requests, created=False),
+                    profile_override=self._profile(root),
+                )
+        self.assertEqual("source_blocked", receipt["status"])
+        self.assertEqual("not_new_session", receipt["new_session_stop"])
+        self.assertEqual([], [r for r in requests if r.full_url.endswith("/api/sessions/opencode/executor-native/stop")])
 
     def test_repair_first_observation_records_progress_and_never_resolves(self) -> None:
         with tempfile.TemporaryDirectory() as root:
@@ -381,6 +445,13 @@ class IndependentVerificationTests(unittest.TestCase):
 class ProjectRouteTests(unittest.TestCase):
     """Explicit per-project routes are honoured; everything else stays pinned."""
 
+    def setUp(self) -> None:
+        # Route tests model an explicitly open owner control state; STOP denial
+        # and unknown-node behavior are covered by the focused helper tests.
+        owner_gate = patch.object(agent_job_helper, "require_herder_owner_running", return_value=None)
+        owner_gate.start()
+        self.addCleanup(owner_gate.stop)
+
     @staticmethod
     def _runner(policy: dict, models: dict, requests: list[object]) -> object:
         def runner(request, **_kwargs):
@@ -391,6 +462,8 @@ class ProjectRouteTests(unittest.TestCase):
                 harness = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("harness", [""])[0]
                 return _Response({"models": models.get(harness, []), "stale": False})
             requests.append(request)
+            if "/api/autopilot/sessions/" in url:
+                return _Response({"enabled": True, "sessionId": "route-native"})
             if "project-launch" in url:
                 body = json.loads(request.data)
                 return _Response({
@@ -496,6 +569,9 @@ class ProjectRouteTests(unittest.TestCase):
             if url.endswith("/api/automation/launch-policy"):
                 return _Response(policy)
             requests.append(request)
+            if "/api/autopilot/sessions/" in url:
+                session_id = str(getattr(request, "full_url", "")).rsplit("/", 1)[-1]
+                return _Response({"enabled": True, "sessionId": session_id})
             return _Response({"outcome": "accepted", "operation_id": "op-admission",
                               "project": "tg-commentator", "selected_harness": "zcode",
                               "model": "account:zai-individual-coding-plan/GLM-5.3-Flash$high", "mode": "queue",
@@ -1024,8 +1100,7 @@ class McpNegotiationTests(unittest.TestCase):
         self.assertIsNone(local_dispatch({"jsonrpc": "2.0", "method": "notifications/initialized"}))
         listed = local_dispatch({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [tool["name"] for tool in listed["result"]["tools"]]
-        for required in ("ask_human", "noticeplace_pending_questions", "noticeplace_answer", "noticeplace_incident_progress"):
-            self.assertIn(required, names)
+        self.assertEqual(["noticeplace"], names)
 
 
 if __name__ == "__main__":

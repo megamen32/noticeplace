@@ -193,6 +193,9 @@ def _repair_first_message(profile: Mapping[str, str], event: Mapping[str, Any], 
     callback_file = profile.get("callback_file") or os.environ.get("GPTADMIN_HEALTH_CALLBACK_FILE") or _HEALTH_CALLBACK_DEFAULT
     instructions = (
         "Ты владелец целевого ремонта этого инцидента. Работай repair-first до результата в этой же native-сессии под существующим Herder autopilot. "
+        "Сначала оцени, действительно ли проблема серьёзна: воспроизведи исходный отказ и установи подтверждённое влияние по исходному producer. "
+        "Если исходный отказ не воспроизводится или нет подтверждённого влияния, не выполняй изменения; объясни оценку и заверши без ремонта. "
+        "Если проблема серьёзна и подтверждена, продолжай ремонт в этой же сессии под автопилотом; не создавай и не запускай вторую сессию. "
         "Прочитай canonical project AGENTS.md, ownership и подходящие runbooks в разрешённом рабочем каталоге. "
         "Воспроизведи отказ реального потребителя, найди первопричину, выполни разрешённое исправление и проверь тот же потребитель. "
         "Можно читать репозитории, использовать инструменты, менять принадлежащий задаче код и выполнять разрешённый ремонт. "
@@ -685,7 +688,11 @@ def _launch_receipt(result: Mapping[str, Any], profile: Mapping[str, str], opera
     return {
         "ok": True,
         "session_id": session_id,
-        "created": outcome == "accepted",
+        # The dispatch may return a previously accepted idempotent operation.
+        # In that case `outcome` is still accepted, but it is not a new session
+        # owned by this invocation. Only stop it on setup failure when Herder's
+        # native receipt explicitly says this call created it.
+        "created": result.get("created") is True,
         "delivery": str(result.get("delivery") or ""),
         "harness": str(result.get("selected_harness") or profile["harness"]),
         "model": str(result.get("model") or profile["model"]),
@@ -728,7 +735,8 @@ def _admission_receipt(result: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stop_session(profile: Mapping[str, str], session_id: str, runner: Any) -> None:
+def _stop_session(profile: Mapping[str, str], session_id: str, runner: Any) -> str:
+    """Request stop for one exact session and report only an acknowledged action."""
     for action in ("/stop", "/terminate"):
         request = urllib.request.Request(
             _session_endpoint(profile, session_id, action),
@@ -737,11 +745,14 @@ def _stop_session(profile: Mapping[str, str], session_id: str, runner: Any) -> N
             method="POST",
         )
         try:
-            _read_json_request(request, runner, timeout=45)
+            result = _read_json_request(request, runner, timeout=45)
+            if result.get("ok") is True:
+                return "stop_requested" if action == "/stop" else "termination_requested"
         except Exception:
             # Agent Herder recycles its wedged ZCode child on a stop timeout;
             # termination is retried through the clean transport next.
             continue
+    return "unknown"
 
 
 def _herder_loopback_profile() -> dict[str, str]:
@@ -1578,20 +1589,11 @@ def run_profile(
         **_launch_receipt(result, profile, operation_id, incident_project),
         **health_result,
     }
-    if profile_id in _HEALTH_JOB_IDS and session_callback is not None:
-        try:
-            session_callback(receipt)
-            receipt["session_notice"] = "attached"
-        except Exception:
-            # The remediation must keep running after Agent Herder accepted it.
-            # record_agent_job_result will retry the same durable link from the
-            # terminal receipt if this immediate callback was unavailable.
-            receipt["session_notice"] = "deferred"
     if profile_id in _HEALTH_JOB_IDS:
         # Executor and recovery sessions run under Agent Herder autopilot: the
         # judge keeps one session working across turns and reports done or
-        # needs-human back through Notice Place. Arming is best-effort and
-        # never fails the job.
+        # needs-human back through Notice Place. A session without confirmed
+        # autopilot is held terminally and is never polled as a repair executor.
         # The launch receipt is authoritative. For a configured project the
         # route owns harness, model, and workspace root; profile values apply
         # only to an unconfigured project, so arming and polling follow the
@@ -1604,6 +1606,34 @@ def run_profile(
                 notice_incident={"incidentId": str(incident.get("id") or ""), "project": incident_project})
         except Exception:
             receipt["autopilot_armed"] = False
+        if receipt["autopilot_armed"] is not True:
+            # The admission is already accepted/possibly unknown. Preserve its
+            # stable operation/session identity, do not replay it, do not
+            # publish a repair button, and do not run the bounded repair observer.
+            stop_state = "not_new_session"
+            if receipt.get("created") is True:
+                # The session was admitted by this invocation, but the required
+                # autopilot could not be confirmed. Stop only this exact newly
+                # created session; never terminate a deduplicated prior session.
+                stop_state = _stop_session(launched, receipt["session_id"], runner)
+            receipt.update({
+                "status": "source_blocked",
+                "source": "agent-herder-autopilot",
+                "reason": "Agent Herder did not confirm autopilot; the accepted operation will not be replayed.",
+                "new_session_stop": stop_state,
+                "human_held": True,
+                "retryable": False,
+                "non_retryable": True,
+            })
+            return receipt
+        if session_callback is not None:
+            try:
+                session_callback(receipt)
+                receipt["session_notice"] = "attached"
+            except Exception:
+                # record_agent_job_result retries the same durable link from
+                # the terminal receipt after a transient callback failure.
+                receipt["session_notice"] = "deferred"
     if profile_id in _REPAIR_FIRST_JOB_IDS:
         receipt.update(_run_health_diagnosis(launched, event, receipt["session_id"], runner, started_at, session_callback))
     elif profile_id == "health-remediation":
