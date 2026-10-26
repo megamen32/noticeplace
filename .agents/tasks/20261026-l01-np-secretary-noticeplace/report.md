@@ -203,7 +203,19 @@ Readback установленного runtime: `noticeplace_calls.py` содер
 | `dlv_e1f5259370e749bc` | `matrix.message` | failed, `Matrix message send returned HTTP 403` | отправитель Notice Place не состоит в изолированной комнате; окончательный отказ, повторов нет |
 | `dlv_41d30af7a61843bd` | `matrix.call` | failed, `Matrix call was not answered` | **типизированный адресат принят установленным UserIO**: отказ маршрута дал бы `HTTP 403 Notice Place policy route is not authorized`, а звонок был поставлен и остался без ответа |
 
-⇒ Звонок **не ушёл** ни в комнату владельца (`!IfwZsTlPzouoIDHQez`), ни к его идентификатору (`@bezrabotnyi`): установленный UserIO прочитал файл маршрута и позвонил в изолированную комнату тестовых ботов.
+**ИСПРАВЛЕНО 26.10 03:5x МСК (продолжение L01, сессия np_secretary_glm): вывод выше был ЛОЖЕН.** Прямое чтение квитанции `0c0ce98a-40e9-5003-93a1-cac7dab30f5d` в `/var/lib/universal-userio/matrix-calls/…/call.json` (backend, server-100) доказывает:
+
+| поле | факт |
+| --- | --- |
+| `room_id` | `!IfwZsTlPzouoIDHQez:chat.bezrabotnyi.com` — **комната владельца** |
+| `target` | `@bezrabotnyi:chat.bezrabotnyi.com` — **личный аккаунт владельца** |
+| `account_ref` | `matrix:3a38caa1…` (`@bezrabotnyi`) |
+| `request_scope` / `control_route` | отсутствуют (legacy-путь) |
+| итог | `unanswered`, владелец звонок не принимал, разговора не было |
+
+Причина: звонок исполнял **mesh-воркер server-88**, который держал релиз 23.10 (`b1944cd2`) без destination-инжекции `delivery_payload` → `payload.destination` отсутствовал → `noticeplace_calls.py` ушёл в legacy-маршрут из env (`USERIO_MATRIX_NOTICE_ROOM/ TARGET`). Квитанция `7348ae60…`, на которую ссылался прежний текст, в хранилище отсутствует — её никогда не существовало.
+
+Устранение и контрольный живой тест — см. §6.2.
 
 Детерминированная идентичность запроса (тот же расчёт, что у Notice Place и у UserIO):
 
@@ -215,7 +227,7 @@ call_id    = uuid5(NAMESPACE_URL, "user_owner\0" + request_id) = 7348ae60-dc76-5
 
 Квитанция звонка принадлежит **пользователю A** (`user_b0fa237eee8f4793aad037971be582a3`), а не владельцу: поэтому её нет в рабочем пространстве владельца (`GET /v1/calls/matrix/7348ae60-…` → `call not found`) — это правильное разделение, а не потеря квитанции.
 
-**Чего не хватает для ответа бота:** backend UserIO не имеет маршрута управления к primary88 (в контейнере нет `AGENTCALL_CONTROL_ROUTE` и конфигурации control), поэтому голосовой приёмник на 88 не подключён к этому вызову, и тестовый бот B не ответил. Это последний недостающий узел: маршрут primary88 плюс действующий QA-scope на 88 для комнаты `!ZatzpywRZSemgAaPju` и пары A/B.
+**Чего не хватало для ответа бота (устранено 26.10):** backend UserIO не имел маршрута управления к primary88. Теперь маршрут есть, деплой voice выполнен, тестовый бот B ответил — см. §6.2.
 
 Изменённое состояние тестового потребителя (только он, matrix_only, телефон по политике недостижим): `max_severity` поднят до `emergency` (иначе тихие часы 01:00–09:00 МСК отменяют любой автоматический вызов) и его `quiet_hours_json` очищен. Исходные значения: `notice` и правило 01:00–09:00 Europe/Moscow.
 
@@ -315,3 +327,36 @@ ANSWER: 200 {"incident_id": "inc_ddd181599b55405cbac9ff1ecf741331", "resolved": 
 
 - Тихие часы автоматических звонков задаются runtime-настройкой `android_phone_quiet_start_hour=0 / end_hour=12` (Europe/Moscow), а не `quiet_hours_json` потребителя.
 - QA-токен потребителя: `/home/roomhacker/.config/noticeplace/qa-stop-20261023b-consumer.json` (`intake_token`); потребитель `consumer_7ad31d4110d744259bde4ee7580890e4`, проект `noticeplace-qa-stop-20261023b`, маршрут — изолированная комната, senders = боты A/B, `matrix_only`.
+
+### 6.6 Продолжение L01 (03:00–04:10 МСК 26.10, сессия np_secretary_glm, маршрут zai-coding-plan/glm-5.3)
+
+#### Исправление корневой причины звонка владельцу (§4.0)
+
+| узел | было | стало |
+| --- | --- | --- |
+| mesh-воркер server-88 | релиз 23.10 `b1944cd2` (нет destination-инжекции) | `402451c` (релиз `20261026T000339Z-402451c7f905-1963425`, tar-перенос с 100, юнит `98-managed-release.conf` обновлён, active; `consumer_matrix_scope` из его кода возвращает типизированный маршрут) |
+| voice server-88 | digest `36ae2279…` (ревизия `86f53b7`, старый sqlite-контекст) | digest `sha256:fc7ce065…` (ревизия `e3a96c53a4f9`), установлен `container_release.py install-voice`, idle-proof перед остановкой: 0 событий звонков 12 мин, 0 подключений incoming.sock, health=healthy; после установки healthy, ревизия в label совпадает |
+| контекст Notice Place для секретаря на 88 | отсутствовал | `NOTICEPLACE_API_URL=http://127.0.0.1:18091` + `NOTICEPLACE_API_TOKEN` (cap-токен перенесён с 100 без печати; 0600 root) в `/etc/userio-voice/environment.json`; readback из engine-пути: HTTP 200, `total_in_scope=1778`, audiences `[me, health]` |
+| маршрут управления primary88 | одноразовый ssh-процесс от 01:40, умер | systemd `l01-primary88-forward.service` на 88 (`User=root` — сокет `/run/agentcall/control.sock` принадлежит root:notification-center 0660; `ExecStartPre` снимает stale-сокет на 100; `-R /run/agentcall/primary88/control.sock` + `-L 127.0.0.1:18091:127.0.0.1:8091`); readback: `{"action":"status"}` через forward отвечает engine |
+
+#### Контрольный живой тест «повтор неуспешного теста 01:17»
+
+Сценарий: инцидент QA-потребителя (`inc_288843d318dd41d39ac9aedaae1549d8`) → `matrix.message` падает 403 (`@aiadmin` временно выведен из комнаты бот-скриптом контракта участников, затем возвращён) → failure-neighbour `matrix.call` по типизированному binding.
+
+| проверка | факт |
+| --- | --- |
+| адресат звонка | call `736bb1fd`: `room_id=!ZatzpywRZSemgAaPju` (изолированная), `target=@lhc_voice_tester_b`, `account_ref=matrix:ab023a` (бот A), `request_scope=user_owner`, `control_route=primary88/roomhacker-server-88` |
+| ответ бота B | peer `matrix_rtc_ai_live_peer.py b` в `qa-mavis09-voice` (100): событие `answered`, qa-scope admission (пара A/B, транспорт matrix, TTL 900 с) |
+| разговор | приветствие Notice Place проиграно (343200 байт), двусторонний PCM подтверждён логами обеих сторон, `status=completed`, `answered=true`; инцидент `acknowledged` ответом бота B (actor `matrix:@lhc_voice_tester_b…`) |
+| владелец | не затронут: ни одной доставки `telegram.call` / `android.phone.call` за весь интервал (полный mesh-запрос), комната и target — только тестовые боты |
+
+⇒ Повтор неуспешного теста **прошёл**: типизированный Notice Place звонок дошёл до тестового бота в изолированной комнате, бот ответил, разговор состоялся, владелец не потревожен.
+
+#### Найденный дефект чужого свежего кода (вне моего скоупа, передан владельцу)
+
+`notification_center/http_api.py` (ветка `matrix.call`, код `d79d75e`/`402451c`, автор — параллельная human-question сессия): при `answered=true` вызывается только `acknowledge_if_active(...)` и отсутствует `complete_delivery('sent', ...)`. Транзакция ack помечает `cancelled` все доставки инцидента в статусе `queued/claimed/sending` — включая саму звонковую доставку: в mesh остаётся `status=cancelled` с пустым `result_json` при физически состоявшемся звонке (доказательство — `call.json` на UserIO). Аудит-след инцидента при этом корректен, повторов нет. Передано coordination-нотой `fb6bf718`; предложенный фикс — `complete_delivery('sent', …, result=result)` после ack (как в соседних ветках).
+
+#### Прочее
+
+- `@aiadmin` возвращён в изолированную комнату после теста (invite ботом A + join), состав снова `aiadmin` + бот A + бот B.
+- Причина расхождения прежнего отчёта: вывод «звонок не ушёл к владельцу» делался по отсутствию квитанции в API владельца, без прямого чтения хранилища квитанций UserIO. Прямое чтение — обязательный шаг при спорных квитанциях.
