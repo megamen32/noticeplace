@@ -8,7 +8,13 @@ from pathlib import Path
 
 from notification_center.core import NotificationCenter
 from notification_center.health_workflow import HealthWorkflow
-from notification_center.telegram_interactions import TelegramActionCodec, TelegramConsoleOwnerControl, TelegramInteractionPoller
+from notification_center.telegram_interactions import (
+    NOTICEPLACE_COMMANDS,
+    OWNER_CALLBACK_PREFIX,
+    TelegramActionCodec,
+    TelegramConsoleOwnerControl,
+    TelegramInteractionPoller,
+)
 from notification_center.http_api import telegram_inbox_sink_from_environment, telegram_inline_keyboard
 
 
@@ -579,6 +585,149 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertEqual(["telegram:99", "telegram:42"], [row["actor"] for row in audit])
         self.assertEqual(["denied", "denied"], [json.loads(row["payload_json"])["outcome"] for row in audit])
 
+    def test_help_uses_one_command_registry_and_shows_only_human_descriptions(self):
+        poller, calls = self._owner_poller([self._owner_command(111, 211, 42, -1001, "/help")],
+                                           _FakeHerderOwnerControl())
+        self.assertEqual(1, poller.poll_once())
+        payload = next(payload for method, payload in calls if method == "sendMessage")
+        self.assertIn("Доступные команды в этом чате:", payload["text"])
+        for command in NOTICEPLACE_COMMANDS:
+            self.assertIn(f"/{command['command']} — {command['description']}", payload["text"])
+        self.assertNotIn("api/", payload["text"])
+        keyboard = json.loads(payload["reply_markup"])
+        self.assertEqual(OWNER_CALLBACK_PREFIX + "status",
+                         keyboard["inline_keyboard"][0][0]["callback_data"])
+
+    def test_status_has_start_button_when_owner_stop_is_confirmed(self):
+        poller, calls = self._owner_poller([self._owner_command(112, 212, 42, -1001, "/status")],
+                                           _FakeHerderOwnerControl(forbidden=True),
+                                           emergency_pause_reader=lambda: {"confirmed": True, "active": True})
+        self.assertEqual(1, poller.poll_once())
+        payload = next(payload for method, payload in calls if method == "sendMessage")
+        self.assertIn("ИИ остановлен", payload["text"])
+        self.assertIn("Чтобы разрешить новые запуски, нажмите Start", payload["text"])
+        keyboard = json.loads(payload["reply_markup"])
+        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+        self.assertEqual(OWNER_CALLBACK_PREFIX + "start", buttons[0]["callback_data"])
+        self.assertEqual({OWNER_CALLBACK_PREFIX + "help", OWNER_CALLBACK_PREFIX + "status"},
+                         {button["callback_data"] for button in buttons[1:]})
+        self.assertIn("Аварийная сетевая пауза Notice Place: активна", payload["text"])
+
+    def test_status_with_emergency_pause_never_claims_ai_is_running(self):
+        poller, calls = self._owner_poller([self._owner_command(113, 213, 42, -1001, "/status")],
+                                           _FakeHerderOwnerControl(),
+                                           emergency_pause_reader=lambda: {"confirmed": True, "active": True})
+        self.assertEqual(1, poller.poll_once())
+        payload = next(payload for method, payload in calls if method == "sendMessage")
+        self.assertIn("Состояние частично известно", payload["text"])
+        self.assertIn("Аварийная сетевая пауза блокирует выполнение", payload["text"])
+        buttons = [button for row in json.loads(payload["reply_markup"])["inline_keyboard"] for button in row]
+        self.assertIn(OWNER_CALLBACK_PREFIX + "stop", [button["callback_data"] for button in buttons])
+        self.assertNotIn(OWNER_CALLBACK_PREFIX + "start", [button["callback_data"] for button in buttons])
+
+    def test_incomplete_empty_session_inventory_never_reports_zero(self):
+        control = _FakeHerderOwnerControl()
+        control.read_active_sessions = lambda: {
+            "confirmed": False, "sessions": [], "partial": True,
+            "hosts": [{"hostId": "server-44", "state": "unknown"}],
+        }
+        poller, calls = self._owner_poller([self._owner_command(114, 214, 42, -1001, "/status")], control)
+        self.assertEqual(1, poller.poll_once())
+        reply = next(payload["text"] for method, payload in calls if method == "sendMessage")
+        self.assertIn("Текущие сессии: неполные данные, число сессий неизвестно", reply)
+        self.assertNotIn("0 активных сессий", reply)
+
+    def test_owner_callback_checks_sender_and_chat_then_updates_message_after_idempotent_action(self):
+        control = _FakeHerderOwnerControl(forbidden=True)
+        poller, calls = self._owner_poller([], control)
+        callback = {
+            "id": "owner-start-1", "from": {"id": 42, "is_bot": False},
+            "data": OWNER_CALLBACK_PREFIX + "start",
+            "message": {"message_id": 300, "chat": {"id": -1001}},
+        }
+        poller._handle_callback(callback)
+        self.assertFalse(control.forbidden)
+        self.assertEqual(1, len([name for name, _ in control.calls if name == "allow_new_operations"]))
+        edit = next(payload for method, payload in calls if method == "editMessageText")
+        self.assertIn("Ранее остановленные сессии не возобновлялись", edit["text"])
+        self.assertTrue(any(method == "answerCallbackQuery" for method, _ in calls))
+
+        # A second callback over the same now-settled state is read-only.
+        poller._handle_callback({**callback, "id": "owner-start-2"})
+        self.assertEqual(1, len([name for name, _ in control.calls if name == "allow_new_operations"]))
+        self.assertEqual(2, len([method for method, _ in calls if method == "answerCallbackQuery"]))
+        self.assertEqual(2, len([method for method, _ in calls if method == "editMessageText"]))
+
+    def test_owner_callback_rejects_untrusted_sender_or_chat(self):
+        callbacks = [
+            {"id": "owner-denied-user", "from": {"id": 99, "is_bot": False},
+             "data": OWNER_CALLBACK_PREFIX + "start",
+             "message": {"message_id": 301, "chat": {"id": -1001}}},
+            {"id": "owner-denied-chat", "from": {"id": 42, "is_bot": False},
+             "data": OWNER_CALLBACK_PREFIX + "start",
+             "message": {"message_id": 302, "chat": {"id": -1002}}},
+        ]
+        for callback in callbacks:
+            control = _FakeHerderOwnerControl(forbidden=True)
+            poller, calls = self._owner_poller([], control)
+            poller._handle_callback(callback)
+            self.assertTrue(control.forbidden)
+            self.assertFalse(any(name == "allow_new_operations" for name, _ in control.calls))
+            self.assertEqual("Нет доступа", next(p["text"] for m, p in calls if m == "answerCallbackQuery"))
+
+    def test_command_menu_scope_is_specific_owner_chat_or_owner_member(self):
+        self.assertEqual([{"type": "chat", "chat_id": 42}],
+                         TelegramInteractionPoller._command_scopes("42", {"42"}))
+        self.assertEqual([{"type": "chat_member", "chat_id": -1001, "user_id": 42}],
+                         TelegramInteractionPoller._command_scopes("-1001", {"42"}))
+
+    def test_nonowner_start_keeps_existing_inbox_onboarding_path(self):
+        received = []
+        poller = TelegramInteractionPoller(
+            self.center, "bot-token", {"42"}, TelegramActionCodec("x" * 32),
+            api=lambda _method, _payload: {"ok": True, "result": []},
+            inbox_sink=lambda payload: received.append(payload) or {"event_id": "evt"},
+            inbox_chat_ids={"-1001"}, inbox_sender_ids={"42"}, owner_user_ids={"99"},
+        )
+        poller._handle_message({"message_id": 302, "from": {"id": 42, "is_bot": False},
+                                "chat": {"id": -1001}, "text": "/start"})
+        self.assertEqual(1, len(received))
+        self.assertEqual("/start", received[0]["body"])
+
+    def test_command_registration_is_owner_scoped_merges_existing_commands_and_reads_back(self):
+        calls = []
+        configured = {}
+
+        def api(method, payload):
+            calls.append((method, payload))
+            scope = json.loads(payload["scope"]) if payload.get("scope") else {"type": "default"}
+            key = (json.dumps(scope, sort_keys=True), payload.get("language_code", ""))
+            if method == "getMyCommands":
+                if scope.get("type") == "default" and payload.get("language_code") == "ru":
+                    return {"ok": True, "result": [{"command": "legacy", "description": "Другая функция"}]}
+                return {"ok": True, "result": configured.get(key, [])}
+            if method == "setMyCommands":
+                configured[key] = json.loads(payload["commands"])
+            return {"ok": True, "result": True}
+
+        poller = TelegramInteractionPoller(
+            self.center, "bot-token", {"42"}, TelegramActionCodec("x" * 32),
+            api=api, inbox_chat_ids={"-1001"}, owner_user_ids={"42"},
+        )
+        poller._manage_command_menu = True  # explicit test of the production registration path
+        poller._register_owner_commands()
+        set_call = next(payload for method, payload in calls if method == "setMyCommands")
+        scope = json.loads(set_call["scope"])
+        self.assertEqual({"type": "chat_member", "chat_id": -1001, "user_id": 42}, scope)
+        commands = json.loads(set_call["commands"])
+        self.assertIn({"command": "legacy", "description": "Другая функция"}, commands)
+        self.assertEqual([item["command"] for item in NOTICEPLACE_COMMANDS],
+                         [item["command"] for item in commands[:len(NOTICEPLACE_COMMANDS)]])
+        self.assertEqual(poller._commands_by_chat["-1001"], commands)
+        before = len(calls)
+        poller._register_owner_commands()
+        self.assertEqual(before, len(calls))
+
     def test_owner_stop_uses_current_herder_stop_endpoint_and_reads_back_all_nodes(self):
         control = _FakeHerderOwnerControl(
             sessions=[{"id": "manual-session-1", "harness": "codex", "runtimeHostId": "server-44"}],
@@ -594,8 +743,9 @@ class TelegramInteractionTests(unittest.TestCase):
         reply = next(payload["text"] for method, payload in calls if method == "sendMessage")
         self.assertIn("запрещены", reply)
         self.assertIn("server-44 — подтвердил", reply)
-        self.assertIn("Текущие сессии: неполные данные: найдено 1 сессий", reply)
-        self.assertIn("Общие нативные сессии показаны отдельно", reply)
+        self.assertIn("Текущие сессии: неполные данные, видно не менее 1 сессий", reply)
+        self.assertIn("Текущие сессии: неполные данные, видно не менее 1 сессий", reply)
+        self.assertNotIn("manual-session-1", reply)
         self.assertIn("Аварийная сетевая пауза Notice Place: неизвестно", reply)
         audit = self.center._connection.execute(
             "SELECT payload_json FROM audit_events WHERE type='telegram.owner_command' ORDER BY created_at DESC LIMIT 1"
@@ -665,7 +815,7 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertEqual(0, poller.poll_once())
         self.assertEqual(1, [name for name, _ in control.calls].count("stop_current"))
         reply = next(payload["text"] for method, payload in calls if method == "sendMessage")
-        self.assertIn("состояние неизвестным", reply)
+        self.assertIn("Состояние неизвестно", reply)
         audit = self.center._connection.execute(
             "SELECT payload_json FROM audit_events WHERE type='telegram.owner_command' ORDER BY created_at DESC LIMIT 1"
         ).fetchone()

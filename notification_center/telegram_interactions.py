@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import urllib.parse
 import urllib.request
@@ -14,6 +15,8 @@ from .core import NotificationCenter, ValidationError
 from .health_workflow import TelegramHealthPlanCodec, health_plan_keyboard
 from .incident_card import controls as incident_controls
 from .selected_card import apply_selected_card, apply_selection_receipt, canonical_choice_ref
+
+LOG = logging.getLogger(__name__)
 
 
 class TelegramActionCodec:
@@ -112,6 +115,19 @@ TelegramApi = Callable[[str, dict[str, Any]], dict[str, Any]]
 ChoiceCallback = Callable[[str, str, str], Mapping[str, Any]]
 InboxSink = Callable[[dict[str, object]], Mapping[str, Any]]
 EmergencyPauseReader = Callable[[], Mapping[str, Any] | None]
+
+# One source drives both the owner menu and /help. Keep this limited to
+# commands implemented by this poller; commands owned by other bot features
+# are merged from Telegram's existing scope before publication.
+NOTICEPLACE_COMMANDS: tuple[dict[str, str], ...] = (
+    {"command": "start", "description": "Владельцу: разрешить новые AI-запуски; начать обращение"},
+    {"command": "stop", "description": "Запретить новые AI-запуски и остановить текущие"},
+    {"command": "status", "description": "Показать состояние ИИ, узлов и сессий"},
+    {"command": "help", "description": "Показать доступные команды"},
+    {"command": "ask", "description": "Задать вопрос по уведомлению: /ask <id> <текст>"},
+)
+NOTICEPLACE_OWNED_COMMANDS = {item["command"] for item in NOTICEPLACE_COMMANDS}
+OWNER_CALLBACK_PREFIX = "np:owner:"
 
 
 class TelegramConsoleOwnerControl:
@@ -271,6 +287,7 @@ class TelegramInteractionPoller:
         self._allowed_user_ids = allowed_user_ids
         self._codec = codec
         self._health_plan_codec = health_plan_codec
+        self._manage_command_menu = api is None
         self._api = api or (lambda method, payload: telegram_api(token, method, payload))
         self._choice_callback = choice_callback
         self._human_request_token = human_request_token
@@ -288,12 +305,114 @@ class TelegramInteractionPoller:
         self._owner_chat_ids = set(self._inbox_chat_ids)
         self._owner_control = owner_control or TelegramConsoleOwnerControl.from_environment()
         self._emergency_pause_reader = emergency_pause_reader
+        self._commands_registration_attempted = False
+        self._commands_by_chat: dict[str, list[dict[str, str]]] = {}
 
     def _answer(self, callback_id: str, text: str) -> None:
         self._api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:180]})
 
-    def _message(self, chat_id: str, text: str) -> None:
-        self._api("sendMessage", {"chat_id": chat_id, "text": text[:1200]})
+    def _message(self, chat_id: str, text: str, reply_markup: Mapping[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:1200]}
+        if reply_markup is not None:
+            payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False, separators=(",", ":"))
+        self._api("sendMessage", payload)
+
+    @staticmethod
+    def _command_scopes(chat_id: str, owner_ids: set[str]) -> list[dict[str, Any]]:
+        """Return only scopes that expose commands to the configured owner."""
+        if chat_id in owner_ids:
+            return [{"type": "chat", "chat_id": int(chat_id)}]
+        if chat_id.startswith("-"):
+            try:
+                parsed_chat = int(chat_id)
+            except ValueError:
+                return []
+            return [
+                {"type": "chat_member", "chat_id": parsed_chat, "user_id": int(owner_id)}
+                for owner_id in sorted(owner_ids) if owner_id.isdigit()
+            ]
+        return []
+
+    @staticmethod
+    def _scope_precedence(scope: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Scopes that can supply commands to this owner, most specific first."""
+        scope_type = str(scope.get("type") or "")
+        chat_id = scope.get("chat_id")
+        user_id = scope.get("user_id")
+        if scope_type == "chat":
+            base = [scope, {"type": "all_private_chats"}, {"type": "default"}]
+        elif scope_type == "chat_member":
+            base = [
+                scope,
+                {"type": "chat_administrators", "chat_id": chat_id},
+                {"type": "chat", "chat_id": chat_id},
+                {"type": "all_chat_administrators"},
+                {"type": "all_group_chats"},
+                {"type": "default"},
+            ]
+        else:
+            return [dict(scope)]
+        localized: list[dict[str, Any]] = []
+        for candidate in base:
+            candidate = dict(candidate)
+            if candidate.get("type") == "chat_member":
+                candidate["user_id"] = user_id
+            localized.append(candidate)
+        return localized
+
+    def _register_owner_commands(self) -> None:
+        """Merge the owner feature into existing command menus, then read back."""
+        if self._commands_registration_attempted or not self._manage_command_menu:
+            return
+        self._commands_registration_attempted = True
+        for chat_id in sorted(self._owner_chat_ids):
+            for scope in self._command_scopes(chat_id, self._owner_user_ids):
+                try:
+                    merged: dict[str, dict[str, str]] = {}
+                    # Telegram returns only the exact list stored at each scope;
+                    # copy the applicable inherited commands before narrowing it.
+                    for inherited_scope in self._scope_precedence(scope):
+                        for language in ("ru", ""):
+                            response = self._api("getMyCommands", {
+                                "scope": json.dumps(inherited_scope, separators=(",", ":")),
+                                "language_code": language,
+                            })
+                            rows = response.get("result") if isinstance(response, Mapping) else None
+                            if isinstance(rows, list):
+                                for row in rows:
+                                    if isinstance(row, Mapping):
+                                        name = str(row.get("command") or "")
+                                        description = str(row.get("description") or "")
+                                        if name and description and name not in merged:
+                                            merged[name] = {"command": name, "description": description}
+                    inherited = [
+                        item for name, item in merged.items()
+                        if name not in NOTICEPLACE_OWNED_COMMANDS
+                    ]
+                    commands = [dict(item) for item in NOTICEPLACE_COMMANDS] + inherited[:100 - len(NOTICEPLACE_COMMANDS)]
+                    target_json = json.dumps(scope, separators=(",", ":"))
+                    existing = self._api("getMyCommands", {"scope": target_json, "language_code": "ru"})
+                    current = existing.get("result") if isinstance(existing, Mapping) else None
+                    if current != commands:
+                        self._api("setMyCommands", {
+                            "scope": target_json,
+                            "language_code": "ru",
+                            "commands": json.dumps(commands, ensure_ascii=False, separators=(",", ":")),
+                        })
+                    readback = self._api("getMyCommands", {"scope": target_json, "language_code": "ru"})
+                    actual = readback.get("result") if isinstance(readback, Mapping) else None
+                    if not isinstance(actual, list):
+                        raise RuntimeError("Telegram command list readback is not a list")
+                    self._commands_by_chat[chat_id] = [
+                        {"command": str(row.get("command") or ""),
+                         "description": str(row.get("description") or "")}
+                        for row in actual if isinstance(row, Mapping)
+                    ]
+                except Exception as error:  # noqa: BLE001 - menu failures must not stop incident polling
+                    LOG.warning("Could not register owner command menu for configured chat: %s", type(error).__name__)
+
+    def _commands_for_chat(self, chat_id: str) -> list[dict[str, str]]:
+        return list(self._commands_by_chat.get(chat_id) or NOTICEPLACE_COMMANDS)
 
     def _incident_control_row(self, incident: Mapping[str, Any]) -> list[dict[str, str]]:
         from .incident_card import controls
@@ -399,27 +518,23 @@ class TelegramInteractionPoller:
             count = sessions["count"]
             if sessions.get("confirmed") is True and sessions.get("partial") is not True:
                 session_state = f"{count} активных сессий"
-            else:
+            elif count > 0:
                 session_state = f"неполные данные, видно не менее {count} сессий"
-            session_details = []
+            else:
+                session_state = "неполные данные, число сессий неизвестно"
             hosts = sessions.get("hosts")
             if isinstance(hosts, list) and hosts:
                 lines.append("Узлы с сессиями: " + ", ".join(str(host)[:128] for host in hosts[:8]) + ".")
         elif isinstance(sessions, Mapping) and isinstance(sessions.get("sessions"), list) and type(sessions.get("partial")) is bool:
             active = sessions["sessions"]
-            session_state = f"{len(active)} активных сессий" if not sessions["partial"] else f"неполные данные: найдено {len(active)} сессий"
-            session_details = [
-                {key: str(row.get(key) or "")[:128] for key in ("id", "harness", "runtimeHostId")}
-                for row in active[:5] if isinstance(row, Mapping)
-            ]
+            session_state = (
+                f"{len(active)} активных сессий" if not sessions["partial"]
+                else f"неполные данные, видно не менее {len(active)} сессий" if active
+                else "неполные данные, число сессий неизвестно"
+            )
         else:
-            session_state, session_details = "неизвестно", []
+            session_state = "неизвестно"
         lines.append(f"Текущие сессии: {session_state}.")
-        if session_details:
-            lines.append("Сессии: " + "; ".join(
-                "/".join(value for value in (row["harness"], row["id"], row["runtimeHostId"]) if value)
-                for row in session_details
-            ) + ("; …" if len(sessions["sessions"]) > 5 else ""))
         if isinstance(emergency, Mapping) and emergency.get("confirmed") is True and type(emergency.get("active")) is bool:
             emergency_state = "активна" if emergency["active"] else "не активна"
         else:
@@ -433,35 +548,136 @@ class TelegramInteractionPoller:
                   "sessions": session_state, "emergency_pause": emergency_state}
         return "\n".join(lines), detail
 
-    def _handle_owner_command(self, message: dict[str, Any], command: str) -> None:
+    @classmethod
+    def _owner_status_heading(cls, policy: Mapping[str, Any] | None,
+                              emergency: Mapping[str, Any] | None) -> tuple[str, dict[str, Any]]:
+        _text, detail = cls._owner_status_text(policy, None, emergency)
+        nodes_confirmed = all(value == "подтвердил" for value in detail["nodes"].values())
+        if detail["policy"] == "запрещены" and nodes_confirmed:
+            heading = "ИИ остановлен"
+        elif (detail["policy"] == "разрешены" and nodes_confirmed
+              and detail["emergency_pause"] == "не активна"):
+            heading = "Новые AI-запуски разрешены"
+        else:
+            heading = "Состояние частично известно"
+        return heading, detail
+
+    @staticmethod
+    def _owner_control_keyboard(detail: Mapping[str, Any]) -> dict[str, Any]:
+        rows: list[list[dict[str, str]]] = []
+        nodes = detail.get("nodes") if isinstance(detail.get("nodes"), Mapping) else {}
+        nodes_confirmed = all(value == "подтвердил" for value in nodes.values()) and len(nodes) == 3
+        if nodes_confirmed and detail.get("policy") == "запрещены":
+            rows.append([{"text": "▶ Start", "callback_data": OWNER_CALLBACK_PREFIX + "start"}])
+        elif nodes_confirmed and detail.get("policy") == "разрешены":
+            rows.append([{"text": "⏹ Stop", "callback_data": OWNER_CALLBACK_PREFIX + "stop"}])
+        rows.append([
+            {"text": "❔ Help", "callback_data": OWNER_CALLBACK_PREFIX + "help"},
+            {"text": "🔄 Обновить", "callback_data": OWNER_CALLBACK_PREFIX + "status"},
+        ])
+        return {"inline_keyboard": rows}
+
+    @staticmethod
+    def _owner_help_keyboard() -> dict[str, Any]:
+        return {"inline_keyboard": [[
+            {"text": "📊 Status", "callback_data": OWNER_CALLBACK_PREFIX + "status"},
+        ]]}
+
+    def _owner_help_text(self, chat_id: str) -> str:
+        commands = self._commands_for_chat(chat_id)
+        lines = ["Доступные команды в этом чате:"]
+        for row in commands:
+            name = str(row.get("command") or "").strip()
+            description = str(row.get("description") or "").strip()
+            if name and description:
+                lines.append(f"/{name} — {description}")
+        return "\n".join(lines)
+
+    def _owner_reply(self, chat_id: str, action: str, text: str,
+                     callback_id: str | None = None, callback: Mapping[str, Any] | None = None,
+                     snapshot: tuple[Mapping[str, Any] | None, Mapping[str, Any] | None,
+                                    Mapping[str, Any] | None] | None = None) -> None:
+        policy, sessions, emergency = snapshot if snapshot is not None else self._read_owner_snapshot()
+        status, detail = self._owner_status_text(policy, sessions, emergency)
+        heading, _ = self._owner_status_heading(policy, emergency)
+        if action == "/help":
+            body = self._owner_help_text(chat_id)
+            markup = self._owner_help_keyboard()
+        else:
+            prompt = ""
+            if detail["policy"] == "запрещены" and all(v == "подтвердил" for v in detail["nodes"].values()):
+                prompt = "Чтобы разрешить новые запуски, нажмите Start."
+            elif detail["policy"] == "разрешены" and all(v == "подтвердил" for v in detail["nodes"].values()):
+                if detail["emergency_pause"] == "активна":
+                    prompt = "Аварийная сетевая пауза блокирует выполнение. Stop запретит новые операции в Herder."
+                else:
+                    prompt = "Чтобы остановить новые запуски, нажмите Stop."
+            else:
+                prompt = "Проверьте статус после подтверждения всех узлов."
+            if action == "/status":
+                body = f"{heading}.\n{prompt}\n\n{status}"
+            else:
+                body = f"{text}\n\n{heading}.\n{prompt}\n\n{status}"
+            markup = self._owner_control_keyboard(detail)
+        if callback is None:
+            self._message(chat_id, body, markup)
+            return
+        message = callback.get("message") if isinstance(callback.get("message"), Mapping) else {}
+        message_id = message.get("message_id") if isinstance(message, Mapping) else None
+        edit_error: Exception | None = None
+        if isinstance(message_id, int) and message_id > 0:
+            try:
+                self._api("editMessageText", {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": body[:3900],
+                    "reply_markup": json.dumps(markup, ensure_ascii=False, separators=(",", ":")),
+                })
+            except Exception as error:  # a stale message must not replay a completed owner action
+                edit_error = error
+        if callback_id:
+            self._answer(callback_id, "Обновлено" if edit_error is None else "Состояние обработано; сообщение не обновилось")
+
+    def _handle_owner_command(self, message: dict[str, Any], command: str,
+                              callback_id: str | None = None,
+                              callback: Mapping[str, Any] | None = None) -> None:
         sender = message.get("from") if isinstance(message.get("from"), dict) else {}
         chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
         actor_id, chat_id, message_id = sender.get("id"), str(chat.get("id") or ""), message.get("message_id")
         action = command.split("@", 1)[0].lower()
-        if (action not in {"/stop", "/start", "/status"} or sender.get("is_bot") is True
+        if (action not in {"/stop", "/start", "/status", "/help"} or sender.get("is_bot") is True
                 or str(actor_id) not in self._owner_user_ids or chat_id not in self._owner_chat_ids):
             self._audit_owner_command(action, actor_id, chat_id, message_id, "denied")
+            if callback_id:
+                self._answer(callback_id, "Нет доступа")
             return
         arguments = str(message.get("text") or "").strip().split()
         if len(arguments) != 1:
             self._audit_owner_command(action, actor_id, chat_id, message_id, "invalid_arguments")
-            self._safe_owner_reply(chat_id, "Используй команду без аргументов: /stop, /start или /status.")
+            self._owner_reply(chat_id, action, "Используй команду без аргументов: /stop, /start, /status или /help.",
+                              callback_id, callback)
+            return
+        if action == "/help":
+            self._audit_owner_command(action, actor_id, chat_id, message_id, "read")
+            self._owner_reply(chat_id, action, "", callback_id, callback)
             return
         if action == "/status":
             policy, sessions, emergency = self._read_owner_snapshot()
             text, detail = self._owner_status_text(policy, sessions, emergency)
             self._audit_owner_command(action, actor_id, chat_id, message_id, "read", detail)
-            self._safe_owner_reply(chat_id, text)
+            self._owner_reply(chat_id, action, text, callback_id, callback, (policy, sessions, emergency))
             return
         if action == "/stop":
             try:
                 before_policy, before_sessions, before_emergency = self._read_owner_snapshot()
                 before_state, before_nodes, _ = self._owner_policy_state(before_policy or {})
-                if (before_state == "запрещены"
-                        and all(value == "подтвердил" for value in before_nodes.values())):
+                if before_state == "запрещены":
                     text, detail = self._owner_status_text(before_policy, before_sessions, before_emergency)
-                    self._audit_owner_command(action, actor_id, chat_id, message_id, "already_stopped", detail)
-                    self._safe_owner_reply(chat_id, "Запрет новых автозапусков уже подтверждён в Herder; повторного действия не было.\n" + text)
+                    outcome = "already_stopped" if all(value == "подтвердил" for value in before_nodes.values()) else "unknown"
+                    self._audit_owner_command(action, actor_id, chat_id, message_id, outcome, detail)
+                    self._owner_reply(chat_id, action,
+                                      "Повторную остановку не отправлял; owner STOP уже записан.",
+                                      callback_id, callback, (before_policy, before_sessions, before_emergency))
                     return
                 result = self._owner_control.stop_current()
                 if not isinstance(result, Mapping) or result.get("ok") is not True or result.get("applied") is not True:
@@ -476,10 +692,14 @@ class TelegramInteractionPoller:
                 if not isinstance(stopped, list) or not isinstance(still_running, list) or still_running:
                     raise RuntimeError("Herder live-session stop is incomplete or unknown")
                 self._audit_owner_command(action, actor_id, chat_id, message_id, "confirmed", detail)
-                self._safe_owner_reply(chat_id, "Остановлено: новые автозапуски запрещены; Herder не сообщает оставшихся работающих автозадач. Общие нативные сессии показаны отдельно.\n" + status)
+                self._owner_reply(chat_id, action,
+                                  "Новые автозапуски запрещены; Herder подтвердил остановку текущих задач.",
+                                  callback_id, callback, (policy, sessions, emergency))
             except Exception:
                 self._audit_owner_command(action, actor_id, chat_id, message_id, "unknown")
-                self._safe_owner_reply(chat_id, "Не удалось подтвердить остановку в Herder. Считай состояние неизвестным; автоматический повтор не выполнялся.")
+                self._owner_reply(chat_id, action,
+                                  "Не удалось подтвердить остановку в Herder. Состояние неизвестно; повтор не выполнялся.",
+                                  callback_id, callback)
             return
         try:
             policy = self._owner_control.read_policy()
@@ -496,8 +716,9 @@ class TelegramInteractionPoller:
                 detail = {"policy": policy_state, "effective": status_detail["effective"],
                           "nodes": fresh_nodes, "sessions_resumed": False}
                 self._audit_owner_command(action, actor_id, chat_id, message_id, "already_started", detail)
-                self._safe_owner_reply(chat_id, "Herder уже разрешает новые запуски. Сессии не возобновлялись.\n"
-                                       + status.splitlines()[1])
+                self._owner_reply(chat_id, action,
+                                  "Herder уже разрешает новые запуски. Сессии не возобновлялись.",
+                                  callback_id, callback, (fresh_policy, fresh_sessions, emergency))
                 return
             etag = str(policy.get("etag") or "")
             result = self._owner_control.allow_new_operations(etag)
@@ -515,11 +736,14 @@ class TelegramInteractionPoller:
             detail = {"policy": fresh_state, "effective": status_detail["effective"],
                       "nodes": fresh_nodes, "sessions_resumed": False}
             self._audit_owner_command(action, actor_id, chat_id, message_id, "confirmed", detail)
-            self._safe_owner_reply(chat_id, "Herder разрешает новые запуски. Ранее остановленные сессии не возобновлялись.\n"
-                                   + status.splitlines()[1])
+            self._owner_reply(chat_id, action,
+                              "Herder разрешает только новые запуски. Ранее остановленные сессии не возобновлялись.",
+                              callback_id, callback, (fresh_policy, fresh_sessions, emergency))
         except Exception:
             self._audit_owner_command(action, actor_id, chat_id, message_id, "unknown")
-            self._safe_owner_reply(chat_id, "Не удалось подтвердить разрешение новых запусков в Herder. Состояние неизвестно; сессии не запускались.")
+            self._owner_reply(chat_id, action,
+                              "Не удалось подтвердить разрешение новых запусков в Herder. Состояние неизвестно; сессии не запускались.",
+                              callback_id, callback)
 
     def _safe_owner_reply(self, chat_id: str, text: str) -> None:
         try:
@@ -676,7 +900,24 @@ class TelegramInteractionPoller:
 
     def _handle_callback(self, callback: dict[str, Any]) -> None:
         callback_id = str(callback.get("id") or "")
-        actor_id = callback.get("from", {}).get("id")
+        sender = callback.get("from") if isinstance(callback.get("from"), dict) else {}
+        actor_id = sender.get("id")
+        data = str(callback.get("data") or "")
+        if data.startswith(OWNER_CALLBACK_PREFIX):
+            action = data[len(OWNER_CALLBACK_PREFIX):]
+            if action not in {"start", "stop", "status", "help"}:
+                self._answer(callback_id, "Недопустимое действие")
+                return
+            message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+            chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+            synthetic = {
+                "from": sender,
+                "chat": chat,
+                "message_id": message.get("message_id"),
+                "text": "/" + action,
+            }
+            self._handle_owner_command(synthetic, "/" + action, callback_id, callback)
+            return
         if not self._allowed(actor_id):
             self._answer(callback_id, "Not authorized")
             return
@@ -825,16 +1066,24 @@ class TelegramInteractionPoller:
             return False
 
     def _handle_message(self, message: dict[str, Any]) -> None:
-        actor_id = message.get("from", {}).get("id")
+        sender = message.get("from") if isinstance(message.get("from"), dict) else {}
+        actor_id = sender.get("id")
         text = str(message.get("text") or "").strip()
         chat_id = str(message.get("chat", {}).get("id") or "")
         message_id = message.get("message_id")
-        sender = message.get("from") if isinstance(message.get("from"), dict) else {}
         allowed_actor = self._allowed(actor_id)
         command = text.split(maxsplit=1)[0] if text else ""
-        if command.split("@", 1)[0].lower() in {"/stop", "/start", "/status"}:
+        normalized_command = command.split("@", 1)[0].lower()
+        if normalized_command in {"/stop", "/status", "/help"}:
             self._handle_owner_command(message, command)
             return
+        if normalized_command == "/start":
+            # Keep the historical /start path available outside the owner
+            # scope (for example, an onboarding message forwarded to Inbox).
+            if (sender.get("is_bot") is not True and str(actor_id) in self._owner_user_ids
+                    and chat_id in self._owner_chat_ids):
+                self._handle_owner_command(message, command)
+                return
         reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else {}
         reply_message_id = reply.get("message_id")
         if allowed_actor and chat_id and isinstance(reply_message_id, int) and text:
@@ -903,6 +1152,7 @@ class TelegramInteractionPoller:
     def poll_once(self) -> int:
         if not self._token or not self._allowed_user_ids:
             return 0
+        self._register_owner_commands()
         offset = self._center.telegram_update_offset()
         response = self._api("getUpdates", {
             "offset": offset,
