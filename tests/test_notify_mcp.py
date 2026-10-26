@@ -94,8 +94,13 @@ if __name__ == "__main__":
 
 class Mcp2ContractTests(unittest.TestCase):
     def test_initialize_negotiates_mcp2_and_ping(self):
+        # The 2026-07-28 revision is a stateless per-request envelope this
+        # server does not implement, so it is never claimed: the handshake
+        # falls back to the newest supported classic revision instead.
         init = notify_mcp.dispatch({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28"}})
-        self.assertEqual("2026-07-28", init["result"]["protocolVersion"])
+        self.assertEqual("2025-11-25", init["result"]["protocolVersion"])
+        echoed = notify_mcp.dispatch({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}})
+        self.assertEqual("2025-06-18", echoed["result"]["protocolVersion"])
         self.assertIn("noticeplace_instructions", init["result"]["instructions"])
         self.assertEqual({}, notify_mcp.dispatch({"jsonrpc":"2.0","id":2,"method":"ping","params":{}})["result"])
 
@@ -110,7 +115,63 @@ class Mcp2ContractTests(unittest.TestCase):
         self.assertIn("Кто сломался", result["message_format"][0])
         self.assertIn("Включить обратно", result["telegram_controls"])
 
-    def test_noticeplace_mute_tools_are_discoverable(self):
-        tools = {tool["name"] for tool in notify_mcp.tool_specs()}
-        self.assertIn("noticeplace_list_mutes", tools)
-        self.assertIn("noticeplace_set_notifications", tools)
+    def test_noticeplace_mute_tools_remain_routable_but_hidden(self):
+        # The public manifest is the one unified tool; the mute operations
+        # stay routable as its actions and as hidden legacy aliases.
+        public = {tool["name"] for tool in notify_mcp.tool_specs()}
+        self.assertEqual({"noticeplace"}, public)
+        routable = {tool["name"] for tool in notify_mcp.tool_manifest(deep=True)}
+        self.assertIn("noticeplace_list_mutes", routable)
+        self.assertIn("noticeplace_set_notifications", routable)
+
+
+class UnifiedToolContractTests(unittest.TestCase):
+    def test_public_manifest_is_exactly_one_unified_tool(self):
+        specs = notify_mcp.tool_specs()
+        self.assertEqual(["noticeplace"], [spec["name"] for spec in specs])
+        enum = specs[0]["inputSchema"]["properties"]["action"]["enum"]
+        self.assertNotIn("noticeplace", enum)
+        # Every legacy tool remains reachable as an action of the unified tool.
+        self.assertEqual(enum, sorted(set(notify_mcp.TOOLS) - {"noticeplace"}))
+
+    def test_unified_dispatch_runs_the_existing_handler(self):
+        seen = {}
+        def fake_ask_human(args):
+            seen.update(args)
+            return {"ok": True}
+        with mock.patch.dict(notify_mcp.TOOLS, {"ask_human": {**notify_mcp.TOOLS["ask_human"], "handler": fake_ask_human}}):
+            response = notify_mcp.dispatch({
+                "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+                "params": {"name": "noticeplace", "arguments": {"action": "ask_human", "params": {"message": "проверка"}}},
+            })
+        self.assertTrue(response["result"]["structuredContent"]["ok"])
+        self.assertEqual({"message": "проверка"}, seen)
+
+    def test_unified_instructions_dispatch_without_params(self):
+        response = notify_mcp.dispatch({
+            "jsonrpc": "2.0", "id": 12, "method": "tools/call",
+            "params": {"name": "noticeplace", "arguments": {"action": "noticeplace_instructions"}},
+        })
+        self.assertEqual("noticeplace.instructions.v1", response["result"]["structuredContent"]["schema"])
+
+    def test_hidden_legacy_alias_still_dispatches_for_internal_callers(self):
+        response = notify_mcp.dispatch({
+            "jsonrpc": "2.0", "id": 13, "method": "tools/call",
+            "params": {"name": "noticeplace_instructions", "arguments": {}},
+        })
+        self.assertEqual("noticeplace.instructions.v1", response["result"]["structuredContent"]["schema"])
+        self.assertNotIn("noticeplace_instructions", {tool["name"] for tool in notify_mcp.tool_specs()})
+
+    def test_unified_rejects_unknown_empty_and_self_actions(self):
+        for arguments in ({"action": "nope"}, {}, {"action": "noticeplace"},
+                          {"action": "ask_human", "params": "not-an-object"}):
+            response = notify_mcp.dispatch({
+                "jsonrpc": "2.0", "id": 14, "method": "tools/call",
+                "params": {"name": "noticeplace", "arguments": arguments},
+            })
+            self.assertIn("error", response, arguments)
+        unknown = notify_mcp.dispatch({
+            "jsonrpc": "2.0", "id": 15, "method": "tools/call",
+            "params": {"name": "noticeplace", "arguments": {"action": "nope"}},
+        })
+        self.assertIn("unknown action", unknown["error"]["message"])

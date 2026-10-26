@@ -880,7 +880,55 @@ def tool_kill_job(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"job_id": job_id, "pid": pid, "signal": "SIG" + sig_name, "sent": sent}
 
 
+AGENT_TOOL = "noticeplace"
+
 TOOLS = {
+    "noticeplace": {
+        "description": (
+            "Единая точка Notice Place: один инструмент, все действия через action. "
+            "Инструкции: action=noticeplace_instructions. Вопрос человеку и ожидание ответа: action=ask_human "
+            "(message; опционально title, choices, wait_seconds, expect_reply=false для уведомления). "
+            "Вопрос, привязанный к нативной сессии Agent Herder: action=noticeplace_ask_human "
+            "(request_id, harness, session_id, cwd, message). Открытые вопросы: action=noticeplace_pending_questions. "
+            "Записать ответ человека: action=noticeplace_answer (request_id, value; для карточки выбора ещё "
+            "incident_id и choice_id). Канонический ответ по request_id: action=noticeplace_question_result. "
+            "Прогресс по инциденту: action=noticeplace_incident_progress (incident_id, step, evidence_refs). "
+            "Mute-настройки: action=noticeplace_list_mutes и action=noticeplace_set_notifications "
+            "(incident_id, enabled). Прямое сообщение в Telegram: action=send_message (message). "
+            "Прямой звонок: action=call (только по явной просьбе человека). "
+            "Legacy-наблюдатель процессов: action=run_and_notify / attach_pid / attach_query / job_status / "
+            "job_tail / list_jobs / kill_job. Параметры действия передавайте в объекте params; "
+            "неизвестные действия и лишние поля отклоняются."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [],
+                    "description": "Одно действие Notice Place; полный список в enum.",
+                },
+                "params": {
+                    "type": "object",
+                    "description": (
+                        "Аргументы выбранного действия — те же поля, что у соответствующего "
+                        "отдельного инструмента: action=ask_human требует message; "
+                        "noticeplace_ask_human — request_id, harness, session_id, cwd, message; "
+                        "answer — request_id (+ value / incident_id+choice_id); question_result — "
+                        "request_id; incident_progress — incident_id, step, evidence_refs; "
+                        "set_notifications — incident_id, enabled; send_message — message; "
+                        "call — без обязательных; run_and_notify — command; attach_pid — pid; "
+                        "attach_query — query; job_status/job_tail/kill_job — job_id; "
+                        "list_mutes и instructions — без параметров."
+                    ),
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        "handler": None,  # set right after the helpers below
+    },
     "ask_human": {
         "description": "Best default way to say or ask something to the human. Set expect_reply=false for a notification. For a question, optionally show two or three choice buttons; the returned value is the human's selected value.",
         "inputSchema": {
@@ -1220,9 +1268,48 @@ TOOLS = {
 }
 
 
+def tool_noticeplace(args: Dict[str, Any]) -> Dict[str, Any]:
+    """The one agent-facing entry: dispatch `action` to the existing handler.
+
+    Thin by design: every action is the existing tool handler, so the unified
+    contract can never drift from the operations it exposes. Legacy names stay
+    dispatchable for internal callers but leave the public manifest.
+    """
+    action = str(args.get("action") or "").strip()
+    if not action or action == AGENT_TOOL:
+        raise ValueError("action is required; one of: " + ", ".join(sorted(n for n in TOOLS if n != AGENT_TOOL)))
+    if action not in TOOLS:
+        raise ValueError(f"unknown action: {action}")
+    params = args.get("params") or {}
+    if not isinstance(params, dict):
+        raise ValueError("params must be an object")
+    return TOOLS[action]["handler"](params)
+
+
+TOOLS[AGENT_TOOL]["handler"] = tool_noticeplace
+TOOLS[AGENT_TOOL]["inputSchema"]["properties"]["action"]["enum"] = sorted(
+    name for name in TOOLS if name != AGENT_TOOL
+)
+
+
 def tool_specs() -> List[Dict[str, Any]]:
-    """Return the exact stdio tool manifest in insertion order."""
-    return [{"name": name, "description": spec["description"], "inputSchema": spec["inputSchema"]} for name, spec in TOOLS.items()]
+    """Return the public manifest: exactly the one unified agent-facing tool.
+
+    Legacy names stay dispatchable through tools/call for internal callers,
+    but they are no longer part of the public surface.
+    """
+    spec = TOOLS[AGENT_TOOL]
+    return [{"name": AGENT_TOOL, "description": spec["description"], "inputSchema": spec["inputSchema"]}]
+
+
+def tool_manifest(deep: bool = False) -> List[Dict[str, Any]]:
+    """The full dispatch table, including hidden legacy aliases.
+
+    Diagnostics and internal callers use this to see every routable name;
+    the public manifest stays the single unified tool.
+    """
+    return [{"name": name, "description": spec["description"], "inputSchema": spec["inputSchema"]}
+            for name, spec in TOOLS.items() if deep or name == AGENT_TOOL]
 
 
 def http_mcp_dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
