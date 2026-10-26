@@ -363,7 +363,7 @@ class SelectedRouteLaunchTests(unittest.TestCase):
         profile = self._profile()
         profile.pop("health_launch_token")
         with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")):
-            with self.assertRaisesRegex(RuntimeError, "no provider fallback"):
+            with self.assertRaisesRegex(RuntimeError, "health launch token is not configured"):
                 run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
                             profile_override=profile, runner=self._runner(self._policy(), calls))
         self.assertEqual([], [call for call in calls if call.full_url.endswith("/api/automation/project-launch")])
@@ -386,20 +386,49 @@ class SelectedRouteLaunchTests(unittest.TestCase):
                                     profile_override=self._profile(), runner=self._runner(self._policy(), calls))
                 self.assertEqual([], [call for call in calls if call.full_url.endswith("/api/automation/project-launch")])
 
-    def test_a_project_without_opencode_fails_closed_before_any_launch(self) -> None:
+    def test_the_project_route_harness_owns_the_selected_launch(self) -> None:
+        """The project route declares the harness; OpenCode is not required."""
         calls: list = []
         policy = self._policy(projectRoutes={"fleet-health": {"harnesses": ["codex"]}})
+        with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
+             mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
+            run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
+                        profile_override=self._profile(), runner=self._runner(policy, calls))
+        launch = [call for call in calls if call.full_url.endswith("/api/automation/project-launch")]
+        self.assertEqual(1, len(launch))
+        body = json.loads(launch[0].data)
+        self.assertEqual("codex", body["harness"])
+        self.assertEqual(["codex"], body["harness_order"])
+        self.assertEqual(HAND_ROUTE, body["model"])
+
+    def test_the_project_route_declares_the_fallback_order(self) -> None:
+        calls: list = []
+        policy = self._policy(projectRoutes={"fleet-health": {"harnesses": ["codex", "opencode"]}})
+        with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
+             mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
+            run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
+                        profile_override=self._profile(), runner=self._runner(policy, calls))
+        launch = [call for call in calls if call.full_url.endswith("/api/automation/project-launch")]
+        body = json.loads(launch[0].data)
+        self.assertEqual("codex", body["harness"])
+        self.assertEqual(["codex", "opencode"], body["harness_order"])
+
+    def test_a_policy_without_opencode_and_without_a_project_route_keeps_the_legacy_gate(self) -> None:
+        """No project route: the legacy pinned default stays policy-gated."""
+        calls: list = []
+        policy = self._policy(allowedHarnesses=["codex"])
         with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")):
-            with self.assertRaisesRegex(RuntimeError, "no harness fallback"):
+            with self.assertRaisesRegex(RuntimeError, "none of the harnesses"):
                 run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
                             profile_override=self._profile(), runner=self._runner(policy, calls))
         self.assertEqual([], [call for call in calls if call.full_url.endswith("/api/automation/project-launch")])
 
-    def test_a_policy_without_opencode_fails_closed_before_any_launch(self) -> None:
+    def test_an_empty_allowed_intersection_fails_closed_before_any_launch(self) -> None:
         calls: list = []
-        policy = self._policy(allowedHarnesses=["codex"])
+        policy = self._policy(allowedHarnesses=["codex"],
+                              projectRoutes={"fleet-health": {"harnesses": ["opencode"]}})
         with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")):
-            with self.assertRaisesRegex(RuntimeError, "no harness fallback"):
+            with self.assertRaisesRegex(RuntimeError, "none of the harnesses"):
                 run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
                             profile_override=self._profile(), runner=self._runner(policy, calls))
         self.assertEqual([], [call for call in calls if call.full_url.endswith("/api/automation/project-launch")])

@@ -44,13 +44,12 @@ class IncidentPreflightTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         self.assertIn('/api/automation/launch-policy', calls[0])
 
-    def test_unpinned_incident_execution_still_refuses_before_any_launch(self):
+    def test_a_saved_nonpinned_incident_execution_no_longer_vetoes(self):
+        """The saved execution is advisory; the declared route launches."""
         for policy in ({'incidentExecution':dict(PROFILE, provider='omniroute')},
-                       {'incidentExecution':dict(PROFILE, runtime='codex')}):
-            with self.subTest(policy=policy), self.assertRaisesRegex(RuntimeError, 'no runtime/provider fallback'):
-                self.select(policy, {'models':[MODEL]})
-
-    def test_old_or_missing_incident_choice_refuses_before_model_or_creation(self):
-        for policy in [{}, {'incidentExecution':dict(PROFILE, provider='omniroute')}, {'incidentExecution':dict(PROFILE, runtime='codex')}]:
-            with self.subTest(policy=policy), self.assertRaisesRegex(RuntimeError, 'no runtime/provider fallback'):
-                self.select(policy, {'models':[MODEL]})
+                       {'incidentExecution':dict(PROFILE, runtime='codex')}, {}):
+            with self.subTest(policy=policy):
+                selected, calls = self.select(policy, {'models':[MODEL]})
+                self.assertEqual('opencode', selected['harness'])
+                self.assertEqual(MODEL, selected['model'])
+                self.assertEqual(1, len(calls))

@@ -77,13 +77,15 @@ class AgentJobHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no model fallback"):
             agent_job_helper._launch_policy_profile(profile, lambda *_a, **_k: _Response({"version": 1, "preferredHarness": "zcode", "allowedHarnesses": ["zcode"], "models": {"zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}}))
 
-    def test_automatic_diagnosis_fails_closed_without_web_policy(self) -> None:
+    def test_automatic_diagnosis_launches_the_declared_route_without_a_saved_execution(self) -> None:
+        """No saved incidentExecution is advisory: the declared route launches."""
         runner = mock.Mock(return_value=_Response({}))
-        with self.assertRaisesRegex(RuntimeError, "Incident execution"):
+        with self.assertRaisesRegex(RuntimeError, "session identity"):
             run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis", "incident": {"id": "inc-denied"}}, Path("unused"),
                         profile_override={"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode", "name": "denied", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "Read only."}, runner=runner)
-        self.assertEqual(1, runner.call_count)
-        self.assertTrue(runner.call_args[0][0].full_url.endswith("/api/automation/launch-policy"))
+        self.assertGreaterEqual(runner.call_count, 2)
+        self.assertTrue(runner.call_args_list[0][0][0].full_url.endswith("/api/automation/launch-policy"))
+        self.assertTrue(any(call[0][0].full_url.endswith("/api/automation/project-launch") for call in runner.call_args_list))
 
     def test_session_result_accepts_bounded_history_metadata(self) -> None:
         payload = {"history": {"metadata": "x" * 132_000}, "messages": [{"role": "assistant", "text": json.dumps({"status": "diagnosis_complete", "diagnosis": "Проверка завершена", "evidence_refs": ["evidence:read-only"]})}]}

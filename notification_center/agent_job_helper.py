@@ -445,38 +445,56 @@ def _selected_incident_model(event: Mapping[str, Any]) -> str:
         ) from error
 
 
-def _selected_route_profile(profile: dict[str, str], policy: Mapping[str, Any], project: str, route: str) -> dict[str, str]:
-    """Build the launch profile for one operator-selected incident route.
+def _project_harness_order(policy: Mapping[str, Any], project: str) -> list[str]:
+    """Return the launchable harness order of one project.
 
-    The operator's saved route owns the model, Agent Herder keeps admission
-    and the project workspace. A missing token, an unapproved route or a
-    project that does not allow OpenCode fails closed before any launch:
-    there is no provider or harness fallback and no launch-policy write.
+    The project route declares the order and the launch policy's
+    allowedHarnesses gates it; an empty result means the intersection is
+    empty and the launch fails closed. A project without a declared route
+    keeps the legacy pinned default.
     """
-    if not profile.get("health_launch_token"):
-        raise RuntimeError("health launch token is not configured; no provider fallback")
     allowed = policy.get("allowedHarnesses")
-    names = [str(item).strip().lower() for item in allowed] if isinstance(allowed, list) else []
-    if HEALTH_LAUNCH_HARNESS not in names:
-        raise RuntimeError("Agent Herder launch policy does not allow OpenCode for health analysis; no harness fallback")
+    allowed_names = [str(item).strip().lower() for item in allowed] if isinstance(allowed, list) else []
     routes_map = policy.get("projectRoutes") if isinstance(policy, Mapping) else None
     aliases = policy.get("projectAliases") if isinstance(policy, Mapping) else None
     project_route = resolve_project_route(routes_map, aliases, project) if project else None
-    if isinstance(project_route, Mapping):
-        harnesses = project_route.get("harnesses") or project_route.get("fallbackHarnesses") or []
-        route_names = [str(item).strip().lower() for item in harnesses] if isinstance(harnesses, list) else []
-        if HEALTH_LAUNCH_HARNESS not in route_names:
-            raise RuntimeError("Agent Herder project route does not allow OpenCode for health analysis; no harness fallback")
+    raw: Any = project_route.get("harnesses") or project_route.get("fallbackHarnesses") or [] if isinstance(project_route, Mapping) else []
+    declared = [str(item).strip().lower() for item in raw] if isinstance(raw, list) else []
+    declared = [name for name in declared if name]
+    if not declared:
+        if allowed_names and HEALTH_LAUNCH_HARNESS not in allowed_names:
+            return []
+        return [HEALTH_LAUNCH_HARNESS]
+    order = [name for name in declared if not allowed_names or name in allowed_names]
+    return order
+
+
+def _selected_route_profile(profile: dict[str, str], policy: Mapping[str, Any], project: str, route: str) -> dict[str, str]:
+    """Build the launch profile for one operator-selected incident route.
+
+    The operator's saved route owns the model. The project route owns the
+    harness order — the first declared harness launches and Agent Herder
+    keeps admission, the fallback inside that order and the project
+    workspace; the launch policy's allowedHarnesses still gates the order.
+    A missing launch token or an empty allowed intersection fails closed
+    before any launch, and no launch-policy write happens here.
+    """
+    if not profile.get("health_launch_token"):
+        raise RuntimeError("health launch token is not configured")
+    order = _project_harness_order(policy, project)
+    if not order:
+        raise RuntimeError(
+            "the launch policy allows none of the harnesses this project can launch; no launch-policy write")
     execution = health_launch_execution(route)
     return {
         **profile,
-        "harness": HEALTH_LAUNCH_HARNESS,
+        "harness": order[0],
         "model": route,
         "reasoning": execution["reasoning"],
         "topic": execution["topic"],
         "orchestrator_model": route,
         "orchestrator_requested_model": route,
-        "harness_order": HEALTH_LAUNCH_HARNESS,
+        "harness_order": ",".join(order),
     }
 
 
@@ -493,8 +511,6 @@ def _incident_profile(profile: dict[str, str], runner: Any, project: str = "", p
     from .health_workflow import HEALTH_EXECUTION_PROFILE, health_execution_routes
 
     routes = health_execution_routes(policy, project)
-    if len(routes) == 1 and policy.get("incidentExecution") != HEALTH_EXECUTION_PROFILE:
-        raise RuntimeError("Incident execution must be saved as OpenCode / MiniMax по подписке / MiniMax-M3.1-Flash; no runtime/provider fallback")
     execution = dict(routes[0])
     route = _health_model_route(execution)
     return {**profile, "harness": execution["runtime"], "model": route, "reasoning": execution["reasoning"],
@@ -1378,7 +1394,12 @@ def run_profile(
         normalized_execution = {key: str(execution.get(key) or "") for key in _HEALTH_EXECUTION_PROFILES[0]}
         if not incident_model and normalized_execution not in [dict(route) for route in allowed_routes]:
             raise RuntimeError("health remediation event has an execution profile this project does not allow")
-        expected_execution = health_launch_execution(incident_model) if incident_model else normalized_execution
+        if incident_model:
+            # The snapshot's route text owns the model; the project route owns
+            # the harness, so a codex-first project never gets an opencode pin.
+            expected_execution = {**health_launch_execution(incident_model), "runtime": profile["harness"]}
+        else:
+            expected_execution = normalized_execution
         profile = {
             **profile,
             "harness": expected_execution["runtime"],
@@ -1413,7 +1434,7 @@ def run_profile(
     if profile_id in _REPAIR_FIRST_JOB_IDS:
         request_body["message"] = _repair_first_message(profile, event, incident)
     if profile_id == "health-remediation":
-        expected_execution = health_launch_execution(incident_model) if incident_model else None
+        expected_execution = dict(health_launch_execution(incident_model), runtime=profile["harness"]) if incident_model else None
         plan_id, request_body["message"] = _health_remediation_message(profile, event, incident, expected_execution)
         request_body["model"] = profile["model"]
         health_result = {"plan_id": plan_id, "model": profile["model"], "reasoning": profile["reasoning"], "topic": profile["topic"]}
