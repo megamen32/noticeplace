@@ -804,6 +804,18 @@ class AdminConfigStore:
         scopes[token]["max_severity"] = max_severity
         self._apply_primary(scopes, actor, "project_severity_changed", project, token)
 
+    def set_project_health_diagnosis(self, project: str, enabled: bool, actor: str) -> None:
+        """Toggle automatic diagnosis only for an existing health-enabled project."""
+        self._validate_project(project)
+        if not isinstance(enabled, bool):
+            raise ValidationError("automatic_health_diagnosis must be boolean")
+        scopes = self._scopes()
+        token = self._token_for_project(scopes, project)
+        if not scopes[token].get("agent_jobs"):
+            raise ValidationError("project is not eligible for automatic health diagnosis")
+        scopes[token]["automatic_health_diagnosis"] = enabled
+        self._apply_primary(scopes, actor, "project_health_diagnosis_changed", project, token)
+
     def revoke_project(self, project: str, actor: str) -> None:
         self._validate_project(project)
         scopes = self._scopes()
