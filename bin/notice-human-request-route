@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Manage an explicit project Telegram destination for Notice HumanRequest cards."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from notification_center.admin import AdminConfigStore
+from notification_center.core import ValidationError
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    save = commands.add_parser("save", help="save one project HumanRequest Telegram destination")
+    save.add_argument("--project", required=True)
+    save.add_argument("--chat-id", required=True)
+    save.add_argument("--message-thread-id", default="")
+    save.add_argument("--chat-only", action="store_true", help="explicitly omit the forum topic")
+    save.add_argument("--disabled", action="store_true", help="save the route disabled; do not fall back")
+
+    delete = commands.add_parser("delete", help="remove an explicit HumanRequest route and restore exact-topic fallback")
+    delete.add_argument("--project", required=True)
+    return parser
+
+
+def _store() -> AdminConfigStore:
+    return AdminConfigStore(
+        Path(os.environ.get("NOTIFY_ADMIN_PRIMARY_ENV", "/etc/notification-center.env")),
+        Path(os.environ.get("NOTIFY_ADMIN_ROUTES_ENV", "/etc/notification-center-telegram-routes.env")),
+        Path(os.environ.get("NOTIFY_ADMIN_STATE_DIR", "/var/lib/notification-center-admin")),
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    actor = "cli:" + (os.environ.get("SUDO_USER") or getpass.getuser())
+    store = _store()
+    try:
+        if args.command == "save":
+            route = store.save_human_request_route(
+                args.project,
+                args.chat_id,
+                args.message_thread_id,
+                args.chat_only,
+                not args.disabled,
+                actor,
+            )
+            result = {"status": "saved", **route}
+        else:
+            store.delete_human_request_route(args.project, actor)
+            result = {"status": "deleted", "project": args.project}
+    except ValidationError as error:
+        print(f"notice-human-request-route: {error}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

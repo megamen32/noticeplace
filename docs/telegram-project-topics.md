@@ -18,6 +18,19 @@ Invalid or disabled explicit destinations fail closed and do not fall back to
 another project or the default chat. Producer requests still cannot choose or
 override a destination.
 
+Use the versioned operator command after deploying a release:
+
+```bash
+sudo /opt/noticeplace/bin/notice-human-request-route save \
+  --project=qa-herder --chat-id=-1001234567890 --chat-only
+```
+
+The command validates the project/chat binding through `AdminConfigStore` and
+records the change in the existing admin audit. Add `--message-thread-id=123`
+instead of `--chat-only` for a forum route; use `--disabled` to fail closed for
+one project. `delete --project=qa-herder` removes the explicit override and
+restores exact-project legacy topic fallback.
+
 Active-mode restrictions still apply. A disabled or incomplete project topic
 does not fall back to another topic. Existing explicit custom consumer targets
 remain authoritative. Telegram topic edits apply live; deploying a code change

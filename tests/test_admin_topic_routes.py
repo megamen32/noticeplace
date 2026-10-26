@@ -1,11 +1,15 @@
 """The live route EnvironmentFile owns topic auto-creation settings."""
 import json
+import importlib.util
+import io
+from importlib.machinery import SourceFileLoader
 import threading
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+from contextlib import redirect_stdout
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -13,6 +17,12 @@ from notification_center.admin import AdminConfigStore
 from notification_center.admin_http import _csrf, build_admin_handler
 from notification_center.core import ValidationError
 from notification_center.http_api import telegram_destination
+
+CLI_PATH = Path(__file__).resolve().parents[1] / "bin" / "notice-human-request-route"
+CLI_SPEC = importlib.util.spec_from_loader("notice_human_request_route", SourceFileLoader("notice_human_request_route", str(CLI_PATH)))
+CLI = importlib.util.module_from_spec(CLI_SPEC)
+assert CLI_SPEC.loader is not None
+CLI_SPEC.loader.exec_module(CLI)
 
 
 class AdminTopicRouteTests(unittest.TestCase):
@@ -119,6 +129,36 @@ class AdminTopicRouteTests(unittest.TestCase):
                     thread.join(timeout=2)
                     server.server_close()
             self.assertFalse(json.loads(values["human_request_telegram_routes_json"])["noticeplace-qa-stop-20261023b"]["enabled"])
+
+    def test_cli_saves_chat_only_destination_through_admin_config_store(self):
+        store = MagicMock()
+        store.save_human_request_route.return_value = {
+            "project": "noticeplace-qa-stop-20261023b", "chat_id": "-1004308060380",
+            "chat_only": True, "enabled": True,
+        }
+        output = io.StringIO()
+        with patch.object(CLI, "_store", return_value=store), redirect_stdout(output):
+            result = CLI.main([
+                "save", "--project", "noticeplace-qa-stop-20261023b",
+                "--chat-id=-1004308060380", "--chat-only",
+            ])
+        self.assertEqual(0, result)
+        call = store.save_human_request_route.call_args.args
+        self.assertEqual(("noticeplace-qa-stop-20261023b", "-1004308060380", "", True, True), call[:5])
+        self.assertTrue(call[5].startswith("cli:"))
+        receipt = json.loads(output.getvalue())
+        self.assertEqual("saved", receipt["status"])
+        self.assertEqual("-1004308060380", receipt["chat_id"])
+
+    def test_cli_delete_uses_audited_admin_config_store(self):
+        store = MagicMock()
+        output = io.StringIO()
+        with patch.object(CLI, "_store", return_value=store), redirect_stdout(output):
+            result = CLI.main(["delete", "--project", "noticeplace-qa-stop-20261023b"])
+        self.assertEqual(0, result)
+        self.assertEqual("noticeplace-qa-stop-20261023b", store.delete_human_request_route.call_args.args[0])
+        self.assertTrue(store.delete_human_request_route.call_args.args[1].startswith("cli:"))
+        self.assertEqual({"project": "noticeplace-qa-stop-20261023b", "status": "deleted"}, json.loads(output.getvalue()))
 
 
 if __name__ == "__main__":
