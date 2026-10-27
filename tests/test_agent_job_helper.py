@@ -47,7 +47,7 @@ def owner_aware_runner(runner):
 
 
 def project_launch_response(session_id: str, harness: str = "opencode",
-                            model: str = "minimax-coding-plan/MiniMax-M3.1-Flash",
+                            model: str = "omniroute/glm-5.3-flash-minimax-m3.1",
                             outcome: str = "accepted", **extra: object) -> dict:
     """Agent Herder's project-launch admission receipt, as the tests consume it."""
     return {"outcome": outcome, "operation_id": "op-1", "project": "fleet-health",
@@ -100,14 +100,14 @@ class AgentJobHelperTests(unittest.TestCase):
         def respond(request, **_kwargs):
             if str(getattr(request, "full_url", "")).endswith("/api/automation/launch-policy"):
                 return _Response({"version": 1, "preferredHarness": "opencode", "allowedHarnesses": ["opencode"],
-                                  "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"},
+                                  "models": {"opencode": "omniroute/glm-5.3-flash-minimax-m3.1"},
                                   "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE)})
             return _Response({})
         runner = mock.Mock(side_effect=respond)
         with self.assertRaisesRegex(RuntimeError, "session identity"):
             run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis", "incident": {"id": "inc-denied"}}, Path("unused"),
                         profile_override={"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
-                                          "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "health_launch_token": "test-token",
+                                          "model": "omniroute/glm-5.3-flash-minimax-m3.1", "health_launch_token": "test-token",
                                           "name": "denied", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "Read only."},
                         runner=owner_aware_runner(runner))
         self.assertGreaterEqual(runner.call_count, 2)
@@ -155,7 +155,7 @@ class AgentJobHelperTests(unittest.TestCase):
             self.fail(f"owner preflight should block before launch or arm: {url}")
         event["health"]["automatic_health_diagnosis"] = False
         profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
-                   "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "health_launch_token": "test-token",
+                   "model": "omniroute/glm-5.3-flash-minimax-m3.1", "health_launch_token": "test-token",
                    "name": "manual", "cwd": "/home/roomhacker/ServersAdministartion", "instruction": "repair"}
         result = run_profile("health-diagnosis", event, Path("unused"), profile_override=profile, runner=runner)
         self.assertEqual("source_blocked", result["status"])
@@ -243,7 +243,7 @@ class AgentJobHelperTests(unittest.TestCase):
             config = Path(tempdir) / "profiles.json"
             config.write_text(json.dumps({"profiles": {"health-diagnosis": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
-                "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health",
+                "model": "omniroute/glm-5.3-flash-minimax-m3.1", "reasoning": "default", "topic": "health",
                 "health_launch_token": "test-health-launch-token", "name": "diagnosis-test", "cwd": tempdir,
                 "mode": "queue", "instruction": "Read only.",
             }}}))
@@ -253,10 +253,10 @@ class AgentJobHelperTests(unittest.TestCase):
                 url = str(getattr(request, "full_url", ""))
                 if url.endswith("/api/automation/launch-policy"):
                     return _Response({"version": 1, "preferredHarness": "opencode", "allowedHarnesses": ["opencode"],
-                                      "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"},
+                                      "models": {"opencode": "omniroute/glm-5.3-flash-minimax-m3.1"},
                                       "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE)})
                 if url.endswith("/api/automation/project-launch"):
-                    return _Response(project_launch_response("session-live", model="minimax-coding-plan/MiniMax-M3.1-Flash", created=True))
+                    return _Response(project_launch_response("session-live", model="omniroute/glm-5.3-flash-minimax-m3.1", created=True))
                 if "/api/autopilot/sessions/" in url:
                     return _Response({"enabled": True, "sessionId": "session-live"})
                 self.fail(f"unexpected Agent Herder URL: {url}")
@@ -275,7 +275,7 @@ class AgentJobHelperTests(unittest.TestCase):
     def test_documented_health_diagnosis_profile_needs_no_planner_mapping(self) -> None:
         document = json.loads((Path(__file__).parents[1] / "docs" / "health-agent-jobs.example.json").read_text(encoding="utf-8"))
         profile = document["profiles"]["health-diagnosis"]
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", profile["model"])
+        self.assertEqual("omniroute/glm-5.3-flash-minimax-m3.1", profile["model"])
         self.assertIn("Repair-first", profile["instruction"])
         self.assertFalse(any(key.startswith("orchestrator_") for key in profile))
 
@@ -287,13 +287,13 @@ class AgentJobHelperTests(unittest.TestCase):
             config.write_text(json.dumps({"profiles": {"health-diagnosis": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "opencode", "name": "health_diagnosis_test", "cwd": str(root), "mode": "queue",
-                "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health",
+                "model": "omniroute/glm-5.3-flash-minimax-m3.1", "reasoning": "default", "topic": "health",
                 "health_launch_token": "test-health-launch-token",
                 "callback_file": str(callback), "diagnosis_timeout_seconds": "5", "poll_seconds": "0.2",
                 "instruction": "Return exactly one diagnosis JSON object.",
                 "orchestrator_name": "health_orchestrator_test",
-                "orchestrator_requested_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
-                "orchestrator_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
+                "orchestrator_requested_model": "omniroute/glm-5.3-flash-minimax-m3.1",
+                "orchestrator_model": "omniroute/glm-5.3-flash-minimax-m3.1",
             }}}), encoding="utf-8")
             config.chmod(0o600)
             callback.write_text(json.dumps({"url": "http://127.0.0.1:8091", "token": "health-callback-token"}), encoding="utf-8")
@@ -323,9 +323,9 @@ class AgentJobHelperTests(unittest.TestCase):
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
                 if "/api/models?" in request.full_url:
-                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash"], "stale": False})
+                    return _Response({"models": ["omniroute/glm-5.3-flash-minimax-m3.1"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "opencode", "allowedHarnesses": ["opencode"], "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "opencode", "allowedHarnesses": ["opencode"], "models": {"opencode": "omniroute/glm-5.3-flash-minimax-m3.1"}})
                 nonlocal session_calls
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
@@ -335,10 +335,10 @@ class AgentJobHelperTests(unittest.TestCase):
                     return _Response(project_launch_response("opencode-health-diagnosis-1"))
                 if url.endswith("/api/sessions/new-or-resume"):
                     body = json.loads(getattr(request, "data").decode())
-                    self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", body["model"])
+                    self.assertEqual("omniroute/glm-5.3-flash-minimax-m3.1", body["model"])
                     self.assertEqual("queue", body["mode"])
                     self.assertIn("bounded synthetic diagnosis", body["message"])
-                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-orchestrator-1", "delivery": "accepted", "model": "minimax-coding-plan/MiniMax-M3.1-Flash"})
+                    return _Response({"ok": True, "created": True, "sessionId": "opencode-health-orchestrator-1", "delivery": "accepted", "model": "omniroute/glm-5.3-flash-minimax-m3.1"})
                 if "/progress?" in url:
                     fingerprint = "progress:diagnosis-1" if "opencode-health-diagnosis-1" in url else "progress:orchestrator-1"
                     return _Response({"session": {"status": "idle"}, "fingerprint": fingerprint})
@@ -348,8 +348,8 @@ class AgentJobHelperTests(unittest.TestCase):
                 self.assertTrue(url.endswith("/v1/incidents/inc-health-1/health/plans"))
                 self.assertEqual("Bearer health-callback-token", getattr(request, "headers", {}).get("Authorization"))
                 body = json.loads(getattr(request, "data").decode())
-                self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", body["orchestration"]["orchestrator_requested_model"])
-                self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", body["orchestration"]["orchestrator_effective_model"])
+                self.assertEqual("omniroute/glm-5.3-flash-minimax-m3.1", body["orchestration"]["orchestrator_requested_model"])
+                self.assertEqual("omniroute/glm-5.3-flash-minimax-m3.1", body["orchestration"]["orchestrator_effective_model"])
                 self.assertEqual(["observe", "repair", "verify"], [plan["plan_id"] for plan in body["plans"]])
                 self.assertRegex(getattr(request, "headers", {}).get("Idempotency-key", ""), r"^health-diagnosis:inc-health-1:opencode-health-orchestrator-1:[0-9a-f]{12}$")
                 return _Response({"event_id": "evt-plans-1"})
@@ -383,7 +383,7 @@ class AgentJobHelperTests(unittest.TestCase):
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "opencode", "name": "health_remediation_100", "cwd": str(root), "mode": "queue",
-                "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health",
+                "model": "omniroute/glm-5.3-flash-minimax-m3.1", "reasoning": "default", "topic": "health",
                 "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -394,9 +394,9 @@ class AgentJobHelperTests(unittest.TestCase):
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
                 if "/api/models?" in request.full_url:
-                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash"], "stale": False})
+                    return _Response({"models": ["omniroute/glm-5.3-flash-minimax-m3.1"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "omniroute/glm-5.3-flash-minimax-m3.1", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if "/api/automation/project-launch" in url:
@@ -417,18 +417,18 @@ class AgentJobHelperTests(unittest.TestCase):
                     "schema": "notify.agent-job.v1",
                     "job_id": "health-remediation",
                     "incident": {"id": "inc-health-1", "project": "health-monitor", "severity": "critical", "title": "Disk degraded", "body": "bounded", "dedup_key": "health:disk", "occurrences": 1},
-                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"}}},
+                    "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "omniroute", "model": "glm-5.3-flash-minimax-m3.1", "reasoning": "default", "topic": "health"}}},
                 },
                 config,
                 runner=owner_aware_runner(runner),
             )
             self.assertEqual("codex-health-1", result["session_id"])
-            self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", result["model"])
+            self.assertEqual("omniroute/glm-5.3-flash-minimax-m3.1", result["model"])
             self.assertEqual("accepted", result["admission"]["status"])
             self.assertEqual("health-monitor", result["project"])
             body = json.loads([r for r in requests if "project-launch" in str(r.full_url)][0].data)
             self.assertEqual("opencode", body["harness"])
-            self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", body["model"])
+            self.assertEqual("omniroute/glm-5.3-flash-minimax-m3.1", body["model"])
             self.assertIn("selected plan repair", body["message"])
             self.assertIn("Execution runtime is opencode through Agent Herder", body["message"])
 
@@ -439,7 +439,7 @@ class AgentJobHelperTests(unittest.TestCase):
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "opencode", "name": "health_remediation_test", "cwd": str(root), "mode": "queue",
-                "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health",
+                "model": "omniroute/glm-5.3-flash-minimax-m3.1", "reasoning": "default", "topic": "health",
                 "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -462,9 +462,9 @@ class AgentJobHelperTests(unittest.TestCase):
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
                 if "/api/models?" in request.full_url:
-                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash"], "stale": False})
+                    return _Response({"models": ["omniroute/glm-5.3-flash-minimax-m3.1"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "omniroute/glm-5.3-flash-minimax-m3.1", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if "/api/automation/project-launch" in url:
@@ -486,7 +486,7 @@ class AgentJobHelperTests(unittest.TestCase):
                     "health": {
                         "source_id": "host:vusa",
                         "source_fingerprint": "source-fingerprint-1",
-                        "selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"}},
+                        "selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "omniroute", "model": "glm-5.3-flash-minimax-m3.1", "reasoning": "default", "topic": "health"}},
                     },
                 },
                 config,
@@ -513,7 +513,7 @@ class AgentJobHelperTests(unittest.TestCase):
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "opencode", "name": "health_remediation_timeout", "cwd": str(root), "mode": "queue",
-                "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health",
+                "model": "omniroute/glm-5.3-flash-minimax-m3.1", "reasoning": "default", "topic": "health",
                 "poll_seconds": "0.2", "diagnosis_timeout_seconds": "5", "remediation_timeout_seconds": "1200",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -530,9 +530,9 @@ class AgentJobHelperTests(unittest.TestCase):
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
                 if "/api/models?" in request.full_url:
-                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash"], "stale": False})
+                    return _Response({"models": ["omniroute/glm-5.3-flash-minimax-m3.1"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "omniroute/glm-5.3-flash-minimax-m3.1", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
                 if "/api/automation/project-launch" in url:
@@ -553,7 +553,7 @@ class AgentJobHelperTests(unittest.TestCase):
                 result = run_profile(
                     "health-remediation",
                     {"schema": "notify.agent-job.v1", "job_id": "health-remediation", "incident": {"id": "inc-timeout", "project": "fleet-health"},
-                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"}}}},
+                     "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "omniroute", "model": "glm-5.3-flash-minimax-m3.1", "reasoning": "default", "topic": "health"}}}},
                     config,
                     runner=owner_aware_runner(runner),
                 )
@@ -567,7 +567,7 @@ class AgentJobHelperTests(unittest.TestCase):
             config.write_text(json.dumps({"profiles": {"health-remediation": {
                 "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                 "harness": "opencode", "name": "health_remediation_retry", "cwd": str(root), "mode": "queue",
-                "model": "minimax-coding-plan/MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health",
+                "model": "omniroute/glm-5.3-flash-minimax-m3.1", "reasoning": "default", "topic": "health",
                 "poll_seconds": "0.2", "remediation_timeout_seconds": "30",
                 "instruction": "Apply only the selected health remediation plan and report useful progress.",
             }}}), encoding="utf-8")
@@ -584,9 +584,9 @@ class AgentJobHelperTests(unittest.TestCase):
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
                 if "/api/models?" in request.full_url:
-                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash"], "stale": False})
+                    return _Response({"models": ["omniroute/glm-5.3-flash-minimax-m3.1"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "omniroute/glm-5.3-flash-minimax-m3.1", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 nonlocal progress_calls
                 url = str(getattr(request, "full_url", ""))
                 if "/api/automation/project-launch" in url:
@@ -611,7 +611,7 @@ class AgentJobHelperTests(unittest.TestCase):
                         "schema": "notify.agent-job.v1", "job_id": "health-remediation",
                         "incident": {"id": "inc-retry", "project": "fleet-health"},
                         "health": {"selection": {"plan_id": "observe", "execution": {
-                            "runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash",
+                            "runtime": "opencode", "provider": "omniroute", "model": "glm-5.3-flash-minimax-m3.1",
                             "reasoning": "default", "topic": "health",
                         }}},
                     },
@@ -628,7 +628,7 @@ class AgentJobHelperTests(unittest.TestCase):
             requests.append(request)
             return _Response({"version": 1, "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
                               "allowedHarnesses": ["opencode"], "preferredHarness": "opencode",
-                              "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"}})
+                              "models": {"opencode": "omniroute/glm-5.3-flash-minimax-m3.1"}})
         with self.assertRaisesRegex(RuntimeError, "execution profile"):
             run_profile("health-remediation", {"schema":"notify.agent-job.v1", "job_id":"health-remediation", "incident":{"id":"legacy"},
                 "health":{"selection":{"plan_id":"repair", "execution":{"runtime":"zcode","provider":"account:zai-start-plan","model":"GLM-5.3-Flash","reasoning":"high","topic":"health"}}}},
@@ -695,9 +695,9 @@ class AgentJobHelperTests(unittest.TestCase):
                 if "/api/coordination/context?" in request.full_url:
                     return _Response({"humanStopHeld": False})
                 if "/api/models?" in request.full_url:
-                    return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash"], "stale": False})
+                    return _Response({"models": ["omniroute/glm-5.3-flash-minimax-m3.1"], "stale": False})
                 if request.full_url.endswith("/api/automation/launch-policy"):
-                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "minimax-coding-plan/MiniMax-M3.1-Flash", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
+                    return _Response({"incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE), "version": 1, "preferredHarness": "codex", "allowedHarnesses": ["codex", "zcode"], "models": {"codex": "omniroute/glm-5.3-flash-minimax-m3.1", "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"}})
                 requests.append(request)
                 url = str(getattr(request, "full_url", ""))
                 if "/api/automation/project-launch" in url:
@@ -720,14 +720,14 @@ class AgentJobHelperTests(unittest.TestCase):
                         "schema": "notify.agent-job.v1",
                         "job_id": "health-remediation",
                         "incident": {"id": "inc-health-legacy"},
-                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"}}},
+                        "health": {"selection": {"plan_id": "repair", "execution": {"runtime": "opencode", "provider": "omniroute", "model": "glm-5.3-flash-minimax-m3.1", "reasoning": "default", "topic": "health"}}},
                     },
                     config,
                     runner=owner_aware_runner(runner),
                 )
             body = json.loads(requests[0].data)
             self.assertEqual("opencode", body["harness"])
-            self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", body["model"])
+            self.assertEqual("omniroute/glm-5.3-flash-minimax-m3.1", body["model"])
             self.assertEqual("opencode", result["harness"])
 
     def test_profile_owns_target_identity_and_event_is_only_telemetry(self) -> None:
@@ -855,7 +855,7 @@ class AgentJobHelperTests(unittest.TestCase):
 
 class HealthAutoselectAndAutopilotTests(unittest.TestCase):
     def test_legacy_orchestrator_message_contains_only_repair_execution_contract(self) -> None:
-        profile = {"orchestrator_model": "minimax-coding-plan/MiniMax-M3.1-Flash"}
+        profile = {"orchestrator_model": "omniroute/glm-5.3-flash-minimax-m3.1"}
         message = agent_job_helper._health_orchestrator_message(
             profile,
             {"incident": {"id": "inc-1", "project": "hermes", "title": "Disk pressure"}},

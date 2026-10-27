@@ -26,13 +26,13 @@ _BEARER_RE = re.compile(r"(?i)\bbearer\s+\S+")
 
 HEALTH_EXECUTION_PROFILE = {
     "runtime": "opencode",
-    "provider": "minimax-coding-plan",
-    "model": "MiniMax-M3.1-Flash",
+    "provider": "omniroute",
+    "model": "glm-5.3-flash-minimax-m3.1",
     "reasoning": "default",
     "topic": "health",
 }
 
-# Incident execution is pinned to this project's exact subscription route.
+# Incident execution is pinned to this project's exact existing OmniRoute combo.
 # Agent Herder keeps the launch/admission decision; it must declare the same
 # project route, and a mismatch fails closed rather than falling back.
 HEALTH_LAUNCH_MODELS: tuple[str, ...] = tuple(
@@ -45,8 +45,9 @@ HEALTH_LAUNCH_PURPOSE = "noticeplace.health-analysis"
 def health_launch_execution(route: str) -> dict[str, str]:
     """Return the execution profile of one approved incident route.
 
-    The route keeps its exact provider/model text, so the launch request and
-    the execution profile describe the same model without any rewriting.
+    The saved route is provider/model qualified. Keep the selected provider
+    and model parts separate in the execution contract; launch requests still
+    carry the exact complete route.
     """
     safe_route = str(route or "").strip()
     provider, _, rest = safe_route.partition("/")
@@ -203,15 +204,21 @@ def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, s
     global_execution = policy.get("incidentExecution") if isinstance(policy, Mapping) else None
     if isinstance(global_execution, Mapping):
         expected = dict(HEALTH_EXECUTION_PROFILE)
+        observed_provider = _bounded_text(global_execution.get("provider"), 64).lower()
+        observed_model = _bounded_text(global_execution.get("model"), 256)
+        # Herder stores the full native ID in its model field for this route.
+        # Normalize only for comparison with NoticePlace's split form.
+        if observed_model.startswith(observed_provider + "/"):
+            observed_model = observed_model[len(observed_provider) + 1:]
         observed = {
             "runtime": _bounded_text(global_execution.get("runtime"), 32).lower(),
-            "provider": _bounded_text(global_execution.get("provider"), 64).lower(),
-            "model": _bounded_text(global_execution.get("model"), 256),
+            "provider": observed_provider,
+            "model": observed_model,
             "reasoning": _bounded_text(global_execution.get("reasoning") or expected["reasoning"], 16).lower(),
             "topic": _bounded_text(global_execution.get("topic") or expected["topic"], 64).lower(),
         }
         if observed != expected:
-            raise ValidationError("Agent Herder incidentExecution conflicts with NoticePlace's pinned OpenCode MiniMax route")
+            raise ValidationError("Agent Herder incidentExecution conflicts with NoticePlace's pinned OpenCode GLM 5.3 Flash + MiniMax combo")
     routes_map = policy.get("projectRoutes") if isinstance(policy, Mapping) else None
     route = resolve_project_route(routes_map, policy.get("projectAliases") if isinstance(policy, Mapping) else None, project) if project else None
     raw_harnesses: Any = []
@@ -219,6 +226,23 @@ def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, s
     if isinstance(route, Mapping):
         raw_harnesses = route.get("harnesses") or route.get("fallbackHarnesses") or []
         raw_models = route.get("models")
+        # Herder may expose this project route directly as runtime/provider/model.
+        if route.get("runtime") or route.get("provider") or route.get("model"):
+            runtime = _bounded_text(
+                route.get("runtime") or route.get("harness")
+                or (raw_harnesses[0] if isinstance(raw_harnesses, list) and raw_harnesses else HEALTH_LAUNCH_HARNESS),
+                32,
+            ).lower()
+            provider = _bounded_text(route.get("provider"), 64).lower()
+            model = _bounded_text(route.get("model"), 256)
+            if model.startswith(provider + "/"):
+                model = model[len(provider) + 1:]
+            direct = {"runtime": runtime, "provider": provider, "model": model,
+                      "reasoning": _bounded_text(route.get("reasoning") or HEALTH_EXECUTION_PROFILE["reasoning"], 16).lower(),
+                      "topic": _bounded_text(route.get("topic") or HEALTH_EXECUTION_PROFILE["topic"], 64).lower()}
+            if direct != HEALTH_EXECUTION_PROFILE:
+                raise ValidationError("Agent Herder projectRoute conflicts with NoticePlace's pinned OpenCode GLM 5.3 Flash + MiniMax combo")
+            return (dict(HEALTH_EXECUTION_PROFILE),)
     elif isinstance(route, list):
         raw_harnesses = route
     models = raw_models if isinstance(raw_models, Mapping) else {}
@@ -227,12 +251,15 @@ def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, s
         name = _bounded_text(harness, 32).lower()
         model = _bounded_text(models.get(name) or global_models.get(name), 256)
         if name and model:
-            return (health_execution_profile(name, model),)
+            selected = health_execution_profile(name, model)
+            if selected != HEALTH_EXECUTION_PROFILE:
+                raise ValidationError("Agent Herder projectRoute conflicts with NoticePlace's pinned OpenCode GLM 5.3 Flash + MiniMax combo")
+            return (selected,)
     return (dict(HEALTH_EXECUTION_PROFILE),)
 
 
 def normalize_health_execution(value: Any, routes: tuple[dict[str, str], ...] | None = None) -> dict[str, str]:
-    """Accept the pinned subscription route and configured project routes only."""
+    """Accept the pinned combo route and its configured project route only."""
     allowed = [dict(route) for route in (routes if routes is not None else (HEALTH_EXECUTION_PROFILE,))]
     if value is None:
         return dict(HEALTH_EXECUTION_PROFILE)
@@ -243,6 +270,8 @@ def normalize_health_execution(value: Any, routes: tuple[dict[str, str], ...] | 
     provider = _bounded_text(value.get("provider") or HEALTH_EXECUTION_PROFILE["provider"], 64).lower()
     provider = {"openai": "openai-codex", "codex": "openai-codex", "openai/codex": "openai-codex"}.get(provider, provider)
     model = _bounded_text(value.get("model") or HEALTH_EXECUTION_PROFILE["model"], 256)
+    if model.startswith(provider + "/"):
+        model = model[len(provider) + 1:]
     reasoning = _bounded_text(value.get("reasoning") or HEALTH_EXECUTION_PROFILE["reasoning"], 16).lower()
     topic = _bounded_text(value.get("topic") or value.get("topic_key") or HEALTH_EXECUTION_PROFILE["topic"], 64).lower()
     result = {

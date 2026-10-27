@@ -1,8 +1,8 @@
-"""Pinned subscription route for NoticePlace health-incident analysis.
+"""Pinned OmniRoute combo for NoticePlace health-incident analysis.
 
-NoticePlace sends incident analysis through the OpenCode MiniMax subscription
-provider. It does not use OmniRoute or provider/model fallbacks. Agent Herder
-stays the launch and admission runtime and keeps its own allow/deny decision.
+NoticePlace sends incident analysis through the existing OpenCode GLM 5.3
+Flash + MiniMax Coding Plan combo. Agent Herder stays the launch and admission
+runtime and keeps its own allow/deny decision.
 
 This module is the single source of truth for the route contract:
 
@@ -22,11 +22,12 @@ from typing import Any, Mapping
 
 INCIDENT_MODEL_SETTING_KEY = "health_incident_model"
 
-# This NoticePlace project is explicitly pinned to its MiniMax subscription.
-DEFAULT_INCIDENT_MODEL = "minimax-coding-plan/MiniMax-M3.1-Flash"
+# This is the exact existing OmniRoute combo ID selected by the owner.
+DEFAULT_INCIDENT_MODEL = "omniroute/glm-5.3-flash-minimax-m3.1"
 LEGACY_INCIDENT_MODELS = (
     "omniroute/minimax-combo.m3.1",
     "omniroute/minimax-combo-m3.1",
+    "minimax-coding-plan/MiniMax-M3.1-Flash",
 )
 
 MAX_INCIDENT_MODEL_LENGTH = 256
@@ -41,7 +42,7 @@ _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 KNOWN_INCIDENT_MODELS: tuple[dict[str, Any], ...] = (
     {
         "value": DEFAULT_INCIDENT_MODEL,
-        "label": "OpenCode · MiniMax по подписке · M3.1 Flash",
+        "label": "OpenCode · GLM 5.3 Flash + MiniMax Coding Plan",
         "default": True,
         "manual_only": False,
     },
@@ -66,7 +67,7 @@ def incident_model_error(value: Any) -> str | None:
 
     - the value is not empty and carries no control characters;
     - it is trimmed and at most 256 characters long;
-    - it is exactly the project-approved MiniMax subscription route.
+    - it is exactly the project-approved GLM 5.3 Flash + MiniMax combo route.
     """
     raw = "" if value is None else str(value)
     if not raw.strip():
@@ -84,7 +85,7 @@ def incident_model_error(value: Any) -> str | None:
     if route != DEFAULT_INCIDENT_MODEL:
         return (
             "Для диагностики инцидентов разрешён только маршрут "
-            f"{DEFAULT_INCIDENT_MODEL}; OmniRoute и другие маршруты запрещены"
+            f"{DEFAULT_INCIDENT_MODEL}; другие маршруты не разрешены"
         )
     return None
 

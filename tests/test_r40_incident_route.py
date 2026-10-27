@@ -3,11 +3,12 @@ from notification_center.core import ValidationError
 from notification_center.health_workflow import HEALTH_EXECUTION_PROFILE, normalize_health_execution
 from notification_center import agent_job_helper as helper
 
-PROFILE = dict(runtime='opencode', provider='minimax-coding-plan', model='MiniMax-M3.1-Flash', reasoning='default', topic='health')
-MODEL = 'minimax-coding-plan/MiniMax-M3.1-Flash'
+PROFILE = dict(runtime='opencode', provider='omniroute', model='glm-5.3-flash-minimax-m3.1', reasoning='default', topic='health')
+MODEL = 'omniroute/glm-5.3-flash-minimax-m3.1'
+HERDER_PROFILE = dict(PROFILE, model=MODEL)
 
 class IncidentRouteTests(unittest.TestCase):
-    def test_new_plan_pins_subscription(self):
+    def test_new_plan_pins_the_existing_glm_minimax_combo(self):
         self.assertEqual(PROFILE, HEALTH_EXECUTION_PROFILE)
         self.assertEqual(PROFILE, normalize_health_execution(PROFILE))
         self.assertEqual(MODEL, helper._health_model_route(PROFILE))
@@ -34,8 +35,8 @@ class IncidentPreflightTests(unittest.TestCase):
         selected = helper._incident_profile({'url':'http://127.0.0.1:18787/api/sessions/new-or-resume','harness':'codex','model':'omniroute/subagent'}, runner)
         return selected, calls
 
-    def test_incident_uses_saved_subscription_ignoring_global_codex(self):
-        selected, calls = self.select({'incidentExecution':PROFILE, 'preferredHarness':'codex','models':{'codex':'gpt-6.1-sol'}}, {'models':[MODEL], 'stale':False})
+    def test_incident_uses_exact_combo_and_does_not_probe_or_fallback(self):
+        selected, calls = self.select({'incidentExecution':HERDER_PROFILE, 'preferredHarness':'codex','models':{'codex':'gpt-6.1-sol'}}, {'models':[MODEL], 'stale':False})
         self.assertEqual('opencode', selected['harness'])
         self.assertEqual(MODEL, selected['model'])
         self.assertEqual(MODEL, selected['orchestrator_model'])
@@ -44,12 +45,10 @@ class IncidentPreflightTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         self.assertIn('/api/automation/launch-policy', calls[0])
 
-    def test_a_saved_nonpinned_incident_execution_no_longer_vetoes(self):
-        """The saved execution is advisory; the declared route launches."""
-        for policy in ({'incidentExecution':dict(PROFILE, provider='omniroute')},
-                       {'incidentExecution':dict(PROFILE, runtime='codex')}, {}):
+    def test_a_conflicting_incident_execution_fails_closed_before_catalog_access(self):
+        for policy in ({'incidentExecution':dict(HERDER_PROFILE, model='omniroute/other')},
+                       {'incidentExecution':dict(HERDER_PROFILE, runtime='codex')},
+                       {'incidentExecution':dict(HERDER_PROFILE, provider='other-provider')}):
             with self.subTest(policy=policy):
-                selected, calls = self.select(policy, {'models':[MODEL]})
-                self.assertEqual('opencode', selected['harness'])
-                self.assertEqual(MODEL, selected['model'])
-                self.assertEqual(1, len(calls))
+                with self.assertRaises(ValidationError):
+                    self.select(policy, {'models':[MODEL]})

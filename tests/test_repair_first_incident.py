@@ -97,10 +97,10 @@ class RepairFirstExecutorTests(unittest.TestCase):
                 return _Response({
                     "version": 1, "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
                     "allowedHarnesses": ["opencode"], "preferredHarness": "opencode",
-                    "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"},
+                    "models": {"opencode": "omniroute/glm-5.3-flash-minimax-m3.1"},
                 })
             if "/api/models?" in url:
-                return _Response({"models": ["minimax-coding-plan/MiniMax-M3.1-Flash"], "stale": False})
+                return _Response({"models": ["omniroute/glm-5.3-flash-minimax-m3.1"], "stale": False})
             requests.append(request)
             if "/api/autopilot/sessions/" in url:
                 return _Response({"enabled": True, "sessionId": "executor-native"})
@@ -135,7 +135,8 @@ class RepairFirstExecutorTests(unittest.TestCase):
         return {
             "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "name": "health",
             "harness": "opencode", "cwd": root, "mode": "queue", "instruction": "Чини до восстановления.",
-            "model": "minimax-coding-plan/MiniMax-M3.1-Flash",
+            "model": "omniroute/glm-5.3-flash-minimax-m3.1",
+            "health_launch_token": "test-health-launch-token",
             "orchestrator_name": "planner", "orchestrator_model": "configured",
             "orchestrator_requested_model": "configured",
         }
@@ -479,7 +480,7 @@ class ProjectRouteTests(unittest.TestCase):
         policy = {
             "version": 1, "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
             "allowedHarnesses": ["opencode", "zcode"], "preferredHarness": "opencode",
-            "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash",
+            "models": {"opencode": "omniroute/glm-5.3-flash-minimax-m3.1",
                        "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"},
         }
         if project_routes is not None:
@@ -491,6 +492,7 @@ class ProjectRouteTests(unittest.TestCase):
         profile = {
             "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "name": "health",
             "harness": "opencode", "cwd": "/tmp", "mode": "queue", "instruction": "Чини.",
+            "health_launch_token": "test-health-launch-token",
             "orchestrator_name": "planner", "orchestrator_model": "configured",
             "orchestrator_requested_model": "configured",
         }
@@ -520,43 +522,42 @@ class ProjectRouteTests(unittest.TestCase):
             helper._launch_receipt(result, profile, "op-1", "tg-commentator")
         self.assertEqual(1, len(calls), "one reservation attempt, never a second launch")
 
-    def test_unconfigured_project_keeps_the_pinned_subscription_route(self) -> None:
-        receipt, requests = self._run("fleet-health", self._policy(), {"opencode": ["minimax-coding-plan/MiniMax-M3.1-Flash"]})
+    def test_unconfigured_project_keeps_the_pinned_glm_minimax_combo(self) -> None:
+        receipt, requests = self._run("fleet-health", self._policy(), {"opencode": ["omniroute/glm-5.3-flash-minimax-m3.1"]})
         self.assertEqual("opencode", receipt["harness"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", receipt["model"])
+        self.assertEqual("omniroute/glm-5.3-flash-minimax-m3.1", receipt["model"])
 
-    def test_configured_project_route_applies_and_keeps_its_declared_order(self) -> None:
-        policy = self._policy({"TelegramAuto": {"harnesses": ["zcode", "opencode"]}})
-        receipt, requests = self._run("TelegramAuto", policy, {"zcode": ["account:zai-individual-coding-plan/GLM-5.3-Flash$high"]})
-        # Agent Herder owns admission and fallback, so NoticePlace sends the
-        # declared order once instead of probing and looping itself.
-        self.assertEqual("zcode", receipt["harness"])
-        self.assertEqual("account:zai-individual-coding-plan/GLM-5.3-Flash$high", receipt["model"])
+    def test_configured_project_route_keeps_the_exact_combo_and_one_harness(self) -> None:
+        policy = self._policy({"TelegramAuto": {"harnesses": ["opencode"]}})
+        receipt, requests = self._run("TelegramAuto", policy, {"opencode": ["omniroute/glm-5.3-flash-minimax-m3.1"]})
+        self.assertEqual("opencode", receipt["harness"])
+        self.assertEqual("omniroute/glm-5.3-flash-minimax-m3.1", receipt["model"])
         launch = [json.loads(r.data) for r in requests if "project-launch" in str(r.full_url)][0]
         self.assertEqual("TelegramAuto", launch["project"])
-        self.assertEqual("zcode", launch["harness"])
+        self.assertEqual("opencode", launch["harness"])
         self.assertEqual(32, len(launch["operation_id"]))
         self.assertEqual("TelegramAuto", launch["project"])
 
     def test_declared_aliases_resolve_case_insensitively_like_herder(self) -> None:
         policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator", "autotelegramviews"],
-                                                "harnesses": ["zcode"]}})
+                                                "harnesses": ["opencode"]}})
         for project in ("tg-commentator", "TG-Commentator", "autotelegramviews", "AutoTelegramViews"):
             with self.subTest(project=project):
-                receipt, _ = self._run(project, policy, {"zcode": ["account:zai-individual-coding-plan/GLM-5.3-Flash$high"]})
-                self.assertEqual("zcode", receipt["harness"])
+                receipt, _ = self._run(project, policy, {"opencode": ["omniroute/glm-5.3-flash-minimax-m3.1"]})
+                self.assertEqual("opencode", receipt["harness"])
 
     def test_undeclared_project_name_is_never_guessed(self) -> None:
-        policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator"], "harnesses": ["zcode"]}})
-        receipt, _ = self._run("autosell", policy, {"zcode": ["account:zai-individual-coding-plan/GLM-5.3-Flash$high"]})
+        policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator"], "harnesses": ["opencode"]}})
+        receipt, _ = self._run("autosell", policy, {"opencode": ["omniroute/glm-5.3-flash-minimax-m3.1"]})
         self.assertEqual("opencode", receipt["harness"])
 
     def test_admission_receipt_is_authoritative_and_never_relaunched(self) -> None:
-        policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator"], "harnesses": ["opencode", "zcode"]}})
+        policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator"], "harnesses": ["opencode"]}})
         requests: list[object] = []
         profile = {
             "url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "name": "health",
             "harness": "opencode", "cwd": "/tmp", "mode": "queue", "instruction": "Чини.",
+            "health_launch_token": "test-health-launch-token",
             "orchestrator_name": "planner", "orchestrator_model": "configured",
             "orchestrator_requested_model": "configured",
         }
@@ -573,16 +574,16 @@ class ProjectRouteTests(unittest.TestCase):
                 session_id = str(getattr(request, "full_url", "")).rsplit("/", 1)[-1]
                 return _Response({"enabled": True, "sessionId": session_id})
             return _Response({"outcome": "accepted", "operation_id": "op-admission",
-                              "project": "tg-commentator", "selected_harness": "zcode",
-                              "model": "account:zai-individual-coding-plan/GLM-5.3-Flash$high", "mode": "queue",
+                              "project": "tg-commentator", "selected_harness": "opencode",
+                              "model": "omniroute/glm-5.3-flash-minimax-m3.1", "mode": "queue",
                               "cwd": "/srv/herder-project-route",
-                              "session_id": "zcode-native", "routing_reason": "declared route",
-                              "attempts": [{"harness": "zcode", "outcome": "accepted", "reason": "declared route"}]})
+                              "session_id": "opencode-native", "routing_reason": "declared route",
+                              "attempts": [{"harness": "opencode", "outcome": "accepted", "reason": "declared route"}]})
 
         with patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "token")), \
              patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}) as diagnosis:
             receipt = agent_job_helper.run_profile("health-diagnosis", event, Path("unused"), runner=runner, profile_override=profile)
-        self.assertEqual("zcode", receipt["harness"], "the launch receipt outranks the requested harness")
+        self.assertEqual("opencode", receipt["harness"])
         self.assertEqual("/srv/herder-project-route", receipt["cwd"])
         launched_profile = diagnosis.call_args.args[0]
         for key in ("harness", "model", "cwd"):
@@ -590,7 +591,7 @@ class ProjectRouteTests(unittest.TestCase):
         armed = [r for r in requests if "/api/autopilot/sessions/" in r.full_url]
         self.assertEqual(1, len(armed))
         self.assertEqual(receipt["cwd"], json.loads(armed[0].data)["cwd"])
-        self.assertIn("/sessions/zcode/", armed[0].full_url)
+        self.assertIn("/sessions/opencode/", armed[0].full_url)
         self.assertEqual("accepted", receipt["admission"]["status"])
         self.assertEqual(1, len(receipt["admission"]["attempts"]))
         launches = [r for r in requests if "project-launch" in str(r.full_url)]

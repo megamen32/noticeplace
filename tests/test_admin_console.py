@@ -146,15 +146,15 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertIn(b'id="health-model"', page)
         self.assertIn(b'<input type="text" name="model"', page)
         self.assertIn(b'<datalist id="incident-model-routes">', page)
-        self.assertIn(b"omniroute/minimax-combo-m3.1", page)
+        self.assertIn(b"omniroute/glm-5.3-flash-minimax-m3.1", page)
         csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
 
-        status, page = self._request("POST", "/admin/health-model", {"csrf": csrf, "model": "minimax-coding-plan/MiniMax-M3.1-Flash"})
-        self.assertEqual(400, status)
-        self.assertIn(b"Configuration rejected", page)
+        status, page = self._request("POST", "/admin/health-model", {"csrf": csrf, "model": "omniroute/glm-5.3-flash-minimax-m3.1"})
+        self.assertEqual(200, status)
+        self.assertIn(b"omniroute/glm-5.3-flash-minimax-m3.1", page)
         status, page = self._request("GET", "/admin/")
         self.assertEqual(200, status)
-        self.assertIn(b"omniroute/minimax-combo-m3.1", page)
+        self.assertIn(b"GLM 5.3 Flash + MiniMax Coding Plan", page)
 
     def test_health_settings_require_csrf_save_atomically_and_optionally_start_monitor(self) -> None:
         status, page = self._request("GET", "/admin/")

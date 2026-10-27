@@ -24,7 +24,7 @@ from notification_center.health_workflow import (HEALTH_LAUNCH_DEFAULT, HEALTH_L
                                                 HealthWorkflow, health_launch_execution,
                                                 normalize_incident_model, selected_incident_model)
 
-DEFAULT_ROUTE = "minimax-coding-plan/MiniMax-M3.1-Flash"
+DEFAULT_ROUTE = "omniroute/glm-5.3-flash-minimax-m3.1"
 HAND_ROUTE = DEFAULT_ROUTE
 SECOND_HAND_ROUTE = "omniroute/qwen/qwen3-max"
 PAID_ROUTES = (
@@ -194,8 +194,8 @@ class IncidentModelSnapshotTests(unittest.TestCase):
                 execution = health_launch_execution(route)
                 self.assertEqual({
                     "runtime": "opencode",
-                    "provider": "minimax-coding-plan",
-                    "model": "MiniMax-M3.1-Flash",
+                    "provider": "omniroute",
+                    "model": "glm-5.3-flash-minimax-m3.1",
                     "reasoning": "default",
                     "topic": "health",
                 }, execution)
@@ -292,7 +292,7 @@ class SelectedRouteLaunchTests(unittest.TestCase):
             "allowedHarnesses": ["opencode", "codex"],
             "preferredHarness": "opencode",
             "models": {"opencode": DEFAULT_ROUTE, "codex": "gpt-6.1-sol"},
-            "incidentExecution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"},
+            "incidentExecution": {"runtime": "opencode", "provider": "omniroute", "model": DEFAULT_ROUTE, "reasoning": "default", "topic": "health"},
         }
         policy.update(overrides)
         return policy
@@ -307,7 +307,7 @@ class SelectedRouteLaunchTests(unittest.TestCase):
             event["health"] = {"incident_model": model}
         return event
 
-    def _runner(self, policy: dict[str, object], calls: list) -> object:
+    def _runner(self, policy: dict[str, object], calls: list, *, created: bool = True) -> object:
         def runner(request, **_options):
             calls.append(request)
             if request.full_url.endswith("/api/automation/launch-policy"):
@@ -318,6 +318,8 @@ class SelectedRouteLaunchTests(unittest.TestCase):
                     "state": {"disarmed": False, "records": [{"scope": "*", "forbidden": False}]},
                     "nodes": [{"hostId": host, "status": "confirmed"} for host in ("server-100", "server-44", "server-88")],
                 })
+            if request.full_url.endswith("/api/sessions/opencode/ses-1/stop"):
+                return _Response({"ok": True})
             if "/api/autopilot/sessions/" in request.full_url:
                 session_id = request.full_url.rsplit("/", 1)[-1]
                 return _Response({"enabled": True, "sessionId": session_id})
@@ -325,7 +327,7 @@ class SelectedRouteLaunchTests(unittest.TestCase):
             return _Response({"outcome": "accepted", "operation_id": "op-1", "project": "fleet-health",
                               "selected_harness": body.get("harness") or "opencode",
                               "model": body.get("model") or LEGACY_MODEL, "mode": "queue",
-                              "session_id": "ses-1", "delivery": "accepted", "routing_reason": "declared route",
+                              "session_id": "ses-1", "created": created, "delivery": "accepted", "routing_reason": "declared route",
                               "attempts": []})
         return runner
 
@@ -345,6 +347,51 @@ class SelectedRouteLaunchTests(unittest.TestCase):
         self.assertEqual("Bearer test-health-launch-token", launch[0].get_header("Authorization"))
         self.assertNotIn("test-health-launch-token", json.dumps(body))
         self.assertEqual(HAND_ROUTE, receipt["model"])
+
+    def test_the_exact_herder_project_route_launches_the_existing_combo_unchanged(self) -> None:
+        calls: list = []
+        policy = self._policy(projectRoutes={"fleet-health": {
+            "runtime": "opencode", "provider": "omniroute", "model": DEFAULT_ROUTE,
+        }})
+        with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
+             mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
+            receipt = run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
+                                  profile_override=self._profile(), runner=self._runner(policy, calls))
+        launch = [call for call in calls if call.full_url.endswith("/api/automation/project-launch")]
+        self.assertEqual(1, len(launch))
+        self.assertEqual(DEFAULT_ROUTE, json.loads(launch[0].data)["model"])
+        self.assertEqual(DEFAULT_ROUTE, receipt["model"])
+
+    def test_a_project_route_for_a_different_model_fails_closed(self) -> None:
+        calls: list = []
+        policy = self._policy(projectRoutes={"fleet-health": {
+            "runtime": "opencode", "provider": "omniroute", "model": "omniroute/other-combo",
+        }})
+        with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")):
+            with self.assertRaisesRegex(ValidationError, "projectRoute conflicts"):
+                run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
+                            profile_override=self._profile(), runner=self._runner(policy, calls))
+        self.assertEqual([], [call for call in calls if call.full_url.endswith("/api/automation/project-launch")])
+
+    def test_unconfirmed_autopilot_stops_only_the_newly_created_session(self) -> None:
+        for created, expected_stop in ((True, "stop_requested"), (False, "not_new_session")):
+            with self.subTest(created=created):
+                calls: list = []
+                runner = self._runner(self._policy(), calls, created=created)
+                with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
+                     mock.patch.object(agent_job_helper, "arm_session_autopilot", return_value=False), \
+                     mock.patch.object(agent_job_helper, "_run_health_diagnosis") as diagnose:
+                    receipt = run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
+                                          profile_override=self._profile(), runner=runner)
+                stop_requests = [call for call in calls if call.full_url.endswith("/api/sessions/opencode/ses-1/stop")]
+                self.assertEqual(1 if created else 0, len(stop_requests))
+                if created:
+                    self.assertEqual("POST", stop_requests[0].get_method())
+                self.assertEqual(expected_stop, receipt["new_session_stop"])
+                self.assertEqual("source_blocked", receipt["status"])
+                self.assertFalse(receipt["retryable"])
+                self.assertFalse(receipt["autopilot_armed"])
+                diagnose.assert_not_called()
 
     def test_the_stored_route_reaches_the_herder_launch_payload_unchanged(self) -> None:
         """Console -> runtime_settings -> delivery -> signed event -> launch."""
@@ -417,12 +464,12 @@ class SelectedRouteLaunchTests(unittest.TestCase):
                                     profile_override=self._profile(), runner=self._runner(self._policy(), calls))
                 self.assertEqual([], [call for call in calls if call.full_url.endswith("/api/automation/project-launch")])
 
-    def test_a_non_opencode_project_route_fails_closed(self) -> None:
+    def test_a_non_opencode_project_route_fails_closed_on_exact_route_mismatch(self) -> None:
         calls: list = []
         policy = self._policy(projectRoutes={"fleet-health": {"harnesses": ["codex"]}})
         with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
              mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
-            with self.assertRaisesRegex(RuntimeError, "requires OpenCode with no harness fallback"):
+            with self.assertRaisesRegex(ValidationError, "projectRoute conflicts"):
                 run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
                             profile_override=self._profile(), runner=self._runner(policy, calls))
         launch = [call for call in calls if call.full_url.endswith("/api/automation/project-launch")]
