@@ -1,0 +1,91 @@
+## ТЕКУЩАЯ ЦЕЛЬ (27.10, решение владельца) — постоянный приём входящего Matrix-звонка на @aiadmin: ДОКАЗАНО
+
+**Ближайшая цель сжата владельцем:** «сделать так, чтобы я позвонил и ты ответил». Это достигнуто и доказано
+(см. execution-voice.md §21): квитанция приёма `65affd09-b496-5a9a-ab18-7350e3c958d7` (`answered=true`,
+`state=answered`), SDK-ход **completed** с полезным ответом секретаря, и этот ответ **услышан A**
+(оффлайн-ASR аудио, полученного A). Allowlist = только `@aiadmin`, постоянная Matrix-identity владельца
+в надзираемом источнике 88, supervisor'ы здоровы, QA-очистка выполнена.
+
+Отложено по приоритету владельца (`deferred_by_owner_priority`): полный roundtrip режимов
+`secretary → incidents → secretary` на постоянном handler и ремонт incidents-ветки fast-agent.
+
+
+Требование: владелец звонит в обычном Matrix-клиенте на существующий аккаунт `@aiadmin:chat.bezrabotnyi.com`
+(UserIO-аккаунт `matrix:3a38caa1e8ac2eeb77443b275466`) → **постоянный штатный обработчик сам принимает на 88**,
+без ручного peer-harness и без QA-seam; первый режим — `secretary`, полезный реальный SDK-ответ слышен;
+команды «Переключись на инциденты» → `incidents` и «Вернись к секретарю» → `secretary` работают в том же call.
+
+Доказанные факты на 27.10 (read-only, до правок исходников):
+- **Входящего звонка сейчас нет**: /sync аккаунта `@aiadmin` — 0 call-событий; в хранилище звонков нет ни одной
+  записи в `accepted/ringing/active`. Рвать нечего, отвечать владельцу не буду, accepted/UNKNOWN не переигрываю.
+- **Точный RED:** `MatrixReader` (src/universal_userio/channels/matrix.py:38) запрашивает /sync с фильтром
+  `{'types':['m.room.message']}` ⇒ все RTC-события (`org.matrix.msc3401.call.member`,
+  `org.matrix.msc4075.rtc.notification`) отбрасываются; `matrix_ingress.py` доставляет только сообщения.
+  Исходящий старт есть (`mcp_dispatch.py:207/225`, `http_api.py:992/997` — только `calls.start`), приёма
+  входящих Matrix-звонков нет ни в репозитории, ни в установленном образе. Сторона вызываемого существует
+  сегодня только как QA-фикстура peer-harness — это и есть запрещённый ручной обход приёма.
+- **Реестр личностей (100, `/etc/agentcall-secretary-identities.json`) уже корректен**: `matrix:@bezrabotnyi…`
+  → `5e438326-6339-4ac8-a328-59dae1d6241f` (владелец, `roomhacker@bezrabotnyi.com`, admin в реестре приложения),
+  `matrix:@lhc_voice_tester_a…` → `9b4ab5e7…`, `matrix:@lhc_voice_tester_b…` → `0680a349…` — подмены owner-UUID ботам нет.
+  В голосовой карте 88 (`/etc/agentcall-secretary/identities.json`) matrix-ключей нет — это разрешённая привязка
+  (`matrix:@bezrabotnyi…` → owner-UUID) и временные QA-привязки с побайтовым восстановлением.
+- **Контракт SDK переиспользуется существующий**: `mode=secretary` по умолчанию, `incidents` только для
+  outgoing+incident (`airlock-agent/voice_chat.go`), переключение — существующий `handoff` с `mode` и
+  `/internal/voice/mode`. Новый публичный caller/daemon/cron не заводим; приёмник — часть существующего
+  UserIO runtime, голос — единственный владелец 88, общий SFU/OmniRoute не трогаем.
+- **Владение исходниками:** канонический bridge — `src/universal_userio/voice/agentcall_realtime_bridge.py`
+  в репозитории `universal-userio`; `/opt/noticeplace-voice/corrections/**` и `/usr/local/lib/agentcall/**` —
+  установленные исторические артефакты, правкам и коммитам не подлежат. Правка engine → owned canonical main →
+  публикация образа → установка на 88 (в idle-окне).
+
+Порядок: task.md обновлён до правок исходников; далее — intake в существующем runtime, callee-leg в каноническом
+bridge, focused-тесты, main+push своих путей, публикация образа и install 88 в idle-окне, затем автопроверка
+**botA→botB через тот же постоянный обработчик** (два бота, своя комната, без людей и без @aiadmin, fallback=0)
+и один полный scripted-разговор: нейтральный вопрос → «Переключись на инциденты» → «Вернись к секретарю», с
+полными ответами, track ASR, app/call/turn/mode events, actual route и terminal cleanup. Реальный входящий звонок
+владельца обслуживается тем же обработчиком — по его прямому указанию, без провокации с моей стороны.
+
+## Готовый компонент (сохраняется, не переигрывается)
+
+Секретарская приёмка на двух ботах достигнута (27.10 17:12Z): call `a4ec5d98-caf9-42ac-b65b-98c7f7ab73f5`
+(mode=secretary, turn completed), услышано A (`afdf475e…/timeline.md`, сегмент 10.33–26.28 с), model route
+`run_id 81625e81-8f87-44e7-a68c-d077959b28fa` (omniroute / exmanager-codex-gpt-6-luna), установка 88
+(образ `sha256:526a2581`, ревизия `b3520fe4`), учётка v181 через надзираемый bind, коммиты `6c88e5b` и `ea21395`.
+Пакет фактов: `l01-secretary-acceptance-evidence.json`, `l01-caller-a-timeline.md` (0600, roomhacker).
+
+## ИТОГ (актуально, 2026-10-27T17:35Z) — секретарская приёмка достигнута
+
+Узкий business outcome закрыт живым прогоном на установленном движке server-88:
+- **Звонок:** A = тестовый бот A (`afdf475e-eec7-42e2-8765-ebe67eb8c256`, `account_ref=matrix:ab023a689e926bf99d924e933ebd`), B = тестовый бот B (`a4ec5d98-caf9-42ac-b65b-98c7f7ab73f5` = `call_id` в app ledger), комната `!vmxuOOunnmTUeuEdvi:chat.bezrabotnyi.com` (ровно два фикстурных бота; owner/@aiadmin/людей нет).
+- **SDK-ход:** app ledger `exmanager_voice_calls` = transport=matrix, direction=incoming, **mode=secretary**, `user_id=9b4ab5e7-546e-4df9-a4c9-5c28f850cd26` (QA-персона), `active_turn=0`, `last_turn=1`; `exmanager_voice_turns` = turn_id=1, **state=completed**, input = «Представься и скажи, чем ты можешь мне помочь как голосовой секретарь?», reply = «Здравствуйте! Я голосовой секретарь: веду ваши личные дела — напоминания, задачи, заметки, — и при необходимости подключаюсь к рабочим системам и агентам, чтобы проверить состояние сервисов или найти нужную информацию. С чего начнём?».
+- **Модельный маршрут именно этого хода:** `llm_usage id=cd53dd1b-24a9-4276-93b1-6f4ebcd2567c`, **run_id=`81625e81-8f87-44e7-a68c-d077959b28fa`**, provider `omniroute`, модель `exmanager-codex-gpt-6-luna`, tokens 3686/82, errored=false. Другие раны этого окна — посторонние cron-задачи приложения, к этой приёмке не относятся.
+- **Услышано A:** оффлайн-транскрипция дорожки, полученной A (`l01-caller-a-timeline.md`, сегмент 10.33–26.28 с): «…Здравствуйте. Я голосовой секретарь. Веду ваши личные дела, напоминания, задачи, заметки и при необходимости подключаюсь к рабочим системам…».
+- **Установленная версия:** 88 voice — образ `ghcr.io/megamen32/universal-userio-voice@sha256:526a2581…`, ревизия `b3520fe4`, health=healthy, engine `md5 48e7de28…`; надзираемая учётка `token_version=181`; три юнита active (`userio-secretary-sdk-tunnel`, `l01-primary88-forward`, `noticeplace-mesh-api`); 36ae не ставился, rollback-контейнер сохранён.
+- **Пакет доказательств (без секретов, 0600, владелец roomhacker):** `l01-secretary-acceptance-evidence.json`, `l01-caller-a-timeline.md` — в этом же каталоге.
+- **Правки в main:** `universal-userio` `6c88e5b` (portable-spec bind надзираемой учётки + 2 focused-теста), `ea21395` (peer-harness: окно воспроизведения ответа). Канон деталей: `execution-voice.md` §19.
+- Дальнейшие звонки, модельные поручения и новые циклы — не требуются (решение владельца, принято). Всё остальное deferred.
+
+## История прежних приказов (не действуют)
+
+Следующие формулировки — исторические приказы предыдущих ходов; действующий статус — в разделе «ИТОГ» выше.
+
+Ближайший результат (ист.): прочитать квитанции уже существующего вызова на88 и завершить только один критический сценарий — полезный слышимый SDK-ответ/поручение и остановка правильной эскалации. Готовый образ36ae и его исходные проверки не повторять. Новый звонок или событие не поручены.
+
+Конкретное препятствие (ист.): у существующей операции подтверждены callerRC0 за88секунд и услышанный вторым ботом вопрос в режиме секретаря. Полезный ответ SDK, peer terminal и installedCID ещё не собраны. Для прекращения эскалации отсутствует точная привязка existingreceipt к consumer/incident/target; этот обязательный критерий НЕотложен и НЕподтверждён. Подготовленная политика NP не применена, live остаётся room-only message — это не ACK.
+
+Ответственный native ID (ист.): единственный владелец88 UserIO mvs_4f40fab5c86f4ad5bad2cd9b7b5507a2; только необходимая политика/квитанция Notice Place — existingchild mvs_2b489b9ad2364fcaa03f4687420699a1. Root читает существующую операцию. Новые бюджетные/STOP сообщения приняты transport, собственные ACK ещё ожидаются; новых продуктовых назначений нет.
+
+Критерий конца (ист.): реальные квитанции доказывают установленную версию, полезный слышимый ответ/поручение и прекращение правильной эскалации. Accepted/UNKNOWN не повторять, callerbytes и sourceготовность не считать успехом. После этого STOP. Остальные незавершённые работы deferred_by_owner_budget, не DONE. Own hourly отключён PATCH200/GETenabled=false,next_run_at=null; pendingRootHerderwaits нет. Старый futurewake не даёт права на продуктовые действия, новых циклов/обзоров/таймеров/отчётных рендеров нет.
+
+## Текущее состояние (2026-10-27T17:35Z, продолжение np_secretary_glm)
+- 88 voice: образ `sha256:526a2581`, ревизия `b3520fe4`, healthy. Учётка долговечная: portable-spec монтирует надзираемый `/etc/agentcall-secretary` (ротация учётки больше не ломает путь), `token_version=181`; rollback-контейнер сохранён, 36ae не ставился.
+- **Секретарская приёмка достигнута**: живой прогон `a4ec5d98-caf9-42ac-b65b-98c7f7ab73f5` — app ledger `mode=secretary`, `user_id`=QA-персона, turn `state=completed`, reply = осмысленное представление голосового секретаря; engine-лог ноги-B: `secretary_sdk … elapsed_ms=3267`, `voice_turn … mode=secretary`, `first_text_to_tts_ms=9.5 first_tts_to_pcm_ms=212.8 answer_kind=native` (ответ синтезирован и отправлен в сеть); оффлайн-транскрипция дорожки, полученной A (`recordings/afdf475e…/timeline.md`, сегмент 10.33–26.28 с): «…Здравствуйте. Я голосовой секретарь. Веду ваши личные дела, напоминания, задачи, заметки и при необходимости подключаюсь к рабочим системам…» ⇒ **полезный секретарский ответ услышан caller'ом A**.
+- Два фикстурных дефекта закрыты (моя зона): нога-B закрывала сессию до TTS ответа (добавлено окно воспроизведения 22 с), нога-A обрывала по «речь не распознана» (терпение к тишине 150 с, без дополнительных LLM-вызовов caller'а).
+- Изоляция соблюдена: комната ровно двух фикстурных ботов (owner/@aiadmin/людей нет), телефонных наборов 0, `telegram.call` 0, QA-инциденты закрыты, identity-карта восстановлена побайтово, harness-процессы и стаб остановлены.
+- Правки в main (мои пути): `universal-userio` `6c88e5b` (portable-spec bind надзираемой учётки + 2 focused-теста) и `ea21395` (peer-harness: окно воспроизведения ответа).
+- Граница: в финальном прогоне секретарь ответил на 502-контекст (нейтральный WAV harness не подхватил и произнёс свою фиксированную фразу) — доказано ПОВЕДЕНИЕ секретаря и «ответ услышан A»; текст вопроса «представься» как таковой не прозвучал.
+- 88 voice: образ `sha256:526a2581…`, ревизия `b3520fe4`, healthy (restart 27.10 11:43Z, idle-guard соблюдён). Приёмка (полезный финальный SDK-ответ, СЛЫШЕН A) НЕ доказана.
+- Устранён реальный дефект: SDK-учётка на 88 была отозвана ротацией 26.10 04:50 (токен v180 против `agents.agent_token_version=181`) ⇒ каждый ход Secretary SDK с 88 получал `HTTP 401`. Копия обновлена из надзираемого источника `/etc/agentcall-secretary/voice.token` (v181), бэкап + idle-guard + restart, signing key/identities/прод-карта owner не тронуты. Readback: аутентификация проходит (далее `403 voice call not admitted`).
+- Блокер последнего метра — admitted-call: сервер принимает SDK-ход только для звонка, начатого самим приложением (24.10 canary: `accepted` + `voice_mode=secretary`; `TEST_ACCESS`: «synthetic fixture calls still cannot validate a Secretary turn»). Peer B вне приложения не адмитится ⇒ 26.10 шёл fast-agent fallback. Модельный маршрут приложения жив (236 успешных LLM-ранов за 3 суток); 503 ALL_TARGETS_SKIPPED относится к поверхности airlock-deploy, не к brain приложения.
+- Побочных эффектов нет: runs/conversations/invocations по QA-персоне = 0, `llm_calls` = 0, ни одного звонка человеку, PSTN/SIP/новые caller-архитектуры/тестовые инциденты — нет.
+- След. шаг (решение владельца): (1) разрешить повторный canary в приложении — нужен доступ к `matrix-synapse/call-e2e` (harness недоступен для чтения) + две временные matrix-записи identities.json по §10 с восстановлением owner-only карты; (2) durable-учётка: bind `/etc/agentcall-secretary` в portable-spec голоса + переустановка 88, иначе копия протухнет на следующей ротации (после 02.11).
