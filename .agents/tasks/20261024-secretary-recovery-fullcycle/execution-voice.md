@@ -852,3 +852,59 @@ identity-байты owner не менялись; образ 88 не откаты
 - **Правило окружения владельца приоритетнее разумной полноты:** когда владелец сужает цель, ремонт
   второстепенной ветки останавливается, WIP сохраняется коммитами и помечается `deferred_by_owner_priority`;
   закрытым остаётся ближайший измеримый результат (квитанция приёма + readback прод-конфигурации).
+
+## 22. 28.10 (reopened): владелец нажал вызов на @aiadmin — «никто не берёт трубку» ⇒ ПРИЧИНА НАЙДЕНА И УСТРАНЕНА
+
+### 22.1 Проверенные данные owner-call (read-only, без выгрузки текста переписки)
+
+- **Время:** 28.10 00:58:42 MSK (`ts=1793138322433`); клиент очистил своё membership через 91.4 с
+  (01:00:13 MSK) ⇒ звонок истёк без ответа.
+- **room_id:** `!qOMevyFhRPiIwUIVDS:chat.bezrabotnyi.com` (личная комната владельца с @aiadmin).
+- **Фактические типы событий:** `org.matrix.msc3401.call.member` от `@bezrabotnyi`
+  (`state_key=_@bezrabotnyi:chat.bezrabotnyi.com_9KrATrt4uw_m.call`, `application=m.call`, `call_id=''`,
+  `device_id=9KrATrt4uw`, `membershipID` ЕСТЬ, `expires=14400000`,
+  `foci_preferred=[livekit → https://rtc.chat.bezrabotnyi.com]`, `focus_active`, `m.call.intent`, `scope`)
+  и его очистка (`content={}`). **`m.call.invite` ОТСУТСТВУЕТ. `org.matrix.msc4075.rtc.notification`
+  (RING) ОТСУТСТВУЕТ.**
+- **joined:** ровно 2 (`@aiadmin`, `@bezrabotnyi`) ⇒ гейт 1:1 проходит. **encryption:** `m.room.encryption`
+  `m.megolm.v1.aes-sha2` (call-события читаются в открытом виде).
+- **Первый пропуск:** poller жив, allowlist=`@aiadmin`, но `MatrixCallReader.poll` узнавал звонок
+  **исключительно по RING с m.mentions** ⇒ сигнала от owner-вызова не было ⇒ receipt не создан,
+  dispatch не выполнялся ⇒ тишина. (Старые bot-receipts `65affd09`/`39688964` — это fixture-разговоры
+  botA↔botB, они owner-call не доказывают.)
+
+### 22.2 Исправление (минимальное, подтверждённое)
+
+- **Интенция:** `org.matrix.msc3401.call.member` отправителя с livekit-фокусом — самостоятельный сигнал
+  вызова; путь RING сохранён. Дедуп внутри опроса — по идентичности вызова (session `membershipID`),
+  **не по state_key**: state_key постоянен между вызовами одного device, поэтому новый вызов с новым
+  `membershipID` распознаётся, а повтор того же member — нет. Durable-квитанция по `membershipID`
+  не даёт второго ответа.
+- Код: `universal-userio` `e059ac6` (intake) + `ff03c2b` (фикстура может воспроизводить форму реального
+  клиента) ⇒ main запушен; backend-образ `sha256:b7cb3d81…` (пин `ff03c2b`) установлен; установленный
+  `matrix_inbound_calls.py` = `3c19c4fd0ab6f3bd` = пиннированный исходник.
+
+### 22.3 Проверка изолированно, в форме реального клиента (botA → botB, через постоянный handler)
+
+- Один разговор **только с membership, без RING**, нейтральный вопрос, без команд режимов.
+- **Принято:** intake распозвал вызов ⇒ claim-receipt `fccd9626-4c09-5801-8e7a-1b7b241b27c3`; dispatch на 88
+  состоялся; **88: session call=78cc251e-375b-55a2-a108-0065abb4be2c, `playing greeting bytes=169200`,
+  `heard: Представься и скажи, чем ты можешь мне помочь как голосовой секретарь?`, `voice_mode turn=1
+  mode=secretary`, `secretary_sdk turn=1 … elapsed_ms=89356`, `voice_turn turn=1 mode=secretary`** ⇒
+  секретарский ход состоялся через постоянный handler.
+- **Услышано A** (запись `recordings/ebcab4da-a9ec-4556-8764-2ea55fd82b11`, `trackDirections
+  {caller: received, assistant: sent}`): 0.06–2.86 с «Здравствуйте, я голосовой секретарь. Слушаю вас.»;
+  10.97–14.70 с «Сейчас нужно немного времени. Открываю контекст вашего разговора.» ⇒ **трубку взяли**.
+- Честная граница: первый **полезный** ответ секретаря в этом прогоне не попал в дорожку A — ход SDK
+  завершился на 89-й секунде (thinking маршрута), а запись A закрылась на 77-й ⇒ приветствие и progress
+  услышаны, содержательный ответ — нет. Предыдущие прогоны показывают полезный ответ в среднем на
+  21–45 с; 89 с — outlier маршрута, не логики приёма.
+
+### 22.4 Финальная конфигурация и cleanup
+
+- **Allowlist:** только `@aiadmin:chat.bezrabotnyi.com` (в живом core-процессе backend и в
+  `/etc/userio-containers/processes.json`); QA-калле убран.
+- **Identity 88:** постоянная карта (matrix owner + phone + telegram), временная QA-привязка удалена.
+- **RTC-membership фикстур:** сняты (2). Стаб и harness-процессы: не запущены.
+- Backend `running`, рестартов 0, образ = пин `ff03c2b`; voice 88 `healthy` (`ed6c4c7`).
+- Старые bot-receipts сохранены историей и owner-call не доказывают.
