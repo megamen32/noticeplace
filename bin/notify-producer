@@ -1,9 +1,10 @@
 #!/bin/sh
 # Send one durable NoticePlace event without exposing the bearer token.
+# NOTICEPLACE_CONSUMER_V2: shared producer CLI, typed source identity and independent verification contract.
 set -eu
 
 usage() {
-    echo "usage: notify-producer --project PROJECT --dedupe-key KEY [--recipient RECIPIENT] [--severity SEVERITY --title TITLE [--body BODY]] [--operator-note NOTE] [--idempotency-key KEY] [--resolve]" >&2
+    echo "usage: notify-producer --project PROJECT --dedupe-key KEY [--recipient RECIPIENT] [--severity SEVERITY --title TITLE [--body BODY]] [--operator-note NOTE] [--idempotency-key KEY] [--source-id ID --host-id ID --signal-type TYPE --problem-type TYPE --correlation-id ID --observed-at EPOCH] [--resolve]" >&2
     exit 64
 }
 
@@ -16,10 +17,16 @@ dedupe_key=
 idempotency_key=
 operator_note=${NOTIFY_OPERATOR_NOTE:-}
 resolve=0
+source_id=
+host_id=
+signal_type=
+problem_type=
+correlation_id=
+observed_at=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --project|--recipient|--severity|--title|--body|--dedupe-key|--operator-note|--idempotency-key)
+        --project|--recipient|--severity|--title|--body|--dedupe-key|--operator-note|--idempotency-key|--source-id|--host-id|--signal-type|--problem-type|--correlation-id|--observed-at)
             [ "$#" -ge 2 ] || usage
             case "$1" in
                 --project) project=$2 ;;
@@ -30,6 +37,12 @@ while [ "$#" -gt 0 ]; do
                 --dedupe-key) dedupe_key=$2 ;;
                 --operator-note) operator_note=$2 ;;
                 --idempotency-key) idempotency_key=$2 ;;
+                --source-id) source_id=$2 ;;
+                --host-id) host_id=$2 ;;
+                --signal-type) signal_type=$2 ;;
+                --problem-type) problem_type=$2 ;;
+                --correlation-id) correlation_id=$2 ;;
+                --observed-at) observed_at=$2 ;;
             esac
             shift 2
             ;;
@@ -55,23 +68,42 @@ case "$project" in
 esac
 
 if [ "$resolve" = 1 ]; then
-    payload=$(python3 - "$project" "$recipient" "$dedupe_key" <<'PY'
+    payload=$(python3 - "$project" "$recipient" "$dedupe_key" "$source_id" "$host_id" "$signal_type" "$problem_type" "$correlation_id" "$observed_at" <<'PY'
 import json
+import math
 import sys
-print(json.dumps({
+payload = {
     "schema": "notify.event.v1",
     "action": "resolve",
     "project": sys.argv[1],
     "recipient": sys.argv[2],
     "dedup_key": sys.argv[3],
-}, ensure_ascii=False, separators=(",", ":")))
+}
+fields = ("source_id", "host_id", "signal_type", "problem_type", "correlation_id", "observed_at")
+values = sys.argv[4:]
+if any(values):
+    if not all(values):
+        raise SystemExit("typed health identity requires all six source fields")
+    try:
+        observed = float(values[5])
+    except ValueError:
+        raise SystemExit("observed_at must be a finite positive epoch")
+    if not math.isfinite(observed) or observed <= 0:
+        raise SystemExit("observed_at must be a finite positive epoch")
+    if not values[3].strip() or len(values[3]) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in values[3]):
+        raise SystemExit("problem_type must be a bounded identifier without control characters")
+    payload["event_type"] = "health.recovered"
+    payload.update(dict(zip(fields, values)))
+    payload["observed_at"] = observed
+print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 PY
 )
 else
     [ -n "$severity" ] && [ -n "$title" ] || usage
     case "$severity" in debug|info|notice|important|critical|emergency) ;; *) echo "unsupported severity" >&2; exit 64 ;; esac
-    payload=$(python3 - "$project" "$recipient" "$severity" "$title" "$body" "$dedupe_key" "$operator_note" <<'PY'
+    payload=$(python3 - "$project" "$recipient" "$severity" "$title" "$body" "$dedupe_key" "$operator_note" "$source_id" "$host_id" "$signal_type" "$problem_type" "$correlation_id" "$observed_at" <<'PY'
 import json
+import math
 import sys
 payload = {
     "schema": "notify.event.v1",
@@ -85,6 +117,22 @@ payload = {
 }
 if sys.argv[7].strip():
     payload["operator_note"] = sys.argv[7].strip()
+fields = ("source_id", "host_id", "signal_type", "problem_type", "correlation_id", "observed_at")
+values = sys.argv[8:]
+if any(values):
+    if not all(values):
+        raise SystemExit("typed health identity requires all six source fields")
+    try:
+        observed = float(values[5])
+    except ValueError:
+        raise SystemExit("observed_at must be a finite positive epoch")
+    if not math.isfinite(observed) or observed <= 0:
+        raise SystemExit("observed_at must be a finite positive epoch")
+    if not values[3].strip() or len(values[3]) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in values[3]):
+        raise SystemExit("problem_type must be a bounded identifier without control characters")
+    payload["event_type"] = "health.degraded"
+    payload.update(dict(zip(fields, values)))
+    payload["observed_at"] = observed
 print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 PY
 )
