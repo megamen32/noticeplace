@@ -48,10 +48,12 @@ def initialize(center):
           idempotency_key TEXT PRIMARY KEY, request_id TEXT NOT NULL,
           payload_json TEXT NOT NULL, result_json TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS incident_check_receipts_request ON incident_check_receipts(request_id);
+        CREATE TABLE IF NOT EXISTS incident_group_completions (
+          id TEXT PRIMARY KEY, continuation_json TEXT);
         ''')
 
         columns = {row['name'] for row in center._connection.execute('PRAGMA table_info(incident_lifecycle)').fetchall()}
-        for name in ('continuation_json', 'last_check_receipt_json'):
+        for name in ('continuation_json', 'last_check_receipt_json', 'completion_id'):
             if name not in columns:
                 center._connection.execute('ALTER TABLE incident_lifecycle ADD COLUMN ' + name + ' TEXT')
         # Upgrade existing accepted receipts without replaying a delivery. A
@@ -181,6 +183,18 @@ def view(center, incident_id):
     result.pop('source_principal')
     result.pop('executor_principal')
     continuation = result.pop('continuation_json')
+    completion_id = result.pop('completion_id')
+    if completion_id:
+        continuation = None
+        completion = center._connection.execute('SELECT continuation_json FROM incident_group_completions WHERE id=?', (completion_id,)).fetchone()
+        if completion and completion['continuation_json']:
+            authority = json.loads(completion['continuation_json'])
+            origin = center._connection.execute('''SELECT i.state,l.completion_id FROM incidents i
+              JOIN incident_lifecycle l ON l.incident_id=i.id WHERE i.id=?''', (authority['incident_id'],)).fetchone()
+            # A healthy sibling may expose the still-open source authority, but
+            # closed origins and a newer attempt never re-authorize old work.
+            if origin and origin['state'] != 'resolved' and origin['completion_id'] == completion_id:
+                continuation = completion['continuation_json']
     receipt = result.pop('last_check_receipt_json')
     if receipt:
         result['last_check_receipt'] = json.loads(receipt)
@@ -246,15 +260,45 @@ def finish(center, token, incident_id, key, body):
             raise ValidationError('completion must match the incident native session')
         if row['session_id'] and (row['session_id'] != body['session_id'] or row['harness'] != body['harness']):
             raise ValidationError('continuation must preserve the incident native session')
-        request_id = 'check_' + uuid.uuid4().hex
         due = time.time()
-        result = dict(incident_id=incident_id,request_id=request_id,generation=row['generation'],attempt_state='work_finished',verification_state='due',verification_due=due,**payload)
+        executor = principal(center, token)
+        completion_id = hashlib.sha256(json.dumps([row['group_key'], executor, *[body[f] for f in fields]], separators=(',', ':')).encode()).hexdigest()
+        center._connection.execute('INSERT OR IGNORE INTO incident_group_completions(id) VALUES (?)', (completion_id,))
+        # A group key alone is insufficient: historical cards and another native
+        # session must not acquire a fabricated executor attempt. Source authority
+        # is never copied; every admitted episode keeps its original principal.
+        peers = center._connection.execute('''SELECT l.* FROM incident_lifecycle l
+          JOIN incidents i ON i.id=l.incident_id WHERE l.group_key=? AND i.state!='resolved' ''', (row['group_key'],)).fetchall()
+        eligible = [row]
+        for peer in peers:
+            if peer['incident_id'] == incident_id:
+                continue
+            binding = center.latest_health_agent_session(peer['incident_id'])
+            if not binding or binding['session_id'] != body['session_id'] or binding['harness'] != body['harness']:
+                continue
+            if peer['session_id'] and (peer['session_id'] != body['session_id'] or peer['harness'] != body['harness']):
+                continue
+            if peer['executor_principal'] and peer['executor_principal'] != executor:
+                continue
+            eligible.append(peer)
+        result = None
+        for episode in eligible:
+            request_id = 'check_' + uuid.uuid4().hex
+            episode_result = dict(incident_id=episode['incident_id'],request_id=request_id,generation=episode['generation'],attempt_state='work_finished',verification_state='due',verification_due=due,**payload)
+            previous_episode = center._connection.execute('SELECT * FROM incident_verification_requests WHERE incident_id=? AND attempt_id=?', (episode['incident_id'],body['attempt_id'])).fetchone()
+            if previous_episode:
+                if previous_episode['finish_json'] != encoded:
+                    raise IdempotencyConflict('shared attempt completion content is already bound')
+                # A duplicate completion never rotates an accepted check nonce.
+                continue
+            center._connection.execute('INSERT INTO incident_verification_requests VALUES (?,?,?,?,?,?)',
+                (request_id,episode['incident_id'],episode['generation'],body['attempt_id'],encoded,json.dumps(episode_result,sort_keys=True)))
+            center._connection.execute('''UPDATE incident_lifecycle SET attempt_state='work_finished', verification_state='due',verification_due=?,request_id=?,session_id=?,harness=?,attempt_id=?,executor_principal=?,continuation_json=NULL,completion_id=? WHERE incident_id=?''',
+                (due,request_id,body['session_id'],body['harness'],body['attempt_id'],executor,completion_id,episode['incident_id']))
+            center._audit(episode['incident_id'],'health.work_finished',executor,episode_result)
+            if episode['incident_id'] == incident_id:
+                result = episode_result
         center._connection.execute('INSERT INTO incident_finish_keys VALUES (?,?,?,?)',(key,incident_id,body['attempt_id'],encoded))
-        center._connection.execute('INSERT INTO incident_verification_requests VALUES (?,?,?,?,?,?)',
-            (request_id,incident_id,row['generation'],body['attempt_id'],encoded,json.dumps(result,sort_keys=True)))
-        center._connection.execute('''UPDATE incident_lifecycle SET attempt_state='work_finished', verification_state='due',verification_due=?,request_id=?,session_id=?,harness=?,attempt_id=?,executor_principal=?,continuation_json=NULL WHERE incident_id=?''',
-            (due,request_id,body['session_id'],body['harness'],body['attempt_id'],principal(center,token),incident_id))
-        center._audit(incident_id,'health.work_finished',principal(center,token),result)
         return result
 
 
@@ -308,14 +352,21 @@ def check(center, token, incident_id, key, body):
             center._transition(incident_id,'resolved',principal(center,token))
             center.schedule_health_outcome(incident_id,'recovered','source-check:'+row['request_id'])
         continuation = json.loads(row['continuation_json']) if row['continuation_json'] else None
+        if row['completion_id']:
+            shared = center._connection.execute('SELECT continuation_json FROM incident_group_completions WHERE id=?', (row['completion_id'],)).fetchone()
+            if shared and shared['continuation_json']:
+                continuation = json.loads(shared['continuation_json'])
         if state == 'degraded' and not continuation:
             continuation = {f:row[f] for f in ('session_id','harness','attempt_id','request_id','generation')}
+            continuation['incident_id'] = incident_id
             continuation['evidence_refs'] = center._health_value(body['evidence_refs'])
             target = center._health_agent_delivery_target()
             target['source_check_continuation'] = dict(continuation)
             continuation['delivery_id'] = center._schedule_delivery(
                 incident_id, 'gptadmin.agent:health-diagnosis',
                 'source-check:' + row['attempt_id'], time.time(), target)
+            if row['completion_id']:
+                center._connection.execute('UPDATE incident_group_completions SET continuation_json=? WHERE id=?', (json.dumps(continuation,sort_keys=True),row['completion_id']))
         if state == 'degraded':
             result['continuation'] = {k:v for k,v in continuation.items() if k != 'delivery_id'}
             result['continuation_delivery_id'] = continuation.get('delivery_id')

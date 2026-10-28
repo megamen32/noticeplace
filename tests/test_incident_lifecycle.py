@@ -18,6 +18,137 @@ class LifecycleTests(unittest.TestCase):
     def finish(self, attempt='one'):
         return self.center.record_work_finished('agent',self.inc,'finish:'+attempt,dict(attempt_id=attempt,session_id='session',harness='codex',evidence_refs=['change']))
 
+    def shared_episode(self, suffix, **changes):
+        event = {**self.event, 'dedup_key': suffix, 'correlation_id': suffix, **changes}
+        incident = self.center.create_event('source', 'intake:'+suffix, event)['incident_id']
+        self.center.record_health_agent_session(incident, 'native:'+suffix, '', 'codex', 'session',
+            'https://agent.example.test', stage='health-diagnosis')
+        return incident
+
+    def test_shared_finish_checks_each_bound_episode_without_group_resolution(self):
+        self.center.record_health_agent_session(self.inc, 'native:first', '', 'codex', 'session',
+            'https://agent.example.test', stage='health-diagnosis')
+        latest = self.shared_episode('latest')
+        unrelated = self.shared_episode('cpu', signal_type='cpu')
+        otherhost = self.shared_episode('otherhost', host_id='other')
+        historical = self.center.create_event('source', 'unbound',
+            {**self.event, 'dedup_key':'unbound', 'correlation_id':'unbound'})['incident_id']
+        consumer = self.consumer()
+        otherconsumer = self.center.create_event(consumer['intake_token'], 'other-consumer',
+            {**self.event, 'dedup_key':'other-consumer', 'correlation_id':'other-consumer'})['incident_id']
+        self.center.record_health_agent_session(otherconsumer, 'native:consumer', '', 'codex', 'session',
+            'https://agent.example.test', stage='health-diagnosis')
+        result = self.center.record_work_finished('agent', latest, 'latest-finish',
+            dict(attempt_id='latest-delivery', session_id='session', harness='codex'))
+        due = self.center.due_source_checks('source', 'test', 'probe')
+        self.assertEqual({self.inc, latest}, {row['incident_id'] for row in due})
+        latest_request = next(row for row in due if row['incident_id'] == latest)
+        self.center.record_source_check('source', latest, 'healthy-latest',
+            dict(request_id=latest_request['request_id'], generation=latest_request['generation'],
+                 observed_state='healthy', evidence_refs=['fresh latest predicate']))
+        self.assertEqual('open', self.center.get_incident(self.inc)['state'])
+        old_request = next(row for row in due if row['incident_id'] == self.inc)
+        self.check(old_request)
+        self.assertEqual('resolved', self.center.get_incident(self.inc)['state'])
+        for incident in (unrelated, otherhost, historical, otherconsumer):
+            self.assertIsNone(self.center.get_incident(incident)['lifecycle']['verification_due'])
+        self.assertEqual(result, self.center.record_work_finished('agent', latest, 'latest-finish',
+            dict(attempt_id='latest-delivery', session_id='session', harness='codex')))
+
+    def test_shared_degraded_episodes_queue_one_continuation_for_group_attempt(self):
+        self.center.record_health_agent_session(self.inc, 'native:first', '', 'codex', 'session',
+            'https://agent.example.test', stage='health-diagnosis')
+        latest = self.shared_episode('latest')
+        self.center.record_work_finished('agent', latest, 'latest-finish',
+            dict(attempt_id='latest-delivery', session_id='session', harness='codex'))
+        due = self.center.due_source_checks('source', 'test', 'probe')
+        self.assertEqual(2, len(due))
+        results = []
+        for row in due:
+            results.append(self.center.record_source_check('source', row['incident_id'], 'degraded:'+row['incident_id'],
+                dict(request_id=row['request_id'], generation=row['generation'],
+                     observed_state='degraded', evidence_refs=['fresh measurement'])))
+        self.assertEqual(results[0]['continuation_delivery_id'], results[1]['continuation_delivery_id'])
+        self.assertEqual(1, self.center._connection.execute("SELECT COUNT(*) FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'").fetchone()[0])
+
+    def test_shared_finish_preserves_each_source_principal_and_native_binding(self):
+        self.center._tokens['other-source'] = {**self.center._tokens['source'], 'principal_id':'other-watchdog'}
+        sibling = self.center.create_event('other-source', 'other-principal',
+            {**self.event, 'dedup_key':'sibling', 'correlation_id':'sibling'})['incident_id']
+        self.center.record_health_agent_session(sibling, 'native:other', '', 'codex', 'session',
+            'https://agent.example.test', stage='health-diagnosis')
+        other_session = self.shared_episode('other-session')
+        self.center.record_health_agent_session(other_session, 'native:separate', '', 'codex', 'separate',
+            'https://agent.example.test', stage='health-diagnosis')
+        latest = self.shared_episode('latest')
+        self.center.record_work_finished('agent', latest, 'latest-finish',
+            dict(attempt_id='latest-delivery', session_id='session', harness='codex'))
+        self.assertEqual([latest], [r['incident_id'] for r in self.center.due_source_checks('source','test','probe')])
+        requests = self.center.due_source_checks('other-source','test','probe')
+        self.assertEqual([sibling], [r['incident_id'] for r in requests])
+        row = requests[0]
+        body = dict(request_id=row['request_id'], generation=row['generation'], observed_state='healthy', evidence_refs=['independent other source'])
+        with self.assertRaises(AuthorizationError):
+            self.center.record_source_check('source', sibling, 'forged-source', body)
+        self.center.record_source_check('other-source', sibling, 'own-source', body)
+        self.assertEqual('resolved', self.center.get_incident(sibling)['state'])
+        self.assertIsNone(self.center.get_incident(other_session)['lifecycle']['verification_due'])
+
+    def test_older_degraded_latest_healthy_retains_one_durable_group_authority(self):
+        self.center.record_health_agent_session(self.inc, 'native:first', '', 'codex', 'session',
+            'https://agent.example.test', stage='health-diagnosis')
+        latest = self.shared_episode('latest')
+        self.center.record_work_finished('agent', latest, 'latest-finish',
+            dict(attempt_id='latest-delivery', session_id='session', harness='codex'))
+        due = {r['incident_id']:r for r in self.center.due_source_checks('source','test','probe')}
+        first = self.check(due[self.inc], 'degraded')
+        row = due[latest]
+        self.center.record_source_check('source', latest, 'latest-healthy',
+            dict(request_id=row['request_id'], generation=row['generation'], observed_state='healthy', evidence_refs=['latest healthy']))
+        self.assertEqual('resolved', self.center.get_incident(latest)['state'])
+        self.assertEqual(self.inc, first['continuation']['incident_id'])
+        self.assertEqual(first['continuation'], self.center.get_incident(latest)['lifecycle']['continuation'])
+        reopened = NotificationCenter(Path(self.tmp.name)/'state.db',self.center._tokens)
+        self.addCleanup(reopened._connection.close)
+        reopened._connection.execute('UPDATE incident_lifecycle SET verification_due=0 WHERE incident_id=?',(self.inc,))
+        reopened._connection.commit()
+        fresh = reopened.due_source_checks('source','test','probe')[0]
+        second = reopened.record_source_check('source', self.inc, 'old-still-degraded',
+            dict(request_id=fresh['request_id'], generation=fresh['generation'], observed_state='degraded', evidence_refs=['old still bad']))
+        self.assertEqual(first['continuation_delivery_id'], second['continuation_delivery_id'])
+        self.assertEqual(first['continuation'], second['continuation'])
+        current = reopened.get_incident(self.inc)['lifecycle']
+        reopened.record_source_check('source', self.inc, 'old-final-healthy',
+            dict(request_id=current['request_id'], generation=current['generation'], observed_state='healthy', evidence_refs=['all now healthy']))
+        self.assertNotIn('continuation', reopened.get_incident(latest)['lifecycle'])
+
+    def test_new_shared_attempt_invalidates_old_group_continuation(self):
+        self.center.record_health_agent_session(self.inc, 'native:first', '', 'codex', 'session',
+            'https://agent.example.test', stage='health-diagnosis')
+        latest = self.shared_episode('latest')
+        self.center.record_work_finished('agent', latest, 'latest-finish',
+            dict(attempt_id='latest-delivery', session_id='session', harness='codex'))
+        old = next(r for r in self.center.due_source_checks('source','test','probe') if r['incident_id'] == self.inc)
+        self.check(old, 'degraded')
+        self.assertIn('continuation', self.center.get_incident(latest)['lifecycle'])
+        self.center.record_work_finished('agent', latest, 'second-finish',
+            dict(attempt_id='second-delivery', session_id='session', harness='codex'))
+        for incident in (self.inc, latest):
+            life = self.center.get_incident(incident)['lifecycle']
+            self.assertEqual('second-delivery', life['attempt_id'])
+            self.assertNotIn('continuation', life)
+
+    def test_shared_attempt_payload_conflict_rolls_back_new_episode_completion(self):
+        from notification_center.core import IdempotencyConflict
+        self.center.record_health_agent_session(self.inc, 'native:first', '', 'codex', 'session',
+            'https://agent.example.test', stage='health-diagnosis')
+        self.finish('shared-attempt')
+        latest = self.shared_episode('latest')
+        with self.assertRaises(IdempotencyConflict):
+            self.center.record_work_finished('agent', latest, 'conflicting-finish',
+                dict(attempt_id='shared-attempt', session_id='session', harness='codex', evidence_refs=['different']))
+        self.assertIsNone(self.center.get_incident(latest)['lifecycle']['verification_due'])
+
     def check(self, request, state='healthy', token='source'):
         return self.center.record_source_check(token,self.inc,'check:'+request['request_id']+':'+state,dict(request_id=request['request_id'],generation=request['generation'],observed_state=state,evidence_refs=['probe']))
 
