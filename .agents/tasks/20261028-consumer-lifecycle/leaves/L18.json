@@ -1,0 +1,9 @@
+{
+  "id": "L18", "label": "Установка мигрированных источников",
+  "status": "done", "owner": "consumer-runtime",
+  "harness": "codex", "model": "gpt-6.1-sol", "tier": "frontier", "complexity": "L",
+  "depends_on": ["L05"], "estimate_minutes": {"minimum": 20, "maximum": 35},
+  "description": "Установить опубликованные consumer adapters по действующим owner release routes и включить opt-in только после SDK и scope validation; сохранить штатные timer состояния и чужие исходники.",
+  "acceptance": "Для каждого активного source зафиксированы actual executable/hash/env marker/helper import и действующая readonly проверка; ни чужие WIP, ни отключённые timer не включены.",
+  "affected_files": [], "note": "Known active consumers installed after NP43ec435e API/auth gate: 7 sourceGET200 + protected opt-ins; Fleet5c263e45 preserves base14e6 and normaltimerexit0; external fullsweepexit0; ATV5readonlyqueries; TGCnormalexit0 mixedforeignWIPpreserved; AF7b35c05e da97533 installed, compatiblecurrentpeer c60ecf4 retains exactadapters/SDK/V2; video bot b87cb8da canonicalpromote100 completed. REPORT-L18.md and registry hold installed proof. Globalcoverage remainsfalse; no broadfleetPASS; make-status DB lifecycle defect only recorded389ed50c, not fixed. No QAevents/calls/businesssends."
+}
