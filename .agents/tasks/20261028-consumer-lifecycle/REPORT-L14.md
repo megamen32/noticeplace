@@ -113,3 +113,25 @@ L06 должен установить SDK/grants/flags/frozen bundles и про�
 consumer path. L16 adapter ещё исполняется. Сервер88 discovery был
 частичным/усеченным — весь fleet не объявляется найденным на 100%.
 Новые runtime/incident/session proof здесь не заявляются.
+
+## Финальная публикация / ограничения
+
+- NoticePlace main `0a6b673`: реестр, staged supplemental grant TGC, report,
+  leaf. Сам grant не применялся.
+- TelegramAuto parent main `22ae315ae31c415a68065bd5ad73e94d0ee4936d`:
+  штатный mapping нового adapter и regression fixture. 157 tests прошли
+  отдельно и повторно в pre-push (22.1s); remote/main подтверждён.
+- TGC feature/cloudtelethon
+  `5edf9f637056f69a02a8d17c25249a6a6f486128` успешно pushed без force/bypass.
+  В main не интегрирован из-за чужой diverged history.
+- TGC pre-push по широкому реальному push range собрал 3543 items и получил
+  collection error в существующем `tests/test_cloud36_message_formatter.py`:
+  `ModuleNotFoundError: account_broker.cloud`. Hook сообщил RED, но текущая
+  политика hook не заблокировала push. Это НЕ full-suite GREEN. Owning
+  Cloud SDK dependency boundary передана Root; исправлять чужой runtime/SDK
+  или включать его WIP в наш release нельзя без согласования его владельца.
+- После alternate-index commit основной index всё ещё отражал HEAD^ и
+  показывал обратные staged deletions моих новых файлов. До исправления
+  проверено, что по четырём owned paths index точно равен HEAD^. Только
+  эти четыре index entries приведены к новому HEAD; working tree и чужие
+  staged paths не менялись. Остался только чужой unstaged watchdog diff.
