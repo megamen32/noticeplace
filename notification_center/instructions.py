@@ -36,12 +36,14 @@ def noticeplace_instructions() -> dict[str, Any]:
             "recovery": (
                 "Закрытие инцидента: POST /v1/events с schema='notify.event.v1', action='resolve', "
                 "project, recipient, dedup_key. Для обычных инцидентов отдельных /health/* эндпоинтов НЕТ. "
-                "Health-инцидент (event_type='health.*') закрывает исполнитель: он чинит до восстановления "
-                "потребителя в одной сессии под автопилотом Agent Herder и публикует проверенный итог "
-                "(progress → verification → resolve). Обязательна независимая проверка источника: "
-                "source_id и verifier_id различаются, отпечаток источника совпадает. Без неё источник "
-                "получит 400; закрывать health-инцидент по словам агента нельзя."
+                "Health-инцидент закрывает исходный независимый watchdog/source, а не исполнитель. "
+                "Исполнитель публикует work-finished: попытка завершена, инцидент остаётся открыт. "
+                "Источник проверяет актуальное состояние; degraded продолжает ту же сессию, "
+                "unknown оставляет проверку ожидающей и не запускает нового агента."
             ),
+            "work_finished": "POST /v1/incidents/{id}/health/work-finished + Idempotency-Key: attempt_id, session_id, harness, evidence_refs. Не закрывает инцидент; возвращает request_id, generation, verification_due.",
+            "source_check": "GET /v1/verification-requests?project=...&source_id=...; POST /v1/incidents/{id}/health/check-result + Idempotency-Key: request_id, generation, observed_state=healthy|degraded|unknown, evidence_refs. Право источника задаётся в серверном NOTIFY_CENTER_TOKENS_JSON: principal_id, verification_sources=[source_id], incident_role=verifier; отдельный executor credential с incident_role=executor не вправе проверять или закрывать.",
+            "health_identity": "consumer_id из серверного scoped incident (иначе project+source_id), host_id, problem_type (иначе signal_type); correlation_id определяет эпизод. Legacy recovery без generation допускается только без неоднозначности: при repeated degraded нужно observed_at позже последнего измерения; после work_finished обязателен актуальный request_id/generation.",
             "disabled_notifications": "GET /v1/mutes?project=...; включить обратно: POST /v1/incidents/{id}/unmute.",
             "human_request_progress": "POST /v1/human-requests/{request_id}/progress с Bearer-токеном исходного проекта; phase=accepted|running|completed|failed; session_url и message необязательны. Обновляет ту же карточку после выбора deep_analysis.",
             "pending_questions": "GET /v1/human-requests?state=pending — краткий текст вопроса, варианты ответа и точная нативная сессия, в которую вернётся ответ.",

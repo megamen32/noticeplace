@@ -2510,6 +2510,16 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                 except ValidationError as error:
                     self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
+            if parsed_path.path == "/v1/verification-requests":
+                try:
+                    query = urllib.parse.parse_qs(parsed_path.query)
+                    checks = center.due_source_checks(_bearer(self), str(query.get('project', [''])[0]), str(query.get('source_id', [''])[0]))
+                    self._reply(HTTPStatus.OK, {"requests": checks})
+                except AuthorizationError as error:
+                    self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
+                except ValidationError as error:
+                    self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
             if self.path.startswith("/v1/incidents/"):
                 try:
                     incident_id = self.path.rsplit("/", 1)[-1]
@@ -2812,7 +2822,11 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     center.authorize_incident(token, incident_id)
                     key = self.headers.get("Idempotency-Key") or ""
                     actor = str(body.get("actor") or "api")
-                    if action == "plans":
+                    if action == "work-finished":
+                        result = center.record_work_finished(token, incident_id, key, body)
+                    elif action == "check-result":
+                        result = center.record_source_check(token, incident_id, key, body)
+                    elif action == "plans":
                         plans = body.get("plans")
                         if not isinstance(plans, list):
                             raise ValidationError("health plans must be a JSON array")
@@ -2870,6 +2884,10 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                             model=str(body.get("model") or ""),
                         )
                     elif action == "verification":
+                        from .incident_lifecycle import verifier, principal
+                        with center._lock:
+                            verifier(center, token, incident_id)
+                            actor = principal(center, token)
                         result = health_workflow.record_verification(
                             incident_id,
                             key,
@@ -2881,6 +2899,10 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                             actor=actor,
                         )
                     elif action == "resolve":
+                        from .incident_lifecycle import verifier, principal
+                        with center._lock:
+                            verifier(center, token, incident_id)
+                            actor = principal(center, token)
                         result = health_workflow.resolve(
                             incident_id,
                             str(body.get("source_id") or ""),

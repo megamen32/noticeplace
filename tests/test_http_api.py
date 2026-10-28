@@ -622,6 +622,8 @@ class HttpApiTests(unittest.TestCase):
             "evidence_refs": ["metric:disk"],
             "health": {"source_id": "host:host-a", "host_id": "host-a", "signal_type": "disk"},
         }
+        self.center._tokens['source-verifier'] = {'project':'hermes','max_severity':'critical','principal_id':'independent-probe','incident_role':'verifier','verification_sources':['host:host-a']}
+        verifier_auth = {"Authorization": "Bearer source-verifier"}
         auth = {"Authorization": "Bearer secret-token"}
         status, created = self.request("POST", "/v1/events", signal, **auth, **{"Idempotency-Key": "health-signal-1"})
         self.assertEqual(202, status)
@@ -692,13 +694,13 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertFalse(heartbeat["useful_progress"])
 
-        status, blocked = self.request("POST", f"/v1/incidents/{incident_id}/health/resolve", {"source_id": "host:host-a", "verification_id": "verify-1", "actor": "api"}, **auth, **{"Idempotency-Key": "health-resolve-early"})
+        status, blocked = self.request("POST", f"/v1/incidents/{incident_id}/health/resolve", {"source_id": "host:host-a", "verification_id": "verify-1", "actor": "api"}, **verifier_auth, **{"Idempotency-Key": "health-resolve-early"})
         self.assertEqual(400, status)
         self.assertIn("verification", str(blocked["error"]))
-        status, verification = self.request("POST", f"/v1/incidents/{incident_id}/health/verification", {"source_id": "host:host-a", "verification_id": "verify-1", "observed_state": "healthy", "evidence_refs": ["independent:probe"], "actor": "probe-b"}, **auth, **{"Idempotency-Key": "health-verification-1"})
+        status, verification = self.request("POST", f"/v1/incidents/{incident_id}/health/verification", {"source_id": "host:host-a", "verification_id": "verify-1", "observed_state": "healthy", "evidence_refs": ["independent:probe"], "actor": "probe-b"}, **verifier_auth, **{"Idempotency-Key": "health-verification-1"})
         self.assertEqual(200, status)
         self.assertEqual("healthy", verification["observed_state"])
-        status, resolved = self.request("POST", f"/v1/incidents/{incident_id}/health/resolve", {"source_id": "host:host-a", "verification_id": "verify-1", "actor": "api", "elapsed_ms": 3210, "trace_refs": ["trace-http-1"]}, **auth, **{"Idempotency-Key": "health-resolve-1"})
+        status, resolved = self.request("POST", f"/v1/incidents/{incident_id}/health/resolve", {"source_id": "host:host-a", "verification_id": "verify-1", "actor": "api", "elapsed_ms": 3210, "trace_refs": ["trace-http-1"]}, **verifier_auth, **{"Idempotency-Key": "health-resolve-1"})
         self.assertEqual(200, status)
         self.assertEqual("resolved", resolved["state"])
         self.assertEqual(1, len(self.center.list_incidents()))
@@ -898,7 +900,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(401, status)
         self.assertEqual({"error": "unauthorized"}, body)
 
-        expected_tools = [{"name": name, "description": spec["description"], "inputSchema": spec["inputSchema"]} for name, spec in STDIO_TOOLS.items()]
+        expected_tools = [{"name": name, "description": spec["description"], "inputSchema": spec["inputSchema"]} for name, spec in STDIO_TOOLS.items() if name == "noticeplace"]
         status, initialize = self.request("POST", "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, Authorization="Bearer mcp-token")
         self.assertEqual(200, status)
         self.assertEqual("notify-mcp", initialize["result"]["serverInfo"]["name"])

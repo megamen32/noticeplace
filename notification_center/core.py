@@ -108,6 +108,8 @@ class NotificationCenter:
         self._default_quiet_hours = list(DEFAULT_CONSUMER_QUIET_HOURS) if default_quiet_hours is None else default_quiet_hours
         self._dispatcher_heartbeat = time.time()
         self._initialize_schema()
+        from .incident_lifecycle import initialize
+        initialize(self)
         from .task_decisions import TaskDecisionStore
         self.task_decisions = TaskDecisionStore(self)
 
@@ -687,7 +689,20 @@ class NotificationCenter:
                 continue
             if not all(str(source_event.get(key) or "").strip() for key in keys):
                 continue
-            return all(str(source_event.get(key) or "").strip() == recovery_identity[key] for key in keys)
+            if not all(str(source_event.get(key) or "").strip() == recovery_identity[key] for key in keys):
+                return False
+            lifecycle = self.incident_lifecycle(incident_id)
+            if lifecycle and lifecycle.get('request_id'):
+                return False  # opted-in completion requires the current check receipt
+            observed, latest = event.get('observed_at'), source_event.get('observed_at')
+            if lifecycle and lifecycle.get('latest_observed_at') is not None:
+                latest = lifecycle['latest_observed_at']
+            if latest is not None:
+                return (isinstance(observed, (int, float)) and not isinstance(observed, bool)
+                        and math.isfinite(observed) and isinstance(latest, (int, float))
+                        and not isinstance(latest, bool) and math.isfinite(latest) and observed > latest)
+            # Legacy delivery has no causal clock: a repeated degradation is ambiguous.
+            return not lifecycle or lifecycle['generation'] == 1
         return False
 
     def _audit(self, incident_id: str | None, event_type: str, actor: str | None, payload: Mapping[str, Any]) -> None:
@@ -1856,6 +1871,8 @@ class NotificationCenter:
             raise ValidationError("Idempotency-Key is required")
         self._validate_event(event)
         scope = self._token(token, event)
+        if scope.get('incident_role') == 'executor' and str(event.get('event_type') or '') in {'health.recovered', 'health.phase_changed', 'health.verification_recorded'}:
+            raise AuthorizationError('executor credentials cannot publish source health authority')
         requested_agent_job = str(event.get("agent_job") or "")
         agent_job = self._effective_agent_job(event, scope)
         authorized_job = agent_job or requested_agent_job
@@ -1941,6 +1958,8 @@ class NotificationCenter:
                 self._audit(incident_id, "incident_repeated", "producer", {"dedup_key": dedup_key})
             event_id = f"evt_{uuid.uuid4().hex}"
             self._connection.execute("INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, proxy_ip, forwarded_for) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (idempotency_key, event_id, incident_id, payload_json, now, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, ingress.get("peer_ip"), ingress.get("source_ip"), ingress.get("proxy_ip"), ingress.get("forwarded_for")))
+            from .incident_lifecycle import observe_degraded
+            observe_degraded(self, token, incident_id, event)
             ingress.update({"project": project, "profile_id": consumer_id, "severity": str(event["severity"]), "event_type": event_type, "producer": producer, "plugin": plugin, "correlation_id": correlation_id, "parent_incident_id": parent_incident_id, "parent_event_id": parent_event_id})
             self._audit(incident_id, "event_ingress", "producer", ingress)
             notifications_muted = self._notification_scope_muted(project, recipient, dedup_key)
@@ -2060,7 +2079,9 @@ class NotificationCenter:
             raise ValidationError("Idempotency-Key is required")
         self._validate_resolution(event)
         project, recipient, dedup_key = (str(event["project"]), str(event["recipient"]), str(event["dedup_key"]))
-        self._scope(token, project)
+        resolution_scope = self._scope(token, project)
+        if resolution_scope.get('incident_role') == 'executor':
+            raise AuthorizationError('executor credentials cannot resolve incidents')
         payload_json = json.dumps(dict(event), ensure_ascii=False, sort_keys=True)
         now = time.time()
         with self._lock, self._connection:
@@ -2107,6 +2128,16 @@ class NotificationCenter:
                 if event_type == 'health.phase_changed' and (event.get('next_severity') not in {'important', 'critical'} or event.get('next_severity') == row['severity']):
                     raise ValidationError('health severity phase must change to a different valid level')
                 source_matches = self._source_health_recovery_matches(incident_id, event)
+                lifecycle = self.incident_lifecycle(incident_id)
+                if lifecycle and event_type in {'health.recovered', 'health.phase_changed'}:
+                    from .incident_lifecycle import principal
+                    source_row = self._connection.execute('SELECT * FROM incident_lifecycle WHERE incident_id=?',(incident_id,)).fetchone()
+                    from .incident_lifecycle import bind_source
+                    bind_source(self, token, source_row)
+                    if principal(self,token) == source_row['executor_principal']:
+                        raise AuthorizationError('recovery requires the original source principal')
+                    if not source_matches:
+                        raise ValidationError('recovery is stale or needs a current source check')
                 if event_type == 'health.phase_changed' and not source_matches:
                     raise ValidationError('health severity phase requires the matching typed source')
                 if not source_matches:
@@ -4429,6 +4460,9 @@ class NotificationCenter:
         only; every other gate, including independent verification and the
         original source fingerprint, still applies unchanged.
         """
+        lifecycle = self.incident_lifecycle(incident_id)
+        if lifecycle and lifecycle.get('request_id'):
+            raise ValidationError('completed attempts require the current authenticated source check')
         current = self.get_incident(incident_id)
         if current is None:
             raise ValidationError("incident not found")
@@ -4636,7 +4670,24 @@ class NotificationCenter:
                 incident["notifications_muted"] = self._notification_scope_muted(
                     str(incident["project"]), str(incident["recipient"]), str(incident.get("collapse_key") or incident["dedup_key"])
                 ) or self._notification_scope_muted(str(incident['project']), str(incident['recipient']), str(incident['dedup_key']))
+                incident["lifecycle"] = self.incident_lifecycle(incident_id)
             return incident
+
+    def incident_lifecycle(self, incident_id: str) -> dict[str, Any] | None:
+        from .incident_lifecycle import view
+        return view(self, incident_id)
+
+    def record_work_finished(self, token: str, incident_id: str, key: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        from .incident_lifecycle import finish
+        return finish(self, token, incident_id, key, body)
+
+    def due_source_checks(self, token: str, project: str, source_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        from .incident_lifecycle import due_checks
+        return due_checks(self, token, project, source_id, limit)
+
+    def record_source_check(self, token: str, incident_id: str, key: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        from .incident_lifecycle import check
+        return check(self, token, incident_id, key, body)
 
     def _notification_scope_muted(self, project: str, recipient: str, dedup_key: str) -> bool:
         row = self._connection.execute(

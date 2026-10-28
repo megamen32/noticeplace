@@ -130,6 +130,7 @@ class HealthWorkflowTests(unittest.TestCase):
                 "host_id": "site-selected",
                 "signal_type": "load",
                 "correlation_id": "external-site:site-selected:transition-1",
+                "observed_at": 100,
             },
         )
         self.workflow.attach_plans(created["incident_id"], "typed-selected-plans", self._plans(), actor="gptadmin")
@@ -150,6 +151,7 @@ class HealthWorkflowTests(unittest.TestCase):
                 "host_id": "site-selected",
                 "signal_type": "load",
                 "correlation_id": "external-site:site-selected:transition-1",
+                "observed_at": 300,
             },
         )
         self.assertEqual(created["incident_id"], repeated["incident_id"])
@@ -168,6 +170,7 @@ class HealthWorkflowTests(unittest.TestCase):
                 "host_id": "site-selected",
                 "signal_type": "load",
                 "correlation_id": "external-site:site-selected:transition-1",
+                "observed_at": 400,
             },
         )
 

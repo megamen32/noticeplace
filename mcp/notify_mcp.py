@@ -463,6 +463,18 @@ def tool_noticeplace_question_result(args: Dict[str, Any]) -> Dict[str, Any]:
     return _human_request_call(cfg, "GET", "/" + urllib.parse.quote(request_id, safe="") + "/result")
 
 
+def tool_noticeplace_work_finished(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Finish only the executor attempt, using its existing project callback."""
+    required = ('incident_id', 'attempt_id', 'session_id', 'harness')
+    if any(not isinstance(args.get(key), str) or not args[key].strip() for key in required):
+        raise ValueError('incident_id, attempt_id, session_id and harness are required')
+    incident_id = args['incident_id']
+    body = {key: args[key] for key in required if key != 'incident_id'}
+    body['evidence_refs'] = [str(item)[:128] for item in (args.get('evidence_refs') or [])[:10]]
+    key = 'noticeplace-finish:' + hashlib.sha256((incident_id + ':' + args['attempt_id']).encode()).hexdigest()
+    return _noticeplace_api('POST', '/incidents/' + urllib.parse.quote(incident_id, safe='') + '/health/work-finished', body, idempotency_key=key)
+
+
 def tool_noticeplace_incident_progress(args: Dict[str, Any]) -> Dict[str, Any]:
     """Publish executor progress using project auth, independent of human identities."""
     incident_id = str(args.get("incident_id") or "").strip()
@@ -896,6 +908,7 @@ TOOLS = {
             "Записать ответ человека: action=noticeplace_answer (request_id, value; для карточки выбора ещё "
             "incident_id и choice_id). Канонический ответ по request_id: action=noticeplace_question_result. "
             "Прогресс по инциденту: action=noticeplace_incident_progress (incident_id, step, evidence_refs). "
+            "Завершить попытку, оставив инцидент открытым до независимой проверки: action=noticeplace_work_finished (incident_id, attempt_id, session_id, harness, evidence_refs). "
             "Mute-настройки: action=noticeplace_list_mutes и action=noticeplace_set_notifications "
             "(incident_id, enabled). Прямое сообщение в Telegram: action=send_message (message). "
             "Прямой звонок: action=call (только по явной просьбе человека). "
@@ -931,6 +944,19 @@ TOOLS = {
             "additionalProperties": False,
         },
         "handler": None,  # set right after the helpers below
+    },
+    "noticeplace_work_finished": {
+        "description": "Исполнитель закончил изменения и просит независимый источник проверить сервис. Инцидент не закрывается; unknown не запускает другого агента.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **{name: {"type":"string","minLength":1,"maxLength":128} for name in ("incident_id","attempt_id","session_id","harness")},
+                "evidence_refs": {"type":"array","maxItems":10,"items":{"type":"string","maxLength":128}},
+            },
+            "required":["incident_id","attempt_id","session_id","harness"],
+            "additionalProperties":False,
+        },
+        "handler": tool_noticeplace_work_finished,
     },
     "ask_human": {
         "description": "Best default way to say or ask something to the human. Set expect_reply=false for a notification. For a question, optionally show two or three choice buttons; the returned value is the human's selected value.",
