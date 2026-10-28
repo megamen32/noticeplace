@@ -862,7 +862,10 @@ class HealthAutoselectAndAutopilotTests(unittest.TestCase):
             {"id": "inc-1", "title": "Disk pressure", "body": "b"},
             {"status": "diagnosis_complete", "diagnosis": "Диск переполнен", "evidence_refs": [], "trace_refs": []},
         )
-        self.assertIn("gsd-debug", message)
+        self.assertIn("выбранному владельцем workflow целевого проекта", message)
+        self.assertNotIn("gsd-debug", message)
+        self.assertNotIn("gsd-quick", message)
+        self.assertNotIn("original Get Shit Done", message)
         self.assertIn("Диск переполнен", message)
         self.assertIn("repair-first", message)
         self.assertNotIn("exactly three", message)
