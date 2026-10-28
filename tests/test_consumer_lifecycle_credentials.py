@@ -157,3 +157,214 @@ class CredentialTests(unittest.TestCase):
                                              '--backup-dir', str(base / 'backup3')], capture_output=True)
             self.assertNotEqual(0, result.returncode)
             self.assertEqual(before, env2.read_bytes())
+
+    def test_reviewed_missing_integration_baseline_is_narrow(self):
+        scopes, _, _ = self.fixture()
+        scopes['existing-integration'] = dict(project='integration', max_severity='important', agent_jobs=None)
+        accepted = credentials.permitted_baselines(scopes, ['integration'])
+        reduced = {t: s for t, s in scopes.items() if s['project'] != 'integration'}
+        self.assertEqual({credentials.scope_hash(scopes), credentials.scope_hash(reduced)}, set(accepted))
+        with self.assertRaises(ValueError):
+            credentials.permitted_baselines(scopes, ['project'])
+        for update in [dict(agent_jobs=['health-diagnosis']), dict(max_severity='critical'),
+                       dict(automatic_health_diagnosis=True), dict(verification_owned_sources=True)]:
+            changed = dict(scopes, **{'existing-integration': dict(scopes['existing-integration'], **update)})
+            with self.assertRaises(ValueError):
+                credentials.permitted_baselines(changed, ['integration'])
+
+    def test_same_candidate_normalizes_only_reviewed_missing_seed(self):
+        scopes, callback, plan = self.fixture()
+        canonical = dict(scopes, integration_token=dict(project='integration', max_severity='important', agent_jobs=None))
+        plan['projects']['integration'] = dict(source_principal='integration-source', executor_principal='integration-executor', verification_sources=[])
+        callback['tokens']['integration'] = 'integration_token'
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            base = Path(directory)
+            env100, env44, cb, review = [base / name for name in ('100env', '44env', 'cb', 'plan')]
+            for env, mapping in [(env100, canonical), (env44, scopes)]:
+                env.write_text('LOCAL_PORT=' + env.name + '\nNOTIFY_CENTER_TOKENS_JSON=' + json.dumps(mapping) + '\n')
+                env.chmod(0o600)
+            cb.write_text(json.dumps(callback)); cb.chmod(0o600)
+            review.write_text(json.dumps(plan))
+            helper = [sys.executable, str(ROOT / 'deploy/consumer-lifecycle-credentials.py')]
+            subprocess.run(helper + ['--env', str(env100), '--callback', str(cb), '--plan', str(review),
+                '--allow-missing-base-project', 'integration', '--prepare-dir', str(base / 'candidate')], check=True, capture_output=True)
+            subprocess.run(helper + ['--env', str(env44), '--scope-only', '--check-prepared', str(base / 'candidate')], check=True, capture_output=True)
+            # Any extra scope mutation still fails, despite the reviewed seed exception.
+            original44 = env44.read_text()
+            changed = {'original': dict(scopes['original'], max_severity='critical')}
+            env44.write_text(credentials.replace_env(original44, changed))
+            collision = subprocess.run(helper + ['--env', str(env44), '--scope-only', '--check-prepared', str(base / 'candidate')], capture_output=True)
+            self.assertNotEqual(0, collision.returncode)
+            self.assertIn(b'source collision', collision.stderr)
+            env44.write_text(original44)
+            subprocess.run(helper + ['--env', str(env44), '--scope-only', '--apply-prepared', str(base / 'candidate'),
+                '--backup-dir', str(base / 'backup44')], check=True, capture_output=True)
+            prepared = json.loads((base / 'candidate/candidate.json').read_text())
+            self.assertEqual(prepared['scopes'], credentials.read_env(env44.read_text()))
+            self.assertTrue(env44.read_text().startswith('LOCAL_PORT=44env\n'))
+
+    def test_registered_consumers_require_exact_reviewed_project_and_never_reach_executor(self):
+        scopes, callback, plan = self.fixture()
+        consumer = 'consumer_b85a89f421694cdd9213c7cdf873e991'
+        plan['registered_consumers'] = [{'consumer_id': consumer, 'project': 'project'}]
+        plan['projects']['project']['verification_consumer_ids'] = [consumer]
+        output, _, _ = credentials.prepare(scopes, callback, plan, lambda: 'fresh')
+        self.assertEqual([consumer], output['original']['verification_consumer_ids'])
+        self.assertEqual('verifier', output['original']['incident_role'])
+        self.assertNotIn('verification_consumer_ids', output['fresh'])
+        plan['registered_consumers'][0]['project'] = 'foreign'
+        with self.assertRaises(ValueError):
+            credentials.prepare(scopes, callback, plan, lambda: 'fresh')
+        plan['registered_consumers'][0]['project'] = 'project'
+        plan['projects']['project']['verification_consumer_ids'] = ['*']
+        with self.assertRaises(ValueError):
+            credentials.prepare(scopes, callback, plan, lambda: 'fresh')
+
+    def test_callback_sync_rejects_executor_with_consumer_verification_grant(self):
+        scopes, callback, plan = self.fixture()
+        migrated, updated, _ = credentials.prepare(scopes, callback, plan, lambda: 'fresh')
+        migrated['fresh']['verification_consumer_ids'] = ['consumer_bad']
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            env, cb = Path(directory) / 'env', Path(directory) / 'cb'
+            env.write_text('NOTIFY_CENTER_TOKENS_JSON=' + json.dumps(migrated) + '\n')
+            cb.write_text(json.dumps(updated)); cb.chmod(0o600)
+            before = cb.read_bytes()
+            result = subprocess.run([sys.executable, str(ROOT / 'scripts/sync-health-callback-tokens.py'), str(env), str(cb)], capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual(before, cb.read_bytes())
+
+    def test_supplemental_registered_policy_uses_no_bearer_and_requires_exact_review(self):
+        plan = json.loads((ROOT / 'docs/consumer-lifecycle-registration-plan.json').read_text())
+        grants = credentials.prepare_consumer_grants(plan)
+        self.assertEqual('autotelegramviews', grants[0]['project'])
+        self.assertNotIn('principal_id', grants[0])
+        self.assertEqual('consumer_b85a89f421694cdd9213c7cdf873e991', grants[0]['consumer_id'])
+        for update in [dict(project='foreign'), dict(incident_role='executor'),
+                       dict(consumer_id='consumer_unreviewed'), dict(principal_id='claimed')]:
+            changed = dict(plan, consumer_grants=[dict(plan['consumer_grants'][0], **update)])
+            with self.assertRaises(ValueError):
+                credentials.prepare_consumer_grants(changed)
+        prior = dict(grants[0], consumer_id='consumer_existing')
+        self.assertEqual([prior, grants[0]], credentials.merge_consumer_grants([prior], grants))
+        with self.assertRaises(ValueError):
+            credentials.merge_consumer_grants([dict(grants[0], verification_sources=['different'])], grants)
+
+    def test_prepared_policy_hash_fences_unrelated_local_policy_change(self):
+        scopes, callback, plan = self.fixture()
+        fragment = json.loads((ROOT / 'docs/consumer-lifecycle-registration-plan.json').read_text())
+        plan.update(registered_consumers=fragment['registered_consumers'], consumer_grants=fragment['consumer_grants'], consumer_executor_projects=fragment['consumer_executor_projects'])
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            base = Path(directory)
+            env, cb, review = base / 'env', base / 'cb', base / 'plan'
+            env.write_text('PORT=19400\nNOTIFY_CENTER_TOKENS_JSON=' + json.dumps(scopes) + '\n')
+            env.chmod(0o600); cb.write_text(json.dumps(callback)); cb.chmod(0o600)
+            review.write_text(json.dumps(plan))
+            helper = [sys.executable, str(ROOT / 'deploy/consumer-lifecycle-credentials.py'), '--env', str(env), '--callback', str(cb)]
+            subprocess.run(helper + ['--plan', str(review), '--prepare-dir', str(base / 'candidate')], check=True, capture_output=True)
+            prepared = json.loads((base / 'candidate/candidate.json').read_text())
+            self.assertEqual(fragment['consumer_grants'], prepared['consumer_grants'])
+            self.assertNotIn('consumer_grants', prepared['callback_tokens'])
+            original = env.read_text()
+            env.write_text(credentials.replace_consumer_grants(original, [dict(fragment['consumer_grants'][0], project='foreign')]))
+            result = subprocess.run(helper + ['--check-prepared', str(base / 'candidate')], capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn(b'consumer grants differ', result.stderr)
+            env.write_text(original)
+            subprocess.run(helper + ['--apply-prepared', str(base / 'candidate'), '--backup-dir', str(base / 'backup')], check=True, capture_output=True)
+            self.assertEqual(fragment['consumer_grants'], credentials.read_consumer_grants(env.read_text()))
+            self.assertNotIn('consumer_grants', json.loads(cb.read_text()))
+            self.assertTrue(env.read_text().startswith('PORT=19400\n'))
+
+    def test_registered_only_project_has_separate_executor_callback(self):
+        scopes, callback, plan = self.fixture()
+        fragment = json.loads((ROOT / 'docs/consumer-lifecycle-registration-plan.json').read_text())
+        plan.update(registered_consumers=fragment['registered_consumers'], consumer_grants=fragment['consumer_grants'], consumer_executor_projects=fragment['consumer_executor_projects'])
+        plan['consumer_executor_projects'] = {'autotelegramviews': {'principal_id': 'executor:autotelegramviews', 'max_severity': 'notice'}}
+        tokens = iter(['legacy-executor', 'registered-executor'])
+        output, updated, _ = credentials.prepare(scopes, callback, plan, lambda: next(tokens))
+        self.assertEqual('registered-executor', updated['tokens']['autotelegramviews'])
+        executor = output['registered-executor']
+        self.assertEqual('executor', executor['incident_role'])
+        self.assertEqual('autotelegramviews', executor['project'])
+        self.assertFalse(any(key.startswith('verification_') for key in executor))
+        self.assertEqual({'original'}, {token for token, scope in output.items() if scope['incident_role'] != 'executor'})
+
+    def test_registered_only_executor_real_callback_session_and_finish(self):
+        import threading
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        from unittest import mock
+        from notification_center.core import NotificationCenter
+        from notification_center.http_api import build_handler
+        from notification_center.agent_job_helper import post_health_session_started
+        scopes, callback, plan = self.fixture()
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            base = Path(directory)
+            database = base / 'fixture.db'
+            initial = NotificationCenter(database, {}, consumer_verifier_grants=[])
+            consumer = initial.create_consumer(project='autotelegramviews', name='Isolated fixture',
+                policy=[dict(id='root', platform='telegram', action='message', target={'chat_id': -100}, retry_interval_seconds=60, max_repeats=1)],
+                max_severity='notice')
+            initial._connection.close()
+            grant = dict(consumer_id=consumer['id'], project='autotelegramviews', incident_role='verifier', verification_owned_sources=True)
+            plan.update(registered_consumers=[dict(consumer_id=consumer['id'], project='autotelegramviews')], consumer_grants=[grant],
+                consumer_executor_projects={'autotelegramviews': dict(principal_id='executor:atv', max_severity='notice')})
+            tokens = iter(['legacy-executor', 'registered-executor'])
+            prepared, updated, _ = credentials.prepare(scopes, callback, plan, lambda: next(tokens))
+            center = NotificationCenter(database, prepared, consumer_verifier_grants=credentials.prepare_consumer_grants(plan))
+            self.addCleanup(center._connection.close)
+            event = dict(schema='notify.event.v1', kind='incident', severity='notice', project='autotelegramviews', recipient='health',
+                title='Fixture failure', body='Fixture failure', dedup_key='probe', event_type='health.degraded', source_id='fixture-probe',
+                host_id='fixture-host', signal_type='service', correlation_id='fixture-episode')
+            incident = center.create_event(consumer['intake_token'], 'fixture-open', event)['incident_id']
+            server = ThreadingHTTPServer(('127.0.0.1', 0), build_handler(center, 'fixture-probe', 'fixture-mcp'))
+            self.assertGreater(server.server_port, 18100)
+            thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+            self.addCleanup(server.server_close); self.addCleanup(thread.join); self.addCleanup(server.shutdown)
+            updated['url'] = 'http://127.0.0.1:' + str(server.server_port)
+            path = base / 'callback.json'; path.write_text(json.dumps(updated)); path.chmod(0o600)
+            calls = []
+            def runner(request, **options):
+                calls.append(request.full_url)
+                return urllib.request.urlopen(request, **options)
+            with mock.patch.dict(os.environ, {'GPTADMIN_HEALTH_CALLBACK_FILE': str(path)}):
+                result = post_health_session_started({'job_id': 'health-diagnosis', 'incident': {'id': incident, 'project': 'autotelegramviews'}},
+                    {'harness': 'codex', 'session_id': 'fixture-native', 'profile': 'health-diagnosis'}, runner=runner)
+            self.assertEqual('session_link_attached', result['status'])
+            self.assertEqual([updated['url'] + '/v1/incidents/' + incident + '/health/session'], calls)
+            body = dict(attempt_id='fixture-delivery', session_id='fixture-native', harness='codex', evidence_refs=['fixture-change'])
+            request = urllib.request.Request(updated['url'] + '/v1/incidents/' + incident + '/health/work-finished',
+                data=json.dumps(body).encode(), headers={'Authorization': 'Bearer registered-executor', 'Content-Type': 'application/json', 'Idempotency-Key': 'fixture-finish'}, method='POST')
+            with urllib.request.urlopen(request, timeout=5) as response:
+                finished = json.load(response)
+            self.assertTrue(finished['request_id'])
+            self.assertEqual('open', center.get_incident(incident)['state'])
+            self.assertEqual('notice', center._token_scope(consumer['intake_token'])['max_severity'])
+            self.assertEqual('consumer:' + consumer['id'], center._token_scope(consumer['intake_token'])['principal_id'])
+
+    def test_reviewed_source_hash_resolution_is_exact_and_readonly(self):
+        import hashlib
+        import sqlite3
+        scopes, callback, plan = self.fixture()
+        source = 'monitor:https://private.invalid/path?opaque=fixture'
+        wanted = hashlib.sha256(source.encode()).hexdigest()
+        plan['projects']['project']['verification_source_sha256_refs'] = [wanted]
+        with self.assertRaises(ValueError):
+            credentials.prepare(scopes, callback, plan)
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as directory:
+            database = Path(directory) / 'fixture.db'
+            connection = sqlite3.connect(database)
+            connection.executescript('CREATE TABLE incidents(id TEXT,project TEXT); CREATE TABLE events(incident_id TEXT,event_type TEXT,payload_json TEXT);')
+            connection.execute('INSERT INTO incidents VALUES (?,?)', ('one', 'project'))
+            for identity in [source, 'unreviewed-source']:
+                connection.execute('INSERT INTO events VALUES (?,?,?)', ('one', 'health.degraded', json.dumps({'source_id': identity})))
+            connection.commit(); connection.close()
+            before = database.read_bytes()
+            hydrated = credentials.resolve_reviewed_source_refs(plan, str(database))
+            self.assertEqual(before, database.read_bytes())
+            self.assertIn(source, hydrated['projects']['project']['verification_sources'])
+            self.assertNotIn('unreviewed-source', hydrated['projects']['project']['verification_sources'])
+            self.assertNotIn(source, json.dumps(plan))
+            output, _, _ = credentials.prepare(scopes, callback, hydrated, lambda: 'fresh')
+            self.assertIn(source, output['original']['verification_sources'])
+            self.assertNotIn('verification_sources', output['fresh'])

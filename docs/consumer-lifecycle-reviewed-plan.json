@@ -1,0 +1,306 @@
+{
+  "schema": "noticeplace.reviewed-credential-plan.v2",
+  "projects": {
+    "nginx-dev": {
+      "source_principal": "source:nginx-dev",
+      "executor_principal": "executor:nginx-dev",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "fleet-health": {
+      "source_principal": "source:fleet-health",
+      "executor_principal": "executor:fleet-health",
+      "verification_sources": [
+        "brake-selftest:brake-selftest-a",
+        "fleet-health:haos",
+        "fleet-health:server-100",
+        "fleet-health:vpn2",
+        "fleet-health:vusa",
+        "noticeplace-agent-link-check"
+      ],
+      "verification_owned_sources": true
+    },
+    "agent-herder": {
+      "source_principal": "source:agent-herder",
+      "executor_principal": "executor:agent-herder",
+      "verification_sources": [
+        "agent-herder-autocontinue-admission",
+        "agent-herder-autocontinue-assessment",
+        "agent-herder-autostart",
+        "agent-herder:autocompact:25ff5a5b69a82eed6004e7c39a0d0c259c4cb63f14fa9c74e7207d3ecdb5b893",
+        "agent-herder:autocompact:ac3a61b0fb0640b0be3441201d29f60e847cfad69097873465228ef6b5fed864",
+        "agent-herder:autocompact:fc92d58344292b7b8bdea482ca9600b6e261947b87932234db587d043195756d"
+      ],
+      "verification_owned_sources": true
+    },
+    "autosell": {
+      "source_principal": "source:autosell",
+      "executor_principal": "executor:autosell",
+      "verification_sources": [
+        "autosell-archive-retention",
+        "autosell-hourly-watch",
+        "autosell.proxy.capacity"
+      ],
+      "verification_owned_sources": true
+    },
+    "infra.mac": {
+      "source_principal": "source:infra.mac",
+      "executor_principal": "executor:infra.mac",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "airlock": {
+      "source_principal": "source:airlock",
+      "executor_principal": "executor:airlock",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "userio": {
+      "source_principal": "source:userio",
+      "executor_principal": "executor:userio",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "fail2ban.server-88": {
+      "source_principal": "source:fail2ban.server-88",
+      "executor_principal": "executor:fail2ban.server-88",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "winramp": {
+      "source_principal": "source:winramp",
+      "executor_principal": "executor:winramp",
+      "verification_sources": [
+        "capacity-forecast:7f3222cb23ee",
+        "capacity-forecast:a61e7c1bc1dc",
+        "capacity-forecast:ad00e172e2b2",
+        "capacity-forecast:bce65cd5d287",
+        "capacity-forecast:cd97e2bc3b7a",
+        "daily-chrome-parity",
+        "gh-pr:self-test",
+        "noticeplace-ai-retry-canary-1791019595",
+        "service:video-watching:pc-registration-pool",
+        "socproof-balance",
+        "vtop-day1:4db0167affe2",
+        "vtop-day1:56d632a671a4",
+        "vtop-day1:7061505f3089",
+        "vtop-day1:7f3222cb23ee",
+        "vtop-day1:7f6432ce3ec6",
+        "vtop-day1:a7a6d86bdbf9",
+        "vtop-day1:b1d229b9e876",
+        "vtop-day1:db9079934f96"
+      ],
+      "verification_owned_sources": true,
+      "verification_source_sha256_refs": [
+        "20b23f05a65f1884ba888140539e4e3e9b09a197dd68936c0012fe90321e054a"
+      ]
+    },
+    "infra": {
+      "source_principal": "source:infra",
+      "executor_principal": "executor:infra",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "atv-views": {
+      "source_principal": "source:atv-views",
+      "executor_principal": "executor:atv-views",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "tg-commentator": {
+      "source_principal": "source:tg-commentator",
+      "executor_principal": "executor:tg-commentator",
+      "verification_sources": [
+        "subs-controller",
+        "tgc-engine-watchdog",
+        "tgc-lease-409-diagnose"
+      ],
+      "verification_owned_sources": true
+    },
+    "noticeplace-qa-stop-20261023b": {
+      "source_principal": "source:noticeplace-qa-stop-20261023b",
+      "executor_principal": "executor:noticeplace-qa-stop-20261023b",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "omniroute-guard": {
+      "source_principal": "source:omniroute-guard",
+      "executor_principal": "executor:omniroute-guard",
+      "verification_sources": [
+        "host:roomhacker-server-100"
+      ],
+      "verification_owned_sources": true
+    },
+    "video-watching": {
+      "source_principal": "source:video-watching",
+      "executor_principal": "executor:video-watching",
+      "verification_sources": [
+        "backend-health-alert",
+        "comment-gen-alert",
+        "comment-orchestrator",
+        "daily-chrome-parity",
+        "daily-chrome-parity:2026-10-12",
+        "proxy5-cabinet-watch",
+        "proxy5-watch",
+        "register-factory",
+        "register-pc-ramp",
+        "server-44",
+        "views-conveyor",
+        "views-failover",
+        "weber-runtime"
+      ],
+      "verification_owned_sources": true
+    },
+    "codex-daemon.server-100": {
+      "source_principal": "source:codex-daemon.server-100",
+      "executor_principal": "executor:codex-daemon.server-100",
+      "verification_sources": [
+        "codex-daemon-watchdog"
+      ],
+      "verification_owned_sources": true
+    },
+    "rustdesk-autoheal.server-100": {
+      "source_principal": "source:rustdesk-autoheal.server-100",
+      "executor_principal": "executor:rustdesk-autoheal.server-100",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "hermes": {
+      "source_principal": "source:hermes",
+      "executor_principal": "executor:hermes",
+      "verification_sources": [
+        "exmanager-native-relay-token-binding"
+      ],
+      "verification_owned_sources": true
+    },
+    "tgc-comments": {
+      "source_principal": "source:tgc-comments",
+      "executor_principal": "executor:tgc-comments",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "comment-orchestrator": {
+      "source_principal": "source:comment-orchestrator",
+      "executor_principal": "executor:comment-orchestrator",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "health-monitor": {
+      "source_principal": "source:health-monitor",
+      "executor_principal": "executor:health-monitor",
+      "verification_sources": [
+        "canary-source-20260812T210521Z",
+        "canary-source-20260813T152000Z",
+        "canary:1791029143",
+        "canary:diagnosis",
+        "canary:diagnosis-forwarded-timeout",
+        "canary:diagnosis-helper-timeout",
+        "canary:diagnosis-queue-poll",
+        "canary:diagnosis-timeout-fix",
+        "canary:health:server-100",
+        "canary:route",
+        "host:haos",
+        "host:roomhacker-server-100",
+        "host:roomhacker-server-100:disk-call-canary-20261003",
+        "host:roomhacker-server-100:disk-call-canary-20261003-v3",
+        "host:roomhacker-server-100:disk-call-canary-20261003-v4",
+        "host:roomhacker-server-44",
+        "host:roomhacker-server-88",
+        "host:router",
+        "host:server-100",
+        "host:server-44",
+        "host:synthetic-canary",
+        "host:synthetic-full-canary",
+        "host:synthetic-full-canary-v2",
+        "host:synthetic-two-stage",
+        "host:synthetic-two-stage-v5",
+        "host:synthetic-two-stage-v6",
+        "host:synthetic-two-stage-v7",
+        "host:synthetic-two-stage-v8",
+        "host:vpn2",
+        "host:vusa",
+        "r40:synthetic-source"
+      ],
+      "verification_owned_sources": true
+    },
+    "Custom": {
+      "source_principal": "source:Custom",
+      "executor_principal": "executor:Custom",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "integration": {
+      "source_principal": "source:integration",
+      "executor_principal": "executor:integration",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "fail2ban.server-100": {
+      "source_principal": "source:fail2ban.server-100",
+      "executor_principal": "executor:fail2ban.server-100",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "fail2ban.server-44": {
+      "source_principal": "source:fail2ban.server-44",
+      "executor_principal": "executor:fail2ban.server-44",
+      "verification_sources": [],
+      "verification_owned_sources": false
+    },
+    "gptadmin.server-100": {
+      "source_principal": "source:gptadmin.server-100",
+      "executor_principal": "executor:gptadmin.server-100",
+      "verification_sources": [
+        "gptadmin-ci-autofix"
+      ],
+      "verification_owned_sources": true
+    }
+  },
+  "evidence": {
+    "observed_at": "2026-10-28T15:09:46.559084+00:00",
+    "source": "readonly NoticePlace canonical state, active non-registered-consumer health episodes; no constructor/migrations",
+    "scan_limit": 5000,
+    "rows_observed": 847,
+    "active_producer_sources": "L07/L08 verified adapter identity handoff, separate from currently open incident source list",
+    "protected_source_enrollment_remaining": {
+      "source_values_not_recorded_in_git": true,
+      "sha256_refs_are_exact_review_references_not_grants": "L06 resolves these exact source_id hashes from canonical active state into verification_sources only inside protected candidate; no prefix/wildcard or arbitrary source enrollment."
+    },
+    "scan": "latest health.degraded per active incident",
+    "snapshot_complete": true,
+    "registered_consumer_ids_not_automatically_enrolled": {
+      "autotelegramviews": [
+        "consumer_b85a89f421694cdd9213c7cdf873e991"
+      ],
+      "tg-commentator": [
+        "consumer_1df8b4668ab24b89b88859f1929d2880"
+      ]
+    },
+    "unsafe_source_sha256_refs": {
+      "winramp": [
+        "20b23f05a65f1884ba888140539e4e3e9b09a197dd68936c0012fe90321e054a"
+      ]
+    }
+  },
+  "registered_consumers": [
+    {
+      "consumer_id": "consumer_b85a89f421694cdd9213c7cdf873e991",
+      "project": "autotelegramviews"
+    }
+  ],
+  "consumer_grants": [
+    {
+      "consumer_id": "consumer_b85a89f421694cdd9213c7cdf873e991",
+      "project": "autotelegramviews",
+      "incident_role": "verifier",
+      "verification_owned_sources": true,
+      "verification_sources": []
+    }
+  ],
+  "consumer_executor_projects": {
+    "autotelegramviews": {
+      "principal_id": "executor:autotelegramviews",
+      "max_severity": "notice"
+    }
+  }
+}

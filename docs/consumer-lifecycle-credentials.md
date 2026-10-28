@@ -89,7 +89,121 @@ candidate or configuration file was written. Canonical sorted JSON SHA256 of
 | roomhacker-server-88 | 25/25 | `4bdd90215d92c1e977095f3578739cb3c32409a0dec81b5e7275e25265db497f` | 9/1 |
 
 All scopes are still legacy. The differing scope identity/content was not
-printed or inferred. L06 must compare that exact project/scope difference
-without exposing token values, reconcile the authorized scope map, then run
-the prepared-candidate compatibility check. Do not overwrite the 44/88 map
-with the 100 environment or suppress the helper's collision fence.
+printed or inferred in this first probe. The exact difference was subsequently
+identified by Lead; the reviewed narrow normalization is recorded below. Do not
+overwrite the 44/88 environment with the 100 environment or suppress the helper's
+collision fence.
+
+## Reviewed normalization and registered-consumer follow-up
+
+Lead's read-only comparison at 2026-10-28 14:16 UTC identified the exact map
+mismatch: all 25 shared credential hashes and every shared scope are identical
+on 100/44/88. Only the existing `integration` scope is absent on 44/88. It has
+`max_severity: important`, no agent jobs and no explicit automatic diagnosis.
+This is not a conflicting health policy or permission to replace host settings.
+
+Preparation may use `--allow-missing-base-project integration`. It computes
+exactly two permitted base hashes: the full canonical map, and that same old map
+minus its single existing integration credential. No arbitrary hash or skip-CAS
+option exists. The exception rejects every other project, active health grants,
+agent jobs, automatic diagnosis or a severity above important. A replica with
+any additional token/scope difference still fails before writes. The identical
+candidate then forward-aligns the reviewed existing integration scope together
+with the scoped credential transition, without an extra API restart.
+
+The ATV sender in `/etc/default/autotelegramviews` uses a DB-authenticated intake
+token, not one of the 26 legacy configured bearer scopes. Its confirmed identity
+is `consumer_b85a89f421694cdd9213c7cdf873e991`, project `autotelegramviews`. Do not
+rename `atv-views`, copy the intake token into config, or invent a public policy
+key usable as a bearer. [The reviewed registration fragment](consumer-lifecycle-registration-plan.json)
+contains only this public consumer identity and policy, with no credential.
+
+Merge that fragment into the final reviewed credential plan. The supplemental
+`consumer_grants` list is written as `NOTICEPLACE_CONSUMER_VERIFIER_GRANTS_JSON`
+in the existing protected API environment. It grants only explicit exact
+consumer/project identities. The API first authenticates the actual token hash
+against its consumer DB on every request, preserving revocation, stored project,
+consumer ID and maximum severity; only then does an unambiguous verifier grant
+supply `consumer:<stored_id>` source ownership. No bearer is created or copied
+and the callback map never receives this policy list. An executor entry, claimed
+principal, unknown field or foreign-project identity is rejected by preparation.
+Existing unrelated supplemental policy is preserved; a differing grant for an
+already registered consumer requires explicit reconciliation. No other registered
+consumer, QA actor or voice account is automatically enrolled.
+
+Candidates include both `base_grants_hash` and `candidate_grants_hash`. Check/apply
+requires the local supplemental policy to match its prepared base as well as an
+allowed credential-map base; arbitrary local policy differences remain fenced.
+The same single candidate patches both environment lines on every replica while
+preserving each host's port, database and unrelated settings.
+
+A follow-up read-only sender-class check confirmed
+`/home/roomhacker/.local/state/autoseller-noticeplace.env`'s
+`NOTIFY_CENTER_TOKEN` matches the existing configured `autosell` scope, so its
+adapter reuses that scoped token. `/etc/default/autotelegramviews` uses the actual
+variable name `NOTIFY_CENTER_TOKEN`; its token is absent from the legacy map,
+consistent with Lead's independently verified DB consumer identity above. No raw
+credential or credential fingerprint was emitted. This check does not classify
+or enroll every other registered consumer.
+
+## Trusted launch identity and explicit work completion
+
+The GPTAdmin envelope preserves only server-stored lifecycle group consumer and
+problem identity plus the stored consumer reference. Repair instructions prefer
+`incident.lifecycle.group.consumer_id`; an actual registered `consumer_*` ID is
+the fallback. Builtin notification routes (`profile_important`/`profile_emergency`)
+fall back to `project+source_id`, so increasing the severity of one CPU signal does
+not split it into different repair owners. Producer-claimed consumer labels are
+not used. The authoritative group problem type is preserved; only its absence
+uses the canonical signal mapping (for example load to CPU).
+
+Both direct and signed GPTAdmin dispatch derive an executor `attempt_id` from the
+server's delivery idempotency key and job, hashing it into bounded metadata. A
+retry of the same delivery retains the attempt; a later delivery gets a different
+attempt. Repair instructions explicitly require `noticeplace_work_finished` or
+protected `/health/work-finished` with that attempt, actual native session/harness
+and evidence references. A text answer or idle observation is not completion.
+No source-health verdict, source verification credential or resolve authority is
+added to the executor instructions. The legacy remediation JSON path is unchanged.
+
+## Concrete release input and remaining TGC migration
+
+`docs/consumer-lifecycle-reviewed-plan.json` supplies all 26 existing legacy
+project grants, stable source/executor principals, explicit historical source
+IDs, the single reviewed ATV supplemental registration and the registered-only
+`autotelegramviews` executor callback project. That extra credential has only
+project, notice ceiling, executor role and a distinct principal; it cannot emit a
+critical source event or verify recovery. Its actual session callback and
+work-finished HTTP paths are covered by an isolated local fixture.
+
+One reviewed winramp source ID includes a URL and is deliberately absent from
+Git. The public plan contains its exact SHA256 reference. Preparation must use
+`--resolve-reviewed-source-refs`; without it the helper fails closed. Resolution
+reads canonical state through a read-only connection, matches only the reviewed
+project/source hashes, and hydrates the raw value in memory for the protected
+candidate. It never prints the value or writes a separate secret file. The
+bounded query refuses more than 10,000 distinct candidate source records. No
+prefix, wildcard or unreviewed source is enrolled.
+
+The concrete plan was successfully checked using the real protected environment
+and read-only canonical state in **preview mode only**: 26 existing project
+scopes plus one executor-only callback project, with no candidate directory,
+configuration change, service restart or producer event.
+
+The same read-only inventory identified an additional active registered
+consumer requiring a separate bounded migration:
+
+- Project `tg-commentator`, consumer `consumer_1df8b4668ab24b89b88859f1929d2880`.
+- Confirmed wire identity: source `tgc-engine-watchdog`, host `server-100`, signal
+  `engine`; 27 active episode snapshots observed.
+- Producer: `/home/roomhacker/PycharmProjects/TelegramAuto/TG_Commentator/scripts/tgc_engine_watchdog.py`,
+  `send_notice`/`resolve_notice`, using
+  `/home/roomhacker/PycharmProjects/TelegramAuto/TG_Commentator/notify_center_client.py`.
+- Missing transition: work-finished → source poll → fresh `check_tgc_execution`
+  and `check_tgc_read_path`/engine decision → typed check-result. The existing
+  `resolve_health` emits a legacy untyped resolve request, not a v2 source check.
+- Next bounded work: migrate that real producer to the shared verifier client,
+  confirm its protected sender binding, then explicitly register this exact DB
+  consumer and test the matching engine episode. No grant for it is added by
+  the current ATV-only plan. Its existing intake token is not verification
+  authority by itself. Do not replay its old accepted or uncertain operations.

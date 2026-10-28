@@ -45,7 +45,7 @@ def main() -> int:
     for token, scope in scopes.items():
         if not isinstance(token, str) or not isinstance(scope, dict):
             continue
-        if lifecycle_v2 and (scope.get('incident_role') != 'executor' or not scope.get('principal_id') or scope.get('verification_sources') or scope.get('verification_owned_sources')):
+        if lifecycle_v2 and (scope.get('incident_role') != 'executor' or not scope.get('principal_id') or scope.get('verification_sources') or scope.get('verification_owned_sources') or scope.get('verification_consumer_ids')):
             continue
         project = str(scope.get("project") or "").strip()
         maximum = str(scope.get("max_severity") or "notice")

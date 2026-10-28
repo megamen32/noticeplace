@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from notification_center.core import AuthorizationError, NotificationCenter, ValidationError
-from notification_center.health_workflow import HealthWorkflow
+from notification_center.health_workflow import HealthWorkflow, HEALTH_EXECUTION_PROFILE
 from notification_center.gptadmin_agent import (
     DirectHealthRemediationAdapter,
     DurableHealthRemediationAdapter,
@@ -251,7 +251,8 @@ class GptAdminAgentJobTests(unittest.TestCase):
         poll_expected = "sha256=" + hmac.new(b"route-secret", poll_signed, hashlib.sha256).hexdigest()
         self.assertEqual(poll_expected, poll.get_header("X-webhook-signature"))
         outbound = json.loads(post.data)
-        self.assertEqual({"schema", "job_id", "incident"}, set(outbound))
+        self.assertEqual({"schema", "job_id", "incident", "attempt_id"}, set(outbound))
+        self.assertTrue(outbound["attempt_id"].startswith("np-attempt:"))
         self.assertEqual(set(("id", "project", "severity", "title", "body", "dedup_key", "occurrences")), set(outbound["incident"]))
         self.assertEqual(3000, len(outbound["incident"]["body"]))
 
@@ -913,7 +914,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("completed", result["status"])
         self.assertEqual("opencode", run.call_args.kwargs["profile_override"]["harness"])
         self.assertEqual("queue", run.call_args.kwargs["profile_override"]["mode"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", run.call_args.kwargs["profile_override"]["model"])
+        self.assertEqual(f"{HEALTH_EXECUTION_PROFILE['provider']}/{HEALTH_EXECUTION_PROFILE['model']}", run.call_args.kwargs["profile_override"]["model"])
         self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
         progress.assert_any_call({"agent_session": {"session_id": "ses-live-1", "harness": "opencode", "plan_id": "plan-003"}})
 

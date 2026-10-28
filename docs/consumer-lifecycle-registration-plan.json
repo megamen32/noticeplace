@@ -1,0 +1,30 @@
+{
+  "schema": "noticeplace.consumer-registration-plan-fragment.v1",
+  "registered_consumers": [
+    {
+      "consumer_id": "consumer_b85a89f421694cdd9213c7cdf873e991",
+      "project": "autotelegramviews"
+    }
+  ],
+  "consumer_grants": [
+    {
+      "consumer_id": "consumer_b85a89f421694cdd9213c7cdf873e991",
+      "project": "autotelegramviews",
+      "incident_role": "verifier",
+      "verification_owned_sources": true,
+      "verification_sources": []
+    }
+  ],
+  "evidence": {
+    "authority": "Lead verified live DB-hash authentication and exact consumer identity; not one of 26 legacy config bearer scopes",
+    "producer_environment_reference": "/etc/default/autotelegramviews",
+    "token_variable_name": "NOTIFY_CENTER_TOKEN",
+    "deployment_status": "preparation only; merge this fragment into the reviewed project credential plan for L06"
+  },
+  "consumer_executor_projects": {
+    "autotelegramviews": {
+      "principal_id": "executor:autotelegramviews",
+      "max_severity": "notice"
+    }
+  }
+}

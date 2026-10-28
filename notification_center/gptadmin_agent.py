@@ -29,7 +29,7 @@ class GptAdminAdmissionUnavailable(RuntimeError):
     """The Hub did not durably accept the job, so a fallback is still safe."""
 
 
-def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+def _agent_job_event(job_id: str, payload: Mapping[str, Any], delivery_key: str = "") -> dict[str, Any]:
     """Build the bounded helper event shared by Hub and direct execution."""
     incident = payload.get("incident")
     if not isinstance(incident, dict):
@@ -41,7 +41,17 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         )
         for field in _INCIDENT_FIELDS
     }
+    if incident.get('consumer_id') is not None:
+        bounded_incident['consumer_id'] = sanitize_bounded_text(incident['consumer_id'], 128)
+    lifecycle = incident.get('lifecycle') if isinstance(incident.get('lifecycle'), Mapping) else {}
+    group = lifecycle.get('group') if isinstance(lifecycle.get('group'), Mapping) else {}
+    if group:
+        bounded_incident['lifecycle'] = {'group': {
+            key: sanitize_bounded_text(group.get(key), 256)
+            for key in ('consumer_id', 'problem_type') if group.get(key) is not None}}
     event: dict[str, Any] = {"schema": "notify.agent-job.v1", "job_id": job_id, "incident": bounded_incident}
+    if delivery_key:
+        event['attempt_id'] = 'np-attempt:' + hashlib.sha256((job_id + ':' + delivery_key).encode()).hexdigest()
     health_context = payload.get("health_context")
     if isinstance(health_context, dict):
         bounded_health: dict[str, Any] = {
@@ -135,14 +145,14 @@ class DirectHealthRemediationAdapter:
         }
         receipt = run_profile(
             self.job_id,
-            _agent_job_event(self.job_id, payload),
+            _agent_job_event(self.job_id, payload, idempotency_key),
             config_path,
             runner=self._runner,
             profile_override=direct_profile,
             session_callback=(
                 (lambda session: progress_callback({"agent_session": dict(session)}))
                 if progress_callback is not None
-                else (lambda session: post_health_session_started(_agent_job_event(self.job_id, payload), session))
+                else (lambda session: post_health_session_started(_agent_job_event(self.job_id, payload, idempotency_key), session))
             ),
         )
         if progress_callback is not None:
@@ -429,7 +439,7 @@ class GptAdminAgentJobAdapter:
         """Submit telemetry while forwarding durable useful-progress snapshots."""
         if not idempotency_key.strip() or len(idempotency_key) > 512:
             raise RuntimeError("GPTAdmin agent job requires a bounded idempotency key")
-        event = _agent_job_event(self.job_id, payload)
+        event = _agent_job_event(self.job_id, payload, idempotency_key)
         body = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         started_at = self._now()
         try:

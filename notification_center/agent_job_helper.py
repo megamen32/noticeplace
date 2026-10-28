@@ -180,6 +180,14 @@ def _repair_first_message(profile: Mapping[str, str], event: Mapping[str, Any], 
              {"id":128,"project":128,"severity":32,"title":500,"body":3000,"dedup_key":500,"occurrences":32}.items()}
     for key in ("source_id", "host_id", "signal_type", "source_fingerprint", "correlation_id", "service", "service_id"):
         facts[key] = sanitize_bounded_text(health.get(key) or incident.get(key) or event.get(key), 256)
+    from .incident_lifecycle import canonical_problem_type
+    lifecycle = incident.get('lifecycle') if isinstance(incident.get('lifecycle'), Mapping) else {}
+    group = lifecycle.get('group') if isinstance(lifecycle.get('group'), Mapping) else {}
+    registered = str(incident.get('consumer_id') or '')
+    fallback_consumer = registered if registered.startswith('consumer_') else (str(incident.get('project') or '') + '+' + str(facts.get('source_id') or '') if facts.get('source_id') else '')
+    facts['consumer_id'] = sanitize_bounded_text(group.get('consumer_id') or fallback_consumer, 256)
+    facts['problem_type'] = sanitize_bounded_text(group.get('problem_type') or canonical_problem_type({'signal_type': facts.get('signal_type')}), 128)
+    facts['attempt_id'] = sanitize_bounded_text(event.get('attempt_id'), 128)
     for key in ("evidence_refs", "trace_refs"):
         values = health.get(key) or incident.get(key) or event.get(key)
         facts[key] = [sanitize_bounded_text(value, 512) for value in values[:16]] if isinstance(values, list) else []
@@ -213,7 +221,14 @@ def _repair_first_message(profile: Mapping[str, str], event: Mapping[str, Any], 
         "POST /v1/incidents/{original incident id}/health/progress: plan_id=repair, короткий реальный русский step, evidence_refs, "
         "стабильный progress_fingerprint, actor=agent-herder и Idempotency-Key. Если токена исходного проекта нет, не используй другой scope. "
         "Не раскрывай token/file contents в сообщениях. Наблюдение модели не является независимой verification и не закрывает инцидент; "
-        "закрытие подтверждает отдельная проверка исходного источника. Обычный завершённый ответ не обязан иметь специальный формат."
+        "закрытие подтверждает отдельная проверка исходного источника. "
+        "При окончании каждой попытки явно вызови штатный noticeplace action noticeplace_work_finished либо "
+        "POST /v1/incidents/{original incident id}/health/work-finished через тот же защищённый executor callback. "
+        "Передай attempt_id из доверенного delivery-контекста ниже, session_id и harness из фактической принятой native-сессии, evidence_refs "
+        "и стабильный Idempotency-Key для этой попытки. Не используй один incident_id как вечный attempt_id; "
+        "если delivery attempt_id отсутствует, прочитай текущий серверный operation/inputId и используй его, не выдумывай идентификатор. "
+        "Это сообщение только о завершении работы исполнителя, без observed_state/source health verdict; "
+        "не вызывай source verification или resolve за источник. Обычный текстовый итог не заменяет work-finished."
     )
     if health.get("notification_review_required") is True:
         instructions += " При необязательном структурированном итоге notify_user и notification_reason могут описать необходимость внимания человека."
