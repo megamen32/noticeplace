@@ -18,6 +18,35 @@ PROBLEM_TYPE_ALIASES = {
     **dict.fromkeys(('disk', 'disk_space', 'disk_full', 'inodes'), 'disk'),
 }
 
+# The mesh response frame is 16 MiB. A raw UTF-8 byte can need up to six
+# JSON-escaped bytes; leave ample room for columns and the response envelope.
+MIGRATION_PAGE_BYTES = 1024 * 1024
+
+
+def _migration_rows(center, columns, source, cursor, size, params=()):
+    """Keyset pages with a byte preflight; never buffer the full history."""
+    after = 0
+    while True:
+        candidates = center._connection.execute(
+            f'SELECT {cursor} AS migration_cursor, {size} AS migration_bytes FROM {source} '
+            f'AND {cursor}>? ORDER BY {cursor} LIMIT 128', (*params, after)).fetchall()
+        if not candidates:
+            return
+        total, through = 0, after
+        for candidate in candidates:
+            cost = int(candidate['migration_bytes']) + 256
+            if total + cost > MIGRATION_PAGE_BYTES:
+                if through == after:
+                    raise ValueError('historical lifecycle row exceeds bounded migration page')
+                break
+            total += cost
+            through = candidate['migration_cursor']
+        rows = center._connection.execute(
+            f'SELECT {columns}, {cursor} AS migration_cursor FROM {source} '
+            f'AND {cursor}>? AND {cursor}<=? ORDER BY {cursor}', (*params, after, through)).fetchall()
+        yield from rows
+        after = through
+
 
 def canonical_problem_type(event):
     explicit = str(event.get('problem_type') or '')
@@ -58,9 +87,10 @@ def initialize(center):
                 center._connection.execute('ALTER TABLE incident_lifecycle ADD COLUMN ' + name + ' TEXT')
         # Upgrade existing accepted receipts without replaying a delivery. A
         # previously queued continuation retains its exact original operation.
-        legacy = center._connection.execute("""SELECT l.*,r.idempotency_key,r.result_json
-          FROM incident_lifecycle l JOIN incident_check_receipts r ON r.request_id=l.request_id
-          WHERE l.last_check_receipt_json IS NULL ORDER BY r.rowid""").fetchall()
+        legacy = _migration_rows(center,
+          'l.incident_id,l.generation,l.request_id,l.verification_state,l.verification_due,r.idempotency_key,r.result_json',
+          'incident_check_receipts r JOIN incident_lifecycle l ON r.request_id=l.request_id WHERE l.last_check_receipt_json IS NULL',
+          'r.rowid', 'length(CAST(r.result_json AS BLOB))+length(CAST(r.idempotency_key AS BLOB))+length(CAST(l.incident_id AS BLOB))+length(CAST(l.request_id AS BLOB))+256')
         for row in legacy:
             result = json.loads(row['result_json'])
             receipt = dict(idempotency_key=row['idempotency_key'],request_id=row['request_id'],result=result)
@@ -76,11 +106,10 @@ def initialize(center):
 
         # One joined historical scan, not an incident-by-incident lookup. No
         # recovery or attempt is inferred from existing cards or session status.
-        rows = center._connection.execute("""SELECT i.id, i.consumer_id, e.payload_json
-          FROM incidents i JOIN events e ON e.incident_id=i.id
+        rows = _migration_rows(center, 'i.id,i.consumer_id,e.payload_json,e.created_at', '''events e NOT INDEXED JOIN incidents i ON e.incident_id=i.id
           WHERE e.event_type='health.degraded' AND NOT EXISTS
-            (SELECT 1 FROM incident_lifecycle l WHERE l.incident_id=i.id)
-          ORDER BY i.id,e.created_at,e.rowid""").fetchall()
+            (SELECT 1 FROM incident_lifecycle l WHERE l.incident_id=i.id)''',
+          'e.rowid', 'length(CAST(e.payload_json AS BLOB))+length(CAST(i.id AS BLOB))+COALESCE(length(CAST(i.consumer_id AS BLOB)),0)')
         episodes = {}
         for row in rows:
             try:
@@ -89,13 +118,15 @@ def initialize(center):
                 continue
             if not typed(event):
                 continue
-            item = episodes.setdefault(row['id'], [event, row['consumer_id'], 0, None])
+            order = (row['created_at'], row['migration_cursor'])
+            item = episodes.setdefault(row['id'], [event, row['consumer_id'], 0, None, order])
             item[2] += 1
-            item[0] = event
+            if order >= item[4]:
+                item[0], item[4] = event, order
             observed = event.get('observed_at')
             if isinstance(observed, (int, float)) and not isinstance(observed, bool) and math.isfinite(observed):
                 item[3] = max(item[3] if item[3] is not None else observed, observed)
-        for incident_id, (event, consumer_id, generation, observed) in episodes.items():
+        for incident_id, (event, consumer_id, generation, observed, _) in episodes.items():
             group = group_identity(event, consumer_id)
             center._connection.execute("""INSERT OR IGNORE INTO incident_lifecycle
               (incident_id,generation,source_principal,metadata_json,group_key,source_id,latest_observed_at)
@@ -105,9 +136,10 @@ def initialize(center):
 
         # Built-in profiles select a notification route, not a producer. Repair
         # only the projection keys; source trust, attempts and health are intact.
-        routed = center._connection.execute("""SELECT l.incident_id,l.metadata_json,l.group_key,i.consumer_id
-          FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id
-          WHERE i.consumer_id IN (?,?,?)""",tuple(sorted(BUILTIN_DELIVERY_PROFILES))).fetchall()
+        routed = _migration_rows(center, 'l.incident_id,l.metadata_json,l.group_key,i.consumer_id',
+          'incident_lifecycle l JOIN incidents i ON i.id=l.incident_id WHERE i.consumer_id IN (?,?,?)',
+          'l.rowid', 'length(CAST(l.incident_id AS BLOB))+length(CAST(l.metadata_json AS BLOB))+length(CAST(l.group_key AS BLOB))+length(CAST(i.consumer_id AS BLOB))',
+          tuple(sorted(BUILTIN_DELIVERY_PROFILES)))
         for row in routed:
             group = json.loads(row['metadata_json'])
             canonical = group_identity(group, row['consumer_id'])['consumer_id']

@@ -18,6 +18,87 @@ class LifecycleTests(unittest.TestCase):
     def finish(self, attempt='one'):
         return self.center.record_work_finished('agent',self.inc,'finish:'+attempt,dict(attempt_id=attempt,session_id='session',harness='codex',evidence_refs=['change']))
 
+    def test_historical_initialization_respects_bounded_mesh_pages(self):
+        import json
+        import sqlite3
+        from unittest.mock import patch
+        from notification_center import incident_lifecycle
+        expected = {}
+        for index in range(9):
+            event = {**self.event, 'dedup_key':'historical:'+str(index), 'correlation_id':'episode:'+str(index), 'body':'x'*2500}
+            incident = self.center.create_event('source','history:'+str(index),event)['incident_id']
+            expected[incident] = event['correlation_id']
+            self.center.create_event('source','history-repeat:'+str(index),{**event,'observed_at':300})
+            # Rowid order may differ from the historical created_at ordering.
+            connection = self.center._connection
+            connection.execute('UPDATE events SET created_at=0,payload_json=? WHERE idempotency_key=?',
+                (json.dumps({**event,'correlation_id':'older-by-clock','observed_at':300}), 'history-repeat:'+str(index)))
+        self.center._connection.execute('DELETE FROM incident_lifecycle')
+        self.center._connection.commit()
+        connection = self.center._connection
+        reads = []
+        class BoundedCursor:
+            def __init__(self, cursor):
+                self.rows = cursor.fetchall()
+                if len(json.dumps([dict(row) for row in self.rows]).encode()) > 12_000:
+                    raise sqlite3.OperationalError('bounded SQL result exceeded')
+            def fetchall(self): return self.rows
+            def fetchone(self): return self.rows[0] if self.rows else None
+        class BoundedConnection:
+            def __enter__(self): connection.__enter__(); return self
+            def __exit__(self,*args): return connection.__exit__(*args)
+            def executescript(self,sql): return connection.executescript(sql)
+            def execute(self,sql,params=()):
+                cursor = connection.execute(sql,params)
+                if sql.lstrip().upper().startswith('SELECT'):
+                    reads.append(sql)
+                    return BoundedCursor(cursor)
+                return cursor
+        self.center._connection = BoundedConnection()
+        try:
+            with patch.object(incident_lifecycle,'MIGRATION_PAGE_BYTES',4096,create=True):
+                incident_lifecycle.initialize(self.center)
+                incident_lifecycle.initialize(self.center)
+        finally:
+            self.center._connection = connection
+        for incident, correlation in expected.items():
+            life = self.center.get_incident(incident)['lifecycle']
+            self.assertEqual(2,life['generation'])
+            self.assertEqual(correlation,life['group']['correlation_id'])
+            self.assertEqual(300,life['latest_observed_at'])
+            self.assertIsNone(life['attempt_id'])
+            self.assertIsNone(life['verification_state'])
+            self.assertEqual('open',self.center.get_incident(incident)['state'])
+        self.assertGreater(sum('e.payload_json' in sql for sql in reads),2)
+        self.assertGreater(sum('l.metadata_json,l.group_key' in sql for sql in reads),2)
+        # Legacy accepted receipts are also a potentially large result set.
+        # Preserve their exact operation and evidence while rotating only the
+        # next pending nonce, across multiple response-bounded pages.
+        accepted = {}
+        for index, incident in enumerate(expected):
+            req = self.center.record_work_finished('agent',incident,'finish-history:'+str(index),
+                dict(attempt_id='history:'+str(index),session_id='history-session:'+str(index),harness='codex'))
+            result = self.center.record_source_check('source',incident,'accepted:'+str(index),
+                dict(request_id=req['request_id'],generation=req['generation'],observed_state='degraded',evidence_refs=['x'*2200]))
+            accepted[incident] = (req, result)
+            connection.execute('UPDATE incident_lifecycle SET request_id=?,last_check_receipt_json=NULL,continuation_json=NULL WHERE incident_id=?',
+                (req['request_id'],incident))
+        connection.commit()
+        reads.clear()
+        self.center._connection = BoundedConnection()
+        try:
+            with patch.object(incident_lifecycle,'MIGRATION_PAGE_BYTES',4096):
+                incident_lifecycle.initialize(self.center)
+        finally:
+            self.center._connection = connection
+        for incident, (request, result) in accepted.items():
+            life = self.center.get_incident(incident)['lifecycle']
+            self.assertEqual(result['continuation'],life['continuation'])
+            self.assertEqual(result,life['last_check_receipt']['result'])
+            self.assertNotEqual(request['request_id'],life['request_id'])
+            self.assertEqual(request['attempt_id'],life['attempt_id'])
+        self.assertGreater(sum('r.result_json,' in sql for sql in reads),2)
+
     def shared_episode(self, suffix, **changes):
         event = {**self.event, 'dedup_key': suffix, 'correlation_id': suffix, **changes}
         incident = self.center.create_event('source', 'intake:'+suffix, event)['incident_id']
