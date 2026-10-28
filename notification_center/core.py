@@ -109,6 +109,8 @@ class NotificationCenter:
         self._default_quiet_hours = list(DEFAULT_CONSUMER_QUIET_HOURS) if default_quiet_hours is None else default_quiet_hours
         self._dispatcher_heartbeat = time.time()
         self._initialize_schema()
+        from .voice_recipient import initialize as initialize_voice_recipients
+        initialize_voice_recipients(self)
         from .incident_lifecycle import initialize
         initialize(self)
         from .task_decisions import TaskDecisionStore
