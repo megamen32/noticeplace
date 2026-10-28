@@ -1,0 +1,27 @@
+{
+  "id": "L04",
+  "label": "Маркированный реестр и миграция активных потребителей",
+  "status": "done",
+  "owner": "consumer-migration",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L01"
+  ],
+  "estimate_minutes": {
+    "minimum": 25,
+    "maximum": 60
+  },
+  "description": "Общий stdlib verifier client, конечный маркированный реестр известных consumers и deployment map; миграция адаптеров отдельно L07/L08, auth cutover L09.",
+  "acceptance": "Для каждого активного health-источника указаны код, установленный исполнитель, маркер, способ актуальной проверки; notification-only не запускают repair; неизвестные/недоступные источники явно отмечены.",
+  "affected_files": [
+    "docs/consumer-lifecycle-registry.json",
+    "docs/consumer-lifecycle-deployment.md",
+    "notification_center/consumer_lifecycle.py",
+    "tests/test_consumer_lifecycle.py"
+  ],
+  "note": "L04 source slice complete; split L07 infrastructure/L08 products/L09 auth. Original estimates preserved. 26-entry truthful registry, source paths confirmed, server100 ExecStart observed for five adapters; server88 partial discovery means coverage incomplete. Three stdlib helper tests green. No runtime installation or real source canary claimed. Receipt reconciliation in L09.",
+  "estimate_unknown_reason": "Количество самостоятельных устанавливаемых health-адаптеров уточняется по найденным корням и live ingress."
+}
