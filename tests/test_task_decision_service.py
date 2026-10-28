@@ -239,6 +239,88 @@ class TaskDecisionServiceTests(unittest.TestCase):
         self.assertEqual(["csv", "markdown"], [choice["value"] for choice in verified["choices"]])
         self.assertEqual("assistant-message-20", verified["continuation"]["executor_question"]["source_message_id"])
 
+    def test_open_code_question_accepts_real_registry_proof_and_persists_it_without_fake_ids(self):
+        question = _executor_question()
+        question.pop("registrationMessageId")
+        question.pop("registrationCallId")
+        question["registrationRef"] = {
+            "kind": "herder-registry",
+            "requestId": question["humanRequestId"],
+            "contextRef": question["contextRef"],
+        }
+        card = _card(
+            phase="waiting", hostId="qa-board", harness="opencode",
+            nativeSessionId="opencode-session-17", nativeTurnId=None,
+            nativeInputMessageId="input-message-18", nativeDispatchJobId="dispatch-job-19",
+            startedBy="testlogin",
+            projectBinding={
+                "contract": "integrator-host-readiness-v1", "projectId": "qa-project-1",
+                "cwd": "/srv/qa/project", "hostId": "qa-board", "harness": "opencode",
+            },
+        )
+        card["owner"] = "testlogin"
+        card["taskExecutionHistory"][-1]["executorQuestion"] = question
+
+        board = _Board(card)
+        verifier = self.verifier(board)
+        verified = verifier.verify(_mandate(project="integrator-dashboard", timeout_value="csv"))
+        executor_question = verified["continuation"]["executor_question"]
+
+        self.assertEqual({
+            "kind": "herder-registry",
+            "requestId": "d920a01e-a5f3-4dce-a640-b65b8e312433",
+            "contextRef": "exmanager-task:task-123:" + OPERATION_ID,
+        }, executor_question["registration_ref"])
+        self.assertNotIn("registration_message_id", executor_question)
+        self.assertNotIn("registration_call_id", executor_question)
+        context = {
+            "task_ref": verified["task_ref"],
+            "mandate_ref": verified["mandate_ref"],
+            "continuation": verified["continuation"],
+        }
+        self.assertTrue(verifier.is_actor_allowed(context, "telegram:42"))
+
+    def test_open_code_registry_proof_rejects_mismatched_identity_context_and_target(self):
+        base = _executor_question()
+        base.pop("registrationMessageId")
+        base.pop("registrationCallId")
+        base["registrationRef"] = {
+            "kind": "herder-registry",
+            "requestId": base["humanRequestId"],
+            "contextRef": base["contextRef"],
+        }
+        invalid = []
+        changed = json.loads(json.dumps(base))
+        changed["registrationRef"]["requestId"] = "11111111-1111-4111-8111-111111111111"
+        invalid.append(changed)
+        changed = json.loads(json.dumps(base))
+        changed["registrationRef"]["contextRef"] = "exmanager-task:other-card:" + OPERATION_ID
+        invalid.append(changed)
+        changed = json.loads(json.dumps(base))
+        changed["registrationTarget"]["sessionId"] = "another-session"
+        invalid.append(changed)
+        changed = json.loads(json.dumps(base))
+        changed["registrationMessageId"] = "legacy-message"
+        changed["registrationCallId"] = "legacy-call"
+        invalid.append(changed)
+
+        for question in invalid:
+            with self.subTest(question=question):
+                card = _card(
+                    phase="waiting", hostId="qa-board", harness="opencode",
+                    nativeSessionId="opencode-session-17", nativeTurnId=None,
+                    nativeInputMessageId="input-message-18", nativeDispatchJobId="dispatch-job-19",
+                    startedBy="testlogin",
+                    projectBinding={
+                        "contract": "integrator-host-readiness-v1", "projectId": "qa-project-1",
+                        "cwd": "/srv/qa/project", "hostId": "qa-board", "harness": "opencode",
+                    },
+                )
+                card["owner"] = "testlogin"
+                card["taskExecutionHistory"][-1]["executorQuestion"] = question
+                with self.assertRaises(AuthorizationError):
+                    self.verifier(_Board(card)).verify(_mandate(project="integrator-dashboard", timeout_value="csv"))
+
     def test_board_answer_proposal_is_rechecked_from_current_card_cas_and_stop_epoch(self):
         card = _card(
             phase="waiting",

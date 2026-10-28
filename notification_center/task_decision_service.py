@@ -204,7 +204,10 @@ class BoardTaskDecisionVerifier:
             context_ref = question.get("contextRef")
             registration_message_id = question.get("registrationMessageId")
             registration_call_id = question.get("registrationCallId")
+            registration_ref = question.get("registrationRef")
             registration_target = question.get("registrationTarget")
+            has_legacy_registration = "registrationMessageId" in question or "registrationCallId" in question
+            has_registry_registration = "registrationRef" in question
             question_hash = question.get("questionHash")
             try:
                 question_text = _clean_text(question.get("text"), limit=_MAX_MESSAGE_CHARS, field="executor question")
@@ -216,15 +219,31 @@ class BoardTaskDecisionVerifier:
                     or source_input_id != input_id or source_job_id != job_id
                     or not isinstance(human_request_id, str) or not _UUID_RE.fullmatch(human_request_id)
                     or context_ref != f"exmanager-task:{task_ref}:{operation_id}"
-                    or not isinstance(registration_message_id, str) or not registration_message_id.strip() or len(registration_message_id) > 512
-                    or not isinstance(registration_call_id, str) or not registration_call_id.strip() or len(registration_call_id) > 512
                     or not isinstance(registration_target, Mapping)
-                    or registration_target.get("harness") != harness
-                    or registration_target.get("sessionId") != session_id
-                    or registration_target.get("cwd") != continuation["cwd"]
+                    or dict(registration_target) != {
+                        "harness": harness,
+                        "sessionId": session_id,
+                        "cwd": continuation["cwd"],
+                    }
                     or not isinstance(question_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", question_hash)
                     or not isinstance(raw_question_choices, list) or not 2 <= len(raw_question_choices) <= 4):
                 return None
+            if has_legacy_registration == has_registry_registration:
+                return None
+            if has_legacy_registration:
+                if ("registrationMessageId" not in question or "registrationCallId" not in question
+                        or not isinstance(registration_message_id, str) or not registration_message_id.strip()
+                        or len(registration_message_id) > 512
+                        or not isinstance(registration_call_id, str) or not registration_call_id.strip()
+                        or len(registration_call_id) > 512):
+                    return None
+            else:
+                if (not isinstance(registration_ref, Mapping)
+                        or set(registration_ref) != {"kind", "requestId", "contextRef"}
+                        or registration_ref.get("kind") != "herder-registry"
+                        or registration_ref.get("requestId") != human_request_id
+                        or registration_ref.get("contextRef") != context_ref):
+                    return None
             question_choices: list[dict[str, str]] = []
             for raw_choice in raw_question_choices:
                 if not isinstance(raw_choice, Mapping) or set(raw_choice) != {"value", "label"}:
@@ -256,7 +275,7 @@ class BoardTaskDecisionVerifier:
             ).hexdigest()
             if question_hash != expected_question_hash:
                 return None
-            continuation["executor_question"] = {
+            executor_question = {
                 "source_message_id": source_message_id,
                 "source_message_hash": source_message_hash,
                 "source_input_id": source_input_id,
@@ -264,9 +283,15 @@ class BoardTaskDecisionVerifier:
                 "human_request_id": human_request_id,
                 "question_hash": question_hash,
                 "context_ref": context_ref,
-                "registration_message_id": registration_message_id,
-                "registration_call_id": registration_call_id,
             }
+            if has_legacy_registration:
+                executor_question.update({
+                    "registration_message_id": registration_message_id,
+                    "registration_call_id": registration_call_id,
+                })
+            else:
+                executor_question["registration_ref"] = dict(registration_ref)
+            continuation["executor_question"] = executor_question
             continuation["human_request_id"] = human_request_id
             continuation["question_text"] = question_text
             continuation["question_choices"] = question_choices
