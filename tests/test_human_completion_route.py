@@ -2,12 +2,14 @@
 
 import os
 import hashlib
+import io
 import json
 import unittest
+import urllib.error
 import urllib.request
 from unittest.mock import patch
 
-from notification_center.agent_job_helper import read_herder_human_request
+from notification_center.agent_job_helper import read_herder_human_request, resume_bound_native_session
 from notification_center.http_api import _human_completion_runner, deliver_human_completion
 
 
@@ -62,18 +64,20 @@ class CompletionRouteTests(unittest.TestCase):
         called = []
 
         def runner(request, timeout):
-            called.append(request.full_url)
+            called.append((request.full_url, request.get_header("Authorization")))
             return object()
 
         def native_resume(_rid, _harness, _sid, _cwd, _ref, routed_runner):
-            routed_runner(urllib.request.Request(OLD, data=b"{}", method="POST"), timeout=1)
+            routed_runner(urllib.request.Request(OLD, data=b"{}", headers={
+                "Authorization": "Bearer fixture-herder-token",
+            }, method="POST"), timeout=1)
             return {"status": "resumed"}
 
         with patch.dict(os.environ, {"NOTIFY_HUMAN_COMPLETION_URL": NEW}), \
                 patch("notification_center.agent_job_helper.resume_bound_native_session", side_effect=native_resume):
             result = deliver_human_completion(Center(), {"request_id": "fixture"}, "fixture", runner)
         self.assertEqual("resumed", result["status"])
-        self.assertEqual([NEW], called)
+        self.assertEqual([(NEW, None)], called)
 
     def test_registry_readback_uses_only_existing_readonly_owner_loopback_mcp(self) -> None:
         request_id = "1b45fd65-6013-4925-a781-afd5367d7b1f"
@@ -97,18 +101,88 @@ class CompletionRouteTests(unittest.TestCase):
             calls.append((request, timeout))
             return Response()
 
-        with patch("notification_center.agent_job_helper._herder_loopback_profile", return_value={
+        with patch("notification_center.agent_job_helper._herder_http_token", return_value="fixture-herder-token"), \
+                patch("notification_center.agent_job_helper._herder_loopback_profile", return_value={
             "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
         }):
             self.assertEqual(record, read_herder_human_request(request_id, runner))
         request, timeout = calls[0]
         self.assertEqual("http://127.0.0.1:18787/mcp", request.full_url)
         self.assertEqual("POST", request.get_method())
-        self.assertFalse(request.has_header("Authorization"))
+        self.assertEqual("Bearer fixture-herder-token", request.get_header("Authorization"))
         self.assertEqual(5, timeout)
         payload = json.loads(request.data)
         self.assertEqual("human_request_get", payload["params"]["name"])
         self.assertEqual({"requestId": request_id}, payload["params"]["arguments"])
+
+    def test_native_completion_uses_existing_protected_herder_bearer(self) -> None:
+        request_id = "1b45fd65-6013-4925-a781-afd5367d7b1f"
+        result_ref = "6944969d-ac29-5003-fba0-a545f0c2891c"
+        captured = []
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return None
+            def read(self, _limit): return json.dumps({"request_id": request_id, "status": "resumed"}).encode()
+
+        def runner(request, timeout):
+            captured.append((request, timeout))
+            return Response()
+
+        with patch("notification_center.agent_job_helper._herder_http_token", return_value="fixture-herder-token"), \
+                patch("notification_center.agent_job_helper._herder_loopback_profile", return_value={
+                    "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+                }):
+            result = resume_bound_native_session(request_id, "opencode", "session-1", "/tmp", result_ref, runner)
+
+        request, timeout = captured[0]
+        self.assertEqual("resumed", result["status"])
+        self.assertEqual("http://127.0.0.1:18787/internal/human-requests/ask-user-completion", request.full_url)
+        self.assertEqual("Bearer fixture-herder-token", request.get_header("Authorization"))
+        self.assertEqual(10, timeout)
+
+    def test_protected_herder_token_loader_reads_only_named_secret_field(self) -> None:
+        from notification_center.agent_job_helper import _herder_http_token
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            secret_file = Path(directory) / "secrets.json"
+            secret_file.write_text(json.dumps({"secrets": {"AGENT_HERDER_HTTP_TOKEN": "fixture-herder-token", "OTHER": "ignored"}}))
+            with patch("notification_center.agent_job_helper._HERDER_SECRETS_PATH", secret_file):
+                self.assertEqual("fixture-herder-token", _herder_http_token())
+            with patch("notification_center.agent_job_helper._HERDER_SECRETS_PATH", secret_file.with_name("missing.json")):
+                self.assertEqual("", _herder_http_token())
+
+    def test_herder_bearer_is_never_added_outside_exact_loopback_routes(self) -> None:
+        from notification_center.agent_job_helper import _herder_authorized_headers
+
+        denied = [
+            "http://127.0.0.1:18788/mcp",
+            "http://127.0.0.1:18787/api/sessions/new-or-resume",
+            "http://127.0.0.1:18787/mcp?extra=1",
+            "https://127.0.0.1:18787/mcp",
+            "http://example.com:18787/mcp",
+        ]
+        with patch("notification_center.agent_job_helper._herder_http_token", side_effect=AssertionError("must not load credentials")):
+            for url in denied:
+                with self.subTest(url=url):
+                    self.assertNotIn("Authorization", _herder_authorized_headers(url, {"Accept": "application/json"}))
+
+    def test_missing_protected_credential_keeps_401_fail_closed_without_fallback(self) -> None:
+        request_id = "1b45fd65-6013-4925-a781-afd5367d7b1f"
+
+        def runner(request, timeout):
+            self.assertFalse(request.has_header("Authorization"))
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(b""))
+
+        with patch("notification_center.agent_job_helper._herder_http_token", return_value=""), \
+                patch("notification_center.agent_job_helper._herder_loopback_profile", return_value={
+                    "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+                }):
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                read_herder_human_request(request_id, runner)
+            self.assertEqual(401, denied.exception.code)
 
     def test_task_completion_is_sent_only_after_matching_herder_receipt_readback(self) -> None:
         request_id = "1b45fd65-6013-4925-a781-afd5367d7b1f"

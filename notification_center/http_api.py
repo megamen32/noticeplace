@@ -1959,8 +1959,12 @@ def _human_completion_runner(runner: Any) -> Any:
         if (request.get_method() != "POST"
                 or urllib.parse.urlsplit(request.full_url).path != "/internal/human-requests/ask-user-completion"):
             raise ValueError("human completion route cannot forward another action")
+        target = urllib.parse.urlsplit(override)
+        headers = dict(request.header_items())
+        if target.port != 18787:
+            headers.pop("Authorization", None)
         forwarded = urllib.request.Request(
-            override, data=request.data, headers=dict(request.header_items()), method="POST",
+            override, data=request.data, headers=headers, method="POST",
         )
         return runner(forwarded, timeout=timeout)
 

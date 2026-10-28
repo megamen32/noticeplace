@@ -22,6 +22,8 @@ _EVENT_LIMIT = 64 * 1024
 _RESPONSE_LIMIT = 64 * 1024
 _SESSION_DETAILS_LIMIT = 1024 * 1024
 _HEALTH_CALLBACK_DEFAULT = "/home/roomhacker/.config/gptadmin/health-callback.json"
+_HERDER_SECRETS_PATH = Path("/home/roomhacker/.config/agent-herder/secrets.json")
+_HERDER_AUTH_PATHS = frozenset({"/mcp", "/internal/human-requests/ask-user-completion"})
 _HEALTH_JOB_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
 _HEALTH_STAGE_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
 _REPAIR_FIRST_JOB_IDS = {"health-diagnosis", "health-orchestrator"}
@@ -818,6 +820,43 @@ def _herder_loopback_profile() -> dict[str, str]:
     return {'url': url, 'cwd': os.path.normpath(cwd), 'harness': 'opencode'}
 
 
+def _herder_http_token() -> str:
+    """Load the current Herder HTTP credential from its protected source."""
+    try:
+        secrets = json.loads(_HERDER_SECRETS_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ""
+    fields = secrets.get("secrets") if isinstance(secrets, Mapping) else None
+    if not isinstance(fields, Mapping):
+        return ""
+    token = fields.get("AGENT_HERDER_HTTP_TOKEN")
+    if not isinstance(token, str) or not token or not re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", token):
+        return ""
+    return token
+
+
+def _herder_authorized_headers(url: str, headers: Mapping[str, str]) -> dict[str, str]:
+    """Attach the existing Bearer only to the exact local Herder endpoints."""
+    result = dict(headers)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        allowed = (
+            parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+            and parsed.port == 18787
+            and parsed.path in _HERDER_AUTH_PATHS
+            and not parsed.username and not parsed.password
+            and not parsed.query and not parsed.fragment
+        )
+    except ValueError:
+        allowed = False
+    if allowed:
+        token = _herder_http_token()
+        if token:
+            result["Authorization"] = f"Bearer {token}"
+    return result
+
+
 def read_herder_human_request(request_id: str, runner: Any = urllib.request.urlopen) -> dict[str, Any]:
     """Read one durable Herder Human Request through its existing owner-loopback MCP.
 
@@ -840,11 +879,11 @@ def read_herder_human_request(request_id: str, runner: Any = urllib.request.urlo
     request = urllib.request.Request(
         f"{base}/mcp",
         data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-        headers={
+        headers=_herder_authorized_headers(f"{base}/mcp", {
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
             "MCP-Protocol-Version": "2025-03-26",
-        },
+        }),
         method="POST",
     )
     with runner(request, timeout=5) as response:
@@ -958,7 +997,10 @@ def resume_bound_native_session(request_id: str, harness: str, session_id: str, 
     request = urllib.request.Request(
         f"{base}/internal/human-requests/ask-user-completion",
         data=json.dumps(body, separators=(",", ":")).encode(),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers=_herder_authorized_headers(
+            f"{base}/internal/human-requests/ask-user-completion",
+            {"Content-Type": "application/json", "Accept": "application/json"},
+        ),
         method="POST",
     )
     # Preserve the completion envelope on non-2xx replies: only Herder's
