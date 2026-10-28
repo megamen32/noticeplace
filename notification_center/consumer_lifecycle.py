@@ -69,15 +69,26 @@ class SourceVerifier:
         with os.fdopen(lock_fd, 'w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             path = self.state_dir / 'verification.json'
+            receipts = []
             saved = json.loads(path.read_text()) if path.exists() else {}
             binding = {'project': self.project, 'source_id': self.source_id, 'host_id': self.host_id}
             if saved and saved.get('binding') != binding:
                 raise VerificationPending('state directory belongs to another source identity')
             if saved.get('status') == 'submitting':
-                raise VerificationPending('source check submission requires receipt reconciliation')
+                incident = urllib.parse.quote(saved['incident_id'], safe='')
+                current = self.transport('GET', '/v1/incidents/' + incident)
+                receipt = (current.get('lifecycle') or {}).get('last_check_receipt') or {}
+                result = receipt.get('result') or {}
+                if (receipt.get('idempotency_key') != saved['idempotency_key']
+                        or receipt.get('request_id') != saved['body']['request_id']
+                        or result.get('generation') != saved['body']['generation']
+                        or result.get('observed_state') != saved['body']['observed_state']):
+                    raise VerificationPending('source check submission requires exact receipt reconciliation')
+                saved.update(status='confirmed', receipt=result)
+                self._save(path, saved)
+                receipts.append(result)
             query = urllib.parse.urlencode({'project': self.project, 'source_id': self.source_id})
             requests = self.transport('GET', '/v1/verification-requests?' + query)['requests']
-            receipts = []
             for request in requests:
                 group = request['group']
                 if (group.get('project'), group.get('source_id'), group.get('host_id')) != (

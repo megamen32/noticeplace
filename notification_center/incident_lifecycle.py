@@ -44,6 +44,7 @@ def initialize(center):
         CREATE TABLE IF NOT EXISTS incident_check_receipts (
           idempotency_key TEXT PRIMARY KEY, request_id TEXT NOT NULL,
           payload_json TEXT NOT NULL, result_json TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS incident_check_receipts_request ON incident_check_receipts(request_id);
         ''')
 
         # One joined historical scan, not an incident-by-incident lookup. No
@@ -138,10 +139,12 @@ def view(center, incident_id):
     result['group'] = json.loads(result.pop('metadata_json'))
     result.pop('source_principal')
     result.pop('executor_principal')
-    if result.get('verification_state') == 'degraded':
-        receipt = center._connection.execute('SELECT result_json FROM incident_check_receipts WHERE request_id=? ORDER BY rowid DESC LIMIT 1',(result['request_id'],)).fetchone()
-        if receipt:
-            result['continuation'] = json.loads(receipt['result_json']).get('continuation')
+    receipt = center._connection.execute('SELECT idempotency_key,request_id,result_json FROM incident_check_receipts WHERE request_id=? ORDER BY rowid DESC LIMIT 1',(result.get('request_id'),)).fetchone()
+    if receipt:
+        receipt_result = json.loads(receipt['result_json'])
+        result['last_check_receipt'] = dict(idempotency_key=receipt['idempotency_key'], request_id=receipt['request_id'], result=receipt_result)
+        if result.get('verification_state') == 'degraded':
+            result['continuation'] = receipt_result.get('continuation')
     return result
 
 
@@ -154,9 +157,14 @@ def verifier(center, token, incident_id):
     source = json.loads(row['metadata_json'])['source_id']
     scope = center._token_scope(token)
     sources = scope.get('verification_sources', [])
-    if (not scope.get('principal_id') or not isinstance(sources, (list, tuple)) or source not in sources
+    authenticated = principal(center, token)
+    exact = isinstance(sources, (list, tuple)) and source in sources
+    owned = row['source_principal'] == authenticated
+    dynamic = scope.get('incident_role') == 'verifier' and scope.get('verification_owned_sources') is True
+    allowed = (owned and (exact or dynamic)) or (row['source_principal'] == 'historical-unbound' and exact)
+    if (not scope.get('principal_id') or not allowed
             or scope.get('incident_role') == 'executor'
-            or (row['executor_principal'] and principal(center,token) == row['executor_principal'])):
+            or (row['executor_principal'] and authenticated == row['executor_principal'])):
         raise AuthorizationError('source verification requires a registered independent source principal')
     return row
 
@@ -213,10 +221,13 @@ def due_checks(center, token, project, source_id, limit=20):
     center.authorize_project(token,project)
     scope = center._token_scope(token)
     sources = scope.get('verification_sources', [])
-    if not scope.get('principal_id') or not isinstance(sources, (list, tuple)) or source_id not in sources or scope.get('incident_role')=='executor':
+    exact = isinstance(sources, (list, tuple)) and source_id in sources
+    dynamic = scope.get('incident_role') == 'verifier' and scope.get('verification_owned_sources') is True
+    if not scope.get('principal_id') or not (exact or dynamic) or scope.get('incident_role')=='executor':
         raise AuthorizationError('source verification scope is required')
+    authenticated = principal(center, token)
     with center._lock:
-        rows=center._connection.execute("SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id WHERE i.project=? AND l.source_id=? AND i.state!='resolved' AND l.verification_state IN ('due','unknown') AND l.verification_due<=? ORDER BY l.verification_due LIMIT ?",(project,source_id,time.time(),max(1,min(100,int(limit))))).fetchall()
+        rows=center._connection.execute("SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id WHERE i.project=? AND l.source_id=? AND (l.source_principal=? OR (l.source_principal='historical-unbound' AND ?)) AND i.state!='resolved' AND l.verification_state IN ('due','unknown') AND l.verification_due<=? ORDER BY l.verification_due LIMIT ?",(project,source_id,authenticated,int(exact),time.time(),max(1,min(100,int(limit))))).fetchall()
         result=[]
         for row in rows:
             if json.loads(row['metadata_json'])['source_id']==source_id:

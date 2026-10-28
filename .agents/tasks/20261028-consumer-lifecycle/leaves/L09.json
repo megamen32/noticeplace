@@ -1,0 +1,31 @@
+{
+  "id": "L09",
+  "label": "Раздельные полномочия источника и исполнителя",
+  "status": "done",
+  "owner": "consumer-migration",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L01",
+    "L04"
+  ],
+  "estimate_minutes": {
+    "minimum": 15,
+    "maximum": 30
+  },
+  "description": "Подготовить защищённый атомарный cutover зарегистрированных verification_sources и executor callback credentials; обновить штатный launch/MCP callback без распространения verifier секрета агенту.",
+  "acceptance": "Reviewable helper имеет no-secret preview, rollback и проверяет scope ограничения. Источник может проверять свой source, executor может finish/progress и не может присвоить себе recovery. Фактическое применение только в L06.",
+  "affected_files": [
+    "deploy/consumer-lifecycle-credentials.py",
+    "scripts/sync-health-callback-tokens.py",
+    "notification_center/consumer_lifecycle.py",
+    "notification_center/incident_lifecycle.py",
+    "tests/test_consumer_lifecycle.py",
+    "tests/test_consumer_lifecycle_credentials.py",
+    "docs/consumer-lifecycle-deployment.md",
+    "docs/consumer-lifecycle-credentials.md"
+  ],
+  "note": "L09 preparation complete: shared protected prepare-dir/check-prepared/apply-prepared candidate, perhost credential-line patch and CAS rollback; executor-only callback sync, exact UNKNOWN receipt readback, stored-principal-owned dynamic verification. 10 source/auth tests +17 lifecycle tests GREEN. ONE live readonly3host preflight found source collision:100 has26legacy scopes,44/88 have25; all nineautoTrue/oneFalse. Hashes/evidence docs/consumer-lifecycle-credentials.md. No live candidate/config/token/runtime mutation. L06 must reconcile exact scoped difference before commoncandidate apply; sourcecode done does not claim installed lifecycle."
+}

@@ -30,7 +30,10 @@ No agent statement, stale sample or process-alive check proves recovery.
 For an existing episode, run source checks before ordinary events from the same
 observation, since an ordinary degraded event advances generation and invalidates
 an outstanding request. An unknown POST admission fences dependent recovery or
-continuation until exact receipt reconciliation. Exact receipt readback is prepared separately in L09. It must not suppress independent
+continuation until exact receipt reconciliation. On the next tick the client
+reads GET incident.lifecycle.last_check_receipt and clears the fence only when
+request ID, idempotency key, generation and observed state all match; otherwise
+it leaves the intent pending without retrying POST. It must not suppress independent
 new-fault registration. Poll failures are not healthy observations. Adapters own
 that distinction; this client never sends ordinary events or launches repair.
 
@@ -39,7 +42,10 @@ that distinction; this client never sends ordinary events or launches repair.
 1. L01 API and L02 authoritative executor owner must be published and installed.
 2. L09 prepares separate source verifier and executor principals while preserving
    the nine production automatic-diagnosis flags and all QA flags.
-3. L07 installs infrastructure adapters; coordinate the foreign dirty fleet-health
+3. L06 enables each adapter opt-in `NOTICEPLACE_CONSUMER_V2=1` in its exact
+   owner environment after helper import/scope validation; adapters can reuse the
+   existing producer token, so a new secret environment variable is optional.
+   L07 installs infrastructure adapters; coordinate the foreign dirty fleet-health
    source with its livevusa owner. L08 installs product adapters through their own
    canonical deploy routes. video_watching is on DEV: do not switch branches.
 4. Validate installed helper imports and exact source scopes on every affected

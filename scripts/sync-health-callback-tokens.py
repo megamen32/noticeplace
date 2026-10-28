@@ -40,9 +40,12 @@ def main() -> int:
     document = json.loads(callback_path.read_text(encoding="utf-8"))
     if not isinstance(document, dict) or not str(document.get("url") or "").strip():
         raise SystemExit("health callback map is invalid")
+    lifecycle_v2 = any(isinstance(scope, dict) and scope.get('incident_role') in ('executor', 'verifier') for scope in scopes.values())
     selected: dict[str, tuple[int, int, str]] = {}
     for token, scope in scopes.items():
         if not isinstance(token, str) or not isinstance(scope, dict):
+            continue
+        if lifecycle_v2 and (scope.get('incident_role') != 'executor' or not scope.get('principal_id') or scope.get('verification_sources') or scope.get('verification_owned_sources')):
             continue
         project = str(scope.get("project") or "").strip()
         maximum = str(scope.get("max_severity") or "notice")
@@ -53,6 +56,11 @@ def main() -> int:
         if project not in selected or rank[:2] > selected[project][:2]:
             selected[project] = rank
     tokens = dict(document.get("tokens") or {})
+    if lifecycle_v2:
+        if set(tokens) - set(selected):
+            raise SystemExit('v2 callback requires explicit executor scope for every existing project')
+        tokens = {}
+        document.pop('token', None)
     for project, (_job_rank, _severity_rank, token) in selected.items():
         tokens[project] = token
     document["tokens"] = tokens
