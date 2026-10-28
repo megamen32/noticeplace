@@ -1,0 +1,94 @@
+{
+ "owner": "Инженер / существующая OpenCode MiniMax-сессия",
+ "session": "ses_e8ab5312bffeEAnYY7mRS2WVfP",
+ "harness": "opencode",
+ "model": "minimax-coding-plan/MiniMax-M3.1-Flash",
+ "tier": "fast",
+ "id": "L02",
+ "label": "Сверить живой путь, доступ и безопасный тестовый контракт",
+ "description": "Без новых вызовов проверить текущие ревизии, прямой GLM, service-token source/mount, модельные/инцидентные переходы, допустимый профиль безопасных инструментов и поддержку encrypted Matrix. Вернуть точные RED/контракты, а не новое расследование всего проекта.",
+ "acceptance": "В progress-L02.md записаны actual source/runtime/provider, account_ref/target/room, отсутствие личных/телефонных маршрутов; выбран минимальный путь каждого ремонта и явно названы неподтверждённые capabilities.",
+ "status": "completed",
+ "estimate_minutes": {
+  "minimum": 8,
+  "maximum": 12
+ },
+ "affected_files": [
+  "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261028-secretary-fullcycle/progress-L02.md"
+ ],
+ "depends_on": [
+  "L01"
+ ],
+ "note": "Первый инженерный шаг после плана; read-only, без новых звонков/генерационных probes.",
+ "created_at": "2026-10-28T17:32:49+03:00",
+ "updated_at": "2026-10-28T17:42:28+03:00",
+ "progress_events": [
+  {
+   "at": "2026-10-28T17:32:49+03:00",
+   "note": "",
+   "changes": {
+    "owner": "Инженер: существующая OpenCode/MiniMax-сессия",
+    "session": "ses_e8ab5312bffeEAnYY7mRS2WVfP",
+    "harness": "opencode",
+    "model": "minimax-coding-plan/MiniMax-M3.1-Flash",
+    "tier": "fast",
+    "id": "L02",
+    "label": "Сверить живой путь, доступ и безопасный тестовый контракт",
+    "description": "Без новых вызовов проверить текущие ревизии, прямой GLM, service-token source/mount, модельные/инцидентные переходы, допустимый профиль безопасных инструментов и поддержку encrypted Matrix. Вернуть точные RED/контракты, а не новое расследование всего проекта.",
+    "acceptance": "В progress-L02.md записаны actual source/runtime/provider, account_ref/target/room, отсутствие личных/телефонных маршрутов; выбран минимальный путь каждого ремонта и явно названы неподтверждённые capabilities.",
+    "status": "queued",
+    "estimate_minutes": {
+     "minimum": 8,
+     "maximum": 12
+    },
+    "affected_files": [
+     "/home/roomhacker/agents-projects/noticeplace/.agents/tasks/20261028-secretary-fullcycle/progress-L02.md"
+    ],
+    "depends_on": [
+     "L01"
+    ],
+    "note": "Первый инженерный шаг после плана; read-only, без новых звонков/генерационных probes."
+   },
+   "session": "ses_e8ab5312bffeEAnYY7mRS2WVfP",
+   "harness": "opencode"
+  },
+  {
+   "at": "2026-10-28T17:41:06+03:00",
+   "note": "",
+   "changes": {
+    "wait_reason": "Требуется подтверждённый результат L01."
+   },
+   "session": "ses_e8ab5312bffeEAnYY7mRS2WVfP",
+   "harness": "opencode"
+  },
+  {
+   "at": "2026-10-28T17:42:03+03:00",
+   "note": "Начал работу в текущей сессии",
+   "changes": {
+    "status": "running",
+    "harness": "codex",
+    "owner": "roomhacker"
+   },
+   "session": "ses_e8ab5312bffeEAnYY7mRS2WVfP",
+   "harness": "codex"
+  },
+  {
+   "at": "2026-10-28T17:42:28+03:00",
+   "note": "Исполнитель возобновлён через Herder, фактически running; только read-only сверка без вызовов.",
+   "changes": {
+    "harness": "opencode",
+    "owner": "Инженер / существующая OpenCode MiniMax-сессия"
+   },
+   "session": "ses_e8ab5312bffeEAnYY7mRS2WVfP",
+   "harness": "opencode"
+  },
+  {
+   "at": "2026-10-28T14:48:19.579870Z",
+   "note": "Read-only сверка завершена: слот direct-GLM и ревизия установлены; credential-путь (STATE=voice.token на 88, чтение bridge, mount rw=false) — один файл, token_version=184 во всех трёх namespace, разрешение 479 мс при таймауте 20 с, форвард 18086 жив. Причина окна 401 не воспроизводится — RED не объявляется, записан честный UNKNOWN. Контракты режимов (voice_chat.go:27/76/142/154/208/275/285/352/449-470), безопасный профиль инструментов (voice_chat.go:403) и допуск 1:1 без проверки шифрования (matrix_inbound_calls.py:287) выписаны по точным символам. Отчёт: progress-L02.md.",
+   "changes": {
+    "status": "completed"
+   }
+  }
+ ],
+ "wait_reason": "Требуется подтверждённый результат L01."
+}
