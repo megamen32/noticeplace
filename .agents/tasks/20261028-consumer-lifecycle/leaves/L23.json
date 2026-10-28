@@ -1,0 +1,10 @@
+{
+  "id": "L23", "label": "Свежая проверка OpenChamber глазами оператора",
+  "status": "done", "owner": "zk-native", "session": "zk_native",
+  "harness": "codex", "model": "gpt-6.1-sol", "tier": "frontier", "complexity": "S",
+  "depends_on": ["L21"], "estimate_minutes": {"minimum": 10, "maximum": 15},
+  "description": "Независимый тестировщик без исходников и отчётов ищет инцидент в живом OpenChamber, оценивает название и наблюдает продолжение той же native сессии.",
+  "acceptance": "Реальная browser-навигация и наблюдаемый результат; нет новых инцидентов/промптов/owner contact, не проверенные переходы указаны явно.",
+  "affected_files": [], "note": "Независимый UI поиск дал ровно один match; URL exact ses_e7c849ab9ffeA5lL9rAli7jl1R. Наблюдались работа, остановка, новое входящее сообщение и продолжение той же сессии, повторная остановка. Никаких пользовательских промптов и мутаций тестировщик не делал. Свой browser закрыт. Evidence .tmp/zk-native-20261028.md и qa-active/finished1/continuation/finished2/final-one-match screenshots.",
+  "result": "Одна native-карточка и same-session continuation подтверждены реальным OpenChamber UI. Хост/тип доступны в фактах чата; отдельный source-status UI OpenChamber не показывает, его показывает панель NoticePlace. Здоровье и закрытие проверяются отдельно L17."
+}

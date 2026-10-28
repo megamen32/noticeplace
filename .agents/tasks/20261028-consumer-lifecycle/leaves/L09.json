@@ -29,5 +29,18 @@
     "tests/test_gptadmin_agent.py",
     "docs/consumer-lifecycle-reviewed-plan.json"
   ],
-  "note": "L13 helper/auth/launch JOIN source complete: 26project reviewed plan +one ATV supplemental verifier and executor-only callback; integration26/25 exactbaseline exception; protected exactsource-SHA resolver with defaultfailclosed; trusted group metadata+deliveryattempt+explicitfinish. 15credential fixtures,5launch,30GPTAdmin,42helper tests GREEN; real read-only no-secret preview27project entries succeeds with no candidate/config write. TGC registered engine consumer separately confirmed (consumer_1df8b4668ab24b89b88859f1929d2880, tgc-engine-watchdog/server-100/engine), missingv2check transition documented for bounded migration; not silently excluded or auto-enrolled. Core/group commit1ff0265d already published. Sourcecommit pending finaldiffchecks; no runtime acceptance claimed."
+  "note": "L13 helper/auth/launch JOIN source complete: 26project reviewed plan +one ATV supplemental verifier and executor-only callback; integration26/25 exactbaseline exception; protected exactsource-SHA resolver with defaultfailclosed; trusted group metadata+deliveryattempt+explicitfinish. 15credential fixtures,5launch,30GPTAdmin,42helper tests GREEN; real read-only no-secret preview27project entries succeeds with no candidate/config write. TGC registered engine consumer separately confirmed (consumer_1df8b4668ab24b89b88859f1929d2880, tgc-engine-watchdog/server-100/engine), missingv2check transition documented for bounded migration; not silently excluded or auto-enrolled. Core/group commit1ff0265d already published. Sourcecommit pending finaldiffchecks; no runtime acceptance claimed.",
+  "estimate_over_limit_reason": "Source/executor разделение требует согласованного credential envelope и проверки обеих ролей; секреты не дробятся на несогласованные промежуточные активации. Установка отдельно L17.",
+  "updated_at": "2026-10-28T20:36:36+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:36+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Source/executor разделение требует согласованного credential envelope и проверки обеих ролей; секреты не дробятся на несогласованные промежуточные активации. Установка отдельно L17."
+      },
+      "session": "unknown",
+      "harness": "codex"
+    }
+  ]
 }

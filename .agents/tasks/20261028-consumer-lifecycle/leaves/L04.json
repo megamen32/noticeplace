@@ -23,5 +23,18 @@
     "tests/test_consumer_lifecycle.py"
   ],
   "note": "L04 source slice complete; split L07 infrastructure/L08 products/L09 auth. Original estimates preserved. 26-entry truthful registry, source paths confirmed, server100 ExecStart observed for five adapters; server88 partial discovery means coverage incomplete. Three stdlib helper tests green. No runtime installation or real source canary claimed. Receipt reconciliation in L09.",
-  "estimate_unknown_reason": "Количество самостоятельных устанавливаемых health-адаптеров уточняется по найденным корням и live ingress."
+  "estimate_unknown_reason": "Количество самостоятельных устанавливаемых health-адаптеров уточняется по найденным корням и live ingress.",
+  "estimate_over_limit_reason": "Первичный discovery имел неизвестное число продуктов. Исполнение разделено в L07/L08/L10/L11/L14/L16/L18; исходная оценка и ID discovery сохранены как история.",
+  "updated_at": "2026-10-28T20:36:22+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:22+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Первичный discovery имел неизвестное число продуктов. Исполнение разделено в L07/L08/L10/L11/L14/L16/L18; исходная оценка и ID discovery сохранены как история."
+      },
+      "session": "unknown",
+      "harness": "codex"
+    }
+  ]
 }

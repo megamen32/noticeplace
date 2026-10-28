@@ -1,0 +1,52 @@
+{
+  "installed": {
+    "version": {
+      "build_version": "1043",
+      "git_commit": "443f941bdfcb2857c9e0ca43458479c5cb629737",
+      "name": "gptadmin-go-hub",
+      "ok": true
+    },
+    "release": "/opt/gptadmin-node/versions/443f941bdfcb2857c9e0ca43458479c5cb629737-1",
+    "binary_sha256": "35e23b96e129657cf2a00a20a2248d582b28c1b65b396a27679bf10f6fa96274",
+    "pid": 2233575,
+    "drain": {
+      "draining": false,
+      "reason": "",
+      "ready_to_stop": false,
+      "counters": {
+        "active_submissions": 0,
+        "active_callbacks": 0,
+        "unfinished_executions": 0,
+        "outbox_pending": 0
+      }
+    },
+    "unit": "NRestarts=0\nActiveState=active\nActiveEnterTimestamp=Wed 2026-10-28 20:35:47 MSK\n"
+  },
+  "package_sha256": "8c58b51d60ed76193ddb2f784dfeedb0bf272c112e6e4e102b71fd2cb733de74",
+  "source_dirty": false,
+  "uid1000_postrestart": {
+    "profiles_read": true,
+    "profiles_mode": "0600",
+    "callback_read": true,
+    "callback_mode": "0600",
+    "foreign_root_env_readable": false
+  },
+  "acl_postrestart": {
+    "named_roomhacker": "--x",
+    "mask": "--x",
+    "mtproxy": "---",
+    "group": "---",
+    "other": "---"
+  },
+  "cancelled_readonly_catalog_ids": [
+    "0e2b962fb99333fccd563530337cf5c9",
+    "44834f3c5effd0c17cccb55daf6f570a",
+    "721143e69914760d14dc015788939808",
+    "9a04d850da7a60f80f0ab2d207923c70",
+    "a255b4c7ad9d56898ee048d972b9665f",
+    "b870a8b149c46b5619156feb2a48970b",
+    "ea93c3f4e09ae20257a4520b07ade1b3",
+    "f235de1299a472b2eb2777649697edc5"
+  ],
+  "cancellation_receipt_sha256": "062a9a90d06a4ccfa90618e1302fcf29d15b5ad03c09c325464b6b1943185bab"
+}

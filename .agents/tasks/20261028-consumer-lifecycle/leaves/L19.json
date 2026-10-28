@@ -1,0 +1,11 @@
+{
+  "id": "L19", "label": "Снятие definitively rejected source-check intent",
+  "status": "done", "owner": "release-core", "session": "release_core",
+  "harness": "codex", "model": "gpt-6.1-sol", "tier": "frontier", "complexity": "L",
+  "depends_on": ["L12"], "estimate_minutes": {"minimum": 10, "maximum": 15},
+  "description": "Исправить найденный интеграционным ревью permanent VerificationPending после достоверно отклонённого stale request. Сохранить no-replay для неоднозначных POST.",
+  "acceptance": "Concurrent source-event invalidates old nonce; rejected old POST не повторяется; следующий fresh request может быть обработан. Неизвестный исход остаётся fenced до точной квитанции.",
+  "affected_files": ["notification_center/consumer_lifecycle.py", "tests/test_consumer_lifecycle.py"],
+  "finished_at": "2026-10-28T15:37:38Z",
+  "note": "RED: domain concurrent degraded -> actual HTTP400 envelope -> next tick VerificationPending. GREEN: 8 SDK tests (5.9s), reviewer integration_review accepted exact stale-only rejection and bound GET supersession. Old POST never replayed. Other400/500/timeout even changed nonce stay fenced; lost accepted healthy/degraded replies reconcile exact receipts. Source published separately; runtime installation remains L17."
+}

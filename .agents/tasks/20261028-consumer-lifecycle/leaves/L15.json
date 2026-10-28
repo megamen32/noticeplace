@@ -1,0 +1,40 @@
+{
+  "id": "L15",
+  "label": "Подключить завершение попытки к живому Herder",
+  "status": "done",
+  "owner": "herder-attempt-finish",
+  "session": "herder_finish",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L01",
+    "L02",
+    "L12"
+  ],
+  "estimate_minutes": {
+    "minimum": 10,
+    "maximum": 20
+  },
+  "description": "Устранить неподключённый readAttemptOutcome в live server и проверить, что явный finish останавливает попытку, а source degraded продолжает ту же native session с автопилотом.",
+  "acceptance": "Фактический production factory имеет callback; work_finished не равен resolved, не создаёт idle-loop и не HumanStop; matching source continuation возвращает одну сессию.",
+  "affected_files": [
+    "/home/roomhacker/agents-projects/agent-herder/src/web/server.ts"
+  ],
+  "finished_at": "2026-10-28T15:29:09Z",
+  "note": "Source published: Herder eeae09c9d35be1b8bdab9be3feae6bc1ac7f33d8 + 4a8815cf1593f2e211ff8d24d1d4f8f2b5f5b832, NP helper 1f0eab0. RED actual factory: work_finished оставлял enabled=true; RED rearm race удалял новый observer. GREEN exact persisted noticeAttempt отдельно от first incident, production authoritative reader project/incident/attempt/session/harness, atomic pause CAS, same-session rearm + restart recovery. 36 targeted Herder + 43 NP helper; tsc. L07 CLI handoff published34214f36bbeb75afc4f5360202e728ecfc95e014:11 stub-transport tests. Runtime ещё не установлен, native OpenCode и model policy не менялись.",
+  "estimate_over_limit_reason": "Production Herder wiring включает observer, persisted native attempt и explicit finish; один установленный runtime требует согласованного outcome.",
+  "updated_at": "2026-10-28T20:36:51+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:51+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Production Herder wiring включает observer, persisted native attempt и explicit finish; один установленный runtime требует согласованного outcome."
+      },
+      "session": "herder_finish",
+      "harness": "codex"
+    }
+  ]
+}

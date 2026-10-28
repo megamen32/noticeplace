@@ -1,0 +1,52 @@
+{
+  "id": "L05",
+  "label": "Интеграция и независимое ревью результата",
+  "status": "done",
+  "owner": "integration-review",
+  "session": "integration_review",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L01",
+    "L02",
+    "L03",
+    "L04",
+    "L07",
+    "L08",
+    "L09",
+    "L10",
+    "L11",
+    "L12",
+    "L13",
+    "L14",
+    "L15",
+    "L16",
+    "L19",
+    "L20",
+    "L21"
+  ],
+  "estimate_minutes": {
+    "minimum": 15,
+    "maximum": 25
+  },
+  "description": "Проверить единый wire-contract, устранить замечания одного fresh review, опубликовать только owned paths в main.",
+  "acceptance": "Объединённый consumer→NP→Herder сценарий проходит, scoped commit/push подтверждён, чужой WIP сохранён.",
+  "affected_files": [],
+  "result": "Независимое ревью приняло опубликованные NP26e402dd и Herder9cd3475d. SDK stale-rejection, проверки связанных эпизодов и отменённый неотправленный continuation исправлены; 39 lifecycle и 25 Herder delta тестов прошли. Разрешена контролируемая установка.",
+  "note": "REPORT-L05.md содержит воспроизведение, независимую повторную проверку и method-check. Принятие исходников не является подтверждением installed user path; оно остаётся L17/L18 и финальным L06.",
+  "estimate_over_limit_reason": "Независимое интеграционное ревью покрывает переходы нескольких владельцев, а найденные дефекты исправлялись отдельными листьями. Исходный ID ревью сохранён.",
+  "updated_at": "2026-10-28T20:36:24+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:24+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Независимое интеграционное ревью покрывает переходы нескольких владельцев, а найденные дефекты исправлялись отдельными листьями. Исходный ID ревью сохранён."
+      },
+      "session": "integration_review",
+      "harness": "codex"
+    }
+  ]
+}

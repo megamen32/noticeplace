@@ -1,0 +1,26 @@
+{
+  "id": "L25",
+  "label": "Проверка полного маршрута панели перед установкой",
+  "status": "done",
+  "owner": "console-lifecycle",
+  "session": "console_lifecycle",
+  "harness": "codex",
+  "model": "gpt-6-luna",
+  "tier": "frontier",
+  "complexity": "S",
+  "depends_on": [
+    "L03"
+  ],
+  "estimate_minutes": {
+    "minimum": 5,
+    "maximum": 10
+  },
+  "description": "Исправить rollout full-selftest без ослабления проверки #/incidents: подтвердить действующий маршрут, форму и фильтры, затем согласовать semantic assertion с реальным заголовком.",
+  "acceptance": "Полный GET-only selftest и route fixture проходят, опубликованные console inputs установлены и проверены на8094.",
+  "affected_files": [
+    "/home/roomhacker/ServersAdministartion/automation/noticeplace-console"
+  ],
+  "note": "RED reproduced from full GET-only gate: /incidents route rendered but the literal expected phrase was stale; group-route fixture also omitted actual API field is_health. Source confirms pageIncidents/hash route and heading Журнал инцидентов. Added fixture proof for heading, project form and submit preserving project+view; updated semantic route expectations and fixture contract. Full source gate PASS: 10 routes against http://127.0.0.1:8094. Published commit 7a6eb9bdc76e678508edba020941fee13b7dddb1 on origin/main. Waiting only for release_core reinstall/restart and installed selftest receipt; this worker did not install/restart.",
+  "finished_at": "2026-10-28T19:51:59+03:00",
+  "result": "7a6eb9bd установлен из пяти зафиксированных файлов; loopback8094 HTTP200 и установленный полный GET-only selftest PASS exit0. Независимая браузерная оценка вынесена в L24."
+}

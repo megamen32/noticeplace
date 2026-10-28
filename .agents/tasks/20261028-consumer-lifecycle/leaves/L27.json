@@ -1,0 +1,27 @@
+{
+  "id": "L27",
+  "label": "Устойчивый узкий доступ исполнителя к профилям GPTAdmin",
+  "status": "done",
+  "owner": "release-core",
+  "session": "release_core",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "S",
+  "depends_on": [
+    "L09"
+  ],
+  "estimate_minutes": {
+    "minimum": 5,
+    "maximum": 10
+  },
+  "description": "Найти и исправить canonical chmod/install, сбрасывающий ACL mask для uidroomhacker на /etc/gptadmin. Сохранить защищённые чужие файлы и profile0600.",
+  "acceptance": "Штатная повторная установка сохраняет effective traverse-only, uid1000 читает свои два профиля/callback, чужие root-only файлы не открываются.",
+  "affected_files": [
+    "gptadmin/go-hub/internal/hub/secret_store.go",
+    "gptadmin/go-hub/internal/hub/secret_store_test.go",
+    "gptadmin/go-hub/internal/hub/node_drain.go",
+    "gptadmin/go-hub/internal/hub/node_drain_test.go"
+  ],
+  "note": "InstalledGPTAdmin443f941b via canonicalrequire-drain; actualversion/processmanifest/PID2233575/NRestarts0 verified. Postrestartuid1000profiles/callback0600read, narrowACLx survives/root-onlyenvdenied. ACLRED→GREEN anddrainRED→GREEN; exactly8provenundispatchedreadonlyschema tasks cancelledviaAPI withreceipts, noforce/DBwrite/UNKNOWNreplay. RECEIPT-L27.json/REPORT-L27.md complete."
+}

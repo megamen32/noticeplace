@@ -1,0 +1,35 @@
+{
+  "id": "L17",
+  "label": "Установка центрального контура и один lifecycle canary",
+  "status": "done",
+  "owner": "release-core",
+  "session": "release_core",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L05"
+  ],
+  "estimate_minutes": {
+    "minimum": 20,
+    "maximum": 35
+  },
+  "description": "Подготовить защищённый единый candidate, после интеграционного ревью установить NP100/44/88 и console, согласовать Herder с единственным runtime installer. Проверить один изолированный muted lifecycle на установленном контуре.",
+  "acceptance": "Фактические SHA, auth readback, incident/operation/session IDs и source-check receipt; finish выключает попытку, degraded возвращает ту же сессию, healthy закрывает. Accepted/UNKNOWN не replay.",
+  "affected_files": [],
+  "note": "Installed NP6a9f78fe on100/44/88, identical frozen inputs/auth; exact ONE muted QA inc_c1092c3c91514485a0617072e87a7727 resolved by independent healthy source. One native ses_e7c849ab9ffeA5lL9rAli7jl1R, initial operatione0fff05d48167299345eaaffac137ad6 and one continuationb96c74a15313a9179b493bd4f8e86cdb; actualOpenCode/modelomniroute/glm-5.3-flash-minimax-m3.1. APtrue→explicitfinish/off/open→fresh503→same-sessionAPtrue→explicitfinish/off/open→fresh200→resolved. Cleanupownroute/processes/gate complete. RECEIPT-L17.json contains sanitized installed/runtime/source proof.",
+  "estimate_over_limit_reason": "Безопасная установка трёх API, одна реальная двухэтапная native canary и независимое закрытие занимают больше15мин по внешней длительности попыток. Дублировать canary ради дробления запрещено.",
+  "updated_at": "2026-10-28T20:36:56+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:56+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Безопасная установка трёх API, одна реальная двухэтапная native canary и независимое закрытие занимают больше15мин по внешней длительности попыток. Дублировать canary ради дробления запрещено."
+      },
+      "session": "release_core",
+      "harness": "codex"
+    }
+  ]
+}

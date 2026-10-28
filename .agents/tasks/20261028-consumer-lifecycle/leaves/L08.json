@@ -1,0 +1,43 @@
+{
+  "id": "L08",
+  "label": "AutoSell hourly/proxy и совместимость inbox",
+  "status": "done",
+  "owner": "product-consumers",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L01",
+    "L04"
+  ],
+  "estimate_minutes": {
+    "minimum": 20,
+    "maximum": 45
+  },
+  "description": "AutoSell hourly и proxy capacity используют общий SourceVerifier и реальные source probes; inbox остаётся notification-only, центральная совместимость без принудительного health/AI.",
+  "acceptance": "Продуктовые проверки используют реальное состояние своего источника, сохраняют эпизод и source identity, не создают параллельный selfheal launcher; marker и адресная regression-проверка соответствуют коду.",
+  "affected_files": [
+    "/home/roomhacker/PycharmProjects/AutoFindClient/AutoSellBot/noticeplace_client.py",
+    "/home/roomhacker/PycharmProjects/AutoFindClient/scripts/autosell_hourly_watch.py",
+    "/home/roomhacker/PycharmProjects/AutoFindClient/AutoSellBot/proxy_manager.py",
+    "/home/roomhacker/agents-projects/universal-inbox/src/universal_inbox/noticeplace_sink.py"
+  ],
+  "note": "SOURCE VERTICAL COMPLETE, not installed acceptance: AutoSell main commits 4ded2f49 and 2a23c126 published; own source working tree tracked clean. Focused 75 passed, authoritative push gate 101 passed. Hourly+proxy fresh probes use installed shared SDK; explicit problem types; check-result UNKNOWN reconciliation delegated SDK; intake POST ambiguity fenced without replay (manual authoritative reconciliation required). Six canonical DB/spend preflight transactions verified SET TRANSACTION READ ONLY/current_setting=on, SQL guard SELECT/SHOW only; no API/send/runtime changes. L06 must install shared SDK inside app image and host, enable NOTICEPLACE_CONSUMER_V2=1 in existing runtime producer env, apply canonical hourly unit relocation, then isolated canary. Inbox marker local cf4d05a only: remote archived/read-only; central server compatibility/readback owned L09/L06. Video and cron are separate L10/L11.",
+  "started_at": "2026-10-28T13:59:06.289842+00:00",
+  "session": "/root/product_consumers",
+  "updated_at": "2026-10-28T20:36:34+03:00",
+  "finished_at": "2026-10-28T14:17:13.329319+00:00",
+  "estimate_over_limit_reason": "Завершённый пакет связанных AutoSell источников сохраняет исходный ID/receipts. Независимая фактическая установка и overlay-проверка выделены L18.",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:34+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Завершённый пакет связанных AutoSell источников сохраняет исходный ID/receipts. Независимая фактическая установка и overlay-проверка выделены L18."
+      },
+      "session": "/root/product_consumers",
+      "harness": "codex"
+    }
+  ]
+}

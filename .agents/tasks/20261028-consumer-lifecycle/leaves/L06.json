@@ -1,0 +1,63 @@
+{
+  "id": "L06",
+  "label": "Выкладка и изолированная сквозная приёмка",
+  "status": "done",
+  "owner": "release-canary",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L17",
+    "L18",
+    "L23",
+    "L24",
+    "L27",
+    "L29",
+    "L30"
+  ],
+  "estimate_minutes": {
+    "minimum": 20,
+    "maximum": 35
+  },
+  "description": "Установить опубликованные SHA, проверить один muted QA lifecycle и реальную панель, провести две свежие Zero Knowledge проверки без контакта с владельцем, убрать только свои фикстуры.",
+  "acceptance": "Зафиксированы deployed SHA, incident/operation/session ID, actual harness/model/autopilot, same-session повтор, независимое закрытие и видимые группы; ноль звонков и тестовых уведомлений человеку.",
+  "affected_files": [],
+  "note": "Основной контур доказан действующим продуктом, не только тестами. Сохранены чужие WIP и принятые/UNKNOWN операции. GrepMesh discovery исторически partial; активные известные потребители мигрированы, полный inventory флота не объявляется. Source/schema MCP identity hermes не расширялась; native QA использовал защищённый HTTP work-finished callback.",
+  "estimate_over_limit_reason": "Агрегирующая приёмка включает две настоящие модельные попытки с независимыми source checks и браузерные проверки. Практическое исполнение выделено в L17/L18/L23/L24/L27/L29.",
+  "updated_at": "2026-10-28T20:38:14+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:27+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Агрегирующая приёмка включает две настоящие модельные попытки с независимыми source checks и браузерные проверки. Практическое исполнение выделено в L17/L18/L23/L24/L27/L29."
+      },
+      "session": "unknown",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-10-28T20:38:14+03:00",
+      "note": "",
+      "changes": {
+        "status": "done",
+        "finished_at": "2026-10-28T17:37:35Z",
+        "depends_on": [
+          "L17",
+          "L18",
+          "L23",
+          "L24",
+          "L27",
+          "L29",
+          "L30"
+        ],
+        "result": "Установлены NP6a9f78fe на100/44/88, Herder5d76de9, GPTAdmin443f941b, consolee49b6e2. Единственный QA inc_c1092c3c91514485a0617072e87a7727 resolved/healthy после двух настоящих attempts в одной OpenCodeсессии; finish/APoff→fresh503→same-session/rearm→finish/APoff→fresh200/closure. Две свежие независимые UI-проверки пройдены. Фикстуры/route/gate убраны, APoff, calls/ownercontact0, собственных мусорных ресурсов нет.",
+        "note": "Основной контур доказан действующим продуктом, не только тестами. Сохранены чужие WIP и принятые/UNKNOWN операции. GrepMesh discovery исторически partial; активные известные потребители мигрированы, полный inventory флота не объявляется. Source/schema MCP identity hermes не расширялась; native QA использовал защищённый HTTP work-finished callback."
+      },
+      "session": "unknown",
+      "harness": "codex"
+    }
+  ],
+  "finished_at": "2026-10-28T17:37:35Z",
+  "result": "Установлены NP6a9f78fe на100/44/88, Herder5d76de9, GPTAdmin443f941b, consolee49b6e2. Единственный QA inc_c1092c3c91514485a0617072e87a7727 resolved/healthy после двух настоящих attempts в одной OpenCodeсессии; finish/APoff→fresh503→same-session/rearm→finish/APoff→fresh200/closure. Две свежие независимые UI-проверки пройдены. Фикстуры/route/gate убраны, APoff, calls/ownercontact0, собственных мусорных ресурсов нет."
+}

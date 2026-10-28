@@ -1,0 +1,37 @@
+{
+  "id": "L03",
+  "label": "Группы в панели и суточная история уведомлений",
+  "status": "done",
+  "owner": "console-lifecycle",
+  "harness": "codex",
+  "model": "gpt-6-luna",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [],
+  "estimate_minutes": {
+    "minimum": 20,
+    "maximum": 35
+  },
+  "description": "Группировать до пагинации по consumer/host/problem_type, сохранить отдельные эпизоды, отделить уведомления старше суток от активных неисправностей.",
+  "acceptance": "Адресные тесты панели и data layer: группы не распадаются между страницами, разные хосты и типы отдельно, health TTL не означает resolved.",
+  "affected_files": [
+    "/home/roomhacker/ServersAdministartion/automation/noticeplace-console"
+  ],
+  "note": "Source and focused proofs complete. Grouping uses indexed incident_lifecycle.group_key and precedes paging; SQL lists separate episode IDs; TTL uses latest events.created_at and only hides old informational non-health/noncritical rows; health remains unverified/overdue and each episode detail merges its native session. Fixed installed self-test gate to read the systemd unit from /etc/systemd/system. Tests: 4 SQLite cases and panel fixture pass; live read-only modified journal limit=2: 2 rows, 6489 groups, 215 ms. Runtime source not installed; deploy/restart explicitly deferred by task scope. Root approval for scoped commit/push pending.",
+  "started_at": "2026-10-28T16:36:58+03:00",
+  "session": "console_lifecycle",
+  "finished_at": "2026-10-28T16:54:37+03:00",
+  "estimate_over_limit_reason": "Одна пользовательская вертикаль объединяет SQL группировку до пагинации, UI и историю; исходный ID сохранён для установленных receipts. Последующие UX-дефекты отдельно L25/L29.",
+  "updated_at": "2026-10-28T20:36:19+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:19+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Одна пользовательская вертикаль объединяет SQL группировку до пагинации, UI и историю; исходный ID сохранён для установленных receipts. Последующие UX-дефекты отдельно L25/L29."
+      },
+      "session": "console_lifecycle",
+      "harness": "codex"
+    }
+  ]
+}

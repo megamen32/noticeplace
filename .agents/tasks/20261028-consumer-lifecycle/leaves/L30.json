@@ -1,0 +1,11 @@
+{
+  "id": "L30", "label": "Рабочая операторская статистика video_watching",
+  "status": "done", "owner": "consumer-runtime", "session": "consumer_runtime",
+  "harness": "codex", "model": "gpt-6.1-sol", "tier": "frontier", "complexity": "S",
+  "depends_on": ["L18"], "estimate_minutes": {"minimum": 5, "maximum": 15},
+  "description": "Исправить обнаруженный L18 дефект status_runtime.py: статистика вызывается без подключения БД.",
+  "acceptance": "Штатный read-only /stats возвращает полезную статистику через защищённый выделенный runtime/monitor endpoint; HBA не меняется, бот и клиенты не перезапускаются.",
+  "affected_files": ["scripts/ops/status_runtime.py"],
+  "note": "RED: два Database is not connected. GREEN: четыре теста, DB manager гарантирует connect/close при успехе и ошибке. Fix a31c3ba7440d9ba7518f57aac9fd14783b86e492 опубликован в canonical origin/dev; итоговый HEAD d1182451581eac3437d7df15488e9b07ac7541f4 синхронизирован. Рестартов/событий нет, чужой .xerjignore сохранён.",
+  "result": "Реальный make status через защищённый runtime wrapper: /stats 60 — 1907 просмотров, 1905 успешных, 2 ошибки. Bot PID739990/NRestarts0 сохранён."
+}

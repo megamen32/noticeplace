@@ -1,0 +1,42 @@
+{
+  "id": "L11",
+  "label": "Проверяемое состояние cron-потребителей TelegramAuto",
+  "status": "done",
+  "owner": "cron-consumers",
+  "harness": "codex",
+  "model": "gpt-6-luna",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L01",
+    "L04"
+  ],
+  "estimate_minutes": {
+    "minimum": 20,
+    "maximum": 35
+  },
+  "description": "Добавить source-owned результат штатного cron и вызов source checks в действующие caller seams. Не запускать повторно бизнес-задачу ради проверки и не объявлять старый успешный запуск свежим восстановлением.",
+  "acceptance": "Подтверждённый новый результат источника снимает failure; отсутствие измерения остаётся unknown; recovery сохраняет эпизод и не даёт агенту источник-полномочия; существующие cron вызовы мигрированы.",
+  "affected_files": [
+    "/home/roomhacker/PycharmProjects/TelegramAuto/scripts/cron_noticeplace.py",
+    "/home/roomhacker/PycharmProjects/TelegramAuto/scripts/tests/test_cron_noticeplace.py",
+    "/home/roomhacker/PycharmProjects/TelegramAuto/.agents/at/view_hourly_check.sh",
+    "/home/roomhacker/PycharmProjects/TelegramAuto/.agents/at/subs_auto_evaluator.py"
+  ],
+  "note": "Published source slice e138ecd to origin/main; authoritative ls-remote and local HEAD both e138ecdbc5c377513597d35ffe609b7b579d7bde. V2 remains opt-in. Due request transport filters by exact measured signal so other same-source cron requests stay pending; problem_type is omitted and falls back to each signal, never generic unknown. Fresh SQL measures view-hourly; fresh sampler timestamp measures sampler-stale; unsupported/business signals are not marked healthy. Targeted tests 16 passed and mandatory push gate 16 passed; shell syntax, py_compile, diff check passed. Runtime status remains source-published only: helper install/grant and protected env marker are not present from this worker; no deploy/restart/live call. Caller classification: service speed/degraded and weekly audit are business/SLA/config findings; subs-ramp stall is business outcome; sampler-stale is runtime health with current timestamp probe. ATV submodule systemd canary and untracked ops/cron tree are outside these owned paths; QA/test callers are not activated. Foreign tracked/untracked WIP and data remain untouched. Code map key telegramauto-noticeplace-cron-lifecycle verified at the published HEAD.",
+  "session": "cron_consumers",
+  "updated_at": "2026-10-28T20:36:41+03:00",
+  "result": "e138ecdbc5c377513597d35ffe609b7b579d7bde published origin/main. Requires /opt/noticeplace SDK (L06), authorized consumer policy (L13), then NOTICEPLACE_CONSUMER_V2=1 in protected /etc/default/autotelegramviews. Runtime installation not claimed.",
+  "estimate_over_limit_reason": "Исходный пакет ATV/TGC cron consumers сохраняет ID с отдельными adapter/test receipts; реальная установка отдельно L18.",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:41+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Исходный пакет ATV/TGC cron consumers сохраняет ID с отдельными adapter/test receipts; реальная установка отдельно L18."
+      },
+      "session": "cron_consumers",
+      "harness": "codex"
+    }
+  ]
+}

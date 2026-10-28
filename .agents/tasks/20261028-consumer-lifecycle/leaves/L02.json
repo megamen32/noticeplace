@@ -1,0 +1,39 @@
+{
+  "id": "L02",
+  "label": "Продолжение той же native-сессии и честный статус исполнителя",
+  "status": "done",
+  "owner": "herder-lifecycle",
+  "harness": "codex",
+  "model": "gpt-6-luna",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [],
+  "estimate_minutes": {
+    "minimum": 15,
+    "maximum": 30
+  },
+  "started_at": "2026-10-28T16:36:39+03:00",
+  "finished_at": "2026-10-28T16:45:39+03:00",
+  "session": "herder_lifecycle",
+  "description": "Разделить завершение attempt и resumable session, сохранить consumer/host/problem_type identity, STOP и UNKNOWN fence. Observer не называет idle/error успешным завершением.",
+  "acceptance": "Regression: degraded после явного continuation receipt возобновляет тот же session_id; load/cpu одной машины группируются вместе, disk и другие host/problem_type отдельно; legacy load/cpu ключи сохраняют живую сессию; held не обходит STOP; UNKNOWN остаётся fenced.",
+  "affected_files": [
+    "/home/roomhacker/agents-projects/agent-herder/src/automation/incident-session-router.ts",
+    "/home/roomhacker/agents-projects/agent-herder/src/automation/noticeplace-health-observer.ts",
+    "/home/roomhacker/agents-projects/agent-herder/src/index.ts"
+  ],
+  "note": "Source/test leaf complete at 2026-10-28 16:45 MSK: targeted Vitest 31/31, tsc --noEmit, diff check pass. L01 confirmed source key project+consumer_id (fallback source_id), host_id, problem_type (fallback signal_type), plus alias map load/loadavg/cpu_load/cpu→cpu and disk/disk_space/disk_full/inodes→disk; explicit problem_type stays exact. GET lifecycle.continuation is emitted only after durable degraded receipt and binds exact session_id/harness/attempt_id/request_id/generation. Herder requires that receipt for stopped-session continuation and scans old signal-based registry keys to preserve active bindings; load and cpu coalesce before another executor is created. No build/deploy/restart; integration review belongs to L05.",
+  "estimate_over_limit_reason": "Единый контракт native continuation затрагивает router, dispatch и persisted attempt; итог проверяется совместно. Реальные дополнительные дефекты выделены отдельно L15/L21.",
+  "updated_at": "2026-10-28T20:36:17+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:17+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Единый контракт native continuation затрагивает router, dispatch и persisted attempt; итог проверяется совместно. Реальные дополнительные дефекты выделены отдельно L15/L21."
+      },
+      "session": "herder_lifecycle",
+      "harness": "codex"
+    }
+  ]
+}

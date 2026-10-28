@@ -1,0 +1,42 @@
+{
+  "id": "L16",
+  "label": "Источник проверки внешних сайтов",
+  "status": "done",
+  "owner": "external-site-consumer",
+  "session": "external_site",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L04"
+  ],
+  "estimate_minutes": {
+    "minimum": 15,
+    "maximum": 25
+  },
+  "description": "Мигрировать lol-nginx-admin external-site-monitor на source-owned проверки и убрать обход NoticePlace через прямой Telegram fallback.",
+  "acceptance": "Свежая проверка исходного vhost отвечает exact challenge; UNKNOWN не replay и не прямой Telegram; исходный outage detector сохраняется.",
+  "finished_at": "2026-10-28T15:29:01Z",
+  "affected_files": [
+    "/home/roomhacker/lol-nginx-admin/monitor/ingest.py",
+    "/home/roomhacker/lol-nginx-admin/monitor/probe.sh",
+    "/home/roomhacker/lol-nginx-admin/monitor/README.md",
+    "/home/roomhacker/lol-nginx-admin/monitor/tests/test_noticeplace_lifecycle.py",
+    "/home/roomhacker/lol-nginx-admin/monitor/tests/test_external_site_monitor.py"
+  ],
+  "note": "SOURCE done: main/origin main 3b6a97927424c9b708d0f902f779531871fd1f1b, checkout clean. RED bypass + corrupt-intent replay, GREEN 18 tests, bash syntax, py_compile, diff check. TEST_ACCESS absent; mock-only tests, owner contacts=0. Live readback: active server100 /opt/external-site-monitor/probe.sh but canonical ingest+stale; VPN2 inactive legacy. V2 defaults off, SDK/credential grants/flag and frozen /opt probe installation belong L06. Historical external-site:<vhost> sources + external-site:vpn2-telemetry registration handed consumer_coverage. Recovery requires exact source challenge and fresh measured result; UNKNOWN/corrupt submissions never replay; both direct Telegram bypasses removed. No runtime restart or protected config mutation.",
+  "estimate_over_limit_reason": "Один внешний monitor объединяет event ingress, independent probe и no-replay durable intent; user-facing результат требует всей этой небольшой вертикали.",
+  "updated_at": "2026-10-28T20:36:54+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:54+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Один внешний monitor объединяет event ingress, independent probe и no-replay durable intent; user-facing результат требует всей этой небольшой вертикали."
+      },
+      "session": "external_site",
+      "harness": "codex"
+    }
+  ]
+}

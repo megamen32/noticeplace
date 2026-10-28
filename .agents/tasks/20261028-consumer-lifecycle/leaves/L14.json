@@ -9,10 +9,34 @@
   "model": "gpt-6.1-sol",
   "tier": "frontier",
   "complexity": "L",
-  "depends_on": ["L04"],
-  "estimate_minutes": {"minimum": 15, "maximum": 25},
+  "depends_on": [
+    "L04"
+  ],
+  "estimate_minutes": {
+    "minimum": 15,
+    "maximum": 25
+  },
   "description": "Закрыть известные пробелы реестра по уже найденным источникам: health, обычные уведомления, QA и транспорт. Для зарегистрированного tg-commentator определить действующий adapter и минимальную миграцию без выдачи непроверенных полномочий.",
   "acceptance": "Каждый обнаруженный ingress имеет фактический владеющий source seam, marker и явный путь установки либо точное ограничение; notification-only не получает фиктивный health checker.",
-  "affected_files": ["/home/roomhacker/agents-projects/noticeplace/docs/consumer-lifecycle-registry.json", "/home/roomhacker/agents-projects/noticeplace/docs/consumer-lifecycle-reviewed-plan.json", "/home/roomhacker/PycharmProjects/TelegramAuto/TGC/scripts/noticeplace_source_v2.py", "/home/roomhacker/PycharmProjects/TelegramAuto/TGC/scripts/tgc_engine_watchdog.py", "/home/roomhacker/PycharmProjects/TelegramAuto/TGC/notify_center_client.py"],
-  "note": "26 известных ingress классифицированы; source marker отдельно от central registry marker, fleet coverage=false из-за partial server88. TGC patch-only commit5edf9f6 на существующей feature/cloudtelethon без foreignCOhunks; frozen3tests+compile, общий163PASS. Parent test mapping22ae315 опубликованmain,157tests+prepushGREEN. GrantTGC staged, не applied. Runtime/source acceptance разделены; L06 установка, L16 внешний monitor, legacyengine/COgenerationunknown. См.REPORT-L14.md."
+  "affected_files": [
+    "/home/roomhacker/agents-projects/noticeplace/docs/consumer-lifecycle-registry.json",
+    "/home/roomhacker/agents-projects/noticeplace/docs/consumer-lifecycle-reviewed-plan.json",
+    "/home/roomhacker/PycharmProjects/TelegramAuto/TGC/scripts/noticeplace_source_v2.py",
+    "/home/roomhacker/PycharmProjects/TelegramAuto/TGC/scripts/tgc_engine_watchdog.py",
+    "/home/roomhacker/PycharmProjects/TelegramAuto/TGC/notify_center_client.py"
+  ],
+  "note": "26 известных ingress классифицированы; source marker отдельно от central registry marker, fleet coverage=false из-за partial server88. TGC patch-only commit5edf9f6 на существующей feature/cloudtelethon без foreignCOhunks; frozen3tests+compile, общий163PASS. Parent test mapping22ae315 опубликованmain,157tests+prepushGREEN. GrantTGC staged, не applied. Runtime/source acceptance разделены; L06 установка, L16 внешний monitor, legacyengine/COgenerationunknown. См.REPORT-L14.md.",
+  "estimate_over_limit_reason": "Лист завершённого покрытия связывает обнаруженные продукты с реестром; самостоятельно устанавливаемые исправления выделены L16/L18, исходный ID сохранён.",
+  "updated_at": "2026-10-28T20:36:49+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:49+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Лист завершённого покрытия связывает обнаруженные продукты с реестром; самостоятельно устанавливаемые исправления выделены L16/L18, исходный ID сохранён."
+      },
+      "session": "consumer_coverage",
+      "harness": "codex"
+    }
+  ]
 }

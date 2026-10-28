@@ -1,0 +1,42 @@
+{
+  "id": "L10",
+  "label": "Проверки video-watching и его общих CLI-потребителей",
+  "status": "done",
+  "owner": "video-consumers",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L01",
+    "L04"
+  ],
+  "estimate_minutes": {
+    "minimum": 20,
+    "maximum": 40
+  },
+  "description": "Перевести общий noticeplace_health CLI и реальные watcher вызовы на source-owned fresh checks; устранить конкурирующий selfheal launch без отключения детектора отказа NoticePlace.",
+  "acceptance": "Реальные watcher измерения отвечают exact source/host/type request; старый healthy и unknown не закрывают; один инцидент имеет один launcher; deployment target и dev/main политика подтверждены.",
+  "affected_files": [
+    "/home/roomhacker/PycharmProjects/video_watching/scripts/ops/noticeplace_health.py",
+    "/home/roomhacker/PycharmProjects/video_watching/UrlsSevr/telegramcontrol/noticeplace_producer.py"
+  ],
+  "note": "Verified independent ls-remote origin/dev equals HEAD ae1f80859d23ca4639f328f7512874aeaa1e0351; HTTP1.1 retry succeeded after confirmed failed HTTP408. Exactly9ownedpaths;110focused tests green; foreign .xerjignore preserved. No flags/deploy/restart/live invocation; source cron edits visible on next tick, V2 path disabled until opt-in+SDK, bot bundle remains old. Optional nonblocking hook skip explicitly Lead-authorized and partial receipt saved.",
+  "session": "video_consumers",
+  "started_at": "2026-10-28T14:17:01.835270+00:00",
+  "updated_at": "2026-10-28T20:36:39+03:00",
+  "finished_at": "2026-10-28T14:50:02.603859+00:00",
+  "result": "source-done ae1f80859d23ca4639f328f7512874aeaa1e0351 published origin/dev; installed-runtime not claimed",
+  "estimate_over_limit_reason": "Исходный пакет video SDK/producers сохраняет ID и bounded release receipts; независимый обнаруженный operator-status дефект отдельно L30.",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:39+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Исходный пакет video SDK/producers сохраняет ID и bounded release receipts; независимый обнаруженный operator-status дефект отдельно L30."
+      },
+      "session": "video_consumers",
+      "harness": "codex"
+    }
+  ]
+}

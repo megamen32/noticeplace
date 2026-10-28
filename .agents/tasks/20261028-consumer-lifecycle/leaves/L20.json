@@ -1,0 +1,41 @@
+{
+  "id": "L20",
+  "label": "Проверка всех эпизодов общей сессии",
+  "status": "done",
+  "owner": "group-completion",
+  "session": "group_completion",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L01",
+    "L12",
+    "L15"
+  ],
+  "estimate_minutes": {
+    "minimum": 15,
+    "maximum": 25
+  },
+  "description": "Исправить найденный интеграционным ревью stranded older episode: явный finish общей native сессии должен позволить источнику проверить каждый связанный эпизод.",
+  "acceptance": "Два same-group эпизода после общего finish получают source-owned проверки; healthy закрывает только проверенные условия, degraded создаёт один continuation на group attempt, другие hosts/types/principals не затронуты.",
+  "affected_files": [
+    "notification_center/incident_lifecycle.py",
+    "tests/test_incident_lifecycle.py"
+  ],
+  "finished_at": "2026-10-28T15:52:27Z",
+  "note": "RED: same-native latest finish yielded one due instead of two. GREEN: per-episode checks with original source principal; other consumer/host/type/session and unbound historical excluded; one durable group-attempt continuation. Additional review RED: canonical A healthy before dispatch cancelled attempt0 ticket and stranded degraded B. Fixed reanchor ONLY resolved origin plus cancelled ticket, attempt0, claimed_at NULL and result_json NULL. Any receipt/claim/accepted/UNKNOWN or missing history remains fenced. Independent reviewer reproduced new queued B ticket in same native. Final full lifecycle 39 PASS (64.05s), focused2 PASS with eight dispatch/receipt fences. Resolved sibling GET exposes canonical OPEN authority; allhealthy/newattempt fences it. Source only; installed one-canary acceptance remains root-owned. No runtime/config/live events changed.",
+  "estimate_over_limit_reason": "Связанные эпизоды разделяют один native attempt; проверка требует group-wide eligibility и ровно одного durable continuation. Отдельные runtime/dispatch исправления вынесены L21/L22.",
+  "updated_at": "2026-10-28T20:37:01+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:37:01+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Связанные эпизоды разделяют один native attempt; проверка требует group-wide eligibility и ровно одного durable continuation. Отдельные runtime/dispatch исправления вынесены L21/L22."
+      },
+      "session": "group_completion",
+      "harness": "codex"
+    }
+  ]
+}

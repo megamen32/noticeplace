@@ -1,0 +1,44 @@
+{
+  "id": "L13",
+  "label": "Авторизация зарегистрированных потребителей и точный launch envelope",
+  "status": "done",
+  "owner": "consumer-migration",
+  "session": "consumer_migration",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L09",
+    "L12"
+  ],
+  "estimate_minutes": {
+    "minimum": 15,
+    "maximum": 30
+  },
+  "description": "Подключить DB intake credentials к отдельной server-side policy без копирования bearer в конфиг. Согласовать candidate с подтверждёнными baseline scopes на репликах и передать доверенные consumer/type/attempt поля исполнителю.",
+  "acceptance": "Отозванный intake token не работает; чужой project/consumer/executor не получает verifier прав. Одинаковый protected candidate применяется только к доказанным baseline26/25 scopes, сохраняя host PORT/DB/flags. Launch metadata совпадает с durable group и server delivery key.",
+  "affected_files": [
+    "notification_center/core.py",
+    "notification_center/agent_job_helper.py",
+    "notification_center/gptadmin_agent.py",
+    "deploy/consumer-lifecycle-credentials.py",
+    "scripts/sync-health-callback-tokens.py",
+    "docs/consumer-lifecycle-registration-plan.json"
+  ],
+  "result": "Source опубликован 89df90ede2fad7a02b6ee76839279705fec97c44; 92 адресных теста и read-only preview прошли. Runtime/config apply не выполнялся.",
+  "note": "26 legacy проектов, отдельный executor-only ATV callback и один supplemental registered consumer grant. Source bearer не изменён. 84 публичных source ID и один защищённый reviewed hash ref. Обнаруженный TGC передан L14; установка L06.",
+  "estimate_over_limit_reason": "Registered principal authorization и launch envelope проверяются как единая граница полномочий; промежуточная несогласованная активация недопустима.",
+  "updated_at": "2026-10-28T20:36:46+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:46+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Registered principal authorization и launch envelope проверяются как единая граница полномочий; промежуточная несогласованная активация недопустима."
+      },
+      "session": "consumer_migration",
+      "harness": "codex"
+    }
+  ]
+}

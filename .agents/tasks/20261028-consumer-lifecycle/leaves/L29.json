@@ -1,0 +1,104 @@
+{
+  "id": "L29",
+  "label": "Понятные состояния и активная очередь панели",
+  "status": "done",
+  "owner": "console-lifecycle",
+  "session": "console_lifecycle",
+  "harness": "codex",
+  "model": "gpt-6-luna",
+  "tier": "frontier",
+  "complexity": "S",
+  "depends_on": [
+    "L24",
+    "L25"
+  ],
+  "estimate_minutes": {
+    "minimum": 10,
+    "maximum": 20
+  },
+  "description": "Исправить три видимых недостатка независимой проверки: машинные состояния, resolved в активной очереди и неясное различие работы ИИ/проверки источника.",
+  "acceptance": "Установленная панель показывает понятные состояния, активная очередь исключает resolved, подробности отдельно отображают работу ИИ и фактическое подтверждение источника. История сохранена.",
+  "affected_files": [
+    "automation/noticeplace-console"
+  ],
+  "note": "API inc.lifecycle уже присутствовал в readmodel; гипотеза его отсутствия опровергнута свежим exact-ID readback, лишний JOIN не добавлялся. Завершение ИИ только exact attempt_state=work_finished; generic Hub receipt нейтрален. Все доказанные L29 defects исправлены.",
+  "updated_at": "2026-10-28T20:37:12+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:13:47+03:00",
+      "note": "Source 575415543cd0ab83763e1af96c17ef2d1e269148 committed and pushed. RED reproduced resolved records in active and unreadable/raw state. GREEN: pytest test_incident_grouping.py 5/5; panel render fixtures PASS; full GET gate against API8094 PASS 10 routes; JS syntax/diff-check PASS. Awaiting release_core frozen install plus installed selftest/readback.",
+      "changes": {},
+      "session": "console_lifecycle",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-10-28T20:17:32+03:00",
+      "note": "",
+      "changes": {
+        "status": "done",
+        "finished_at": "2026-10-28T17:17:24Z",
+        "result": "Панель установлена из SHA 575415543cd0ab83763e1af96c17ef2d1e269148; API 8094 active, selftest PASS, full installed render gate PASS (10 routes). Active API readback: 0 resolved/closed из 50 rows; view=all&state=resolved сохраняет 5 записей. Резервная копия пяти owned paths: /var/backups/noticeplace-console/20261028-L29-575415543cd0. Unit tests: grouping 5/5, render fixtures PASS.",
+        "note": "Restart затронул только noticeplace-console-api.service. NP/Herder/Hub/landing не трогал. Root организует отдельный fresh ZK console readback."
+      },
+      "session": "console_lifecycle",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-10-28T20:17:57+03:00",
+      "note": "Root review found two acceptance defects in installed 5754155: detail API omits incident.lifecycle, so UI summary used unknown for all real incidents; agent_job_completed is a generic job receipt and must not imply native work completion. Reopening L29: add exact-incident read-only lifecycle projection and fixture based on actual returned shape, neutral event label, then scoped follow-up install/readback.",
+      "changes": {},
+      "session": "console_lifecycle",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-10-28T20:22:56+03:00",
+      "note": "Generic agent_job_completed теперь подписан «Получен результат задания ИИ». AI completion берётся только из incident.lifecycle.attempt_state=work_finished; complete session.status не считается подтверждением. Добавлена локализация vpn2-prefixed service title и exact incident_id regression для lifecycle lookup. Ожидается независимая ZK/UI проверка root.",
+      "changes": {
+        "status": "waiting",
+        "wait_reason": "Ожидается независимая повторная Zero Knowledge проверка реальной консоли от root.",
+        "result": "Follow-up e5222730099c2ee9700669a80f2204bcfc5c7bba установлен из exact frozen source. Backup: /var/backups/noticeplace-console/20261028-L29-e5222730099c. Только panel/app.js и два test-файла заменены; restart только noticeplace-console-api.service. Active API исключает resolved/closed; установленный selftest PASS и GET render gate PASS 10/10. Свежий GET inc_c1092c3c91514485a0617072e87a7727 вернул actual lifecycle: work_finished, healthy, native session есть, harness opencode. Unit tests 5/5 и render fixtures PASS."
+      },
+      "session": "console_lifecycle",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-10-28T20:27:46+03:00",
+      "note": "Fresh ZK localization delta committed/pushed as eb1638d83d72599fad992a1e525412f35b2af608, only panel app.js and render fixture. Fixture RED→GREEN: state filters retain API values and use Russian STATE_LABELS; vusa RAM and canary-v8 DISK titles preserve hostname prefix; RAM wording is grammatically correct. Installed only static app.js with backup /var/backups/noticeplace-console/20261028-L29-eb1638d83d72, no API restart. Served GET /app.js HTTP200 SHA matches source; installed selftest PASS at 17:27:06Z. Waiting for root ZK recheck.",
+      "changes": {},
+      "session": "console_lifecycle",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-10-28T20:32:19+03:00",
+      "note": "Final grammar delta e49b6e2f0aa95f6501ac7d6d4311318099c1c579 published and installed as app.js only (backup /var/backups/noticeplace-console/20261028-L29-e49b6e2f0aa9; no restart). RED fixtures for both old Russian examples plus already-correct wording; GREEN render-fixtures. Exact live API→installed /opt renderer test PASS for inc_1b35c24c214a4cab92f2cfdeca22a86c and inc_d983bea313644e06821c9892f73c7650, preserving host names. Served GET /app.js HTTP200 SHA256 b772834ab45c1d49c22f324c06ae8682c50772114e4acfab9b534a942234b61e matches source. Waiting root final ZK receipt.",
+      "changes": {},
+      "session": "console_lifecycle",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-10-28T20:33:47+03:00",
+      "note": "",
+      "changes": {
+        "status": "done",
+        "wait_reason": "",
+        "result": "Установленная console e49b6e2f0aa95f6501ac7d6d4311318099c1c579. Fresh ZK через UI подтвердил active/all/history, реальное QA work_finished/healthy, русские статусы/dropdown, vusaRAM/canaryDISK и оба старых Russian grammar случая. Последние изменения только static app.js, без API restart. Собственные браузеры закрыты.",
+        "note": "API inc.lifecycle уже присутствовал в readmodel; гипотеза его отсутствия опровергнута свежим exact-ID readback, лишний JOIN не добавлялся. Завершение ИИ только exact attempt_state=work_finished; generic Hub receipt нейтрален. Все доказанные L29 defects исправлены."
+      },
+      "session": "console_lifecycle",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-10-28T20:37:12+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Единая UI-приёмка включает independent finding→fix→install→реальный retest. Исходный ID сохраняет историю нескольких точно найденных локализационных исправлений."
+      },
+      "session": "console_lifecycle",
+      "harness": "codex"
+    }
+  ],
+  "finished_at": "2026-10-28T17:17:24Z",
+  "result": "Установленная console e49b6e2f0aa95f6501ac7d6d4311318099c1c579. Fresh ZK через UI подтвердил active/all/history, реальное QA work_finished/healthy, русские статусы/dropdown, vusaRAM/canaryDISK и оба старых Russian grammar случая. Последние изменения только static app.js, без API restart. Собственные браузеры закрыты.",
+  "wait_reason": "",
+  "estimate_over_limit_reason": "Единая UI-приёмка включает independent finding→fix→install→реальный retest. Исходный ID сохраняет историю нескольких точно найденных локализационных исправлений."
+}

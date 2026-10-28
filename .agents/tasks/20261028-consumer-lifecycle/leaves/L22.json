@@ -1,0 +1,39 @@
+{
+  "id": "L22",
+  "label": "Ограниченная миграция реальной истории mesh SQL",
+  "status": "done",
+  "owner": "group-completion",
+  "session": "group_completion",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L20"
+  ],
+  "estimate_minutes": {
+    "minimum": 10,
+    "maximum": 20
+  },
+  "description": "Устранить runtime crash исторической миграции initialize: bounded SQL result exceeded на полной реальной истории. Ограничить scan keyset-порциями, сохранив idempotency и source authority.",
+  "acceptance": "Регрессия воспроизводит лимит ответа; несколько ограниченных страниц проходят без пропусков/повторов, контролируемая установка поднимает API без crashloop на настоящей истории.",
+  "affected_files": [
+    "notification_center/incident_lifecycle.py",
+    "tests/test_incident_lifecycle.py"
+  ],
+  "result": "Исправление43ec435 и latest-receipt-before-paging независимо приняты и установлены на100/44/88; первая readiness30.053s, реплики~2s, NRestarts0. Последующий6a9f78fe также штатно запустился на3узлах и прошёл реальный lifecycle до independent healthy/resolved. Повторный полный scan не запускали.",
+  "note": "RED reproduced actual bounded SQL result exceeded at old line79 using response-budget adapter. GREEN40 lifecycle tests47.30s including all3scan types, last partial page, repeated initialization, reordered created_at, exact accepted receipt/continuation preservation. Added shared PKkeyset pages: preflight128numeric cursor+actual row bytes; fetch prefix<=1MiBraw (<6MiBJSONescaped against16MiBmeshframe), noOFFSET/no per-event writes. Actual source helper READONLY walked188599liveevents in2949SQLcalls/29.645s; maxpayload5579bytes;2100distinctincidents needoneprojectioninsert each onfirstmigration. Subsequent startups skip migratedhistory. No workerDDL/config/events; oldstable APIs restored byrelease_core. Source ready; controlled100-first activation needs~90s readiness window then44/88, runtime acceptance remains root/release_core-owned.",
+  "estimate_over_limit_reason": "Ограниченная миграция требует нескольких SQL страниц, сохранения последнего receipt и первой readiness на реальной истории. Повторять весь production scan ради искусственного дробления нельзя.",
+  "updated_at": "2026-10-28T20:37:06+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:37:06+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Ограниченная миграция требует нескольких SQL страниц, сохранения последнего receipt и первой readiness на реальной истории. Повторять весь production scan ради искусственного дробления нельзя."
+      },
+      "session": "group_completion",
+      "harness": "codex"
+    }
+  ]
+}

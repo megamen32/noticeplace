@@ -1,0 +1,43 @@
+{
+  "id": "L07",
+  "label": "Новые проверки инфраструктурных источников",
+  "status": "done",
+  "owner": "infra-consumers",
+  "harness": "codex",
+  "model": "gpt-6-luna",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L01",
+    "L04"
+  ],
+  "estimate_minutes": {
+    "minimum": 20,
+    "maximum": 40
+  },
+  "description": "Подключить общий verifier client к существующим infrastructure probe ticks: Fleet Health, health-monitor, OmniRoute guard, router и Codex watchdog по подтверждённому deployment map. Точный mutable scope назначается после проверки чужого WIP.",
+  "acceptance": "Свежая CPU/disk/host-specific проверка отвечает на challenge; unknown не превращается в healthy; маркер указывает на действующий source; установка выполняется в L06.",
+  "affected_files": [
+    "/home/roomhacker/ServersAdministartion/automation/fleet-health",
+    "/home/roomhacker/ServersAdministartion/automation/health-incident-monitor",
+    "/home/roomhacker/ServersAdministartion/ops/omniroute-guard",
+    "/home/roomhacker/ServersAdministartion/ops/router-health-lite",
+    "/home/roomhacker/ServersAdministartion/ops/codex-daemon-watchdog"
+  ],
+  "note": "fleet_health.py чужой WIP: только согласованная интеграция с владельцем, без перезаписи. Лист выделен из L04 после подтверждения числа адаптеров. Source adapters/tests published in ServersAdministartion commit 63e8a5ef4d0f8f001edffef844036a943e0b6318; no runtime install/deploy. Fleet installer is adapter-only and validates installed fleet_health.py SHA 14e6c9be...; L06 owns installation.",
+  "session": "01a182cc-691a-7c42-b490-552136be2ebe",
+  "started_at": "2026-10-28T13:58:26Z",
+  "estimate_over_limit_reason": "Завершённый пакет инфраструктурных адаптеров сохраняет исходный ID и отдельные consumer receipts; установка отдельно L18. Ретроспективное дробление не создаёт новых выполненных шагов.",
+  "updated_at": "2026-10-28T20:36:31+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:31+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Завершённый пакет инфраструктурных адаптеров сохраняет исходный ID и отдельные consumer receipts; установка отдельно L18. Ретроспективное дробление не создаёт новых выполненных шагов."
+      },
+      "session": "01a182cc-691a-7c42-b490-552136be2ebe",
+      "harness": "codex"
+    }
+  ]
+}

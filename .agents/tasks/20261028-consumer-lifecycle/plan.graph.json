@@ -1,0 +1,1273 @@
+{
+  "schema_version": 2,
+  "title": "Одна сессия на потребителя, хост и тип проблемы",
+  "goal": "Устранить дубли исполнителей и бесконечную очередь карточек, сохранив независимое подтверждение восстановления.",
+  "business_result": "Повторные сигналы одного потребителя, хоста и типа проблемы продолжают одну сессию. Агент сообщает об окончании работы; источник проверяет состояние. Панель складывает связанные карточки, уведомления старше суток уходят в историю, неисправности не получают ложного закрытия.",
+  "business_results": [
+    "Повторные сигналы одного потребителя, хоста и типа проблемы продолжают одну сессию. Агент сообщает об окончании работы; источник проверяет состояние. Панель складывает связанные карточки, уведомления старше суток уходят в историю, неисправности не получают ложного закрытия."
+  ],
+  "acceptance_scenarios": [
+    "Два CPU-сигнала одного хоста продолжают одну native-сессию; диск и другой хост имеют другие группы.",
+    "work_finished оставляет инцидент открытым; актуальная независимая проверка закрывает, degraded продолжает ту же сессию, unknown и STOP не запускают дубль.",
+    "Оператор видит группы и отдельную очередь неподтверждённых неисправностей; история уведомлений сохранена.",
+    "Реестр найденных потребителей содержит поисковый маркер, фактический способ проверки и подтверждение миграции каждого активного health-источника."
+  ],
+  "current_progress": "Завершено: NP6a9f78fe на100/44/88, Herder5d76de9, GPTAdmin443f941b и consolee49b6e2 установлены и проверены. Один QA inc_c1092c3c91514485a0617072e87a7727 resolved/healthy17:18:30UTC; одна OpenCode ses_e7c849ab9ffeA5lL9rAli7jl1R, два operation e0fff05d48167299345eaaffac137ad6/b96c74a15313a9179b493bd4f8e86cdb, actualmodelomniroute/glm-5.3-flash-minimax-m3.1. Оба explicit finish выключили AP; независимый503 вернул ту же сессию, независимый200 закрыл. Root отдельно проверил HTTP и mesh SQL; свежие ZK подтвердили native continuation и панель active/all/history/AI/source/локализацию. Активные известные consumers мигрированы, operator /stats исправлен. После настоящего Hubrestart ACL сохранился. Свои fixture/source/route/gate убраны, контактов с людьми0. Полный GrepMesh inventory не заявляется: partial discovery отражён в реестре.",
+  "external_waits": "Историческое время до создания этого плана не восстановлено и не включено в оценку.",
+  "slots": 3,
+  "updated_at": "2026-10-28T20:38:14+03:00",
+  "tasks": [
+    {
+      "id": "L01",
+      "label": "Контракт завершения работы и независимой проверки",
+      "status": "done",
+      "description": "Ввести work_finished отдельно от incident resolve, durable verification_due, свежесть source recovery и общий consumer/host/problem_type контракт. Сохранить legacy-совместимость и no-replay.",
+      "acceptance": "Адресные regression-тесты: finish идемпотентен, stale recovery не закрывает, unknown не закрывает, авторизация не зависит от body.actor.",
+      "owner": "lifecycle-core",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Source acceptance: 17 lifecycle regression tests, 37 health workflow tests, 31 HTTP API tests passed. Explicit executor finish, principal-scoped independent source checks, generation fence, historical enrollment, canonical group metadata, one same-session continuation delivery. Source only; runtime/config unchanged; deployed consumer acceptance belongs to L05/L06.",
+      "estimate_over_limit_reason": "Исходный лист сохраняет идентичность уже опубликованного state-machine контракта; независимые найденные исправления вынесены в L12/L13/L20/L28. Ретроспективное дробление выполненной работы потеряет связь с receipts.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:14+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Исходный лист сохраняет идентичность уже опубликованного state-machine контракта; независимые найденные исправления вынесены в L12/L13/L20/L28. Ретроспективное дробление выполненной работы потеряет связь с receipts."
+          },
+          "session": "unknown",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "notification_center/core.py",
+        "notification_center/http_api.py",
+        "notification_center/instructions.py",
+        "notification_center/incident_lifecycle.py",
+        "tests/test_incident_lifecycle.py"
+      ],
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 20.0,
+        "maximum": 40.0
+      }
+    },
+    {
+      "id": "L02",
+      "label": "Продолжение той же native-сессии и честный статус исполнителя",
+      "status": "done",
+      "description": "Разделить завершение attempt и resumable session, сохранить consumer/host/problem_type identity, STOP и UNKNOWN fence. Observer не называет idle/error успешным завершением.",
+      "acceptance": "Regression: degraded после явного continuation receipt возобновляет тот же session_id; load/cpu одной машины группируются вместе, disk и другие host/problem_type отдельно; legacy load/cpu ключи сохраняют живую сессию; held не обходит STOP; UNKNOWN остаётся fenced.",
+      "owner": "herder-lifecycle",
+      "session": "herder_lifecycle",
+      "harness": "codex",
+      "model": "gpt-6-luna",
+      "note": "Source/test leaf complete at 2026-10-28 16:45 MSK: targeted Vitest 31/31, tsc --noEmit, diff check pass. L01 confirmed source key project+consumer_id (fallback source_id), host_id, problem_type (fallback signal_type), plus alias map load/loadavg/cpu_load/cpu→cpu and disk/disk_space/disk_full/inodes→disk; explicit problem_type stays exact. GET lifecycle.continuation is emitted only after durable degraded receipt and binds exact session_id/harness/attempt_id/request_id/generation. Herder requires that receipt for stopped-session continuation and scans old signal-based registry keys to preserve active bindings; load and cpu coalesce before another executor is created. No build/deploy/restart; integration review belongs to L05.",
+      "estimate_over_limit_reason": "Единый контракт native continuation затрагивает router, dispatch и persisted attempt; итог проверяется совместно. Реальные дополнительные дефекты выделены отдельно L15/L21.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:17+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Единый контракт native continuation затрагивает router, dispatch и persisted attempt; итог проверяется совместно. Реальные дополнительные дефекты выделены отдельно L15/L21."
+          },
+          "session": "herder_lifecycle",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "/home/roomhacker/agents-projects/agent-herder/src/automation/incident-session-router.ts",
+        "/home/roomhacker/agents-projects/agent-herder/src/automation/noticeplace-health-observer.ts",
+        "/home/roomhacker/agents-projects/agent-herder/src/index.ts"
+      ],
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 15.0,
+        "maximum": 30.0
+      },
+      "started_at": "2026-10-28T16:36:39+03:00",
+      "finished_at": "2026-10-28T16:45:39+03:00"
+    },
+    {
+      "id": "L03",
+      "label": "Группы в панели и суточная история уведомлений",
+      "status": "done",
+      "description": "Группировать до пагинации по consumer/host/problem_type, сохранить отдельные эпизоды, отделить уведомления старше суток от активных неисправностей.",
+      "acceptance": "Адресные тесты панели и data layer: группы не распадаются между страницами, разные хосты и типы отдельно, health TTL не означает resolved.",
+      "owner": "console-lifecycle",
+      "session": "console_lifecycle",
+      "harness": "codex",
+      "model": "gpt-6-luna",
+      "note": "Source and focused proofs complete. Grouping uses indexed incident_lifecycle.group_key and precedes paging; SQL lists separate episode IDs; TTL uses latest events.created_at and only hides old informational non-health/noncritical rows; health remains unverified/overdue and each episode detail merges its native session. Fixed installed self-test gate to read the systemd unit from /etc/systemd/system. Tests: 4 SQLite cases and panel fixture pass; live read-only modified journal limit=2: 2 rows, 6489 groups, 215 ms. Runtime source not installed; deploy/restart explicitly deferred by task scope. Root approval for scoped commit/push pending.",
+      "estimate_over_limit_reason": "Одна пользовательская вертикаль объединяет SQL группировку до пагинации, UI и историю; исходный ID сохранён для установленных receipts. Последующие UX-дефекты отдельно L25/L29.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:19+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Одна пользовательская вертикаль объединяет SQL группировку до пагинации, UI и историю; исходный ID сохранён для установленных receipts. Последующие UX-дефекты отдельно L25/L29."
+          },
+          "session": "console_lifecycle",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "/home/roomhacker/ServersAdministartion/automation/noticeplace-console"
+      ],
+      "depends_on": [],
+      "estimate_minutes": {
+        "minimum": 20.0,
+        "maximum": 35.0
+      },
+      "started_at": "2026-10-28T16:36:58+03:00",
+      "finished_at": "2026-10-28T16:54:37+03:00"
+    },
+    {
+      "id": "L04",
+      "label": "Маркированный реестр и миграция активных потребителей",
+      "status": "done",
+      "description": "Общий stdlib verifier client, конечный маркированный реестр известных consumers и deployment map; миграция адаптеров отдельно L07/L08, auth cutover L09.",
+      "acceptance": "Для каждого активного health-источника указаны код, установленный исполнитель, маркер, способ актуальной проверки; notification-only не запускают repair; неизвестные/недоступные источники явно отмечены.",
+      "owner": "consumer-migration",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "L04 source slice complete; split L07 infrastructure/L08 products/L09 auth. Original estimates preserved. 26-entry truthful registry, source paths confirmed, server100 ExecStart observed for five adapters; server88 partial discovery means coverage incomplete. Three stdlib helper tests green. No runtime installation or real source canary claimed. Receipt reconciliation in L09.",
+      "estimate_unknown_reason": "Количество самостоятельных устанавливаемых health-адаптеров уточняется по найденным корням и live ingress.",
+      "estimate_over_limit_reason": "Первичный discovery имел неизвестное число продуктов. Исполнение разделено в L07/L08/L10/L11/L14/L16/L18; исходная оценка и ID discovery сохранены как история.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:22+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Первичный discovery имел неизвестное число продуктов. Исполнение разделено в L07/L08/L10/L11/L14/L16/L18; исходная оценка и ID discovery сохранены как история."
+          },
+          "session": "unknown",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "docs/consumer-lifecycle-registry.json",
+        "docs/consumer-lifecycle-deployment.md",
+        "notification_center/consumer_lifecycle.py",
+        "tests/test_consumer_lifecycle.py"
+      ],
+      "depends_on": [
+        "L01"
+      ],
+      "estimate_minutes": {
+        "minimum": 25.0,
+        "maximum": 60.0
+      }
+    },
+    {
+      "id": "L24",
+      "label": "Свежая проверка групп и истории в панели Notice Place",
+      "status": "done",
+      "description": "Независимый оператор проверяет живые группы по потребителю, хосту и типу, историю обычных уведомлений и отличимость непроверенного health от resolved.",
+      "acceptance": "Фактическое browser open→snapshot→навигация→проверка, исходники/старые отчёты не читаются; реальные карточки не изменяются.",
+      "result": "Независимый реальный browser подтвердил раздельные CPU/disk/RAM и host, историю эпизодов, active59 без5resolved и all64 с ними; история1758/36страниц доступна; exactQA показывает раздельно ИИ закончил и источник подтвердил, Решён/Закрыт20:18:30. Все последние видимые локализационные дефекты исправлены и повторно проверены. Собственные браузеры закрыты, мутаций0.",
+      "owner": "zk-console",
+      "session": "zk_console",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Evidence .tmp/zk-console-20261028/REPORT-DELTA.md, FINAL-DELTA.md, final-e49b6e2.png. Точная граница24ч не выдумывается по отдельным UI-примерам; соответствующий predicate отдельно проверен fixture.",
+      "tier": "frontier",
+      "complexity": "S",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:33:44+03:00",
+          "note": "",
+          "changes": {
+            "status": "done",
+            "result": "Независимый реальный browser подтвердил раздельные CPU/disk/RAM и host, историю эпизодов, active59 без5resolved и all64 с ними; история1758/36страниц доступна; exactQA показывает раздельно ИИ закончил и источник подтвердил, Решён/Закрыт20:18:30. Все последние видимые локализационные дефекты исправлены и повторно проверены. Собственные браузеры закрыты, мутаций0.",
+            "note": "Evidence .tmp/zk-console-20261028/REPORT-DELTA.md, FINAL-DELTA.md, final-e49b6e2.png. Точная граница24ч не выдумывается по отдельным UI-примерам; соответствующий predicate отдельно проверен fixture."
+          },
+          "session": "zk_console",
+          "harness": "codex"
+        }
+      ],
+      "depends_on": [
+        "L03"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      }
+    },
+    {
+      "id": "L25",
+      "label": "Проверка полного маршрута панели перед установкой",
+      "status": "done",
+      "description": "Исправить rollout full-selftest без ослабления проверки #/incidents: подтвердить действующий маршрут, форму и фильтры, затем согласовать semantic assertion с реальным заголовком.",
+      "acceptance": "Полный GET-only selftest и route fixture проходят, опубликованные console inputs установлены и проверены на8094.",
+      "result": "7a6eb9bd установлен из пяти зафиксированных файлов; loopback8094 HTTP200 и установленный полный GET-only selftest PASS exit0. Независимая браузерная оценка вынесена в L24.",
+      "owner": "console-lifecycle",
+      "session": "console_lifecycle",
+      "harness": "codex",
+      "model": "gpt-6-luna",
+      "note": "RED reproduced from full GET-only gate: /incidents route rendered but the literal expected phrase was stale; group-route fixture also omitted actual API field is_health. Source confirms pageIncidents/hash route and heading Журнал инцидентов. Added fixture proof for heading, project form and submit preserving project+view; updated semantic route expectations and fixture contract. Full source gate PASS: 10 routes against http://127.0.0.1:8094. Published commit 7a6eb9bdc76e678508edba020941fee13b7dddb1 on origin/main. Waiting only for release_core reinstall/restart and installed selftest receipt; this worker did not install/restart.",
+      "tier": "frontier",
+      "complexity": "S",
+      "origin": "",
+      "supersedes": [],
+      "affected_files": [
+        "/home/roomhacker/ServersAdministartion/automation/noticeplace-console"
+      ],
+      "depends_on": [
+        "L03"
+      ],
+      "estimate_minutes": {
+        "minimum": 5.0,
+        "maximum": 10.0
+      },
+      "finished_at": "2026-10-28T19:51:59+03:00"
+    },
+    {
+      "id": "L07",
+      "label": "Новые проверки инфраструктурных источников",
+      "status": "done",
+      "description": "Подключить общий verifier client к существующим infrastructure probe ticks: Fleet Health, health-monitor, OmniRoute guard, router и Codex watchdog по подтверждённому deployment map. Точный mutable scope назначается после проверки чужого WIP.",
+      "acceptance": "Свежая CPU/disk/host-specific проверка отвечает на challenge; unknown не превращается в healthy; маркер указывает на действующий source; установка выполняется в L06.",
+      "owner": "infra-consumers",
+      "session": "01a182cc-691a-7c42-b490-552136be2ebe",
+      "harness": "codex",
+      "model": "gpt-6-luna",
+      "note": "fleet_health.py чужой WIP: только согласованная интеграция с владельцем, без перезаписи. Лист выделен из L04 после подтверждения числа адаптеров. Source adapters/tests published in ServersAdministartion commit 63e8a5ef4d0f8f001edffef844036a943e0b6318; no runtime install/deploy. Fleet installer is adapter-only and validates installed fleet_health.py SHA 14e6c9be...; L06 owns installation.",
+      "estimate_over_limit_reason": "Завершённый пакет инфраструктурных адаптеров сохраняет исходный ID и отдельные consumer receipts; установка отдельно L18. Ретроспективное дробление не создаёт новых выполненных шагов.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:31+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Завершённый пакет инфраструктурных адаптеров сохраняет исходный ID и отдельные consumer receipts; установка отдельно L18. Ретроспективное дробление не создаёт новых выполненных шагов."
+          },
+          "session": "01a182cc-691a-7c42-b490-552136be2ebe",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "/home/roomhacker/ServersAdministartion/automation/fleet-health",
+        "/home/roomhacker/ServersAdministartion/automation/health-incident-monitor",
+        "/home/roomhacker/ServersAdministartion/ops/omniroute-guard",
+        "/home/roomhacker/ServersAdministartion/ops/router-health-lite",
+        "/home/roomhacker/ServersAdministartion/ops/codex-daemon-watchdog"
+      ],
+      "depends_on": [
+        "L01",
+        "L04"
+      ],
+      "estimate_minutes": {
+        "minimum": 20.0,
+        "maximum": 40.0
+      },
+      "started_at": "2026-10-28T13:58:26Z"
+    },
+    {
+      "id": "L08",
+      "label": "AutoSell hourly/proxy и совместимость inbox",
+      "status": "done",
+      "description": "AutoSell hourly и proxy capacity используют общий SourceVerifier и реальные source probes; inbox остаётся notification-only, центральная совместимость без принудительного health/AI.",
+      "acceptance": "Продуктовые проверки используют реальное состояние своего источника, сохраняют эпизод и source identity, не создают параллельный selfheal launcher; marker и адресная regression-проверка соответствуют коду.",
+      "owner": "product-consumers",
+      "session": "/root/product_consumers",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "SOURCE VERTICAL COMPLETE, not installed acceptance: AutoSell main commits 4ded2f49 and 2a23c126 published; own source working tree tracked clean. Focused 75 passed, authoritative push gate 101 passed. Hourly+proxy fresh probes use installed shared SDK; explicit problem types; check-result UNKNOWN reconciliation delegated SDK; intake POST ambiguity fenced without replay (manual authoritative reconciliation required). Six canonical DB/spend preflight transactions verified SET TRANSACTION READ ONLY/current_setting=on, SQL guard SELECT/SHOW only; no API/send/runtime changes. L06 must install shared SDK inside app image and host, enable NOTICEPLACE_CONSUMER_V2=1 in existing runtime producer env, apply canonical hourly unit relocation, then isolated canary. Inbox marker local cf4d05a only: remote archived/read-only; central server compatibility/readback owned L09/L06. Video and cron are separate L10/L11.",
+      "estimate_over_limit_reason": "Завершённый пакет связанных AutoSell источников сохраняет исходный ID/receipts. Независимая фактическая установка и overlay-проверка выделены L18.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:34+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Завершённый пакет связанных AutoSell источников сохраняет исходный ID/receipts. Независимая фактическая установка и overlay-проверка выделены L18."
+          },
+          "session": "/root/product_consumers",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "/home/roomhacker/PycharmProjects/AutoFindClient/AutoSellBot/noticeplace_client.py",
+        "/home/roomhacker/PycharmProjects/AutoFindClient/scripts/autosell_hourly_watch.py",
+        "/home/roomhacker/PycharmProjects/AutoFindClient/AutoSellBot/proxy_manager.py",
+        "/home/roomhacker/agents-projects/universal-inbox/src/universal_inbox/noticeplace_sink.py"
+      ],
+      "depends_on": [
+        "L01",
+        "L04"
+      ],
+      "estimate_minutes": {
+        "minimum": 20.0,
+        "maximum": 45.0
+      },
+      "started_at": "2026-10-28T13:59:06.289842+00:00",
+      "finished_at": "2026-10-28T14:17:13.329319+00:00"
+    },
+    {
+      "id": "L09",
+      "label": "Раздельные полномочия источника и исполнителя",
+      "status": "done",
+      "description": "Подготовить защищённый атомарный cutover зарегистрированных verification_sources и executor callback credentials; обновить штатный launch/MCP callback без распространения verifier секрета агенту.",
+      "acceptance": "Reviewable helper имеет no-secret preview, rollback и проверяет scope ограничения. Источник может проверять свой source, executor может finish/progress и не может присвоить себе recovery. Фактическое применение только в L06.",
+      "owner": "consumer-migration",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "L13 helper/auth/launch JOIN source complete: 26project reviewed plan +one ATV supplemental verifier and executor-only callback; integration26/25 exactbaseline exception; protected exactsource-SHA resolver with defaultfailclosed; trusted group metadata+deliveryattempt+explicitfinish. 15credential fixtures,5launch,30GPTAdmin,42helper tests GREEN; real read-only no-secret preview27project entries succeeds with no candidate/config write. TGC registered engine consumer separately confirmed (consumer_1df8b4668ab24b89b88859f1929d2880, tgc-engine-watchdog/server-100/engine), missingv2check transition documented for bounded migration; not silently excluded or auto-enrolled. Core/group commit1ff0265d already published. Sourcecommit pending finaldiffchecks; no runtime acceptance claimed.",
+      "estimate_over_limit_reason": "Source/executor разделение требует согласованного credential envelope и проверки обеих ролей; секреты не дробятся на несогласованные промежуточные активации. Установка отдельно L17.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:36+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Source/executor разделение требует согласованного credential envelope и проверки обеих ролей; секреты не дробятся на несогласованные промежуточные активации. Установка отдельно L17."
+          },
+          "session": "unknown",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "deploy/consumer-lifecycle-credentials.py",
+        "scripts/sync-health-callback-tokens.py",
+        "docs/consumer-lifecycle-credentials.md",
+        "docs/consumer-lifecycle-registration-plan.json",
+        "tests/test_consumer_lifecycle_credentials.py",
+        "notification_center/agent_job_helper.py",
+        "notification_center/gptadmin_agent.py",
+        "tests/test_launch_completion_contract.py",
+        "tests/test_gptadmin_agent.py",
+        "docs/consumer-lifecycle-reviewed-plan.json"
+      ],
+      "depends_on": [
+        "L01",
+        "L04"
+      ],
+      "estimate_minutes": {
+        "minimum": 15.0,
+        "maximum": 30.0
+      }
+    },
+    {
+      "id": "L10",
+      "label": "Проверки video-watching и его общих CLI-потребителей",
+      "status": "done",
+      "description": "Перевести общий noticeplace_health CLI и реальные watcher вызовы на source-owned fresh checks; устранить конкурирующий selfheal launch без отключения детектора отказа NoticePlace.",
+      "acceptance": "Реальные watcher измерения отвечают exact source/host/type request; старый healthy и unknown не закрывают; один инцидент имеет один launcher; deployment target и dev/main политика подтверждены.",
+      "result": "source-done ae1f80859d23ca4639f328f7512874aeaa1e0351 published origin/dev; installed-runtime not claimed",
+      "owner": "video-consumers",
+      "session": "video_consumers",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Verified independent ls-remote origin/dev equals HEAD ae1f80859d23ca4639f328f7512874aeaa1e0351; HTTP1.1 retry succeeded after confirmed failed HTTP408. Exactly9ownedpaths;110focused tests green; foreign .xerjignore preserved. No flags/deploy/restart/live invocation; source cron edits visible on next tick, V2 path disabled until opt-in+SDK, bot bundle remains old. Optional nonblocking hook skip explicitly Lead-authorized and partial receipt saved.",
+      "estimate_over_limit_reason": "Исходный пакет video SDK/producers сохраняет ID и bounded release receipts; независимый обнаруженный operator-status дефект отдельно L30.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:39+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Исходный пакет video SDK/producers сохраняет ID и bounded release receipts; независимый обнаруженный operator-status дефект отдельно L30."
+          },
+          "session": "video_consumers",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "/home/roomhacker/PycharmProjects/video_watching/scripts/ops/noticeplace_health.py",
+        "/home/roomhacker/PycharmProjects/video_watching/UrlsSevr/telegramcontrol/noticeplace_producer.py"
+      ],
+      "depends_on": [
+        "L01",
+        "L04"
+      ],
+      "estimate_minutes": {
+        "minimum": 20.0,
+        "maximum": 40.0
+      },
+      "started_at": "2026-10-28T14:17:01.835270+00:00",
+      "finished_at": "2026-10-28T14:50:02.603859+00:00"
+    },
+    {
+      "id": "L11",
+      "label": "Проверяемое состояние cron-потребителей TelegramAuto",
+      "status": "done",
+      "description": "Добавить source-owned результат штатного cron и вызов source checks в действующие caller seams. Не запускать повторно бизнес-задачу ради проверки и не объявлять старый успешный запуск свежим восстановлением.",
+      "acceptance": "Подтверждённый новый результат источника снимает failure; отсутствие измерения остаётся unknown; recovery сохраняет эпизод и не даёт агенту источник-полномочия; существующие cron вызовы мигрированы.",
+      "result": "e138ecdbc5c377513597d35ffe609b7b579d7bde published origin/main. Requires /opt/noticeplace SDK (L06), authorized consumer policy (L13), then NOTICEPLACE_CONSUMER_V2=1 in protected /etc/default/autotelegramviews. Runtime installation not claimed.",
+      "owner": "cron-consumers",
+      "session": "cron_consumers",
+      "harness": "codex",
+      "model": "gpt-6-luna",
+      "note": "Published source slice e138ecd to origin/main; authoritative ls-remote and local HEAD both e138ecdbc5c377513597d35ffe609b7b579d7bde. V2 remains opt-in. Due request transport filters by exact measured signal so other same-source cron requests stay pending; problem_type is omitted and falls back to each signal, never generic unknown. Fresh SQL measures view-hourly; fresh sampler timestamp measures sampler-stale; unsupported/business signals are not marked healthy. Targeted tests 16 passed and mandatory push gate 16 passed; shell syntax, py_compile, diff check passed. Runtime status remains source-published only: helper install/grant and protected env marker are not present from this worker; no deploy/restart/live call. Caller classification: service speed/degraded and weekly audit are business/SLA/config findings; subs-ramp stall is business outcome; sampler-stale is runtime health with current timestamp probe. ATV submodule systemd canary and untracked ops/cron tree are outside these owned paths; QA/test callers are not activated. Foreign tracked/untracked WIP and data remain untouched. Code map key telegramauto-noticeplace-cron-lifecycle verified at the published HEAD.",
+      "estimate_over_limit_reason": "Исходный пакет ATV/TGC cron consumers сохраняет ID с отдельными adapter/test receipts; реальная установка отдельно L18.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:41+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Исходный пакет ATV/TGC cron consumers сохраняет ID с отдельными adapter/test receipts; реальная установка отдельно L18."
+          },
+          "session": "cron_consumers",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "/home/roomhacker/PycharmProjects/TelegramAuto/scripts/cron_noticeplace.py",
+        "/home/roomhacker/PycharmProjects/TelegramAuto/scripts/tests/test_cron_noticeplace.py",
+        "/home/roomhacker/PycharmProjects/TelegramAuto/.agents/at/view_hourly_check.sh",
+        "/home/roomhacker/PycharmProjects/TelegramAuto/.agents/at/subs_auto_evaluator.py"
+      ],
+      "depends_on": [
+        "L01",
+        "L04"
+      ],
+      "estimate_minutes": {
+        "minimum": 20.0,
+        "maximum": 35.0
+      }
+    },
+    {
+      "id": "L14",
+      "label": "Покрытие обнаруженных потребителей и зарегистрированных источников",
+      "status": "done",
+      "description": "Закрыть известные пробелы реестра по уже найденным источникам: health, обычные уведомления, QA и транспорт. Для зарегистрированного tg-commentator определить действующий adapter и минимальную миграцию без выдачи непроверенных полномочий.",
+      "acceptance": "Каждый обнаруженный ingress имеет фактический владеющий source seam, marker и явный путь установки либо точное ограничение; notification-only не получает фиктивный health checker.",
+      "owner": "consumer-coverage",
+      "session": "consumer_coverage",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "26 известных ingress классифицированы; source marker отдельно от central registry marker, fleet coverage=false из-за partial server88. TGC patch-only commit5edf9f6 на существующей feature/cloudtelethon без foreignCOhunks; frozen3tests+compile, общий163PASS. Parent test mapping22ae315 опубликованmain,157tests+prepushGREEN. GrantTGC staged, не applied. Runtime/source acceptance разделены; L06 установка, L16 внешний monitor, legacyengine/COgenerationunknown. См.REPORT-L14.md.",
+      "estimate_over_limit_reason": "Лист завершённого покрытия связывает обнаруженные продукты с реестром; самостоятельно устанавливаемые исправления выделены L16/L18, исходный ID сохранён.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:49+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Лист завершённого покрытия связывает обнаруженные продукты с реестром; самостоятельно устанавливаемые исправления выделены L16/L18, исходный ID сохранён."
+          },
+          "session": "consumer_coverage",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "/home/roomhacker/agents-projects/noticeplace/docs/consumer-lifecycle-registry.json",
+        "/home/roomhacker/agents-projects/noticeplace/docs/consumer-lifecycle-reviewed-plan.json",
+        "/home/roomhacker/PycharmProjects/TelegramAuto/TGC/scripts/noticeplace_source_v2.py",
+        "/home/roomhacker/PycharmProjects/TelegramAuto/TGC/scripts/tgc_engine_watchdog.py",
+        "/home/roomhacker/PycharmProjects/TelegramAuto/TGC/notify_center_client.py"
+      ],
+      "depends_on": [
+        "L04"
+      ],
+      "estimate_minutes": {
+        "minimum": 15.0,
+        "maximum": 25.0
+      },
+      "finished_at": "2026-10-28T15:33:05Z"
+    },
+    {
+      "id": "L16",
+      "label": "Источник проверки внешних сайтов",
+      "status": "done",
+      "description": "Мигрировать lol-nginx-admin external-site-monitor на source-owned проверки и убрать обход NoticePlace через прямой Telegram fallback.",
+      "acceptance": "Свежая проверка исходного vhost отвечает exact challenge; UNKNOWN не replay и не прямой Telegram; исходный outage detector сохраняется.",
+      "owner": "external-site-consumer",
+      "session": "external_site",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "SOURCE done: main/origin main 3b6a97927424c9b708d0f902f779531871fd1f1b, checkout clean. RED bypass + corrupt-intent replay, GREEN 18 tests, bash syntax, py_compile, diff check. TEST_ACCESS absent; mock-only tests, owner contacts=0. Live readback: active server100 /opt/external-site-monitor/probe.sh but canonical ingest+stale; VPN2 inactive legacy. V2 defaults off, SDK/credential grants/flag and frozen /opt probe installation belong L06. Historical external-site:<vhost> sources + external-site:vpn2-telemetry registration handed consumer_coverage. Recovery requires exact source challenge and fresh measured result; UNKNOWN/corrupt submissions never replay; both direct Telegram bypasses removed. No runtime restart or protected config mutation.",
+      "estimate_over_limit_reason": "Один внешний monitor объединяет event ingress, independent probe и no-replay durable intent; user-facing результат требует всей этой небольшой вертикали.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:54+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Один внешний monitor объединяет event ingress, independent probe и no-replay durable intent; user-facing результат требует всей этой небольшой вертикали."
+          },
+          "session": "external_site",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "/home/roomhacker/lol-nginx-admin/monitor/ingest.py",
+        "/home/roomhacker/lol-nginx-admin/monitor/probe.sh",
+        "/home/roomhacker/lol-nginx-admin/monitor/README.md",
+        "/home/roomhacker/lol-nginx-admin/monitor/tests/test_noticeplace_lifecycle.py",
+        "/home/roomhacker/lol-nginx-admin/monitor/tests/test_external_site_monitor.py"
+      ],
+      "depends_on": [
+        "L04"
+      ],
+      "estimate_minutes": {
+        "minimum": 15.0,
+        "maximum": 25.0
+      },
+      "finished_at": "2026-10-28T15:29:01Z"
+    },
+    {
+      "id": "L29",
+      "label": "Понятные состояния и активная очередь панели",
+      "status": "done",
+      "description": "Исправить три видимых недостатка независимой проверки: машинные состояния, resolved в активной очереди и неясное различие работы ИИ/проверки источника.",
+      "acceptance": "Установленная панель показывает понятные состояния, активная очередь исключает resolved, подробности отдельно отображают работу ИИ и фактическое подтверждение источника. История сохранена.",
+      "result": "Установленная console e49b6e2f0aa95f6501ac7d6d4311318099c1c579. Fresh ZK через UI подтвердил active/all/history, реальное QA work_finished/healthy, русские статусы/dropdown, vusaRAM/canaryDISK и оба старых Russian grammar случая. Последние изменения только static app.js, без API restart. Собственные браузеры закрыты.",
+      "owner": "console-lifecycle",
+      "session": "console_lifecycle",
+      "harness": "codex",
+      "model": "gpt-6-luna",
+      "note": "API inc.lifecycle уже присутствовал в readmodel; гипотеза его отсутствия опровергнута свежим exact-ID readback, лишний JOIN не добавлялся. Завершение ИИ только exact attempt_state=work_finished; generic Hub receipt нейтрален. Все доказанные L29 defects исправлены.",
+      "estimate_over_limit_reason": "Единая UI-приёмка включает independent finding→fix→install→реальный retest. Исходный ID сохраняет историю нескольких точно найденных локализационных исправлений.",
+      "tier": "frontier",
+      "complexity": "S",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:13:47+03:00",
+          "note": "Source 575415543cd0ab83763e1af96c17ef2d1e269148 committed and pushed. RED reproduced resolved records in active and unreadable/raw state. GREEN: pytest test_incident_grouping.py 5/5; panel render fixtures PASS; full GET gate against API8094 PASS 10 routes; JS syntax/diff-check PASS. Awaiting release_core frozen install plus installed selftest/readback.",
+          "changes": {},
+          "session": "console_lifecycle",
+          "harness": "codex"
+        },
+        {
+          "at": "2026-10-28T20:17:32+03:00",
+          "note": "",
+          "changes": {
+            "status": "done",
+            "finished_at": "2026-10-28T17:17:24Z",
+            "result": "Панель установлена из SHA 575415543cd0ab83763e1af96c17ef2d1e269148; API 8094 active, selftest PASS, full installed render gate PASS (10 routes). Active API readback: 0 resolved/closed из 50 rows; view=all&state=resolved сохраняет 5 записей. Резервная копия пяти owned paths: /var/backups/noticeplace-console/20261028-L29-575415543cd0. Unit tests: grouping 5/5, render fixtures PASS.",
+            "note": "Restart затронул только noticeplace-console-api.service. NP/Herder/Hub/landing не трогал. Root организует отдельный fresh ZK console readback."
+          },
+          "session": "console_lifecycle",
+          "harness": "codex"
+        },
+        {
+          "at": "2026-10-28T20:17:57+03:00",
+          "note": "Root review found two acceptance defects in installed 5754155: detail API omits incident.lifecycle, so UI summary used unknown for all real incidents; agent_job_completed is a generic job receipt and must not imply native work completion. Reopening L29: add exact-incident read-only lifecycle projection and fixture based on actual returned shape, neutral event label, then scoped follow-up install/readback.",
+          "changes": {},
+          "session": "console_lifecycle",
+          "harness": "codex"
+        },
+        {
+          "at": "2026-10-28T20:22:56+03:00",
+          "note": "Generic agent_job_completed теперь подписан «Получен результат задания ИИ». AI completion берётся только из incident.lifecycle.attempt_state=work_finished; complete session.status не считается подтверждением. Добавлена локализация vpn2-prefixed service title и exact incident_id regression для lifecycle lookup. Ожидается независимая ZK/UI проверка root.",
+          "changes": {
+            "status": "waiting",
+            "wait_reason": "Ожидается независимая повторная Zero Knowledge проверка реальной консоли от root.",
+            "result": "Follow-up e5222730099c2ee9700669a80f2204bcfc5c7bba установлен из exact frozen source. Backup: /var/backups/noticeplace-console/20261028-L29-e5222730099c. Только panel/app.js и два test-файла заменены; restart только noticeplace-console-api.service. Active API исключает resolved/closed; установленный selftest PASS и GET render gate PASS 10/10. Свежий GET inc_c1092c3c91514485a0617072e87a7727 вернул actual lifecycle: work_finished, healthy, native session есть, harness opencode. Unit tests 5/5 и render fixtures PASS."
+          },
+          "session": "console_lifecycle",
+          "harness": "codex"
+        },
+        {
+          "at": "2026-10-28T20:27:46+03:00",
+          "note": "Fresh ZK localization delta committed/pushed as eb1638d83d72599fad992a1e525412f35b2af608, only panel app.js and render fixture. Fixture RED→GREEN: state filters retain API values and use Russian STATE_LABELS; vusa RAM and canary-v8 DISK titles preserve hostname prefix; RAM wording is grammatically correct. Installed only static app.js with backup /var/backups/noticeplace-console/20261028-L29-eb1638d83d72, no API restart. Served GET /app.js HTTP200 SHA matches source; installed selftest PASS at 17:27:06Z. Waiting for root ZK recheck.",
+          "changes": {},
+          "session": "console_lifecycle",
+          "harness": "codex"
+        },
+        {
+          "at": "2026-10-28T20:32:19+03:00",
+          "note": "Final grammar delta e49b6e2f0aa95f6501ac7d6d4311318099c1c579 published and installed as app.js only (backup /var/backups/noticeplace-console/20261028-L29-e49b6e2f0aa9; no restart). RED fixtures for both old Russian examples plus already-correct wording; GREEN render-fixtures. Exact live API→installed /opt renderer test PASS for inc_1b35c24c214a4cab92f2cfdeca22a86c and inc_d983bea313644e06821c9892f73c7650, preserving host names. Served GET /app.js HTTP200 SHA256 b772834ab45c1d49c22f324c06ae8682c50772114e4acfab9b534a942234b61e matches source. Waiting root final ZK receipt.",
+          "changes": {},
+          "session": "console_lifecycle",
+          "harness": "codex"
+        },
+        {
+          "at": "2026-10-28T20:33:47+03:00",
+          "note": "",
+          "changes": {
+            "status": "done",
+            "wait_reason": "",
+            "result": "Установленная console e49b6e2f0aa95f6501ac7d6d4311318099c1c579. Fresh ZK через UI подтвердил active/all/history, реальное QA work_finished/healthy, русские статусы/dropdown, vusaRAM/canaryDISK и оба старых Russian grammar случая. Последние изменения только static app.js, без API restart. Собственные браузеры закрыты.",
+            "note": "API inc.lifecycle уже присутствовал в readmodel; гипотеза его отсутствия опровергнута свежим exact-ID readback, лишний JOIN не добавлялся. Завершение ИИ только exact attempt_state=work_finished; generic Hub receipt нейтрален. Все доказанные L29 defects исправлены."
+          },
+          "session": "console_lifecycle",
+          "harness": "codex"
+        },
+        {
+          "at": "2026-10-28T20:37:12+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Единая UI-приёмка включает independent finding→fix→install→реальный retest. Исходный ID сохраняет историю нескольких точно найденных локализационных исправлений."
+          },
+          "session": "console_lifecycle",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "automation/noticeplace-console"
+      ],
+      "depends_on": [
+        "L24",
+        "L25"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 20.0
+      },
+      "finished_at": "2026-10-28T17:17:24Z"
+    },
+    {
+      "id": "L12",
+      "label": "Непрерывная проверка источника после завершения работы и STOP",
+      "status": "done",
+      "description": "Разделить nonce каждого измерения и разрешение продолжения попытки. После degraded источник продолжает проверки независимо от STOP; новое обычное degraded не отменяет уже разрешённое продолжение той же сессии.",
+      "acceptance": "degraded→STOP→fresh healthy закрывает; delayed old nonce отвергается; несколько degraded раундов дают ровно один operation на attempt; UNKNOWN reconcile читает exact receipt после смены nonce без POST replay.",
+      "owner": "lifecycle-core",
+      "session": "lifecycle_core",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Source acceptance only: 25 lifecycle tests (including real loopback HTTP finish→degraded→next due→healthy), 5 SDK, 6 credential and 31 HTTP tests passed; diff-check clean. Every nonhealthy measurement rearms a fresh nonce; ordinary degraded preserves one continuation per finished attempt. Exact accepted-receipt GET reconciliation survives nonce rotation without POST replay. Additive schema upgrade preserves prior continuation. DB consumer grants retain authenticated hash lookup, project/severity and revocation. Runtime/config unchanged; installed-product acceptance remains L05/L06.",
+      "estimate_over_limit_reason": "Непрерывный source check, nonce rotation и receipt reconciliation составляют один протокол; его error cases проверяются совместно без разрыва durable authority.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:44+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Непрерывный source check, nonce rotation и receipt reconciliation составляют один протокол; его error cases проверяются совместно без разрыва durable authority."
+          },
+          "session": "lifecycle_core",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "notification_center/incident_lifecycle.py",
+        "notification_center/core.py",
+        "tests/test_incident_lifecycle.py",
+        "tests/test_consumer_lifecycle.py",
+        "tests/test_http_api.py"
+      ],
+      "depends_on": [
+        "L01",
+        "L04",
+        "L09"
+      ],
+      "estimate_minutes": {
+        "minimum": 15.0,
+        "maximum": 25.0
+      },
+      "started_at": "2026-10-28T14:39:59.676098+00:00"
+    },
+    {
+      "id": "L27",
+      "label": "Устойчивый узкий доступ исполнителя к профилям GPTAdmin",
+      "status": "done",
+      "description": "Найти и исправить canonical chmod/install, сбрасывающий ACL mask для uidroomhacker на /etc/gptadmin. Сохранить защищённые чужие файлы и profile0600.",
+      "acceptance": "Штатная повторная установка сохраняет effective traverse-only, uid1000 читает свои два профиля/callback, чужие root-only файлы не открываются.",
+      "owner": "release-core",
+      "session": "release_core",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "InstalledGPTAdmin443f941b via canonicalrequire-drain; actualversion/processmanifest/PID2233575/NRestarts0 verified. Postrestartuid1000profiles/callback0600read, narrowACLx survives/root-onlyenvdenied. ACLRED→GREEN anddrainRED→GREEN; exactly8provenundispatchedreadonlyschema tasks cancelledviaAPI withreceipts, noforce/DBwrite/UNKNOWNreplay. RECEIPT-L27.json/REPORT-L27.md complete.",
+      "tier": "frontier",
+      "complexity": "S",
+      "origin": "",
+      "supersedes": [],
+      "affected_files": [
+        "gptadmin/go-hub/internal/hub/secret_store.go",
+        "gptadmin/go-hub/internal/hub/secret_store_test.go",
+        "gptadmin/go-hub/internal/hub/node_drain.go",
+        "gptadmin/go-hub/internal/hub/node_drain_test.go"
+      ],
+      "depends_on": [
+        "L09"
+      ],
+      "estimate_minutes": {
+        "minimum": 5.0,
+        "maximum": 10.0
+      }
+    },
+    {
+      "id": "L13",
+      "label": "Авторизация зарегистрированных потребителей и точный launch envelope",
+      "status": "done",
+      "description": "Подключить DB intake credentials к отдельной server-side policy без копирования bearer в конфиг. Согласовать candidate с подтверждёнными baseline scopes на репликах и передать доверенные consumer/type/attempt поля исполнителю.",
+      "acceptance": "Отозванный intake token не работает; чужой project/consumer/executor не получает verifier прав. Одинаковый protected candidate применяется только к доказанным baseline26/25 scopes, сохраняя host PORT/DB/flags. Launch metadata совпадает с durable group и server delivery key.",
+      "result": "Source опубликован 89df90ede2fad7a02b6ee76839279705fec97c44; 92 адресных теста и read-only preview прошли. Runtime/config apply не выполнялся.",
+      "owner": "consumer-migration",
+      "session": "consumer_migration",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "26 legacy проектов, отдельный executor-only ATV callback и один supplemental registered consumer grant. Source bearer не изменён. 84 публичных source ID и один защищённый reviewed hash ref. Обнаруженный TGC передан L14; установка L06.",
+      "estimate_over_limit_reason": "Registered principal authorization и launch envelope проверяются как единая граница полномочий; промежуточная несогласованная активация недопустима.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:46+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Registered principal authorization и launch envelope проверяются как единая граница полномочий; промежуточная несогласованная активация недопустима."
+          },
+          "session": "consumer_migration",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "notification_center/core.py",
+        "notification_center/agent_job_helper.py",
+        "notification_center/gptadmin_agent.py",
+        "deploy/consumer-lifecycle-credentials.py",
+        "scripts/sync-health-callback-tokens.py",
+        "docs/consumer-lifecycle-registration-plan.json"
+      ],
+      "depends_on": [
+        "L09",
+        "L12"
+      ],
+      "estimate_minutes": {
+        "minimum": 15.0,
+        "maximum": 30.0
+      }
+    },
+    {
+      "id": "L15",
+      "label": "Подключить завершение попытки к живому Herder",
+      "status": "done",
+      "description": "Устранить неподключённый readAttemptOutcome в live server и проверить, что явный finish останавливает попытку, а source degraded продолжает ту же native session с автопилотом.",
+      "acceptance": "Фактический production factory имеет callback; work_finished не равен resolved, не создаёт idle-loop и не HumanStop; matching source continuation возвращает одну сессию.",
+      "owner": "herder-attempt-finish",
+      "session": "herder_finish",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Source published: Herder eeae09c9d35be1b8bdab9be3feae6bc1ac7f33d8 + 4a8815cf1593f2e211ff8d24d1d4f8f2b5f5b832, NP helper 1f0eab0. RED actual factory: work_finished оставлял enabled=true; RED rearm race удалял новый observer. GREEN exact persisted noticeAttempt отдельно от first incident, production authoritative reader project/incident/attempt/session/harness, atomic pause CAS, same-session rearm + restart recovery. 36 targeted Herder + 43 NP helper; tsc. L07 CLI handoff published34214f36bbeb75afc4f5360202e728ecfc95e014:11 stub-transport tests. Runtime ещё не установлен, native OpenCode и model policy не менялись.",
+      "estimate_over_limit_reason": "Production Herder wiring включает observer, persisted native attempt и explicit finish; один установленный runtime требует согласованного outcome.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:51+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Production Herder wiring включает observer, persisted native attempt и explicit finish; один установленный runtime требует согласованного outcome."
+          },
+          "session": "herder_finish",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "/home/roomhacker/agents-projects/agent-herder/src/web/server.ts"
+      ],
+      "depends_on": [
+        "L01",
+        "L02",
+        "L12"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 20.0
+      },
+      "finished_at": "2026-10-28T15:29:09Z"
+    },
+    {
+      "id": "L19",
+      "label": "Снятие definitively rejected source-check intent",
+      "status": "done",
+      "description": "Исправить найденный интеграционным ревью permanent VerificationPending после достоверно отклонённого stale request. Сохранить no-replay для неоднозначных POST.",
+      "acceptance": "Concurrent source-event invalidates old nonce; rejected old POST не повторяется; следующий fresh request может быть обработан. Неизвестный исход остаётся fenced до точной квитанции.",
+      "owner": "release-core",
+      "session": "release_core",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "RED: domain concurrent degraded -> actual HTTP400 envelope -> next tick VerificationPending. GREEN: 8 SDK tests (5.9s), reviewer integration_review accepted exact stale-only rejection and bound GET supersession. Old POST never replayed. Other400/500/timeout even changed nonce stay fenced; lost accepted healthy/degraded replies reconcile exact receipts. Source published separately; runtime installation remains L17.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "affected_files": [
+        "notification_center/consumer_lifecycle.py",
+        "tests/test_consumer_lifecycle.py"
+      ],
+      "depends_on": [
+        "L12"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      },
+      "finished_at": "2026-10-28T15:37:38Z"
+    },
+    {
+      "id": "L20",
+      "label": "Проверка всех эпизодов общей сессии",
+      "status": "done",
+      "description": "Исправить найденный интеграционным ревью stranded older episode: явный finish общей native сессии должен позволить источнику проверить каждый связанный эпизод.",
+      "acceptance": "Два same-group эпизода после общего finish получают source-owned проверки; healthy закрывает только проверенные условия, degraded создаёт один continuation на group attempt, другие hosts/types/principals не затронуты.",
+      "owner": "group-completion",
+      "session": "group_completion",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "RED: same-native latest finish yielded one due instead of two. GREEN: per-episode checks with original source principal; other consumer/host/type/session and unbound historical excluded; one durable group-attempt continuation. Additional review RED: canonical A healthy before dispatch cancelled attempt0 ticket and stranded degraded B. Fixed reanchor ONLY resolved origin plus cancelled ticket, attempt0, claimed_at NULL and result_json NULL. Any receipt/claim/accepted/UNKNOWN or missing history remains fenced. Independent reviewer reproduced new queued B ticket in same native. Final full lifecycle 39 PASS (64.05s), focused2 PASS with eight dispatch/receipt fences. Resolved sibling GET exposes canonical OPEN authority; allhealthy/newattempt fences it. Source only; installed one-canary acceptance remains root-owned. No runtime/config/live events changed.",
+      "estimate_over_limit_reason": "Связанные эпизоды разделяют один native attempt; проверка требует group-wide eligibility и ровно одного durable continuation. Отдельные runtime/dispatch исправления вынесены L21/L22.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:37:01+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Связанные эпизоды разделяют один native attempt; проверка требует group-wide eligibility и ровно одного durable continuation. Отдельные runtime/dispatch исправления вынесены L21/L22."
+          },
+          "session": "group_completion",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "notification_center/incident_lifecycle.py",
+        "tests/test_incident_lifecycle.py"
+      ],
+      "depends_on": [
+        "L01",
+        "L12",
+        "L15"
+      ],
+      "estimate_minutes": {
+        "minimum": 15.0,
+        "maximum": 25.0
+      },
+      "finished_at": "2026-10-28T15:52:27Z"
+    },
+    {
+      "id": "L21",
+      "label": "Продолжение общей сессии после закрытия последнего эпизода",
+      "status": "done",
+      "description": "Исправить конкретную границу group continuation: последний привязанный эпизод healthy/resolved, другой эпизод той же общей native сессии degraded.",
+      "acceptance": "Authoritative exact group continuation указывает на проверенный открытый origin и повторно использует прежнюю native session. Closed latest binding не создаёт дубль; HumanStop, stale authority и UNKNOWN остаются fenced.",
+      "owner": "herder-finish",
+      "session": "herder_finish",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Source published ea0e100 + 9cd3475d36a38127cd0aac1ef1771010e116b6d2, origin/main verified equal. RED router создал ses_2 вместо ses_1 после закрытия latestB при siblingA degraded. GREEN25 targeted (реальные production ports + router), tsc0: exact shared ledger через resolvedB, secondGET openA + project/group/session/harness/attempt/immutableauthority checks; rotating pendingnonce допустим. Closed/stale/unknown continuation не создаёт новую сессию, HumanStop остаётся oldID admission. Старые normal-newgeneration tests сохранены: fresh unboundC допускается после healthy, replayclosedB blocked. Owned source clean; foreign WIP сохранён. Без build/restart/config/native/incident mutations, runtime установит sole Herder lead после общего review с L20 0c5143a.",
+      "estimate_over_limit_reason": "Один Herder continuation контракт включает resolved-origin authority, replay fence и сохранение нормального создания следующего поколения; независимая установленная приёмка в L17.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:37:03+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Один Herder continuation контракт включает resolved-origin authority, replay fence и сохранение нормального создания следующего поколения; независимая установленная приёмка в L17."
+          },
+          "session": "herder_finish",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "/home/roomhacker/agents-projects/agent-herder/src/automation/incident-session-router.ts",
+        "/home/roomhacker/agents-projects/agent-herder/src/index.ts"
+      ],
+      "depends_on": [
+        "L15"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 20.0
+      },
+      "finished_at": "2026-10-28T15:48:14Z"
+    },
+    {
+      "id": "L05",
+      "label": "Интеграция и независимое ревью результата",
+      "status": "done",
+      "description": "Проверить единый wire-contract, устранить замечания одного fresh review, опубликовать только owned paths в main.",
+      "acceptance": "Объединённый consumer→NP→Herder сценарий проходит, scoped commit/push подтверждён, чужой WIP сохранён.",
+      "result": "Независимое ревью приняло опубликованные NP26e402dd и Herder9cd3475d. SDK stale-rejection, проверки связанных эпизодов и отменённый неотправленный continuation исправлены; 39 lifecycle и 25 Herder delta тестов прошли. Разрешена контролируемая установка.",
+      "owner": "integration-review",
+      "session": "integration_review",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "REPORT-L05.md содержит воспроизведение, независимую повторную проверку и method-check. Принятие исходников не является подтверждением installed user path; оно остаётся L17/L18 и финальным L06.",
+      "estimate_over_limit_reason": "Независимое интеграционное ревью покрывает переходы нескольких владельцев, а найденные дефекты исправлялись отдельными листьями. Исходный ID ревью сохранён.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:24+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Независимое интеграционное ревью покрывает переходы нескольких владельцев, а найденные дефекты исправлялись отдельными листьями. Исходный ID ревью сохранён."
+          },
+          "session": "integration_review",
+          "harness": "codex"
+        }
+      ],
+      "depends_on": [
+        "L01",
+        "L02",
+        "L03",
+        "L04",
+        "L07",
+        "L08",
+        "L09",
+        "L10",
+        "L11",
+        "L12",
+        "L13",
+        "L14",
+        "L15",
+        "L16",
+        "L19",
+        "L20",
+        "L21"
+      ],
+      "estimate_minutes": {
+        "minimum": 15.0,
+        "maximum": 25.0
+      }
+    },
+    {
+      "id": "L22",
+      "label": "Ограниченная миграция реальной истории mesh SQL",
+      "status": "done",
+      "description": "Устранить runtime crash исторической миграции initialize: bounded SQL result exceeded на полной реальной истории. Ограничить scan keyset-порциями, сохранив idempotency и source authority.",
+      "acceptance": "Регрессия воспроизводит лимит ответа; несколько ограниченных страниц проходят без пропусков/повторов, контролируемая установка поднимает API без crashloop на настоящей истории.",
+      "result": "Исправление43ec435 и latest-receipt-before-paging независимо приняты и установлены на100/44/88; первая readiness30.053s, реплики~2s, NRestarts0. Последующий6a9f78fe также штатно запустился на3узлах и прошёл реальный lifecycle до independent healthy/resolved. Повторный полный scan не запускали.",
+      "owner": "group-completion",
+      "session": "group_completion",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "RED reproduced actual bounded SQL result exceeded at old line79 using response-budget adapter. GREEN40 lifecycle tests47.30s including all3scan types, last partial page, repeated initialization, reordered created_at, exact accepted receipt/continuation preservation. Added shared PKkeyset pages: preflight128numeric cursor+actual row bytes; fetch prefix<=1MiBraw (<6MiBJSONescaped against16MiBmeshframe), noOFFSET/no per-event writes. Actual source helper READONLY walked188599liveevents in2949SQLcalls/29.645s; maxpayload5579bytes;2100distinctincidents needoneprojectioninsert each onfirstmigration. Subsequent startups skip migratedhistory. No workerDDL/config/events; oldstable APIs restored byrelease_core. Source ready; controlled100-first activation needs~90s readiness window then44/88, runtime acceptance remains root/release_core-owned.",
+      "estimate_over_limit_reason": "Ограниченная миграция требует нескольких SQL страниц, сохранения последнего receipt и первой readiness на реальной истории. Повторять весь production scan ради искусственного дробления нельзя.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:37:06+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Ограниченная миграция требует нескольких SQL страниц, сохранения последнего receipt и первой readiness на реальной истории. Повторять весь production scan ради искусственного дробления нельзя."
+          },
+          "session": "group_completion",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "notification_center/incident_lifecycle.py",
+        "tests/test_incident_lifecycle.py"
+      ],
+      "depends_on": [
+        "L20"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 20.0
+      }
+    },
+    {
+      "id": "L23",
+      "label": "Свежая проверка OpenChamber глазами оператора",
+      "status": "done",
+      "description": "Независимый тестировщик без исходников и отчётов ищет инцидент в живом OpenChamber, оценивает название и наблюдает продолжение той же native сессии.",
+      "acceptance": "Реальная browser-навигация и наблюдаемый результат; нет новых инцидентов/промптов/owner contact, не проверенные переходы указаны явно.",
+      "result": "Одна native-карточка и same-session continuation подтверждены реальным OpenChamber UI. Хост/тип доступны в фактах чата; отдельный source-status UI OpenChamber не показывает, его показывает панель NoticePlace. Здоровье и закрытие проверяются отдельно L17.",
+      "owner": "zk-native",
+      "session": "zk_native",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Независимый UI поиск дал ровно один match; URL exact ses_e7c849ab9ffeA5lL9rAli7jl1R. Наблюдались работа, остановка, новое входящее сообщение и продолжение той же сессии, повторная остановка. Никаких пользовательских промптов и мутаций тестировщик не делал. Свой browser закрыт. Evidence .tmp/zk-native-20261028.md и qa-active/finished1/continuation/finished2/final-one-match screenshots.",
+      "tier": "frontier",
+      "complexity": "S",
+      "origin": "",
+      "supersedes": [],
+      "depends_on": [
+        "L21"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      }
+    },
+    {
+      "id": "L26",
+      "label": "Уникальная операция продолжения законченной попытки",
+      "status": "done",
+      "description": "Провести trusted source-check continuation через GPTAdmin adapter и сделать стабильный новый operation_id для продолжения, сохранив initial IDs и exact retry idempotency.",
+      "acceptance": "Actual adapter→helper fixture: initial ID сохранён, continuation1 другой, exactretry тот же, следующий finished-attempt имеет новый ID. Poll nonce rotation не создаёт операций.",
+      "owner": "release-core",
+      "session": "release_core",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Source51de9b55 reviewed83GREEN, deployed combined6a9f78fe all3. Real source-degraded continuation created new operationb96c74a15313a9179b493bd4f8e86cdb into SAME native ses_e7c849ab9ffeA5lL9rAli7jl1R with distinct actualattempt566b412…; initial e0fff… remained stable. Real protocol confirmed one created native and one continuation, no replay/duplicate.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "affected_files": [
+        "notification_center/agent_job_helper.py",
+        "notification_center/gptadmin_agent.py"
+      ],
+      "depends_on": [
+        "L13",
+        "L20"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 15.0
+      }
+    },
+    {
+      "id": "L17",
+      "label": "Установка центрального контура и один lifecycle canary",
+      "status": "done",
+      "description": "Подготовить защищённый единый candidate, после интеграционного ревью установить NP100/44/88 и console, согласовать Herder с единственным runtime installer. Проверить один изолированный muted lifecycle на установленном контуре.",
+      "acceptance": "Фактические SHA, auth readback, incident/operation/session IDs и source-check receipt; finish выключает попытку, degraded возвращает ту же сессию, healthy закрывает. Accepted/UNKNOWN не replay.",
+      "owner": "release-core",
+      "session": "release_core",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Installed NP6a9f78fe on100/44/88, identical frozen inputs/auth; exact ONE muted QA inc_c1092c3c91514485a0617072e87a7727 resolved by independent healthy source. One native ses_e7c849ab9ffeA5lL9rAli7jl1R, initial operatione0fff05d48167299345eaaffac137ad6 and one continuationb96c74a15313a9179b493bd4f8e86cdb; actualOpenCode/modelomniroute/glm-5.3-flash-minimax-m3.1. APtrue→explicitfinish/off/open→fresh503→same-sessionAPtrue→explicitfinish/off/open→fresh200→resolved. Cleanupownroute/processes/gate complete. RECEIPT-L17.json contains sanitized installed/runtime/source proof.",
+      "estimate_over_limit_reason": "Безопасная установка трёх API, одна реальная двухэтапная native canary и независимое закрытие занимают больше15мин по внешней длительности попыток. Дублировать canary ради дробления запрещено.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:56+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Безопасная установка трёх API, одна реальная двухэтапная native canary и независимое закрытие занимают больше15мин по внешней длительности попыток. Дублировать canary ради дробления запрещено."
+          },
+          "session": "release_core",
+          "harness": "codex"
+        }
+      ],
+      "depends_on": [
+        "L05"
+      ],
+      "estimate_minutes": {
+        "minimum": 20.0,
+        "maximum": 35.0
+      }
+    },
+    {
+      "id": "L18",
+      "label": "Установка мигрированных источников",
+      "status": "done",
+      "description": "Установить опубликованные consumer adapters по действующим owner release routes и включить opt-in только после SDK и scope validation; сохранить штатные timer состояния и чужие исходники.",
+      "acceptance": "Для каждого активного source зафиксированы actual executable/hash/env marker/helper import и действующая readonly проверка; ни чужие WIP, ни отключённые timer не включены.",
+      "owner": "consumer-runtime",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Known active consumers installed after NP43ec435e API/auth gate: 7 sourceGET200 + protected opt-ins; Fleet5c263e45 preserves base14e6 and normaltimerexit0; external fullsweepexit0; ATV5readonlyqueries; TGCnormalexit0 mixedforeignWIPpreserved; AF7b35c05e da97533 installed, compatiblecurrentpeer c60ecf4 retains exactadapters/SDK/V2; video bot b87cb8da canonicalpromote100 completed. REPORT-L18.md and registry hold installed proof. Globalcoverage remainsfalse; no broadfleetPASS; make-status DB lifecycle defect only recorded389ed50c, not fixed. No QAevents/calls/businesssends.",
+      "estimate_over_limit_reason": "Установки нескольких уже опубликованных consumers сохраняют единый исходный ID; каждый установленный продукт отдельно подтверждён в registry/REPORT-L18. Не создаём ретроспективно фиктивные листья.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:59+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Установки нескольких уже опубликованных consumers сохраняют единый исходный ID; каждый установленный продукт отдельно подтверждён в registry/REPORT-L18. Не создаём ретроспективно фиктивные листья."
+          },
+          "session": "unknown",
+          "harness": "codex"
+        }
+      ],
+      "depends_on": [
+        "L05"
+      ],
+      "estimate_minutes": {
+        "minimum": 20.0,
+        "maximum": 35.0
+      }
+    },
+    {
+      "id": "L28",
+      "label": "Новая попытка после доказанного отказа до запуска",
+      "status": "done",
+      "description": "Сохранить строгую квитанцию отсутствия запуска и разрешить новую ручную попытку той же карточки после штатной проверки STOP.",
+      "acceptance": "Только доказанный not_attempted допускает новый delivery; STOP, пустая квитанция, accepted и UNKNOWN не допускают повтора. Повтор команды идемпотентен.",
+      "owner": "lifecycle-core",
+      "session": "lifecycle_core",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Reviewed source6a9f78fe deployedall3;7new+33TelegramGREEN. HistoricalcompletedHubsourceblocked BEFOREPOST combined with root-verified canonical operationNOT_FOUND/runtimeidentity reconciled through domainrecord_agent_job_result, preserving oldsent/noSQL. Onefreshmanualdeliverydlv_f1359c1eddeb470d8c090618f8ad0c79 admittedsameincident; subsequentnativefinish/sourcecontinuation/resolved proven. Blank/accepted/UNKNOWN unchangedfences.",
+      "estimate_over_limit_reason": "Один безопасный manual resume требует terminal not_attempted proof, свежего STOP guard и идемпотентного нового delivery. Деление инварианта создаёт опасный промежуточный release.",
+      "tier": "frontier",
+      "complexity": "S",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:37:08+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Один безопасный manual resume требует terminal not_attempted proof, свежего STOP guard и идемпотентного нового delivery. Деление инварианта создаёт опасный промежуточный release."
+          },
+          "session": "lifecycle_core",
+          "harness": "codex"
+        }
+      ],
+      "affected_files": [
+        "notification_center/core.py"
+      ],
+      "depends_on": [
+        "L26"
+      ],
+      "estimate_minutes": {
+        "minimum": 10.0,
+        "maximum": 20.0
+      }
+    },
+    {
+      "id": "L30",
+      "label": "Рабочая операторская статистика video_watching",
+      "status": "done",
+      "description": "Исправить обнаруженный L18 дефект status_runtime.py: статистика вызывается без подключения БД.",
+      "acceptance": "Штатный read-only /stats возвращает полезную статистику через защищённый выделенный runtime/monitor endpoint; HBA не меняется, бот и клиенты не перезапускаются.",
+      "result": "Реальный make status через защищённый runtime wrapper: /stats 60 — 1907 просмотров, 1905 успешных, 2 ошибки. Bot PID739990/NRestarts0 сохранён.",
+      "owner": "consumer-runtime",
+      "session": "consumer_runtime",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "RED: два Database is not connected. GREEN: четыре теста, DB manager гарантирует connect/close при успехе и ошибке. Fix a31c3ba7440d9ba7518f57aac9fd14783b86e492 опубликован в canonical origin/dev; итоговый HEAD d1182451581eac3437d7df15488e9b07ac7541f4 синхронизирован. Рестартов/событий нет, чужой .xerjignore сохранён.",
+      "tier": "frontier",
+      "complexity": "S",
+      "origin": "",
+      "supersedes": [],
+      "affected_files": [
+        "scripts/ops/status_runtime.py"
+      ],
+      "depends_on": [
+        "L18"
+      ],
+      "estimate_minutes": {
+        "minimum": 5.0,
+        "maximum": 15.0
+      }
+    },
+    {
+      "id": "L06",
+      "label": "Выкладка и изолированная сквозная приёмка",
+      "status": "done",
+      "description": "Установить опубликованные SHA, проверить один muted QA lifecycle и реальную панель, провести две свежие Zero Knowledge проверки без контакта с владельцем, убрать только свои фикстуры.",
+      "acceptance": "Зафиксированы deployed SHA, incident/operation/session ID, actual harness/model/autopilot, same-session повтор, независимое закрытие и видимые группы; ноль звонков и тестовых уведомлений человеку.",
+      "result": "Установлены NP6a9f78fe на100/44/88, Herder5d76de9, GPTAdmin443f941b, consolee49b6e2. Единственный QA inc_c1092c3c91514485a0617072e87a7727 resolved/healthy после двух настоящих attempts в одной OpenCodeсессии; finish/APoff→fresh503→same-session/rearm→finish/APoff→fresh200/closure. Две свежие независимые UI-проверки пройдены. Фикстуры/route/gate убраны, APoff, calls/ownercontact0, собственных мусорных ресурсов нет.",
+      "owner": "release-canary",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "note": "Основной контур доказан действующим продуктом, не только тестами. Сохранены чужие WIP и принятые/UNKNOWN операции. GrepMesh discovery исторически partial; активные известные потребители мигрированы, полный inventory флота не объявляется. Source/schema MCP identity hermes не расширялась; native QA использовал защищённый HTTP work-finished callback.",
+      "estimate_over_limit_reason": "Агрегирующая приёмка включает две настоящие модельные попытки с независимыми source checks и браузерные проверки. Практическое исполнение выделено в L17/L18/L23/L24/L27/L29.",
+      "tier": "frontier",
+      "complexity": "L",
+      "origin": "",
+      "supersedes": [],
+      "progress_events": [
+        {
+          "at": "2026-10-28T20:36:27+03:00",
+          "note": "",
+          "changes": {
+            "estimate_over_limit_reason": "Агрегирующая приёмка включает две настоящие модельные попытки с независимыми source checks и браузерные проверки. Практическое исполнение выделено в L17/L18/L23/L24/L27/L29."
+          },
+          "session": "unknown",
+          "harness": "codex"
+        },
+        {
+          "at": "2026-10-28T20:38:14+03:00",
+          "note": "",
+          "changes": {
+            "status": "done",
+            "finished_at": "2026-10-28T17:37:35Z",
+            "depends_on": [
+              "L17",
+              "L18",
+              "L23",
+              "L24",
+              "L27",
+              "L29",
+              "L30"
+            ],
+            "result": "Установлены NP6a9f78fe на100/44/88, Herder5d76de9, GPTAdmin443f941b, consolee49b6e2. Единственный QA inc_c1092c3c91514485a0617072e87a7727 resolved/healthy после двух настоящих attempts в одной OpenCodeсессии; finish/APoff→fresh503→same-session/rearm→finish/APoff→fresh200/closure. Две свежие независимые UI-проверки пройдены. Фикстуры/route/gate убраны, APoff, calls/ownercontact0, собственных мусорных ресурсов нет.",
+            "note": "Основной контур доказан действующим продуктом, не только тестами. Сохранены чужие WIP и принятые/UNKNOWN операции. GrepMesh discovery исторически partial; активные известные потребители мигрированы, полный inventory флота не объявляется. Source/schema MCP identity hermes не расширялась; native QA использовал защищённый HTTP work-finished callback."
+          },
+          "session": "unknown",
+          "harness": "codex"
+        }
+      ],
+      "depends_on": [
+        "L17",
+        "L18",
+        "L23",
+        "L24",
+        "L27",
+        "L29",
+        "L30"
+      ],
+      "estimate_minutes": {
+        "minimum": 20.0,
+        "maximum": 35.0
+      },
+      "finished_at": "2026-10-28T17:37:35Z"
+    }
+  ],
+  "leaf_count": 30,
+  "plan_origin": {
+    "at": "2026-10-28T13:29:15.993802+00:00",
+    "source": "file_birthtime",
+    "leaf_id": "L01",
+    "recorded_at": "2026-10-28T13:29:34.291304+00:00"
+  }
+}

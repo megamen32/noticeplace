@@ -21,5 +21,18 @@
     "notification_center/incident_lifecycle.py",
     "tests/test_incident_lifecycle.py"
   ],
-  "note": "Source acceptance: 17 lifecycle regression tests, 37 health workflow tests, 31 HTTP API tests passed. Explicit executor finish, principal-scoped independent source checks, generation fence, historical enrollment, canonical group metadata, one same-session continuation delivery. Source only; runtime/config unchanged; deployed consumer acceptance belongs to L05/L06."
+  "note": "Source acceptance: 17 lifecycle regression tests, 37 health workflow tests, 31 HTTP API tests passed. Explicit executor finish, principal-scoped independent source checks, generation fence, historical enrollment, canonical group metadata, one same-session continuation delivery. Source only; runtime/config unchanged; deployed consumer acceptance belongs to L05/L06.",
+  "estimate_over_limit_reason": "Исходный лист сохраняет идентичность уже опубликованного state-machine контракта; независимые найденные исправления вынесены в L12/L13/L20/L28. Ретроспективное дробление выполненной работы потеряет связь с receipts.",
+  "updated_at": "2026-10-28T20:36:14+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:14+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Исходный лист сохраняет идентичность уже опубликованного state-machine контракта; независимые найденные исправления вынесены в L12/L13/L20/L28. Ретроспективное дробление выполненной работы потеряет связь с receipts."
+      },
+      "session": "unknown",
+      "harness": "codex"
+    }
+  ]
 }

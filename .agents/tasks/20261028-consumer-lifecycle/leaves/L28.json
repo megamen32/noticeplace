@@ -1,0 +1,37 @@
+{
+  "id": "L28",
+  "label": "Новая попытка после доказанного отказа до запуска",
+  "status": "done",
+  "owner": "lifecycle-core",
+  "session": "lifecycle_core",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "S",
+  "depends_on": [
+    "L26"
+  ],
+  "estimate_minutes": {
+    "minimum": 10,
+    "maximum": 20
+  },
+  "description": "Сохранить строгую квитанцию отсутствия запуска и разрешить новую ручную попытку той же карточки после штатной проверки STOP.",
+  "acceptance": "Только доказанный not_attempted допускает новый delivery; STOP, пустая квитанция, accepted и UNKNOWN не допускают повтора. Повтор команды идемпотентен.",
+  "affected_files": [
+    "notification_center/core.py"
+  ],
+  "note": "Reviewed source6a9f78fe deployedall3;7new+33TelegramGREEN. HistoricalcompletedHubsourceblocked BEFOREPOST combined with root-verified canonical operationNOT_FOUND/runtimeidentity reconciled through domainrecord_agent_job_result, preserving oldsent/noSQL. Onefreshmanualdeliverydlv_f1359c1eddeb470d8c090618f8ad0c79 admittedsameincident; subsequentnativefinish/sourcecontinuation/resolved proven. Blank/accepted/UNKNOWN unchangedfences.",
+  "estimate_over_limit_reason": "Один безопасный manual resume требует terminal not_attempted proof, свежего STOP guard и идемпотентного нового delivery. Деление инварианта создаёт опасный промежуточный release.",
+  "updated_at": "2026-10-28T20:37:08+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:37:08+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Один безопасный manual resume требует terminal not_attempted proof, свежего STOP guard и идемпотентного нового delivery. Деление инварианта создаёт опасный промежуточный release."
+      },
+      "session": "lifecycle_core",
+      "harness": "codex"
+    }
+  ]
+}

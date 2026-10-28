@@ -27,5 +27,18 @@
     "tests/test_http_api.py"
   ],
   "note": "Source acceptance only: 25 lifecycle tests (including real loopback HTTP finish→degraded→next due→healthy), 5 SDK, 6 credential and 31 HTTP tests passed; diff-check clean. Every nonhealthy measurement rearms a fresh nonce; ordinary degraded preserves one continuation per finished attempt. Exact accepted-receipt GET reconciliation survives nonce rotation without POST replay. Additive schema upgrade preserves prior continuation. DB consumer grants retain authenticated hash lookup, project/severity and revocation. Runtime/config unchanged; installed-product acceptance remains L05/L06.",
-  "started_at": "2026-10-28T14:39:59.676098+00:00"
+  "started_at": "2026-10-28T14:39:59.676098+00:00",
+  "estimate_over_limit_reason": "Непрерывный source check, nonce rotation и receipt reconciliation составляют один протокол; его error cases проверяются совместно без разрыва durable authority.",
+  "updated_at": "2026-10-28T20:36:44+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:36:44+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Непрерывный source check, nonce rotation и receipt reconciliation составляют один протокол; его error cases проверяются совместно без разрыва durable authority."
+      },
+      "session": "lifecycle_core",
+      "harness": "codex"
+    }
+  ]
 }

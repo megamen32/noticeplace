@@ -1,0 +1,179 @@
+{
+  "incident_id": "inc_c1092c3c91514485a0617072e87a7727",
+  "state": "resolved",
+  "muted": true,
+  "lifecycle": {
+    "incident_id": "inc_c1092c3c91514485a0617072e87a7727",
+    "generation": 1,
+    "group_key": "[\"noticeplace-qa-stop-20261023b\",\"consumer_7ad31d4110d744259bde4ee7580890e4\",\"server-100\",\"cpu\"]",
+    "source_id": "lifecycle-canary-20261028-01a17ea3",
+    "attempt_state": "work_finished",
+    "verification_state": "healthy",
+    "verification_due": null,
+    "request_id": "check_e596bfd165a34a71a8b8e779101a7c34",
+    "session_id": "ses_e7c849ab9ffeA5lL9rAli7jl1R",
+    "harness": "opencode",
+    "attempt_id": "np-attempt:566b41212327f620b3ce8100b02e20326cbfa3ea9400bcaf3527b9f876b1912a",
+    "latest_observed_at": null,
+    "group": {
+      "consumer_id": "consumer_7ad31d4110d744259bde4ee7580890e4",
+      "correlation_id": "lifecycle-canary-20261028-01a17ea3",
+      "host_id": "server-100",
+      "problem_type": "cpu",
+      "project": "noticeplace-qa-stop-20261023b",
+      "signal_type": "cpu",
+      "source_id": "lifecycle-canary-20261028-01a17ea3"
+    },
+    "last_check_receipt": {
+      "idempotency_key": "source-check:12208a90e09349458e3d5583ed375fd3",
+      "request_id": "check_e596bfd165a34a71a8b8e779101a7c34",
+      "result": {
+        "generation": 1,
+        "incident_id": "inc_c1092c3c91514485a0617072e87a7727",
+        "observed_state": "healthy",
+        "request_id": "check_e596bfd165a34a71a8b8e779101a7c34"
+      }
+    }
+  },
+  "session": {
+    "id": "ses_e7c849ab9ffeA5lL9rAli7jl1R",
+    "title": "Инцидент: Тестовый сервис: требуется двухэтапное восстановление | noticeplace-qa-stop-20261023b",
+    "harness": "opencode",
+    "model": "omniroute/glm-5.3-flash-minimax-m3.1",
+    "cwd": "/home/roomhacker/agents-projects/noticeplace/.tmp/lifecycle-canary-20261028/fixture",
+    "status": "idle"
+  },
+  "autopilot": {
+    "harness": "opencode",
+    "sessionId": "ses_e7c849ab9ffeA5lL9rAli7jl1R",
+    "enabled": false,
+    "source": "session",
+    "cwd": "/home/roomhacker/agents-projects/noticeplace/.tmp/lifecycle-canary-20261028/fixture",
+    "updatedAt": "2026-10-28T17:18:08.275Z"
+  },
+  "operations": [
+    {
+      "operation_id": "e0fff05d48167299345eaaffac137ad6",
+      "attempts": [
+        {
+          "outcome": "accepted",
+          "at": "2026-10-28T17:07:44.487Z",
+          "atCompleted": "2026-10-28T17:07:47.116Z",
+          "sessionId": "ses_e7c849ab9ffeA5lL9rAli7jl1R",
+          "created": true,
+          "delivery": "accepted",
+          "harness": "opencode",
+          "model": "omniroute/glm-5.3-flash-minimax-m3.1"
+        }
+      ]
+    },
+    {
+      "operation_id": "b96c74a15313a9179b493bd4f8e86cdb",
+      "attempts": [
+        {
+          "outcome": "accepted",
+          "at": "2026-10-28T17:14:54.475Z",
+          "atCompleted": "2026-10-28T17:14:55.087Z",
+          "sessionId": "ses_e7c849ab9ffeA5lL9rAli7jl1R",
+          "created": false,
+          "delivery": "completed",
+          "harness": "opencode",
+          "model": "omniroute/glm-5.3-flash-minimax-m3.1"
+        }
+      ]
+    }
+  ],
+  "deliveries": [
+    {
+      "id": "dlv_7c7b8f4f454a43e19da5e809a6d659a1",
+      "channel": "gptadmin.agent:health-diagnosis",
+      "status": "sent"
+    },
+    {
+      "id": "dlv_f1359c1eddeb470d8c090618f8ad0c79",
+      "channel": "gptadmin.agent:health-diagnosis",
+      "status": "sent"
+    },
+    {
+      "id": "dlv_e4cb57cc0ff24b299c0f087ddbc21203",
+      "channel": "gptadmin.agent:health-diagnosis",
+      "status": "sent"
+    },
+    {
+      "id": "dlv_e57d1d708c9b4bdf9f28b00a0c9c16dc",
+      "channel": "matrix.message",
+      "status": "cancelled"
+    }
+  ],
+  "source_confirmed": {
+    "binding": {
+      "host_id": "server-100",
+      "project": "noticeplace-qa-stop-20261023b",
+      "source_id": "lifecycle-canary-20261028-01a17ea3"
+    },
+    "body": {
+      "evidence_refs": [
+        "Independent HTTP probe 2026-10-28T17:18:30.277610+00:00: status=200, sha256=4f4f9ee297ed82e21b8b1208518cb17efa3de3a6a226676e2d3c76558ae2fe6f, attempts=2"
+      ],
+      "generation": 1,
+      "observed_state": "healthy",
+      "request_id": "check_e596bfd165a34a71a8b8e779101a7c34"
+    },
+    "idempotency_key": "source-check:12208a90e09349458e3d5583ed375fd3",
+    "incident_id": "inc_c1092c3c91514485a0617072e87a7727",
+    "receipt": {
+      "generation": 1,
+      "incident_id": "inc_c1092c3c91514485a0617072e87a7727",
+      "observed_state": "healthy",
+      "request_id": "check_e596bfd165a34a71a8b8e779101a7c34"
+    },
+    "status": "confirmed"
+  },
+  "fixture_final": {
+    "state": "healthy",
+    "attempts": [
+      "np-attempt:dab7a9fcc00ae251f120862582080c0795289f2e0c74585369e042c2c4b4585d",
+      "np-attempt:566b41212327f620b3ce8100b02e20326cbfa3ea9400bcaf3527b9f876b1912a"
+    ]
+  },
+  "cleanup": {
+    "route_removed": true,
+    "fixture_and_source_pids_terminated": [
+      612198,
+      613049
+    ],
+    "source_gate_removed": true
+  },
+  "installed": {
+    "source": "6a9f78fece17f3f2c710f57ff4d45396cc6999a1",
+    "hosts": {
+      "100": {
+        "release": "/opt/noticeplace-releases/20261028T170451Z-6a9f78fece17-1301208",
+        "hashes": {
+          "notification_center/agent_job_helper.py": "3e6dceb90233c79a7cd1b64a3afd55cb2ede0a02cc446437afb854e4752622e0",
+          "notification_center/gptadmin_agent.py": "b2a2f1b9c01fa0260731abf8fd0a0b5bcb8c992e6d4fac1841bbfdd64eac9dbd",
+          "notification_center/core.py": "023a309116d50f8ade9ff2d9999f043575aef798b226be013e4a3df1bf3804f7"
+        },
+        "unit": "MainPID=1310409\nNRestarts=0\nActiveState=active\n"
+      },
+      "192.168.2.5": {
+        "release": "/opt/noticeplace-releases/20261028T170525Z-6a9f78fece17f3f2c710f57ff4d45396cc6999a1-2843238",
+        "hashes": {
+          "notification_center/agent_job_helper.py": "3e6dceb90233c79a7cd1b64a3afd55cb2ede0a02cc446437afb854e4752622e0",
+          "notification_center/gptadmin_agent.py": "b2a2f1b9c01fa0260731abf8fd0a0b5bcb8c992e6d4fac1841bbfdd64eac9dbd",
+          "notification_center/core.py": "023a309116d50f8ade9ff2d9999f043575aef798b226be013e4a3df1bf3804f7"
+        },
+        "unit": "MainPID=2843607\nNRestarts=0\nActiveState=active\n"
+      },
+      "192.168.2.75": {
+        "release": "/opt/noticeplace-releases/20261028T170549Z-6a9f78fece17f3f2c710f57ff4d45396cc6999a1-61397",
+        "hashes": {
+          "notification_center/agent_job_helper.py": "3e6dceb90233c79a7cd1b64a3afd55cb2ede0a02cc446437afb854e4752622e0",
+          "notification_center/gptadmin_agent.py": "b2a2f1b9c01fa0260731abf8fd0a0b5bcb8c992e6d4fac1841bbfdd64eac9dbd",
+          "notification_center/core.py": "023a309116d50f8ade9ff2d9999f043575aef798b226be013e4a3df1bf3804f7"
+        },
+        "unit": "MainPID=62177\nNRestarts=0\nActiveState=active\n"
+      }
+    }
+  }
+}

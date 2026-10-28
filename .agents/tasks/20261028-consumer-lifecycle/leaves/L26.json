@@ -1,0 +1,26 @@
+{
+  "id": "L26",
+  "label": "Уникальная операция продолжения законченной попытки",
+  "status": "done",
+  "owner": "release-core",
+  "session": "release_core",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L13",
+    "L20"
+  ],
+  "estimate_minutes": {
+    "minimum": 10,
+    "maximum": 15
+  },
+  "description": "Провести trusted source-check continuation через GPTAdmin adapter и сделать стабильный новый operation_id для продолжения, сохранив initial IDs и exact retry idempotency.",
+  "acceptance": "Actual adapter→helper fixture: initial ID сохранён, continuation1 другой, exactretry тот же, следующий finished-attempt имеет новый ID. Poll nonce rotation не создаёт операций.",
+  "affected_files": [
+    "notification_center/agent_job_helper.py",
+    "notification_center/gptadmin_agent.py"
+  ],
+  "note": "Source51de9b55 reviewed83GREEN, deployed combined6a9f78fe all3. Real source-degraded continuation created new operationb96c74a15313a9179b493bd4f8e86cdb into SAME native ses_e7c849ab9ffeA5lL9rAli7jl1R with distinct actualattempt566b412…; initial e0fff… remained stable. Real protocol confirmed one created native and one continuation, no replay/duplicate."
+}

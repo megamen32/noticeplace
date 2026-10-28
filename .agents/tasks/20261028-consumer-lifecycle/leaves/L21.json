@@ -1,0 +1,39 @@
+{
+  "id": "L21",
+  "label": "Продолжение общей сессии после закрытия последнего эпизода",
+  "status": "done",
+  "owner": "herder-finish",
+  "session": "herder_finish",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L15"
+  ],
+  "estimate_minutes": {
+    "minimum": 10,
+    "maximum": 20
+  },
+  "description": "Исправить конкретную границу group continuation: последний привязанный эпизод healthy/resolved, другой эпизод той же общей native сессии degraded.",
+  "acceptance": "Authoritative exact group continuation указывает на проверенный открытый origin и повторно использует прежнюю native session. Closed latest binding не создаёт дубль; HumanStop, stale authority и UNKNOWN остаются fenced.",
+  "affected_files": [
+    "/home/roomhacker/agents-projects/agent-herder/src/automation/incident-session-router.ts",
+    "/home/roomhacker/agents-projects/agent-herder/src/index.ts"
+  ],
+  "finished_at": "2026-10-28T15:48:14Z",
+  "note": "Source published ea0e100 + 9cd3475d36a38127cd0aac1ef1771010e116b6d2, origin/main verified equal. RED router создал ses_2 вместо ses_1 после закрытия latestB при siblingA degraded. GREEN25 targeted (реальные production ports + router), tsc0: exact shared ledger через resolvedB, secondGET openA + project/group/session/harness/attempt/immutableauthority checks; rotating pendingnonce допустим. Closed/stale/unknown continuation не создаёт новую сессию, HumanStop остаётся oldID admission. Старые normal-newgeneration tests сохранены: fresh unboundC допускается после healthy, replayclosedB blocked. Owned source clean; foreign WIP сохранён. Без build/restart/config/native/incident mutations, runtime установит sole Herder lead после общего review с L20 0c5143a.",
+  "estimate_over_limit_reason": "Один Herder continuation контракт включает resolved-origin authority, replay fence и сохранение нормального создания следующего поколения; независимая установленная приёмка в L17.",
+  "updated_at": "2026-10-28T20:37:03+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:37:03+03:00",
+      "note": "",
+      "changes": {
+        "estimate_over_limit_reason": "Один Herder continuation контракт включает resolved-origin authority, replay fence и сохранение нормального создания следующего поколения; независимая установленная приёмка в L17."
+      },
+      "session": "herder_finish",
+      "harness": "codex"
+    }
+  ]
+}
