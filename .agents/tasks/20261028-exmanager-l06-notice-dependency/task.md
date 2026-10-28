@@ -83,7 +83,8 @@ QA project credential из той же закрытой token map. Значен�
 хранятся только в защищённом QA env; в task artifact записаны только имена
 переменных и endpoint references.
 
-Код/API/unit-проверки готовы; полноценный `19450` HTTP/browser canary ещё
-ожидает подготовки protected QA env и запуска root-ом на QA fixture. Канонический
-Board verifier на `127.0.0.1:43330` отвечает HTTP 200; production Notice и
-внешняя доставка для этой проверки не использовались.
+Source checkpoint `63f0b0f` опубликован в `main`. Итоговый focused Notice
+regression set: 49 passed. Полноценный `19450` HTTP/browser canary ещё ждёт
+protected QA env и запуска на QA fixture. Канонический Board verifier на
+`127.0.0.1:43330` отвечает HTTP 200; production Notice и внешняя доставка для
+этой проверки не использовались.
