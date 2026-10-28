@@ -104,7 +104,8 @@ class AgentJobHelperTests(unittest.TestCase):
                                   "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE)})
             return _Response({})
         runner = mock.Mock(side_effect=respond)
-        with self.assertRaisesRegex(RuntimeError, "session identity"):
+        with (mock.patch.object(agent_job_helper, '_load_health_callback', return_value=('http://127.0.0.1:8091', 'fixture-token')),
+              self.assertRaisesRegex(RuntimeError, "session identity")):
             run_profile("health-diagnosis", {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis", "incident": {"id": "inc-denied"}}, Path("unused"),
                         profile_override={"url": "http://127.0.0.1:18787/api/sessions/new-or-resume", "harness": "opencode",
                                           "model": "omniroute/glm-5.3-flash-minimax-m3.1", "health_launch_token": "test-token",

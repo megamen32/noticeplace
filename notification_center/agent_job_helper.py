@@ -188,6 +188,9 @@ def _repair_first_message(profile: Mapping[str, str], event: Mapping[str, Any], 
     facts['consumer_id'] = sanitize_bounded_text(group.get('consumer_id') or fallback_consumer, 256)
     facts['problem_type'] = sanitize_bounded_text(group.get('problem_type') or canonical_problem_type({'signal_type': facts.get('signal_type')}), 128)
     facts['attempt_id'] = sanitize_bounded_text(event.get('attempt_id'), 128)
+    if 'source_check_continuation' in event:
+        facts['source_check_continuation'] = _source_check_continuation(
+            event['source_check_continuation'], str(incident.get('id') or ''))
     for key in ("evidence_refs", "trace_refs"):
         values = health.get(key) or incident.get(key) or event.get(key)
         facts[key] = [sanitize_bounded_text(value, 512) for value in values[:16]] if isinstance(values, list) else []
@@ -666,6 +669,7 @@ def _owner_blocked_receipt(error: HerderOwnerStateBlocked, event: Mapping[str, A
     return {
         "status": "source_blocked",
         "source": "agent-herder-owner-disarm",
+        "admission": "not_attempted",
         "reason": error.reason,
         "detail": error.detail,
         "human_held": True,
@@ -729,14 +733,43 @@ def _launch_receipt(result: Mapping[str, Any], profile: Mapping[str, str], opera
     }
 
 
+def _source_check_continuation(value: Any, incident_id: str) -> dict[str, Any]:
+    """Bound server-delivery authority; never read this marker from telemetry."""
+    if not isinstance(value, Mapping):
+        raise RuntimeError('invalid source-check continuation authority')
+    bounded: dict[str, Any] = {}
+    for field in ('incident_id', 'session_id', 'harness', 'attempt_id', 'request_id'):
+        item = value.get(field)
+        if (not isinstance(item, str) or not item.strip() or len(item) > 128
+                or any(character in item for character in '\r\n\0')):
+            raise RuntimeError('invalid source-check continuation authority')
+        bounded[field] = item
+    generation = value.get('generation')
+    if (bounded['incident_id'] != incident_id or isinstance(generation, bool)
+            or not isinstance(generation, int) or generation < 1):
+        raise RuntimeError('invalid source-check continuation binding')
+    bounded['generation'] = generation
+    refs = value.get('evidence_refs', [])
+    if not isinstance(refs, list):
+        raise RuntimeError('invalid source-check continuation evidence')
+    bounded['evidence_refs'] = [str(ref)[:512] for ref in refs[:16] if isinstance(ref, str) and ref.strip()]
+    return bounded
+
+
 def _operation_id(event: Mapping[str, Any], profile_id: str, plan_id: str = "") -> str:
-    """One stable operation identity per incident stage and plan.
+    """Keep initial IDs; one stable continuation per finished native attempt.
 
     Agent Herder keys the native session by this id, so an accepted or unknown
     launch is never started a second time by a retry here.
     """
     incident = event.get("incident") if isinstance(event.get("incident"), Mapping) else {}
     identity = f"{incident.get('id') or 'incident'}:{profile_id}:{plan_id or profile_id}"
+    if 'source_check_continuation' in event:
+        authority = _source_check_continuation(event['source_check_continuation'], str(incident.get('id') or ''))
+        # The finished native attempt is the durable authority. Poll nonces and
+        # generations rotate; they must never manufacture another operation.
+        identity += ':source-check:' + json.dumps([authority[field] for field in
+            ('incident_id', 'session_id', 'harness', 'attempt_id')], separators=(',', ':'))
     return hashlib.sha256(identity.encode()).hexdigest()[:32]
 
 

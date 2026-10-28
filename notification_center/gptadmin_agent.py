@@ -52,6 +52,13 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any], delivery_key: str 
     event: dict[str, Any] = {"schema": "notify.agent-job.v1", "job_id": job_id, "incident": bounded_incident}
     if delivery_key:
         event['attempt_id'] = 'np-attempt:' + hashlib.sha256((job_id + ':' + delivery_key).encode()).hexdigest()
+    target = payload.get('target')
+    if isinstance(target, Mapping) and 'source_check_continuation' in target:
+        if not delivery_key:
+            raise RuntimeError('source-check continuation requires its server delivery key')
+        from .agent_job_helper import _source_check_continuation
+        event['source_check_continuation'] = _source_check_continuation(
+            target['source_check_continuation'], str(incident.get('id') or ''))
     health_context = payload.get("health_context")
     if isinstance(health_context, dict):
         bounded_health: dict[str, Any] = {
@@ -350,9 +357,26 @@ class GptAdminAgentJobAdapter:
                     candidates.append(structured.get("result"))
         parsed_stdout: dict[str, Any] | None = None
 
+        def explicit_prelaunch_negative(candidate: Mapping[str, Any]) -> bool:
+            operation = candidate.get('operation_id')
+            return bool(
+                job.get('status') == 'completed'
+                and candidate.get('status') == 'source_blocked'
+                and candidate.get('source') == 'agent-herder-owner-disarm'
+                and candidate.get('reason') == 'herder_owner_state_unknown'
+                and candidate.get('admission') == 'not_attempted'
+                and isinstance(operation, str) and operation.strip() and len(operation) <= 128
+                and not any(character in operation for character in '\r\n\0')
+                and not candidate.get('session_id') and not candidate.get('sessionId')
+                and not candidate.get('created')
+                and candidate.get('outcome') not in ('accepted', 'admission_unknown', 'in_flight')
+                and candidate.get('delivery') not in ('accepted', 'unknown', 'admission_unknown')
+            )
+
         def looks_like_receipt(candidate: Mapping[str, Any]) -> bool:
             return bool(
-                str(candidate.get("session_id") or candidate.get("sessionId") or "")
+                explicit_prelaunch_negative(candidate)
+                or str(candidate.get("session_id") or candidate.get("sessionId") or "")
                 or (
                     str(candidate.get("plan_id") or "")
                     and str(candidate.get("observed_state") or candidate.get("verification_id") or "")
@@ -379,6 +403,17 @@ class GptAdminAgentJobAdapter:
                 break
         if parsed_stdout is None:
             return {}
+        if explicit_prelaunch_negative(parsed_stdout):
+            # This is helper-owned negative admission evidence, not an inference
+            # from an empty session field or a lost/ambiguous response.
+            return {
+                'status': 'source_blocked', 'source': 'agent-herder-owner-disarm',
+                'reason': 'herder_owner_state_unknown', 'admission': 'not_attempted',
+                'operation_id': parsed_stdout['operation_id'],
+                'incident_id': _safe_health_ref(parsed_stdout.get('incident_id'), 128),
+                'human_held': parsed_stdout.get('human_held') is True,
+                'retryable': False, 'non_retryable': True,
+            }
         evidence_refs = parsed_stdout.get("evidence_refs")
         bounded_evidence_refs = [_safe_health_ref(item, 128) for item in evidence_refs[:10]] if isinstance(evidence_refs, list) else []
         receipt = {
