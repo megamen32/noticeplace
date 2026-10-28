@@ -909,6 +909,73 @@ identity-байты owner не менялись; образ 88 не откаты
 - Backend `running`, рестартов 0, образ = пин `ff03c2b`; voice 88 `healthy` (`ed6c4c7`).
 - Старые bot-receipts сохранены историей и owner-call не доказывают.
 
+### 22.7 Checkpoint задержки первого звука в живом звонке (28.10, read-only трассировка завершённого call 5a833c9a)
+
+Звонок **не повторяется**; ниже — точные timestamps уже завершённого вызова (нога B
+`5a833c9a-562c-5c8f-87d2-aae52f6fe3ce`, turn 1, `created 2026-10-27T23:07:23.425461Z`):
+
+| момент (UTC) | событие | источник |
+| --- | --- | --- |
+| 23:07:23.383 | B распознал вопрос: `heard: Здравствуй. Как тебя зовут?` | лог 88 voice |
+| 23:07:23.444 | сервер принял ход: `voice_mode turn=1 mode=secretary` (61 мс после вопроса) | лог 88 voice |
+| 23:07:23.559 | OmniRoute получил `POST /v1/chat/completions \| exmanager-codex-gpt-6-luna \| 7 msgs \| 10 tools \| effort=low` (115 мс) | app.log OmniRoute |
+| 23:07:23.592–.594 | маршрут разрешён: `minimax/MiniMax-M3.1-Flash`, провайдер `minimax`, connection `a507dbb3` («MiniMax M3 token») | app.log OmniRoute |
+| 23:08:57.910 | upstream-запрос завершён: `succeeded (94320ms, 0 fallbacks)` | app.log OmniRoute |
+| 23:08:57.926 | **строка роутера: `duration=94327`, `ttft_ms=94295`, `added_wait_ms=null`, `tokens_in=3562`, `tokens_out=97`, `tokens_reasoning=0`, `status=200`** | storage.sqlite `call_logs` |
+| 23:08:57.980 | первый текстовый дельта дошёл до голоса: `first_text_ms=94536` | лог 88 voice |
+| 23:08:58.185 | синтез первой фразы: `first_text_to_tts_ms=4.5`, `first_tts_to_pcm_ms=224.7` | лог 88 voice |
+| 23:08:58.0 | ход завершён: `voice_turn turn=1 mode=secretary elapsed_ms=94614` | лог 88 voice |
+| +101.98–116.46 с | A услышала полезный ответ (в шкале A) | `recordings/a21e52ac…/timeline.md` |
+
+- **Участок:** 94.295 с TTFT из 94.327 с суммарных — целиком upstream/adapter (официальный API MiniMax,
+  connection «MiniMax M3 token»). Остальные участки: принятие хода 61 мс, ход до роутера 115 мс,
+  дельта→PCM 229 мс, доставка в сеть ~3.2 с. Скрытого thinking в отчётности нет (`tokens_reasoning=0`),
+  но это не доказывает его отсутствие.
+- **Короткий source-check (без генерации):** клиент шлёт `stream: true` (goai/openai chat); тело запроса
+  в OmniRoute уходит к провайдеру без изменений (решение по `stream` — по телу клиента,
+  `api/v1/chat/completions/route.ts`); relay пересылает каждый апстрим-чанк немедленно
+  (`relay/chat/completions/streamFinalizer.ts`: `pull → reader.read() → controller.enqueue`) ⇒
+  **внутренней буферизации в voice/adapter-контуре нет**.
+- **Вывод:** задержка внешняя (upstream first-token). Косметический фикс, сборка и смена модели/провайдера/
+  комбо/квот НЕ выполняются (рабочий маршрут и owner-avoid не трогаются). Следующий шаг — один
+  изолированный A→B замер на нынешнем установленном production-маршруте с честными числами.
+
+### 22.8 Замер на текущем production-маршруте (28.10): один новый A→B, одинаковые метрики, внешний блокер
+
+- **Изоляция:** комната `!vmxuOOunnmTUeuEdvi:chat.bezrabotnyi.com`, ровно два фикстурных бота; A
+  `account_ref matrix:ab023a689e926bf99d924e933ebd` (target B `@lhc_voice_tester_b_20261021`), B
+  `account_ref matrix:37698708b623db45e1bfe61f4d01`; личные Matrix/PSTN/SIM/GSM/SIP/fallback = 0; owner и
+  `@aiadmin` как QA-адресат не использовались; мок 18199 (`PHRASES=["Хорошо."]`) жил до терминала B.
+- **Вопрос (новый, нейтральный):** «Добрый день! Как тебя зовут?» — WAV 24000 Гц 2.05 с (native
+  `pcm.sample_rate`), оффлайн-ASR «Добрый день. Как тебя зовут?». Фикстура `fc61412` без изменений
+  (`attention_pcm=b''`, гейт микрофона, `speech_speed=1.0`), `CALLER_SCRIPT_WAVS` пусто, `CALLER_CLIENT_FORM=1`,
+  терпение 150 с.
+- **Квитанции:** intake `9b268023-a510-55b0-b35d-66d5ef03e804` (`sent`/`answered`); нога B
+  `00f7619e-d512-5dc9-a95d-f1ffa0219f56` — ledger `exmanager_voice_turns` turn 1 = **completed**, input
+  «Добрый день. Как тебя зовут?», reply «Добрый день! Меня зовут eXmanager, я ваш голосовой секретарь —
+  помогаю с делами, задачами и напоминаниями. Чем могу быть полезен?»; нога A
+  `23407810-9576-4964-90b0-fb807124f6f7` — `session ended`, `audio_socket_closed` (07:14:58.21Z); B —
+  `session ended` 07:12:47.206Z.
+- **Замер (тот же маршрут `exmanager-codex-gpt-6-luna` → `minimax/MiniMax-M3.1-Flash`, connection
+  `a507dbb3`, промпт 3562 токена, `added_wait_ms=null`):** B услышал вопрос 07:11:02.044Z; первый текст SDK
+  07:11:52.402Z (`first_text_ms=50289`); строка роутера: `duration=50085`, **`ttft_ms=49269`**,
+  `tokens_out=51`, `tokens_reasoning=0`, `status=200`; `utterance_end_to_pcm_ms=52611.1`,
+  `stt_ms=1378.3`, текст→PCM 210.7 мс; **A услышала полезный ответ на 57.37–64.39 с** своей шкалы
+  («Добрый день. Меня зовут Экс-менеджер. Я ваш голосовой секретарь. Помогаю с делами, задачами и
+  напоминаниями. Чем могу быть полезен?»), закрытие звонка B — 107.35–112.20 с.
+- **Сравнение одинаковых метрик с предыдущим вызовом (5a833c9a):** upstream TTFT 94 295 → **49 269 мс**;
+  суммарно upstream 94 327 → 50 085 мс; первый текст SDK 94 536 → 50 289 мс; до PCM 96 570,7 → 52 611,1 мс;
+  первый полезный звук у A 101,98 → **57,37 с**; конец ответа 116,46 → 64,39 с.
+- **Честная граница:** ориентир < 30 с **не достигнут** — 49–95 с лежат во внешней задержке
+  upstream first-token (официальный API MiniMax, та же connection, тот же промпт, без queue-wait); разброс
+  95 с → 50 с — вариативность провайдера, а не исправление в коде. Внутренних буферизаций не найдено
+  (§22.7), поэтому косметический фикс, сборка и смена модели/провайдера/комбо/квот НЕ выполнялись;
+  решение о маршруте остаётся за владельцем.
+- **Cleanup после обоих терминалов:** allowlist = только `@aiadmin:chat.bezrabotnyi.com` (контейнер
+  `9a133b4e0033 → 377c3334a2c9`, ревизия `ff03c2b`, образ `sha256:b7cb3d81…`, health OK); постоянная
+  identity-карта 88 (3 привязки), временная QA-привязка снята, QA `model_grants` = 0 (owner = 14); мок 18199
+  остановлен, harness-процессов нет, живых RTC-membership нет (2 истёкших события).
+
 ### 22.6 ПРИЁМКА ДОСТИГНУТА (28.10, изолированный client-form A→B): один вопрос → один полезный completed reply → услышан A
 
 - **Причина потери вопроса (установлена по коду, не по гипотезе):** A импортирует СТАРЫЙ host-engine
