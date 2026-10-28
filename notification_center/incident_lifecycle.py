@@ -356,6 +356,16 @@ def check(center, token, incident_id, key, body):
             shared = center._connection.execute('SELECT continuation_json FROM incident_group_completions WHERE id=?', (row['completion_id'],)).fetchone()
             if shared and shared['continuation_json']:
                 continuation = json.loads(shared['continuation_json'])
+        if state == 'degraded' and continuation and continuation.get('incident_id') != incident_id:
+            origin = center._connection.execute('SELECT state FROM incidents WHERE id=?', (continuation.get('incident_id'),)).fetchone()
+            ticket = center._connection.execute('SELECT status,attempt,claimed_at,result_json FROM deliveries WHERE id=?', (continuation.get('delivery_id'),)).fetchone()
+            # Resolution can cancel a queued ticket before its first claim. Only
+            # that durable proof permits a new target. Any dispatch/receipt or
+            # missing history remains fenced, including accepted/UNKNOWN work.
+            if (origin and origin['state'] == 'resolved' and ticket
+                    and ticket['status'] == 'cancelled' and ticket['attempt'] == 0
+                    and ticket['claimed_at'] is None and ticket['result_json'] is None):
+                continuation = None
         if state == 'degraded' and not continuation:
             continuation = {f:row[f] for f in ('session_id','harness','attempt_id','request_id','generation')}
             continuation['incident_id'] = incident_id

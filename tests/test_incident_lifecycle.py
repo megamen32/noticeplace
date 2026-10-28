@@ -149,6 +149,51 @@ class LifecycleTests(unittest.TestCase):
                 dict(attempt_id='shared-attempt', session_id='session', harness='codex', evidence_refs=['different']))
         self.assertIsNone(self.center.get_incident(latest)['lifecycle']['verification_due'])
 
+    def cancelled_shared_authority(self):
+        self.center.record_health_agent_session(self.inc, 'native:first', '', 'codex', 'session',
+            'https://agent.example.test', stage='health-diagnosis')
+        latest = self.shared_episode('latest')
+        self.center.record_work_finished('agent', latest, 'latest-finish',
+            dict(attempt_id='latest-delivery', session_id='session', harness='codex'))
+        due = {r['incident_id']:r for r in self.center.due_source_checks('source','test','probe')}
+        first = self.check(due[self.inc], 'degraded')
+        row = due[latest]
+        self.center.record_source_check('source', latest, 'latest-still-bad',
+            dict(request_id=row['request_id'], generation=row['generation'], observed_state='degraded', evidence_refs=['latest still bad']))
+        self.check(self.next_round(), 'healthy')
+        return latest, first
+
+    def check_latest_degraded(self, latest, key):
+        self.center._connection.execute('UPDATE incident_lifecycle SET verification_due=0 WHERE incident_id=?',(latest,))
+        self.center._connection.commit()
+        row = self.center.due_source_checks('source','test','probe')[0]
+        return self.center.record_source_check('source', latest, key,
+            dict(request_id=row['request_id'], generation=row['generation'], observed_state='degraded', evidence_refs=['fresh latest still bad']))
+
+    def test_never_dispatched_cancelled_group_ticket_reanchors_to_open_episode(self):
+        latest, first = self.cancelled_shared_authority()
+        old = self.center._connection.execute('SELECT * FROM deliveries WHERE id=?',(first['continuation_delivery_id'],)).fetchone()
+        self.assertEqual(('cancelled', 0, None), (old['status'], old['attempt'], old['claimed_at']))
+        result = self.check_latest_degraded(latest, 'reanchor')
+        self.assertNotEqual(first['continuation_delivery_id'], result['continuation_delivery_id'])
+        self.assertEqual(latest, result['continuation']['incident_id'])
+        self.assertEqual(result['continuation'], self.center.get_incident(latest)['lifecycle']['continuation'])
+        self.assertEqual(1, self.center._connection.execute("SELECT COUNT(*) FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis' AND status='queued'").fetchone()[0])
+        again = self.check_latest_degraded(latest, 'still-bad')
+        self.assertEqual(result['continuation_delivery_id'], again['continuation_delivery_id'])
+
+    def test_group_ticket_with_dispatch_or_unknown_history_is_never_replayed(self):
+        latest, first = self.cancelled_shared_authority()
+        for status, attempt, claimed, receipt in [('cancelled',1,None,None), ('cancelled',0,1,None), ('cancelled',0,None,'{"operation_id":"accepted"}'), ('sent',1,1,None), ('sending',1,1,None), ('uncertain',1,1,None), ('claimed',1,1,None), ('failed',1,1,None)]:
+            with self.subTest(status=status,attempt=attempt,claimed=claimed,receipt=receipt):
+                self.center._connection.execute('UPDATE deliveries SET status=?,attempt=?,claimed_at=?,result_json=? WHERE id=?',
+                    (status,attempt,claimed,receipt,first['continuation_delivery_id']))
+                self.center._connection.commit()
+                result = self.check_latest_degraded(latest, 'fenced:'+str((status,attempt,claimed,receipt)))
+                self.assertEqual(first['continuation_delivery_id'], result['continuation_delivery_id'])
+                self.assertNotIn('continuation', self.center.get_incident(latest)['lifecycle'])
+                self.assertEqual(1, self.center._connection.execute("SELECT COUNT(*) FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'").fetchone()[0])
+
     def check(self, request, state='healthy', token='source'):
         return self.center.record_source_check(token,self.inc,'check:'+request['request_id']+':'+state,dict(request_id=request['request_id'],generation=request['generation'],observed_state=state,evidence_refs=['probe']))
 
