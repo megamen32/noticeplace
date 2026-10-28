@@ -785,7 +785,7 @@ def _herder_loopback_profile() -> dict[str, str]:
     return {'url': url, 'cwd': os.path.normpath(cwd), 'harness': 'opencode'}
 
 
-def arm_session_autopilot(harness: str, session_id: str, cwd: str, runner: Any = urllib.request.urlopen, *, notice_incident: Mapping[str, str] | None = None) -> bool:
+def arm_session_autopilot(harness: str, session_id: str, cwd: str, runner: Any = urllib.request.urlopen, *, notice_incident: Mapping[str, str] | None = None, notice_attempt: Mapping[str, str] | None = None) -> bool:
     """Enable the durable Agent Herder autopilot switch for one session.
 
     Best-effort by contract: a failed arming never fails the health job that
@@ -808,6 +808,11 @@ def arm_session_autopilot(harness: str, session_id: str, cwd: str, runner: Any =
         if any(not value or len(value) > 128 or "\x00" in value for value in binding.values()):
             return False
         payload["noticeIncident"] = binding
+    if notice_attempt is not None:
+        attempt = {key: str(notice_attempt.get(key) or "").strip() for key in ("incidentId", "attemptId")}
+        if any(not value or len(value) > 128 or any(char in value for char in "\r\n\x00") for value in attempt.values()):
+            return False
+        payload["noticeAttempt"] = attempt
     body = json.dumps(payload, separators=(",", ":")).encode()
     request = urllib.request.Request(
         f"{base}/api/autopilot/sessions/{urllib.parse.quote(safe_harness)}/{urllib.parse.quote(safe_session)}",
@@ -1634,7 +1639,9 @@ def run_profile(
                 # autopilot binding remains intact. This job still records and
                 # observes the incoming incident independently below.
                 notice_incident=None if receipt.get("coalesced") else
-                {"incidentId": str(incident.get("id") or ""), "project": incident_project})
+                {"incidentId": str(incident.get("id") or ""), "project": incident_project},
+                notice_attempt={"incidentId": str(incident.get("id") or ""),
+                                "attemptId": str(event.get("attempt_id") or receipt["operation_id"])})
         except Exception:
             receipt["autopilot_armed"] = False
         if receipt["autopilot_armed"] is not True:

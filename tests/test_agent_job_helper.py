@@ -917,7 +917,7 @@ class HealthAutoselectAndAutopilotTests(unittest.TestCase):
             profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
                        "harness": "opencode", "name": "health", "cwd": directory,
                        "instruction": "repair", "mode": "queue", "model": agent_job_helper.HEALTH_LAUNCH_DEFAULT}
-            event = {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
+            event = {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis", "attempt_id": "attempt_incoming",
                      "incident": {"id": "inc_incoming", "project": "fleet-health"}}
             with mock.patch.object(agent_job_helper, "_launch_policy", return_value={}), \
                  mock.patch.object(agent_job_helper, "_selected_route_profile", side_effect=lambda profile, *_a, **_k: profile), \
@@ -931,8 +931,18 @@ class HealthAutoselectAndAutopilotTests(unittest.TestCase):
             self.assertTrue(result["coalesced"])
             self.assertTrue(result["autopilot_armed"])
             self.assertIsNone(arm.call_args.kwargs["notice_incident"])
+            self.assertEqual(arm.call_args.kwargs["notice_attempt"], {"incidentId": "inc_incoming", "attemptId": "attempt_incoming"})
             self.assertEqual(observe.call_args.args[1]["incident"]["id"], "inc_incoming")
             self.assertEqual(observe.call_args.args[2], "ses_original")
+
+    def test_arm_session_autopilot_carries_exact_current_attempt_without_replacing_first_binding(self) -> None:
+        runner = mock.Mock(side_effect=[_Response(owner_open_payload()), _Response({"sessionId": "ses-arm-1", "enabled": True})])
+        self.assertTrue(agent_job_helper.arm_session_autopilot(
+            "opencode", "ses-arm-1", "/cwd", runner,
+            notice_attempt={"incidentId": "inc_current", "attemptId": "delivery_current"}))
+        payload = json.loads(runner.call_args[0][0].data.decode())
+        self.assertNotIn("noticeIncident", payload)
+        self.assertEqual(payload["noticeAttempt"], {"incidentId": "inc_current", "attemptId": "delivery_current"})
 
     def test_arm_session_autopilot_rejects_unconfirmed_or_invalid_targets(self) -> None:
         runner = mock.Mock(return_value=_Response({"harness": "opencode", "sessionId": "ses-arm-1", "enabled": False}))
