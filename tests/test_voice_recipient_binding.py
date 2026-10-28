@@ -3,6 +3,7 @@ import base64
 import hashlib
 import hmac
 import json
+import io
 import time
 
 import pytest
@@ -113,3 +114,16 @@ def test_binding_does_not_follow_delivery_changes_or_foreign_binding_id(center):
     with pytest.raises(ValidationError):
         api.apply({'proof':proof(),'action':'ack','binding_id':binding['binding_id'],'utterance':'Получил уведомление'})
     assert center.get_incident(incident_id)['state'] == 'open'
+
+
+def test_http_recipient_proof_uses_its_own_auth_before_project_bearer(center):
+    from notification_center.http_api import build_handler
+    handler=object.__new__(build_handler(center,'health-token','mcp-token'))
+    handler.path='/v1/voice/recipient-context'
+    handler.headers={'Content-Length':'2'}
+    handler.rfile=io.BytesIO(b'{}')
+    replies=[]
+    handler._reply=lambda status,payload:replies.append((int(status),payload))
+    handler.do_POST()
+    assert replies[0][0]==400  # Proof is verified, rather than requiring a project bearer.
+    assert 'voice receipt' in replies[0][1]['error']

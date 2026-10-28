@@ -2840,13 +2840,13 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         return
                     self._mcp(response)
                     return
-                token = _bearer(self)
-                body = _json_body(self)
                 if self.path == '/v1/voice/recipient-context':
                     from .voice_recipient import VoiceRecipientContext
                     self._reply(HTTPStatus.OK, VoiceRecipientContext(
-                        center, os.environ.get('MATRIX_CALL_TOKEN', '')).apply(body))
+                        center, os.environ.get('MATRIX_CALL_TOKEN', '')).apply(_json_body(self)))
                     return
+                token = _bearer(self)
+                body = _json_body(self)
                 if self.path == "/v1/events":
                     key = self.headers.get("Idempotency-Key") or ""
                     if body.get("action") == "resolve":
