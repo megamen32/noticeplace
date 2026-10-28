@@ -1025,9 +1025,15 @@ OmniRoute, чтобы быстрее» — только для голосово�
   (3 привязки), временная QA-привязка снята, QA `model_grants` = 0 (owner = 14); мок 18199 остановлен, своих
   caller-процессов 0, живых RTC-membership нет; credential приложения актуальна (184), signing key и
   owner-привязки не тронуты.
-- **Scoped source publish:** `megamen32/exmanager`, ветка `codex/voice-direct-model-slot-20261028`, коммит
-  `30d46c9` (ровно 2 пути, +74/−12) ⇒ diff = только мой голосовой шов, чужой WIP ноль. Слияние в `main` —
-  решение Lead (`main` занят worktree'ом другой сессии, `origin/main` ушёл вперёд).
+- **Scoped source publish:** `megamen32/exmanager` **main**, коммит `20fc2ad` («Secretary voice: spoken turns use
+  their own model slot») — ровно 2 пути (`airlock-agent/voice_chat.go`, `airlock-agent/voice_model_slot_test.go`),
+  +74/−12, diff = только мой голосовой шов, чужой WIP ноль. Доставка сделана в существующий main-worktree
+  `/home/roomhacker/.codex/worktrees/e5fb/exmanager`: main fast-forward на `origin/main` (`412f8e8`, пересечение с
+  чужим WIP — 0 файлов ⇒ ff безопасен, 494 чужие записи сохранены), затем узкий check (`go build ./...` ok,
+  `go test -run TestVoiceTurnAsksTheVoiceModelSlot` ok, `go test -run TestVoice` ok) и push `main`
+  (`412f8e8..20fc2ad`). Родительский checkout `agents-projects/exmanager` остался на чужой ветке
+  `fix/20261024-airlock-app-readonly-board-client` — не checkout'нут и не staged. Промежуточная ветка и
+  worktree, созданные до указания Lead, удалены.
 
 ### 22.6 ПРИЁМКА ДОСТИГНУТА (28.10, изолированный client-form A→B): один вопрос → один полезный completed reply → услышан A
 

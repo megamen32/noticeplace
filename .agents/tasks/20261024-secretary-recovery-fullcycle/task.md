@@ -137,5 +137,6 @@ bridge, focused-тесты, main+push своих путей, публикаци�
 - **Cleanup owner-only:** allowlist = только `@aiadmin` (контейнер `84a195b3d746`), постоянная identity-карта
   88, QA-привязка снята, QA `model_grants` = 0, мок 18199 остановлен, своих caller-процессов 0, живых
   RTC-membership нет.
-- **Scoped source:** `megamen32/exmanager` ветка `codex/voice-direct-model-slot-20261028`, коммит `30d46c9`
-  (2 пути, +74/−12) ⇒ слияние в `main` — решение Lead.
+- **Scoped source:** `megamen32/exmanager` **main**, коммит `20fc2ad` (2 пути, +74/−12), push `main`
+  (`412f8e8..20fc2ad`) из существующего main-worktree `~/.codex/worktrees/e5fb/exmanager`; чужой WIP (494
+  записи) и чужая ветка родительского checkout не тронуты.
