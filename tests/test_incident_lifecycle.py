@@ -6,7 +6,7 @@ from notification_center.core import NotificationCenter, AuthorizationError, Val
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.tmp')
         self.addCleanup(self.tmp.cleanup)
         self.center = NotificationCenter(Path(self.tmp.name)/'state.db', {
             'source': {'project':'test','max_severity':'emergency','principal_id':'watchdog','verification_sources':['probe']},
@@ -292,3 +292,60 @@ class LifecycleTests(unittest.TestCase):
         self.center._tokens['grant-owner']=base
         self.center._tokens['grant-duplicate']=base
         self.assertNotIn('incident_role',self.center._token_scope(token))
+
+    def test_supplemental_consumer_grant_needs_no_project_legacy_token(self):
+        consumer=self.consumer('autotelegramviews')
+        grants=[dict(consumer_id=consumer['id'],project='autotelegramviews',incident_role='verifier',verification_owned_sources=True,verification_sources=[])]
+        reopened=NotificationCenter(Path(self.tmp.name)/'state.db',{'unrelated':dict(project='atv-views',max_severity='emergency'),'executor':dict(project='*',max_severity='emergency',incident_role='executor',principal_id='worker')},consumer_verifier_grants=grants)
+        self.addCleanup(reopened._connection.close)
+        token=consumer['intake_token']
+        scope=reopened._token_scope(token)
+        self.assertEqual('verifier',scope['incident_role'])
+        self.assertEqual('consumer:'+consumer['id'],scope['principal_id'])
+        self.assertEqual('autotelegramviews',scope['project'])
+        self.assertEqual('notice',scope['max_severity'])
+        event={**self.event,'project':'autotelegramviews','dedup_key':'supplemental','source_id':'atv:probe','correlation_id':'supplemental'}
+        incident=reopened.create_event(token,'supplemental-open',event)['incident_id']
+        self.assertEqual(scope['principal_id'],reopened._connection.execute('SELECT source_principal FROM incident_lifecycle WHERE incident_id=?',(incident,)).fetchone()[0])
+        finished=reopened.record_work_finished('executor',incident,'supplemental-finish',dict(attempt_id='one',session_id='consumer-session',harness='codex'))
+        self.assertEqual(1,len(reopened.due_source_checks(token,'autotelegramviews','atv:probe')))
+        reopened.record_source_check(token,incident,'supplemental-healthy',dict(request_id=finished['request_id'],generation=finished['generation'],observed_state='healthy',evidence_refs=['probe']))
+        self.assertEqual('resolved',reopened.get_incident(incident)['state'])
+        with self.assertRaises(AuthorizationError): reopened.create_event(token,'consumer-escalation',{**event,'severity':'important'})
+        reopened._connection.execute('UPDATE consumers SET token_hash=? WHERE id=?',('revoked',consumer['id']))
+        reopened._connection.commit()
+        with self.assertRaises(AuthorizationError): reopened._token_scope(token)
+
+    def test_supplemental_invalid_policy_fails_closed_before_opening_db(self):
+        from unittest.mock import patch
+        base=dict(consumer_id='consumer',project='test',incident_role='verifier')
+        for policy in ({}, [dict(base,principal_id='forged')], [dict(base,verification_owned_sources='true')], [dict(base,verification_sources='source')], [dict(base,consumer_id='')], [dict(base,incident_role=['verifier'])], [base]*1025):
+            with self.subTest(policy_type=type(policy).__name__),self.assertRaises(ValidationError):
+                NotificationCenter(Path(self.tmp.name)/'invalid.db',{},consumer_verifier_grants=policy)
+        with patch.dict('os.environ',{'NOTICEPLACE_CONSUMER_VERIFIER_GRANTS_JSON':'invalid-json'}),self.assertRaises(ValidationError):
+            NotificationCenter(Path(self.tmp.name)/'invalid.db',{})
+        self.assertFalse((Path(self.tmp.name)/'invalid.db').exists())
+
+    def test_supplemental_env_policy_and_combined_grants_are_unambiguous(self):
+        import json
+        from unittest.mock import patch
+        consumer=self.consumer()
+        base=dict(consumer_id=consumer['id'],project='test',incident_role='verifier',verification_owned_sources=True)
+        token=consumer['intake_token']
+        with patch.dict('os.environ',{'NOTICEPLACE_CONSUMER_VERIFIER_GRANTS_JSON':json.dumps([base])}):
+            reopened=NotificationCenter(Path(self.tmp.name)/'state.db',{})
+        self.addCleanup(reopened._connection.close)
+        self.assertEqual('verifier',reopened._token_scope(token)['incident_role'])
+        legacy=dict(project='test',incident_role='verifier',verification_consumer_ids=[consumer['id']],verification_owned_sources=True)
+        reopened._tokens['legacy']=legacy
+        self.assertNotIn('incident_role',reopened._token_scope(token))
+        for policy in ([dict(base,project='foreign')],[dict(base,incident_role='executor')],[dict(base,consumer_id='unregistered')],[base,base]):
+            other=NotificationCenter(Path(self.tmp.name)/'state.db',{},consumer_verifier_grants=policy)
+            self.addCleanup(other._connection.close)
+            self.assertNotIn('incident_role',other._token_scope(token))
+        # Event metadata cannot grant a consumer source authority.
+        ungranted=NotificationCenter(Path(self.tmp.name)/'state.db',{},consumer_verifier_grants=[])
+        self.addCleanup(ungranted._connection.close)
+        incident=ungranted.create_event(token,'body-role',{**self.event,'dedup_key':'body-role','incident_role':'verifier','verification_owned_sources':True,'principal_id':'forged'})['incident_id']
+        with self.assertRaises(AuthorizationError): ungranted.due_source_checks(token,'test','probe')
+        self.assertNotIn('incident_role',ungranted._token_scope(token))

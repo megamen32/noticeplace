@@ -89,8 +89,9 @@ class NotificationCenter:
     failure, while stable delivery keys prevent routine duplicate scheduling.
     """
 
-    def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]], default_quiet_hours: list[Mapping[str, Any]] | None = None, *, task_decision_verifier: Any | None = None) -> None:
+    def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]], default_quiet_hours: list[Mapping[str, Any]] | None = None, *, task_decision_verifier: Any | None = None, consumer_verifier_grants: list[Mapping[str, Any]] | None = None) -> None:
         """Open and initialize durable state; raises sqlite errors on storage failures."""
+        self._consumer_verifier_grants = self._load_consumer_verifier_grants(consumer_verifier_grants)
         if str(database_path).startswith("mesh:"):
             from .mesh_store import connect
             self._connection = connect(str(database_path))
@@ -506,6 +507,36 @@ class NotificationCenter:
                 (f"profile_{profile_key}", profile_key.title(), f"builtin:{profile_key}", f"builtin-{profile_key}", max_severity, now, now, quiet_hours, profile_key),
             )
 
+    @staticmethod
+    def _load_consumer_verifier_grants(value: list[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+        """Load bounded, non-secret server policy; never accept event claims."""
+        if value is None:
+            raw = os.environ.get('NOTICEPLACE_CONSUMER_VERIFIER_GRANTS_JSON', '[]')
+            if len(raw.encode('utf-8')) > 1048576:
+                raise ValidationError('consumer verifier grants exceed policy size limit')
+            try:
+                value = json.loads(raw)
+            except (ValueError, TypeError):
+                raise ValidationError('consumer verifier grants must be a JSON list') from None
+        if not isinstance(value, list) or len(value) > 1024:
+            raise ValidationError('consumer verifier grants must be a bounded list')
+        allowed = {'consumer_id', 'project', 'incident_role', 'verification_owned_sources', 'verification_sources'}
+        result = []
+        def bounded(item):
+            return isinstance(item, str) and bool(item.strip()) and len(item) <= 128 and not any(ord(c) < 32 or ord(c) == 127 for c in item)
+        for grant in value:
+            if (not isinstance(grant, Mapping) or set(grant) - allowed
+                    or not bounded(grant.get('consumer_id')) or not bounded(grant.get('project'))
+                    or grant.get('incident_role') not in ('verifier', 'executor')):
+                raise ValidationError('invalid consumer verifier grant identity or role')
+            if 'verification_owned_sources' in grant and not isinstance(grant['verification_owned_sources'], bool):
+                raise ValidationError('consumer owned-source permission must be boolean')
+            sources = grant.get('verification_sources', [])
+            if not isinstance(sources, list) or len(sources) > 1024 or not all(bounded(item) for item in sources):
+                raise ValidationError('consumer verification sources must be a bounded string list')
+            result.append({**grant, 'verification_sources': list(sources)})
+        return result
+
     def _token_scope(self, token: str) -> Mapping[str, Any]:
         """Resolve one token's stored scope without a project comparison."""
         scope = self._tokens.get(token)
@@ -525,6 +556,9 @@ class NotificationCenter:
                       and grant.get('project') == row['project']
                       and isinstance(grant.get('verification_consumer_ids'), (list, tuple))
                       and row['id'] in grant['verification_consumer_ids']]
+            grants.extend(grant for grant in self._consumer_verifier_grants
+                          if grant['incident_role'] == 'verifier'
+                          and grant['project'] == row['project'] and grant['consumer_id'] == row['id'])
             if len(grants) == 1:
                 grant = grants[0]
                 scope.update(incident_role='verifier', principal_id='consumer:' + str(row['id']))
