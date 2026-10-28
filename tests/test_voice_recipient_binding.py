@@ -127,3 +127,43 @@ def test_http_recipient_proof_uses_its_own_auth_before_project_bearer(center):
     handler.do_POST()
     assert replies[0][0]==400  # Proof is verified, rather than requiring a project bearer.
     assert 'voice receipt' in replies[0][1]['error']
+
+
+def test_published_sender_freezes_real_policy_and_receipt_for_normal_resolver(center):
+    from notification_center.http_api import MatrixMessageSender, DeliveryWorker
+    from notification_center.voice_recipient import VoiceRecipientContext
+    consumer=center.create_consumer(project='test',name='ordinary explicit recipient',policy=[{
+        'id':'message','platform':'matrix','action':'message',
+        'target':{'target':'@recipient:test','account_ref':'matrix:assistant',
+                  'room_id':'!notice:test','conversation_id':'conv'},
+        'retry_interval_seconds':30,'max_repeats':2}])
+    event=center.create_event(consumer['intake_token'],'real-sender-contract',{
+        'schema':'notify.event.v1','project':'test','recipient':'me','kind':'incident',
+        'severity':'notice','title':'Exact notice','body':'Body','dedup_key':'real-sender',
+        'correlation_id':'real-sender'})
+    class Response:
+        status=200
+        def __init__(self,value):self.value=value
+        def __enter__(self):return self
+        def __exit__(self,*_):pass
+        def read(self,*_):return json.dumps({'result':{'structuredContent':self.value}}).encode()
+    operations=[]
+    def runner(request,timeout):
+        params=json.loads(request.data)['params'];operations.append(params['name'])
+        if params['name']=='userio.messages.prepare':
+            assert params['arguments']['account_ref']=='matrix:assistant'
+            assert params['arguments']['conversation_id']=='conv'
+            return Response({'ok':True,'draft_id':'draft','conversation_id':'conv',
+                             'body':params['arguments']['text']})
+        return Response({'ok':True,'delivery_confirmed':True,'receipt':'matrix:$provider-event'})
+    sender=MatrixMessageSender('','',userio_url='http://userio/mcp',
+                               userio_token='scoped-existing-account-token',runner=runner)
+    assert DeliveryWorker(center,object(),message_adapters={'matrix.message':sender}).run_once()==1
+    row=center._connection.execute("SELECT * FROM deliveries WHERE status='sent' AND incident_id=?",(event['incident_id'],)).fetchone()
+    assert json.loads(row['target_json'])['target']=='@recipient:test'
+    assert json.loads(row['result_json'])['event_id']=='$provider-event'
+    assert json.loads(row['result_json'])['account_ref']=='matrix:assistant'
+    assert json.loads(row['result_json'])['room_id']=='!notice:test'
+    binding=VoiceRecipientContext(center,KEY).apply({'proof':proof(),'action':'resolve'})
+    assert binding['delivery_id']==row['id'] and binding['incident']['id']==event['incident_id']
+    assert operations==['userio.messages.prepare','userio.messages.send']
