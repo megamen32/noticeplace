@@ -299,7 +299,8 @@ class NotificationCenter:
                     native_harness TEXT,
                     native_session_id TEXT,
                     native_cwd TEXT,
-                    kind TEXT NOT NULL DEFAULT 'user'
+                    kind TEXT NOT NULL DEFAULT 'user',
+                    task_decision_ref TEXT
                 );
                 CREATE TABLE IF NOT EXISTS matrix_reply_receipts (
                     reply_event_id TEXT PRIMARY KEY,
@@ -352,6 +353,7 @@ class NotificationCenter:
             completion_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(human_request_completions)")}
             for column, definition in (
                 ("task_context_json", "TEXT"),
+                ("task_decision_ref", "TEXT"),
                 ("task_input_sha256", "TEXT"),
                 ("task_notification_state", "TEXT NOT NULL DEFAULT 'not_applicable'"),
                 ("task_notified_at", "REAL"),
@@ -381,8 +383,16 @@ class NotificationCenter:
                 "CREATE INDEX IF NOT EXISTS human_requests_task_due ON human_requests(task_deadline_at) "
                 "WHERE task_context_json IS NOT NULL AND state='pending'"
             )
+            self._connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS human_requests_task_decision_ref "
+                "ON human_requests(task_decision_ref) WHERE task_decision_ref IS NOT NULL"
+            )
             for column, definition in (("card_state", "TEXT NOT NULL DEFAULT 'pending'"),
-                                       ("card_next_attempt_at", "REAL NOT NULL DEFAULT 0")):
+                                       ("card_next_attempt_at", "REAL NOT NULL DEFAULT 0"),
+                                       ("registry_request_id", "TEXT"),
+                                       ("herder_idempotency_key", "TEXT"),
+                                       ("herder_receipt", "TEXT"),
+                                       ("herder_input_id", "TEXT")):
                 if column not in completion_columns:
                     self._connection.execute(f"ALTER TABLE human_request_completions ADD COLUMN {column} {definition}")
             if "telegram_chat_id" not in human_request_columns:
@@ -779,6 +789,13 @@ class NotificationCenter:
             result["task_decision"] = {
                 "task_ref": context.get("task_ref"), "purpose": context.get("purpose"),
                 "version": context.get("version"),
+                "reference": {
+                    "request_id": context.get("task_decision_ref") or result.get("task_decision_ref"),
+                    "request_hash": result.pop("task_input_sha256", None),
+                    "purpose": context.get("purpose"),
+                    "version": context.get("version"),
+                },
+                "continuation": context.get("continuation"),
                 "notification_state": result.pop("task_notification_state", "queued"),
                 "notified_at": result.pop("task_notified_at", None),
                 "deadline_at": result.pop("task_deadline_at", None),
@@ -801,11 +818,11 @@ class NotificationCenter:
                 "resumed_at": result.pop("task_resumed_at", None),
                 "late_instructions": json.loads(result.pop("task_late_instructions_json", "[]") or "[]"),
             }
-            result.pop("task_input_sha256", None)
+            result.pop("task_decision_ref", None)
         else:
             for name in ("task_input_sha256", "task_notification_state", "task_notified_at", "task_deadline_at",
                          "task_decision_source", "task_decision_value", "task_decision_actor", "task_decided_at",
-                         "task_decision_evidence_json", "task_control_state", "task_control_kind", "task_control_id",
+                         "task_decision_evidence_json", "task_decision_ref", "task_control_state", "task_control_kind", "task_control_id",
                          "task_control_epoch", "task_control_requested_at", "task_control_ack_ref",
                          "task_control_lease_until",
                          "task_control_ack_epoch", "task_control_ack_at", "task_control_effects_json",
@@ -819,7 +836,10 @@ class NotificationCenter:
 
     def _human_request_row(self, token: str, request_id: str) -> sqlite3.Row:
         """Load and authorize one human request; raises ValidationError when absent."""
-        row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+        row = self._connection.execute(
+            "SELECT * FROM human_requests WHERE request_id=? OR task_decision_ref=? LIMIT 1",
+            (request_id, request_id),
+        ).fetchone()
         if row is None:
             if token not in self._tokens:
                 raise AuthorizationError("invalid bearer token")
@@ -858,6 +878,20 @@ class NotificationCenter:
     def create_task_decision_request(self, token: str, mandate: Mapping[str, Any]) -> dict[str, Any]:
         """Create through the private verified task-decision adapter seam."""
         return self.task_decisions.create_request(token, mandate)
+
+    def get_task_decision_request(self, token: str, task_decision_ref: str) -> dict[str, Any]:
+        """Resolve the public task reference to its one canonical human request row."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM human_requests WHERE task_decision_ref=? OR request_id=? LIMIT 1",
+                (str(task_decision_ref), str(task_decision_ref)),
+            ).fetchone()
+            if row is None or not row["task_context_json"]:
+                if token not in self._tokens:
+                    raise AuthorizationError("invalid bearer token")
+                raise ValidationError("task decision not found")
+            self._scope(token, str(row["project"]))
+            return self._human_request_result(self._expire_human_request(row))
 
     def create_human_request(
         self, token: str, request: Mapping[str, Any], *,
@@ -935,6 +969,9 @@ class NotificationCenter:
             or kind != "user" or not _task_input_sha256 or len(_task_input_sha256) != 64
         ):
             raise ValidationError("task decisions require an unbound, non-expiring question and verified source")
+        task_decision_ref = str((_task_context or {}).get("task_decision_ref") or "").strip()
+        if _task_context is not None and not re.fullmatch(r"td-[0-9a-f]{40}", task_decision_ref):
+            raise ValidationError("task decision requires its stable Board reference")
         if incident_id is None and native['session_id'] and kind == 'user':
             with self._lock:
                 existing_binding = self._connection.execute('SELECT incident_id FROM human_requests WHERE request_id=?', (request_id,)).fetchone()
@@ -977,6 +1014,8 @@ class NotificationCenter:
                 and (row["kind"] if "kind" in row.keys() else "user") == kind
                 and (row["task_context_json"] if "task_context_json" in row.keys() else None)
                     == (json.dumps(_task_context, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if _task_context is not None else None)
+                and (row["task_decision_ref"] if "task_decision_ref" in row.keys() else None)
+                    == (task_decision_ref or None)
                 and (row["task_input_sha256"] if "task_input_sha256" in row.keys() else None) == _task_input_sha256
             )
 
@@ -993,11 +1032,12 @@ class NotificationCenter:
                 return result
             try:
                 self._connection.execute(
-                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at, incident_id, native_harness, native_session_id, native_cwd, kind, task_context_json, task_input_sha256, task_notification_state)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO human_requests(request_id, project, recipient, mode, message, original_text, choices_json, allowed_actors_json, state, created_at, expires_at, incident_id, native_harness, native_session_id, native_cwd, kind, task_context_json, task_decision_ref, task_input_sha256, task_notification_state)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (request_id, project, recipient, mode, message, original_text, json.dumps(choices, ensure_ascii=False), json.dumps(actors, ensure_ascii=False), now, expires, incident_id, native["harness"] or None, native["session_id"] or None, native["cwd"] or None, kind,
                      json.dumps(_task_context, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if _task_context is not None else None,
-                     _task_input_sha256, "queued" if _task_context is not None else "not_applicable"),
+                     task_decision_ref or None, _task_input_sha256,
+                     "queued" if _task_context is not None else "not_applicable"),
                 )
             except sqlite3.IntegrityError as error:
                 existing = self._connection.execute(
@@ -1008,7 +1048,7 @@ class NotificationCenter:
                 result = self._human_request_result(self._expire_human_request(existing))
                 result["idempotent"] = True
                 return result
-            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id=?", (request_id,)).fetchone()
             result = self._human_request_result(self._expire_human_request(row))
             result["idempotent"] = False
             return result
@@ -1022,21 +1062,24 @@ class NotificationCenter:
         """
         with self._lock:
             request = self.human_request_producer_view(self._human_request_result(self._human_request_row(token, request_id)))
-            completion = self.human_request_completion(request_id)
+            canonical_request_id = str(request["request_id"])
+            completion = self.human_request_completion(canonical_request_id)
         value = request.get("response_value")
         kind = str(request.get("kind") or "user")
+        task_decision = request.get("task_decision") if isinstance(request.get("task_decision"), Mapping) else {}
+        task_target = task_decision.get("continuation") if isinstance(task_decision.get("continuation"), Mapping) else {}
         receipt = {
             "schema": "ask_human.result.v1",
-            "request_id": str(request["request_id"]),
+            "request_id": canonical_request_id,
             "state": str(request["state"]),
             "kind": kind,
             "result_ref": (completion.get("result_ref") or request.get("response_result_ref")
                            or request.get("result_ref") or self._selection_result_ref(
                                str(request["request_id"]), value, str(request.get("response_actor") or ""))),
             "native": {
-                "harness": str(request.get("native_harness") or ""),
-                "session_id": str(request.get("native_session_id") or ""),
-                "cwd": str(request.get("native_cwd") or ""),
+                "harness": str(request.get("native_harness") or task_target.get("harness") or ""),
+                "session_id": str(request.get("native_session_id") or task_target.get("session_id") or ""),
+                "cwd": str(request.get("native_cwd") or task_target.get("cwd") or ""),
             },
         }
         if kind == "secret":
@@ -1044,6 +1087,34 @@ class NotificationCenter:
             receipt["answer_withheld"] = "secret requests return only an opaque reference"
         else:
             receipt["answer"] = value
+        if task_decision:
+            completion_state = str(completion.get("state") or "not_attempted")
+            has_herder_receipt = bool(
+                completion.get("registry_request_id") and completion.get("herder_idempotency_key")
+                and completion.get("herder_receipt") and completion.get("herder_input_id")
+            )
+            if completion.get("registry_request_id"):
+                continuation_state = "accepted" if completion_state == "sent" and has_herder_receipt else (
+                    "queued" if completion_state in {"pending", "retryable"} else
+                    "unknown" if completion_state in {"sending", "sent", "unknown"} else completion_state
+                )
+            else:
+                continuation_state = completion_state
+            continuation = {
+                "state": continuation_state,
+                "status": continuation_state,
+                "request_id": completion.get("registry_request_id"),
+                "result_ref": receipt["result_ref"],
+                "idempotency_key": completion.get("herder_idempotency_key"),
+                "receipt": completion.get("herder_receipt"),
+                "input_id": completion.get("herder_input_id"),
+                "target": {
+                    key: task_target.get(key)
+                    for key in ("harness", "session_id", "cwd", "input_id", "job_id")
+                    if task_target.get(key) is not None
+                },
+            }
+            receipt["continuation"] = continuation
         return receipt
 
     @staticmethod
@@ -1078,7 +1149,7 @@ class NotificationCenter:
     def confirm_human_request_progress_card(self, request_id: str) -> dict[str, Any]:
         """Record the in-process adapter's successful original-card edit receipt."""
         with self._lock, self._connection:
-            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id=?", (request_id,)).fetchone()
             if row is None or row["state"] != "resolved" or row["response_value"] != "deep_analysis":
                 raise ValidationError("progress receipt requires a selected deep_analysis request")
             if not row["telegram_chat_id"] or not row["telegram_message_id"]:
@@ -1191,6 +1262,7 @@ class NotificationCenter:
             raise ValidationError("valid notification receipt timestamp is required")
         with self._lock, self._connection:
             row = self._expire_human_request(self._human_request_row(token, request_id))
+            request_id = str(row["request_id"])
             if observed_at is not None and not row["task_context_json"]:
                 raise ValidationError("receipt timestamp is only valid for task decisions")
             existing_chat_id = str(row["telegram_chat_id"] or "")
@@ -1295,7 +1367,9 @@ class NotificationCenter:
             return self._human_request_result(current)
 
     def _resolve_human_request_row(self, row: sqlite3.Row, actor: str, value: str, *,
-                                   extra_allowed_actors: Collection[str] | None = None) -> dict[str, Any]:
+                                   extra_allowed_actors: Collection[str] | None = None,
+                                   verified_task_actor: bool = False,
+                                   task_decision_evidence: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Resolve an already selected row; caller owns the lock and transport trust."""
         if row["kind"] != "user":
             raise ValidationError("secret requests require AskSecret/SSS, not an ordinary answer")
@@ -1303,7 +1377,8 @@ class NotificationCenter:
         actors = json.loads(str(row["allowed_actors_json"]))
         if actor not in actors and actor not in verified:
             raise ValidationError("human response actor is not allowed")
-        if row["task_context_json"] and not self.task_decisions.actor_allowed_now(str(row["request_id"]), actor):
+        if (row["task_context_json"] and not verified_task_actor
+                and not self.task_decisions.actor_allowed_now(str(row["request_id"]), actor)):
             raise AuthorizationError("current task actor policy does not allow this decision")
         if row["state"] == "resolved":
             if row["response_actor"] == actor and row["response_value"] == value:
@@ -1320,8 +1395,11 @@ class NotificationCenter:
         if row["task_context_json"]:
             if row["task_notification_state"] != "sent" or not self.task_decisions.control_gate_open(row):
                 raise ValidationError("task continuation is not available before receipt and control reconciliation")
-            evidence = json.dumps({"source": "human", "actor": actor,
-                                   "answer_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest()},
+            evidence_body = dict(task_decision_evidence or {
+                "source": "human", "actor": actor,
+                "answer_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+            })
+            evidence = json.dumps(evidence_body,
                                   sort_keys=True, separators=(",", ":"))
             update = self._connection.execute(
                 "UPDATE human_requests SET state='resolved', response_value=?, response_actor=?, resolved_at=?, "
@@ -1353,6 +1431,96 @@ class NotificationCenter:
         result = self._human_request_result(current)
         self._enqueue_human_completion(result)
         return result
+
+    def resolve_task_decision_from_board(
+        self, token: str, task_decision_ref: str, proposal_ref: str,
+    ) -> dict[str, Any]:
+        """Win one canonical answer from an authenticated, current Board CAS proposal."""
+        reference = str(task_decision_ref or "").strip()
+        proposal = str(proposal_ref or "").strip()
+        if not re.fullmatch(r"td-[0-9a-f]{40}", reference) or not proposal or len(proposal) > 128:
+            raise IdempotencyConflict("task decision answer reference is invalid")
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT * FROM human_requests WHERE task_decision_ref=? AND task_context_json IS NOT NULL",
+                (reference,),
+            ).fetchone()
+            if row is None:
+                if token not in self._tokens:
+                    raise AuthorizationError("invalid bearer token")
+                raise ValidationError("task decision not found")
+            self._scope(token, str(row["project"]))
+            row = self._expire_human_request(row)
+            canonical_request_id = str(row["request_id"])
+            context = json.loads(str(row["task_context_json"]))
+            if not isinstance(context, Mapping) or context.get("task_decision_ref") != reference:
+                raise AuthorizationError("task decision binding is not current")
+            evidence_before = json.loads(str(row["task_decision_evidence_json"] or "null") or "null")
+            if row["state"] == "resolved" and isinstance(evidence_before, Mapping):
+                if evidence_before.get("proposal_ref") != proposal:
+                    raise IdempotencyConflict("task decision already has a different winning answer")
+                return {
+                    **self._human_request_result(row),
+                    "task_decision_ref": reference,
+                    "canonical_request_id": canonical_request_id,
+                    "answer_status": "duplicate",
+                    "answer_accepted": False,
+                    "completion": self.human_request_completion(canonical_request_id),
+                }
+            if row["state"] != "pending" or row["task_decision_source"] is not None:
+                raise IdempotencyConflict("task decision is no longer pending")
+            if row["task_notification_state"] != "sent":
+                raise ValidationError("task question has no confirmed Notice delivery receipt")
+            if not self.task_decisions.control_gate_open(row):
+                raise ValidationError("task answer is fenced by the current stop or hold")
+            verified = self.task_decisions.verify_board_answer(context, reference, proposal)
+            if not isinstance(verified, Mapping):
+                raise IdempotencyConflict("current Board answer proposal is stale or conflicts with the canonical question")
+            if verified.get("human_request_id") != canonical_request_id:
+                raise IdempotencyConflict("Board answer belongs to another human request")
+            actor = str(verified["actor"])
+            value = str(verified["value"])
+            if value in {"stop", "hold"}:
+                control = self.task_decisions.request_control(
+                    canonical_request_id, actor, value, "authenticated current Board answer",
+                    verified_task_actor=True,
+                )
+                return {
+                    **control,
+                    "task_decision_ref": reference,
+                    "canonical_request_id": canonical_request_id,
+                    "answer_status": "control_requested",
+                    "answer_accepted": False,
+                    "control_requested": True,
+                }
+            evidence = {
+                "source": "exmanager_board",
+                "actor": actor,
+                "answer_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+                "proposal_ref": proposal,
+                "task_decision_ref": reference,
+                "board_version": int(verified["card_version"]),
+                "stop_epoch": str(verified["stop_epoch"]),
+                "source_message_id": str(verified["source_message_id"]),
+                "source_job_id": str(verified["source_job_id"]),
+                "question_hash": str(verified["question_hash"]),
+            }
+            result = self._resolve_human_request_row(
+                row, actor, value, extra_allowed_actors=[actor], verified_task_actor=True,
+                task_decision_evidence=evidence,
+            )
+            completion = self.human_request_completion(canonical_request_id)
+            if not completion:
+                raise RuntimeError("task answer committed without its durable continuation receipt")
+            return {
+                **result,
+                "task_decision_ref": reference,
+                "canonical_request_id": canonical_request_id,
+                "proposal_ref": proposal,
+                "answer_status": "accepted",
+                "answer_accepted": True,
+                "completion": completion,
+            }
 
     def update_human_request_progress(self, token: str, request_id: str, update: Mapping[str, Any]) -> dict[str, Any]:
         """Persist monotonic analysis progress for the original project/card only."""
@@ -1430,8 +1598,14 @@ class NotificationCenter:
         with self._lock, self._connection:
             # Take the shared SQLite writer fence before reading incident state;
             # another center cannot resolve it between that read and admission.
-            self._connection.execute('UPDATE human_requests SET request_id=request_id WHERE request_id=?', (request_id,))
-            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            self._connection.execute(
+                "UPDATE human_requests SET request_id=request_id WHERE request_id=? OR task_decision_ref=?",
+                (request_id, request_id),
+            )
+            row = self._connection.execute(
+                "SELECT * FROM human_requests WHERE request_id=? OR task_decision_ref=? LIMIT 1",
+                (request_id, request_id),
+            ).fetchone()
             if row is None:
                 raise ValidationError("human request not found")
             if row["task_context_json"]:
@@ -1476,8 +1650,14 @@ class NotificationCenter:
             raise ValidationError("human response actor and value are required")
         verified = {str(item).strip() for item in (extra_allowed_actors or []) if str(item).strip()}
         with self._lock, self._connection:
-            self._connection.execute('UPDATE human_requests SET request_id=request_id WHERE request_id=?', (request_id,))
-            row = self._connection.execute("SELECT * FROM human_requests WHERE request_id = ?", (request_id,)).fetchone()
+            self._connection.execute(
+                "UPDATE human_requests SET request_id=request_id WHERE request_id=? OR task_decision_ref=?",
+                (request_id, request_id),
+            )
+            row = self._connection.execute(
+                "SELECT * FROM human_requests WHERE request_id=? OR task_decision_ref=? LIMIT 1",
+                (request_id, request_id),
+            ).fetchone()
             if row is None:
                 raise ValidationError("human request not found")
             if row["kind"] != "user":
@@ -1528,6 +1708,26 @@ class NotificationCenter:
         harness = str(request.get("native_harness") or "")
         session_id = str(request.get("native_session_id") or "")
         cwd = str(request.get("native_cwd") or "")
+        registry_request_id = ""
+        task_row = self._connection.execute(
+            "SELECT task_context_json FROM human_requests WHERE request_id=?", (request_id,)
+        ).fetchone()
+        task_context_raw = task_row["task_context_json"] if task_row is not None else None
+        if task_context_raw and not (harness and session_id and cwd):
+            try:
+                task_context = json.loads(str(task_context_raw))
+            except (TypeError, ValueError):
+                task_context = {}
+            target = task_context.get("continuation") if isinstance(task_context, Mapping) else None
+            if isinstance(target, Mapping) and target.get("harness") == "opencode":
+                registry_request_id = str(target.get("human_request_id") or "").strip()
+                session_id = str(target.get("session_id") or "").strip()
+                cwd = os.path.normpath(str(target.get("cwd") or "").strip())
+                harness = "opencode"
+                if (not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", registry_request_id)
+                        or not session_id or len(session_id) > 512 or not cwd or not os.path.isabs(cwd)
+                        or not target.get("project_id") or not target.get("input_id") or not target.get("job_id")):
+                    return {}
         if not (request_id and harness and session_id and cwd):
             return {}
         actor = str(request.get("response_actor") or "")
@@ -1542,9 +1742,10 @@ class NotificationCenter:
                 return {**dict(existing), "replayed": True}
             self._connection.execute(
                 "INSERT INTO human_request_completions(request_id, result_ref, harness, session_id, cwd, actor,"
-                " state, attempts, reason, next_attempt_at, card_next_attempt_at, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, ?, ?)",
-                (request_id, result_ref, harness, session_id, cwd, actor[:128], now, now, now, now),
+                " state, attempts, reason, next_attempt_at, card_next_attempt_at, created_at, updated_at, registry_request_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, ?, ?, ?)",
+                (request_id, result_ref, harness, session_id, cwd, actor[:128], now, now, now, now,
+                 registry_request_id or None),
             )
             row = self._connection.execute(
                 "SELECT * FROM human_request_completions WHERE request_id = ?", (request_id,)
@@ -1556,6 +1757,37 @@ class NotificationCenter:
             row = self._connection.execute(
                 "SELECT * FROM human_request_completions WHERE request_id = ?", (request_id,)).fetchone()
             return dict(row) if row is not None else {}
+
+    def record_herder_completion_receipt(
+        self, request_id: str, registry_request_id: str, idempotency_key: str,
+        receipt: str, input_id: str,
+    ) -> dict[str, Any]:
+        """Attach a read-back Herder transport receipt to the existing outbox row."""
+        values = tuple(str(value or "").strip() for value in
+                       (registry_request_id, idempotency_key, receipt, input_id))
+        if any(not value for value in values):
+            raise ValidationError("Herder completion receipt is incomplete")
+        now = time.time()
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE request_id=?", (str(request_id),)
+            ).fetchone()
+            if row is None or str(row["registry_request_id"] or "") != values[0]:
+                raise ValidationError("Herder completion receipt request does not match the outbox")
+            for column, value in (("herder_idempotency_key", values[1]),
+                                  ("herder_receipt", values[2]), ("herder_input_id", values[3])):
+                prior = str(row[column] or "")
+                if prior and prior != value:
+                    raise IdempotencyConflict("Herder completion receipt conflicts with the existing receipt")
+            self._connection.execute(
+                "UPDATE human_request_completions SET herder_idempotency_key=?, herder_receipt=?,"
+                " herder_input_id=?, updated_at=? WHERE request_id=?",
+                (values[1], values[2], values[3], now, str(request_id)),
+            )
+            current = self._connection.execute(
+                "SELECT * FROM human_request_completions WHERE request_id=?", (str(request_id),)
+            ).fetchone()
+            return dict(current) if current is not None else {}
 
     def claim_human_completion(self, request_id: str) -> bool:
         """Fence concurrent HTTP/worker attempts before crossing the network.

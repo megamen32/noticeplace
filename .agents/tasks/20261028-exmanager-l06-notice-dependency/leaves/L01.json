@@ -1,0 +1,84 @@
+{
+  "id": "L01",
+  "label": "Связать Board CAS с одним Notice continuation",
+  "status": "running",
+  "description": "В существующем task-decision verifier/CAS/completion join принять только проверенный source-bound Board answer, сохранить актуальные stop/hold и UNKNOWN no-replay fences, связать с одним typed OpenCode continuation.",
+  "acceptance": "Фокусные тесты показывают отказ для forged actor/stale CAS/STOP, одну durable continuation при duplicate-safe answer и query-first при UNKNOWN; согласованный ExCode request/receipt проходит изолированную QA без production доставки.",
+  "affected_files": [
+    "notification_center/task_decision_service.py",
+    "notification_center/task_decisions.py",
+    "tests/test_task_decisions.py",
+    "tests/test_task_decision_service.py"
+  ],
+  "owner": "Codex L (Notice dependency)",
+  "session": "01a17e2e-6dce-7870-b08c-89c092087fb5",
+  "harness": "codex",
+  "model": "gpt-6-luna",
+  "model_class": "frontier",
+  "tier": "frontier",
+  "complexity": "M",
+  "token_estimate": 18000,
+  "cost_usd": 0.0032,
+  "cost_source": "provisional",
+  "depends_on": [],
+  "estimate_minutes": {
+    "minimum": 15,
+    "maximum": 15
+  },
+  "estimate": "Проверить существующий контракт, реализовать узкий CAS join и доказать focused/isolated acceptance.",
+  "note": "Параллельные владельцы ExCode и root; чужой http_api.py и production runtime не менять.",
+  "created_at": "2026-10-28T20:39:43+03:00",
+  "updated_at": "2026-10-28T20:41:00+03:00",
+  "progress_events": [
+    {
+      "at": "2026-10-28T20:39:43+03:00",
+      "note": "",
+      "changes": {
+        "id": "L01",
+        "label": "Связать Board CAS с одним Notice continuation",
+        "status": "running",
+        "description": "В существующем task-decision verifier/CAS/completion join принять только проверенный source-bound Board answer, сохранить актуальные stop/hold и UNKNOWN no-replay fences, связать с одним typed OpenCode continuation.",
+        "acceptance": "Фокусные тесты показывают отказ для forged actor/stale CAS/STOP, одну durable continuation при duplicate-safe answer и query-first при UNKNOWN; согласованный ExCode request/receipt проходит изолированную QA без production доставки.",
+        "affected_files": [
+          "notification_center/task_decision_service.py",
+          "notification_center/task_decisions.py",
+          "tests/test_task_decisions.py",
+          "tests/test_task_decision_service.py"
+        ],
+        "owner": "Codex L (Notice dependency)",
+        "session": "01a17e2e-6dce-7870-b08c-89c092087fb5",
+        "harness": "codex",
+        "model": "gpt-6-luna",
+        "model_class": "frontier",
+        "tier": "frontier",
+        "complexity": "M",
+        "token_estimate": 40000,
+        "cost_usd": 0.0072,
+        "cost_source": "provisional",
+        "depends_on": [],
+        "estimate_minutes": {
+          "minimum": 15,
+          "maximum": 20
+        },
+        "estimate": "Проверить существующий контракт, реализовать узкий CAS join и доказать focused/isolated acceptance.",
+        "note": "Параллельные владельцы ExCode и root; чужой http_api.py и production runtime не менять."
+      },
+      "session": "01a17e2e-6dce-7870-b08c-89c092087fb5",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-10-28T20:41:00+03:00",
+      "note": "Оценка пересчитана по каталогу gpt-6-luna: 15 минут, 18k planned tokens, provisional USD 0.0032; без превышения лимита leaf.",
+      "changes": {
+        "estimate_minutes": {
+          "minimum": 15,
+          "maximum": 15
+        },
+        "token_estimate": 18000,
+        "cost_usd": 0.0032
+      },
+      "session": "01a17e2e-6dce-7870-b08c-89c092087fb5",
+      "harness": "codex"
+    }
+  ]
+}

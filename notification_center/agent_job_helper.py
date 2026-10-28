@@ -818,6 +818,70 @@ def _herder_loopback_profile() -> dict[str, str]:
     return {'url': url, 'cwd': os.path.normpath(cwd), 'harness': 'opencode'}
 
 
+def read_herder_human_request(request_id: str, runner: Any = urllib.request.urlopen) -> dict[str, Any]:
+    """Read one durable Herder Human Request through its existing owner-loopback MCP.
+
+    This is deliberately a query only. It never calls ``human_request_resolve``
+    or any session delivery tool, and it rejects non-loopback targets before
+    opening a connection.
+    """
+    safe_request_id = str(request_id or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", safe_request_id):
+        raise ValueError("Herder human request read requires a UUID")
+    profile = _herder_loopback_profile()
+    parsed = urllib.parse.urlsplit(profile["url"])
+    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "human_request_get", "arguments": {"requestId": safe_request_id}},
+    }
+    request = urllib.request.Request(
+        f"{base}/mcp",
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": "2025-03-26",
+        },
+        method="POST",
+    )
+    with runner(request, timeout=5) as response:
+        raw = response.read(_RESPONSE_LIMIT + 1)
+    if len(raw) > _RESPONSE_LIMIT:
+        raise RuntimeError("Herder human request readback exceeds the limit")
+    text = raw.decode("utf-8")
+    data_lines = [line[6:] for line in text.splitlines() if line.startswith("data: ")]
+    if not data_lines:
+        raise RuntimeError("Herder human request readback has no MCP result")
+    try:
+        message = json.loads(data_lines[-1])
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Herder human request readback is invalid") from error
+    if message.get("id") != 1 or "error" in message:
+        raise RuntimeError("Herder human request readback was rejected")
+    result = message.get("result")
+    if not isinstance(result, Mapping) or result.get("isError") is True:
+        raise RuntimeError("Herder human request readback failed")
+    structured = result.get("structuredContent")
+    record = structured.get("request") if isinstance(structured, Mapping) else None
+    if record is None:
+        for item in result.get("content", []) if isinstance(result.get("content"), list) else []:
+            if not isinstance(item, Mapping) or item.get("type") != "text":
+                continue
+            try:
+                decoded = json.loads(str(item.get("text") or ""))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, Mapping):
+                record = decoded.get("request")
+                break
+    if not isinstance(record, Mapping) or str(record.get("requestId") or "") != safe_request_id:
+        raise RuntimeError("Herder human request readback does not match the request")
+    return dict(record)
+
+
 def arm_session_autopilot(harness: str, session_id: str, cwd: str, runner: Any = urllib.request.urlopen, *, notice_incident: Mapping[str, str] | None = None, notice_attempt: Mapping[str, str] | None = None) -> bool:
     """Enable the durable Agent Herder autopilot switch for one session.
 

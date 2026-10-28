@@ -35,6 +35,8 @@ class _BoardResponse:
 
 
 class _Authority:
+    board_answer = None
+
     def __call__(self, mandate):
         return mandate
 
@@ -43,6 +45,12 @@ class _Authority:
 
     def timeout_allowed_now(self, _context):
         return True
+
+    def verify_board_answer(self, _context, request_ref, proposal_ref):
+        proof = type(self).board_answer
+        if not isinstance(proof, dict) or proof.get("request_id") != request_ref or proof.get("proposal_ref") != proposal_ref:
+            return None
+        return proof
 
 
 class _FakeExManagerTransport:
@@ -94,6 +102,23 @@ def _mandate(version: str = "v3") -> dict[str, object]:
     }
 
 
+def _opencode_mandate(human_request_id: str) -> dict[str, object]:
+    mandate = _mandate()
+    mandate.update({
+        "message": "Which output format should I use?",
+        "choices": [{"label": "CSV", "value": "csv"}, {"label": "Markdown", "value": "markdown"}],
+        "timeout_value": "csv",
+        "continuation": {
+            "task_ref": "board/task-17", "operation_id": "grant:task-17:v3", "board_version": 23,
+            "started_by": "testlogin", "host_id": "qa-board", "harness": "opencode",
+            "session_id": "opencode-session-17", "project_id": "qa-project-1",
+            "cwd": "/srv/qa/project", "input_id": "input-message-18", "job_id": "dispatch-job-19",
+            "human_request_id": human_request_id,
+        },
+    })
+    return mandate
+
+
 class TaskDecisionApiTests(unittest.TestCase):
     def setUp(self) -> None:
         _FakeExManagerTransport.instances.clear()
@@ -117,19 +142,90 @@ class TaskDecisionApiTests(unittest.TestCase):
         self.center._connection.close()
         self.tempdir.cleanup()
 
-    def request(self, method: str, path: str, token: str, body: dict[str, object] | None = None):
+    def request(self, method: str, path: str, token: str, body: dict[str, object] | None = None,
+                extra_headers: dict[str, str] | None = None):
         data = json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+        headers.update(extra_headers or {})
         request = urllib.request.Request(
             self.base_url + path,
             data=data,
             method=method,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=2) as response:
                 return response.status, json.loads(response.read())
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
+
+    def test_board_answer_cas_uses_only_proposal_ref_and_herder_reads_same_row(self) -> None:
+        herder_request_id = "d920a01e-a5f3-4dce-a640-b65b8e312433"
+        _Authority.board_answer = None
+        with mock.patch.dict(os.environ, {"EXMANAGER_NOTICE_QUESTION_BASE_URL": "https://notify.bezrabotnyi.com/_exmanager"}), \
+             mock.patch("notification_center.http_api.ExManagerNoticeTransport", _FakeExManagerTransport):
+            create_status, created = self.request(
+                "POST", "/v1/task-decisions", "airlock-token", {"mandate": _opencode_mandate(herder_request_id)}
+            )
+        self.assertEqual(201, create_status)
+        task_ref = str(created["request_id"])
+        request_hash = str(created["question"]["reference"]["request_hash"])
+        self.assertEqual(herder_request_id, created["canonical_request_id"])
+
+        _Authority.board_answer = {
+            "request_id": task_ref, "proposal_ref": "proposal-1", "actor": "testlogin", "value": "csv",
+            "card_version": 24, "stop_epoch": "input-message-18", "source_message_id": "assistant-message-20",
+            "source_job_id": "dispatch-job-19", "human_request_id": herder_request_id, "question_hash": "b" * 64,
+        }
+        attempts = []
+        def unknown_dispatch(center, request, _actor, _runner=None):
+            prior = center.human_request_completion(str(request["request_id"]))
+            if prior.get("state") != "unknown":
+                attempts.append(str(request["request_id"]))
+                center.mark_human_completion(str(request["request_id"]), "unknown", "test outcome unknown")
+            return {"status": "unknown"}
+
+        with mock.patch("notification_center.http_api.deliver_human_completion", side_effect=unknown_dispatch) as deliver:
+            answer_status, answer = self.request(
+                "POST", f"/v1/task-decisions/{task_ref}/resolve", "airlock-token",
+                {"proposal_ref": "proposal-1"}, {"Idempotency-Key": "proposal-1"},
+            )
+            duplicate_status, duplicate = self.request(
+                "POST", f"/v1/task-decisions/{task_ref}/resolve", "airlock-token",
+                {"proposal_ref": "proposal-1"}, {"Idempotency-Key": "proposal-1"},
+            )
+        self.assertEqual((200, "accepted", "unknown"), (answer_status, answer["answer_status"], answer["dispatch_status"]))
+        self.assertEqual((200, "duplicate"), (duplicate_status, duplicate["answer_status"]))
+        self.assertEqual(2, deliver.call_count)  # accepted dispatch, then UNKNOWN-only readback
+        self.assertEqual([herder_request_id], attempts)
+        self.assertEqual("unknown", duplicate["continuation"]["status"])
+        self.assertIsNone(duplicate["continuation"]["receipt"])
+
+        conflict_status, conflict = self.request(
+            "POST", f"/v1/task-decisions/{task_ref}/resolve", "airlock-token",
+            {"proposal_ref": "different-proposal"}, {"Idempotency-Key": "different-proposal"},
+        )
+        self.assertEqual((409, "conflict"), (conflict_status, conflict["answer_status"]))
+
+        with mock.patch("notification_center.agent_job_helper.read_herder_human_request",
+                        side_effect=RuntimeError("fixture has no Herder completion yet")):
+            result_status, herder_result = self.request(
+                "GET", f"/v1/human-requests/{herder_request_id}/result", "airlock-token",
+            )
+        self.assertEqual(200, result_status)
+        self.assertEqual((herder_request_id, "resolved", "csv"),
+                         (herder_result["request_id"], herder_result["state"], herder_result["answer"]))
+        self.assertEqual(herder_result["result_ref"], answer["continuation"]["result_ref"])
+        self.assertIsNone(answer["continuation"]["receipt"])
+        self.assertEqual({"harness": "opencode", "session_id": "opencode-session-17", "cwd": "/srv/qa/project"},
+                         herder_result["native"])
+
+        denied_status, _ = self.request(
+            "POST", f"/v1/task-decisions/{task_ref}/resolve", "airlock-token",
+            {"proposal_ref": "proposal-1", "actor": "testlogin", "value": "csv"},
+            {"Idempotency-Key": "proposal-1"},
+        )
+        self.assertEqual(400, denied_status)
 
     def test_create_read_answer_and_retry_reuse_one_receipt_started_deadline(self) -> None:
         with mock.patch.dict(os.environ, {"EXMANAGER_NOTICE_QUESTION_BASE_URL": "https://notify.bezrabotnyi.com/_exmanager"}), \

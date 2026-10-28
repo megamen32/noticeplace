@@ -25,7 +25,11 @@ def _mandate():
         "mandate_ref": "grant:task-17:v3", "project": "airlock", "recipient": "operator",
         "message": "Choose the permitted next step.", "allowed_actors": ["telegram:42"],
         "choices": [{"label": "Continue", "value": "continue"}, {"label": "Stop", "value": "stop"}],
-        "timeout_value": "continue", "continuation": {"kind": "bounded-follow-up", "limit": 1},
+        "timeout_value": "continue", "continuation": {
+            "task_ref": "board/task-17", "operation_id": "grant:task-17:v3", "board_version": 23,
+            "started_by": "test-owner", "host_id": "qa-board", "harness": "codex",
+            "session_id": "codex-session-17", "turn_id": "codex-turn-18",
+        },
     }
 
 
@@ -86,6 +90,30 @@ class TaskDecisionViewTests(unittest.TestCase):
             self.assertEqual(1800.0, after["deadline_at"] - after["receipt"]["confirmed_at"])
         finally:
             reopened._connection.close()
+
+    def test_task_continuation_separates_answer_reference_from_herder_transport_receipt(self):
+        request_id = str(self.request["canonical_request_id"])
+        result_ref = "6944969d-ac29-5003-fba0-a545f0c2891c"
+        registry_request_id = "d920a01e-a5f3-4dce-a640-b65b8e312433"
+        idem = "human-request:d920a01e-a5f3-4dce-a640-b65b8e312433:attempt-1"
+        receipt = f"agent-herder://opencode/opencode-session-17/{idem}"
+        with self.center._lock, self.center._connection:
+            self.center._connection.execute(
+                "INSERT INTO human_request_completions(request_id,result_ref,harness,session_id,cwd,actor,state,"
+                "attempts,reason,next_attempt_at,card_next_attempt_at,created_at,updated_at,registry_request_id,"
+                "herder_idempotency_key,herder_receipt,herder_input_id) "
+                "VALUES (?,?,?,?,?,?,'sent',1,'',0,0,0,0,?,?,?,?)",
+                (request_id, result_ref, "opencode", "opencode-session-17", "/srv/qa/project", "testlogin",
+                 registry_request_id, idem, receipt, "herder-resume-" + "a" * 32),
+            )
+
+        continuation = self.view.read("current-admin", request_id)["continuation"]
+        self.assertEqual(
+            {"state": "accepted", "status": "accepted", "request_id": registry_request_id, "result_ref": result_ref,
+             "idempotency_key": idem, "receipt": receipt, "input_id": "herder-resume-" + "a" * 32},
+            {key: continuation[key] for key in
+             ("state", "status", "request_id", "result_ref", "idempotency_key", "receipt", "input_id")},
+        )
 
     def test_projection_uses_persisted_first_receipt_winner_and_matching_control_ack(self):
         self.center.task_decisions.reserve_notification(self.request_id)

@@ -12,7 +12,7 @@ from typing import Any
 from unittest import mock
 
 from notification_center.core import AuthorizationError, NotificationCenter, ValidationError
-from notification_center.http_api import DeliveryWorker, send_human_request_telegram
+from notification_center.http_api import DeliveryWorker, deliver_human_completion, send_human_request_telegram
 
 
 class _TrustedTestAuthority:
@@ -21,6 +21,7 @@ class _TrustedTestAuthority:
     def __init__(self) -> None:
         self.actors = {"telegram:42"}
         self.timeout_enabled = True
+        self.board_answer = None
 
     def __call__(self, mandate: dict[str, object]) -> dict[str, object]:
         return mandate
@@ -30,6 +31,12 @@ class _TrustedTestAuthority:
 
     def timeout_allowed_now(self, _context: dict[str, object]) -> bool:
         return self.timeout_enabled
+
+    def verify_board_answer(self, _context, request_ref, proposal_ref):
+        proof = self.board_answer
+        if not isinstance(proof, dict) or proof.get("request_id") != request_ref or proof.get("proposal_ref") != proposal_ref:
+            return None
+        return proof
 
 
 def _race_task_answer_or_timeout(database: str, role: str, gate: Any, output: Any) -> None:
@@ -154,6 +161,101 @@ class TaskDecisionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "not allowed"):
             self.center.resolve_human_request("token", str(request["request_id"]), "telegram:7", "continue")
         denied._connection.close()
+
+    def test_opencode_task_decision_alias_reuses_the_herder_uuid_notice_row(self):
+        continuation = {
+            "task_ref": "board/task-17",
+            "operation_id": "grant:task-17:v3",
+            "board_version": 23,
+            "started_by": "nikita",
+            "host_id": "qa-board",
+            "harness": "opencode",
+            "session_id": "opencode-session-17",
+            "project_id": "qa-project-1",
+            "cwd": "/srv/qa/project",
+            "input_id": "input-message-18",
+            "job_id": "dispatch-job-19",
+            "human_request_id": "d920a01e-a5f3-4dce-a640-b65b8e312433",
+        }
+
+        request = self.create(continuation=continuation)
+
+        rows = self.center._connection.execute("SELECT request_id,task_decision_ref,task_context_json FROM human_requests").fetchall()
+        self.assertEqual(1, len(rows))
+        self.assertEqual("d920a01e-a5f3-4dce-a640-b65b8e312433", rows[0]["request_id"])
+        self.assertEqual(_request_id(), rows[0]["task_decision_ref"])
+        self.assertEqual(_request_id(), request["request_id"])
+        self.assertEqual("d920a01e-a5f3-4dce-a640-b65b8e312433", request["canonical_request_id"])
+
+    def test_board_answer_and_herder_uuid_result_share_one_cas_row_and_outbox(self):
+        herder_request_id = "d920a01e-a5f3-4dce-a640-b65b8e312433"
+        continuation = {
+            "task_ref": "board/task-17", "operation_id": "grant:task-17:v3", "board_version": 23,
+            "started_by": "nikita", "host_id": "qa-board", "harness": "opencode",
+            "session_id": "opencode-session-17", "project_id": "qa-project-1",
+            "cwd": "/srv/qa/project", "input_id": "input-message-18", "job_id": "dispatch-job-19",
+            "human_request_id": herder_request_id,
+        }
+        request = self.create(
+            continuation=continuation,
+            choices=[{"label": "CSV", "value": "csv"}, {"label": "Markdown", "value": "markdown"}],
+            timeout_value="csv",
+        )
+        task_decision_ref = str(request["request_id"])
+        self.sent(request, at=100.0)
+        self.center._task_decision_verifier.board_answer = {
+            "request_id": task_decision_ref,
+            "proposal_ref": "board-proposal-1",
+            "actor": "testlogin",
+            "value": "csv",
+            "card_version": 24,
+            "stop_epoch": "initial-input-hash",
+            "source_message_id": "assistant-message-20",
+            "source_job_id": "dispatch-job-19",
+            "human_request_id": herder_request_id,
+            "question_hash": "a" * 64,
+        }
+
+        accepted = self.center.resolve_task_decision_from_board("token", task_decision_ref, "board-proposal-1")
+        current_request = self.center.get_human_request("token", herder_request_id)
+        completion = accepted["completion"]
+        idem = f"human-request:{herder_request_id}:attempt-1"
+        herder_record = {
+            "requestId": herder_request_id, "status": "resumed", "resultRef": completion["result_ref"],
+            "target": {"agent": "opencode", "sessionId": "opencode-session-17", "cwd": "/srv/qa/project"},
+            "idempotencyKey": idem,
+            "receipt": f"agent-herder://opencode/opencode-session-17/{idem}",
+        }
+        with mock.patch("notification_center.http_api._human_completion_runner", return_value=object()), \
+             mock.patch("notification_center.agent_job_helper.resume_bound_native_session", return_value={
+                 "request_id": herder_request_id, "status": "resumed",
+             }) as resume, \
+             mock.patch("notification_center.agent_job_helper.read_herder_human_request", return_value=herder_record):
+            dispatch = deliver_human_completion(self.center, current_request, "exmanager-board", runner=object())
+        duplicate = self.center.resolve_task_decision_from_board("token", task_decision_ref, "board-proposal-1")
+        herder_result = self.center.human_request_result_receipt("token", herder_request_id)
+
+        self.assertEqual("accepted", accepted["answer_status"])
+        self.assertEqual("duplicate", duplicate["answer_status"])
+        self.assertEqual(herder_request_id, accepted["canonical_request_id"])
+        self.assertEqual(("resumed", "accepted", herder_request_id, completion["result_ref"], idem,
+                          herder_record["receipt"]),
+                         (dispatch["status"], dispatch["state"], dispatch["request_id"],
+                          dispatch["result_ref"], dispatch["idempotency_key"], dispatch["receipt"]))
+        self.assertEqual((herder_request_id, "opencode", "opencode-session-17", "/srv/qa/project"),
+                         resume.call_args.args[:4])
+        self.assertEqual(herder_request_id, herder_result["request_id"])
+        self.assertEqual(("resolved", "csv"), (herder_result["state"], herder_result["answer"]))
+        self.assertEqual(("accepted", herder_request_id, completion["result_ref"], idem, herder_record["receipt"]),
+                         (herder_result["continuation"]["state"], herder_result["continuation"]["request_id"],
+                          herder_result["continuation"]["result_ref"], herder_result["continuation"]["idempotency_key"],
+                          herder_result["continuation"]["receipt"]))
+        self.assertEqual(dispatch["input_id"], herder_result["continuation"]["input_id"])
+        self.assertEqual({"harness": "opencode", "session_id": "opencode-session-17", "cwd": "/srv/qa/project"},
+                         herder_result["native"])
+        self.assertEqual(herder_request_id, accepted["completion"]["registry_request_id"])
+        self.assertEqual(1, self.center._connection.execute("SELECT COUNT(*) FROM human_requests").fetchone()[0])
+        self.assertEqual(1, self.center._connection.execute("SELECT COUNT(*) FROM human_request_completions").fetchone()[0])
 
     def test_revoked_current_actor_policy_blocks_answer_and_timeout(self) -> None:
         request = self.create()

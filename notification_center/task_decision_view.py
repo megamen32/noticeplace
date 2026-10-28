@@ -44,8 +44,9 @@ class TaskDecisionView:
 
         with self._center._lock:
             row = self._center._connection.execute(
-                "SELECT * FROM human_requests WHERE request_id=? AND task_context_json IS NOT NULL",
-                (str(request_id),),
+                "SELECT * FROM human_requests WHERE (request_id=? OR task_decision_ref=?) "
+                "AND task_context_json IS NOT NULL LIMIT 1",
+                (str(request_id), str(request_id)),
             ).fetchone()
         if row is None:
             raise ValidationError("task decision not found")
@@ -107,9 +108,40 @@ class TaskDecisionView:
         if not isinstance(late, list):
             late = []
 
+        continuation_binding = context.get("continuation") if isinstance(context.get("continuation"), Mapping) else {}
+        completion = self._center.human_request_completion(str(row["request_id"]))
+        completion_state = str(completion.get("state") or "not_attempted")
+        has_herder_receipt = bool(
+            completion.get("registry_request_id") and completion.get("herder_idempotency_key")
+            and completion.get("herder_receipt") and completion.get("herder_input_id")
+        )
+        if completion.get("registry_request_id"):
+            continuation_state = "accepted" if completion_state == "sent" and has_herder_receipt else (
+                "queued" if completion_state in {"pending", "retryable"} else
+                "unknown" if completion_state in {"sending", "sent", "unknown"} else completion_state
+            )
+        else:
+            continuation_state = completion_state
+        continuation = {
+            "state": continuation_state,
+            "status": continuation_state,
+            "request_id": completion.get("registry_request_id"),
+            "result_ref": completion.get("result_ref"),
+            "idempotency_key": completion.get("herder_idempotency_key"),
+            "receipt": completion.get("herder_receipt"),
+            "input_id": completion.get("herder_input_id"),
+            "target": {
+                key: continuation_binding.get(key)
+                for key in ("harness", "host_id", "session_id", "project_id", "cwd", "input_id", "job_id")
+                if continuation_binding.get(key) is not None
+            },
+        }
+
         return {
             "schema": "noticeplace.task_decision_view.v1",
-            "request_id": str(row["request_id"]),
+            "request_id": str(request_id),
+            "canonical_request_id": str(row["request_id"]),
+            "task_decision_ref": str(context.get("task_decision_ref") or row["task_decision_ref"] or request_id),
             "project": str(row["project"]),
             "recipient": str(row["recipient"]),
             "status": str(row["state"]),
@@ -120,6 +152,8 @@ class TaskDecisionView:
                 "choices": choices,
                 "expires_at": float(row["expires_at"]) if row["expires_at"] is not None else None,
                 "reference": {
+                    "request_id": str(context.get("task_decision_ref") or row["task_decision_ref"] or request_id),
+                    "request_hash": str(row["task_input_sha256"] or ""),
                     "task_ref": context.get("task_ref"),
                     "purpose": context.get("purpose"),
                     "version": context.get("version"),
@@ -134,5 +168,7 @@ class TaskDecisionView:
             },
             "winner": winner,
             "control": control,
+            "answer_status": "accepted" if source == "human" else ("timeout" if source == "timeout" else "pending"),
+            "continuation": continuation,
             "late_instructions": late,
         }

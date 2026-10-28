@@ -1961,7 +1961,77 @@ def deliver_human_completion(
     pending = center.human_request_completion(request_id)
     if not pending:
         return {"status": "not_bound"}
+    registry_request_id = str(pending.get("registry_request_id") or "").strip()
+
+    def read_task_receipt() -> dict[str, Any] | None:
+        if not registry_request_id:
+            return None
+        from .agent_job_helper import read_herder_human_request
+
+        try:
+            record = read_herder_human_request(registry_request_id, runner)
+            target = record.get("target") if isinstance(record.get("target"), Mapping) else {}
+            harness = str(pending.get("harness") or "")
+            session_id = str(pending.get("session_id") or "")
+            cwd = os.path.normpath(str(pending.get("cwd") or ""))
+            idempotency_key = str(record.get("idempotencyKey") or "").strip()
+            receipt = str(record.get("receipt") or "").strip()
+            if (
+                record.get("status") != "resumed"
+                or str(record.get("resultRef") or "") != str(pending.get("result_ref") or "")
+                or str(target.get("agent") or target.get("harness") or "") != harness
+                or str(target.get("sessionId") or "") != session_id
+                or os.path.normpath(str(target.get("cwd") or "")) != cwd
+                or not idempotency_key
+                or receipt != f"agent-herder://{harness}/{session_id}/{idempotency_key}"
+            ):
+                return None
+            input_id = "herder-resume-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:32]
+            stored = center.record_herder_completion_receipt(
+                request_id, registry_request_id, idempotency_key, receipt, input_id,
+            )
+            return {
+                "state": "accepted" if str(stored.get("state") or "") == "sent" else "unknown",
+                "request_id": registry_request_id,
+                "result_ref": str(pending.get("result_ref") or ""),
+                "idempotency_key": idempotency_key,
+                "receipt": receipt,
+                "input_id": input_id,
+            }
+        except Exception:  # noqa: BLE001 - query failures never authorize replay
+            return None
+
+    def sent_result(status: str) -> dict[str, Any]:
+        result = {"status": "accepted" if registry_request_id else status,
+                  "state": "accepted" if registry_request_id else status,
+                  "result_ref": str(pending.get("result_ref") or "")}
+        if registry_request_id:
+            for field in ("request_id", "herder_idempotency_key", "herder_receipt", "herder_input_id"):
+                value = pending.get(field)
+                if value:
+                    result[{
+                        "request_id": "request_id",
+                        "herder_idempotency_key": "idempotency_key",
+                        "herder_receipt": "receipt",
+                        "herder_input_id": "input_id",
+                    }[field]] = str(value)
+            if not result.get("receipt"):
+                readback = read_task_receipt()
+                if readback is None:
+                    return {"status": "unknown", "result_ref": str(pending.get("result_ref") or "")}
+                result.update(readback)
+        return result
+
     if str(pending.get("state")) in {"sent", "unknown", "sending", 'cancelled'}:
+        if registry_request_id and str(pending.get("state")) in {"sent", "unknown"}:
+            readback = read_task_receipt()
+            if readback is not None:
+                if str(pending.get("state")) != "sent":
+                    pending = center.mark_human_completion(request_id, "sent", "")
+                    readback["state"] = "accepted" if str(pending.get("state") or "") == "sent" else "unknown"
+                return {"status": readback["state"], **readback}
+        if str(pending.get("state")) == "sent":
+            return sent_result("sent")
         return {"status": str(pending["state"]), "result_ref": str(pending.get("result_ref") or "")}
     try:
         completion_runner = _human_completion_runner(runner)
@@ -1974,7 +2044,8 @@ def deliver_human_completion(
 
     try:
         outcome = resume_bound_native_session(
-            request_id, str(pending["harness"]), str(pending["session_id"]), str(pending["cwd"]),
+            str(pending.get("registry_request_id") or request_id),
+            str(pending["harness"]), str(pending["session_id"]), str(pending["cwd"]),
             str(pending["result_ref"]), completion_runner,
         )
     except NativeCompletionUnavailable as error:
@@ -1988,6 +2059,18 @@ def deliver_human_completion(
         center.mark_human_completion(request_id, "unknown", "native admission is unknown")
         return {"status": "unknown"}
     if status in {"resuming", "resumed"}:
+        if registry_request_id:
+            readback = read_task_receipt()
+            if readback is None:
+                center.mark_human_completion(request_id, "unknown", "Herder resume receipt readback is unavailable")
+                return {"status": "unknown", "result_ref": str(pending.get("result_ref") or "")}
+            stored = center.mark_human_completion(request_id, "sent", "")
+            result = {
+                "status": status,
+                **readback,
+                "state": "accepted" if str(stored.get("state") or "") == "sent" else "unknown",
+            }
+            return result
         center.mark_human_completion(request_id, "sent", "")
         return {"status": status, "result_ref": str(pending.get("result_ref") or "")}
     reason = str(outcome.get("reason") or "")
@@ -1999,6 +2082,32 @@ def deliver_human_completion(
         return {"status": "retryable", "result_ref": str(pending["result_ref"])}
     center.mark_human_completion(request_id, "unknown", status)
     return {"status": "unknown", "reason": status}
+
+
+def refresh_task_completion_readback(
+    center: NotificationCenter,
+    token: str,
+    request_id: str,
+    runner: Any = urllib.request.urlopen,
+) -> dict[str, Any]:
+    """Query Herder's registry for an existing task continuation without resuming it."""
+    completion = center.human_request_completion(str(request_id))
+    if not completion or not completion.get("registry_request_id"):
+        return {"status": str(completion.get("state") or "not_bound")}
+    state = str(completion.get("state") or "unknown")
+    if state not in {"sent", "unknown"}:
+        return {"status": state}
+    if state == "sent" and completion.get("herder_receipt"):
+        return {
+            "status": state,
+            "request_id": str(completion.get("registry_request_id") or ""),
+            "result_ref": str(completion.get("result_ref") or ""),
+            "idempotency_key": str(completion.get("herder_idempotency_key") or ""),
+            "receipt": str(completion.get("herder_receipt") or ""),
+            "input_id": str(completion.get("herder_input_id") or ""),
+        }
+    request = center.get_human_request(token, str(request_id))
+    return deliver_human_completion(center, request, "exmanager-board", runner)
 
 
 def mark_human_request_resolved_card(
@@ -2650,9 +2759,13 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     def authorize_task_view(principal: str, candidate_id: str) -> bool:
                         # Reuse the existing project-token/request authorization;
                         # the client cannot supply a project or actor to widen it.
-                        center.get_human_request(principal, candidate_id)
+                        center.get_task_decision_request(principal, candidate_id)
                         return True
 
+                    decision = center.get_task_decision_request(token, request_id)
+                    canonical_request_id = str(decision.get("canonical_request_id") or decision.get("request_id") or "")
+                    if canonical_request_id:
+                        refresh_task_completion_readback(center, token, canonical_request_id)
                     view = TaskDecisionView(center, authorize_task_view)
                     self._reply(HTTPStatus.OK, view.read(token, request_id))
                 except AuthorizationError as error:
@@ -2802,8 +2915,12 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         raise ValidationError("task decision accepts only a verified mandate")
                     created = center.create_task_decision_request(token, body["mandate"])
                     request_id = str(created["request_id"])
+                    canonical_request_id = str(created.get("canonical_request_id") or request_id)
                     try:
-                        delivery = send_human_request_telegram(center, token, created)
+                        delivery_request = center.get_human_request(token, canonical_request_id)
+                        delivery_request["request_id"] = request_id
+                        delivery_request["task_decision_ref"] = request_id
+                        delivery = send_human_request_telegram(center, token, delivery_request)
                     except Exception:
                         # Any sender failure after reservation remains uncertain;
                         # a later idempotent request must never replay it.
@@ -2812,7 +2929,7 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     view = TaskDecisionView(
                         center,
                         lambda principal, candidate_id: bool(
-                            center.get_human_request(principal, candidate_id)
+                            center.get_task_decision_request(principal, candidate_id)
                         ),
                     ).read(token, request_id)
                     view["delivery_status"] = str(delivery.get("status") or "unknown")
@@ -2823,9 +2940,50 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     )
                     return
                 parts = self.path.split("/")
+                if len(parts) == 5 and parts[:3] == ["", "v1", "task-decisions"] and parts[4] == "resolve":
+                    if set(body) != {"proposal_ref"} or not isinstance(body.get("proposal_ref"), str):
+                        raise ValidationError("Board task answer accepts only proposal_ref")
+                    request_id, proposal_ref = parts[3], str(body["proposal_ref"]).strip()
+                    idempotency_key = str(self.headers.get("Idempotency-Key") or "").strip()
+                    if not idempotency_key or idempotency_key != proposal_ref:
+                        raise IdempotencyConflict("Idempotency-Key must equal the Board proposal_ref")
+                    try:
+                        resolved = center.resolve_task_decision_from_board(token, request_id, proposal_ref)
+                    except IdempotencyConflict as error:
+                        self._reply(HTTPStatus.CONFLICT, {
+                            "task_decision_ref": request_id,
+                            "proposal_ref": proposal_ref,
+                            "answer_status": "conflict",
+                            "error": str(error),
+                        })
+                        return
+                    dispatch: dict[str, Any] = {"status": "not_attempted"}
+                    canonical_request_id = str(resolved.get("canonical_request_id") or "")
+                    if canonical_request_id and resolved.get("answer_status") == "accepted":
+                        current = center.get_human_request(token, canonical_request_id)
+                        dispatch = deliver_human_completion(center, current, "exmanager-board")
+                    elif canonical_request_id and resolved.get("answer_status") == "duplicate":
+                        prior = center.human_request_completion(canonical_request_id)
+                        if prior.get("registry_request_id") and str(prior.get("state") or "") in {"sent", "unknown"}:
+                            dispatch = refresh_task_completion_readback(center, token, canonical_request_id)
+                        else:
+                            dispatch = {"status": str(prior.get("state") or "unknown")}
+                    view = TaskDecisionView(
+                        center,
+                        lambda principal, candidate_id: bool(
+                            center.get_task_decision_request(principal, candidate_id)
+                        ),
+                    ).read(token, request_id)
+                    view["answer_status"] = str(resolved.get("answer_status") or "unknown")
+                    view["answer_accepted"] = bool(resolved.get("answer_accepted"))
+                    view["dispatch_status"] = str(dispatch.get("status") or "unknown")
+                    self._reply(HTTPStatus.OK, view)
+                    return
                 if len(parts) == 5 and parts[:3] == ["", "v1", "human-requests"] and parts[4] == "result":
                     if set(body) - {"actor"}:
                         raise ValidationError("question result accepts no payload fields")
+                    center.get_human_request(token, parts[3])
+                    refresh_task_completion_readback(center, token, parts[3])
                     self._reply(HTTPStatus.OK, center.human_request_result_receipt(token, parts[3]))
                     return
                 if len(parts) == 5 and parts[:3] == ["", "v1", "human-requests"]:

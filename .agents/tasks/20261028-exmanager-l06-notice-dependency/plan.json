@@ -1,0 +1,7 @@
+{
+  "title": "Notice: доверенный ответ продолжает ту же сессию ExManager",
+  "goal": "Замкнуть L06-зависимость между ответом в Board и существующим Notice task-decision completion без подмены автора или дублирующего запуска.",
+  "business_result": "До: Notice хранит task decision, но ExManager Board не может безопасно принять ответ и продолжить ту же typed OpenCode задачу. После: Board CAS answer проходит source-bound проверку автора/актуального состояния и связывается ровно с одним durable continuation; UNKNOWN остаётся query-first.",
+  "default_model": "gpt-6-luna",
+  "updated_at": "2026-10-28T20:39:00+03:00"
+}

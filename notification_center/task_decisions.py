@@ -71,26 +71,40 @@ class TaskDecisionStore:
             "continuation": dict(verified["continuation"]),
             "timeout_value": str(verified["timeout_value"]),
             "allowed_actors": canonical["allowed_actors"],
+            "task_decision_ref": request_id,
+            "request_hash": digest,
         }
+        canonical_request_id = str(
+            verified["continuation"].get("human_request_id")
+            if verified["continuation"].get("harness") == "opencode" else request_id
+        ).strip()
         request = {
-            "schema": "ask_human.request.v1", "request_id": request_id,
+            "schema": "ask_human.request.v1", "request_id": canonical_request_id,
             "project": str(verified["project"]).strip(), "recipient": str(verified["recipient"]).strip(),
             "mode": "choice", "message": str(verified["message"]), "choices": choices,
             "allowed_actors": canonical["allowed_actors"], "expires_at": None,
         }
-        return self._center.create_human_request(
+        result = self._center.create_human_request(
             token, request, _task_context=context, _task_input_sha256=digest,
             _task_writer=self._center._task_decision_writer,
         )
+        result["canonical_request_id"] = str(result["request_id"])
+        result["request_id"] = request_id
+        result["task_decision_ref"] = request_id
+        return result
 
     def _row(self, request_id: str) -> Any:
         row = self._center._connection.execute(
-            "SELECT * FROM human_requests WHERE request_id=?", (str(request_id),)
+            "SELECT * FROM human_requests WHERE request_id=? OR task_decision_ref=? LIMIT 1",
+            (str(request_id), str(request_id)),
         ).fetchone()
         if row is None or not row["task_context_json"]:
             from .core import ValidationError
             raise ValidationError("task decision not found")
         return row
+
+    def canonical_request_id(self, request_id: str) -> str:
+        return str(self._row(request_id)["request_id"])
 
     def actor_allowed_now(self, request_id: str, actor: str) -> bool:
         row = self._row(request_id)
@@ -98,6 +112,17 @@ class TaskDecisionStore:
         verifier = self._center._task_decision_verifier
         check = getattr(verifier, "is_actor_allowed", None)
         return bool(callable(check) and check(context, actor) is True)
+
+    def verify_board_answer(
+        self, context: Mapping[str, Any], task_decision_ref: str, proposal_ref: str,
+    ) -> dict[str, Any] | None:
+        verifier = self._center._task_decision_verifier
+        check = getattr(verifier, "verify_board_answer", None)
+        if not callable(check):
+            from .core import AuthorizationError
+            raise AuthorizationError("current Board answer verifier unavailable")
+        verified = check(context, task_decision_ref, proposal_ref)
+        return dict(verified) if isinstance(verified, Mapping) else None
 
     @staticmethod
     def control_gate_open(row: Any) -> bool:
@@ -107,6 +132,7 @@ class TaskDecisionStore:
                     and row["task_control_kind"] == "hold" and row["task_resume_ref"])
 
     def reserve_notification(self, request_id: str) -> bool:
+        request_id = self.canonical_request_id(request_id)
         with self._center._lock, self._center._connection:
             changed = self._center._connection.execute(
                 "UPDATE human_requests SET task_notification_state='sending' "
@@ -123,6 +149,7 @@ class TaskDecisionStore:
                     "deadline_at": row["task_deadline_at"]}
 
     def mark_notification_unknown(self, request_id: str) -> None:
+        request_id = self.canonical_request_id(request_id)
         with self._center._lock, self._center._connection:
             self._center._connection.execute(
                 "UPDATE human_requests SET task_notification_state='unknown' "
@@ -134,6 +161,7 @@ class TaskDecisionStore:
     def mark_notification_failed(self, request_id: str, error_code: str) -> None:
         """Persist a provider-confirmed no-send result without enabling replay."""
         safe_code = str(error_code or "")[:64]
+        request_id = self.canonical_request_id(request_id)
         with self._center._lock, self._center._connection:
             changed = self._center._connection.execute(
                 "UPDATE human_requests SET task_notification_state='failed' "
@@ -152,6 +180,7 @@ class TaskDecisionStore:
         now = time.time() if observed_at is None else float(observed_at)
         with self._center._lock, self._center._connection:
             row = self._row(request_id)
+            request_id = str(row["request_id"])
             if row["task_notified_at"] is not None:
                 return self._center._human_request_result(row)
             if row["task_notification_state"] not in {"sending", "unknown"}:
@@ -210,17 +239,21 @@ class TaskDecisionStore:
                     resolved += 1
         return resolved
 
-    def request_control(self, request_id: str, actor: str, kind: str, reason: str = "") -> dict[str, Any]:
+    def request_control(
+        self, request_id: str, actor: str, kind: str, reason: str = "", *,
+        verified_task_actor: bool = False,
+    ) -> dict[str, Any]:
         if kind not in {"stop", "hold"} or not str(actor).strip():
             from .core import ValidationError
             raise ValidationError("task control requires an authenticated stop or hold")
         reason = " ".join(str(reason).split())[:500]
         with self._center._lock, self._center._connection:
             row = self._row(request_id)
-            if actor not in json.loads(str(row["allowed_actors_json"])):
+            request_id = str(row["request_id"])
+            if actor not in json.loads(str(row["allowed_actors_json"])) and not verified_task_actor:
                 from .core import ValidationError
                 raise ValidationError("human response actor is not allowed")
-            if not self.actor_allowed_now(request_id, actor):
+            if not verified_task_actor and not self.actor_allowed_now(request_id, actor):
                 from .core import AuthorizationError
                 raise AuthorizationError("current task actor policy does not allow this decision")
             current_state = str(row["task_control_state"])
@@ -258,6 +291,7 @@ class TaskDecisionStore:
         now = time.time() if now_epoch is None else float(now_epoch)
         with self._center._lock, self._center._connection:
             row = self._row(request_id)
+            request_id = str(row["request_id"])
             state = str(row["task_control_state"])
             if state == "pending":
                 changed = self._center._connection.execute(
@@ -293,6 +327,7 @@ class TaskDecisionStore:
         """Return the bounded durable intent for the existing worker adapter."""
         with self._center._lock:
             row = self._row(request_id)
+            request_id = str(row["request_id"])
             context = json.loads(str(row["task_context_json"]))
             raw_execution = context.get("continuation") if isinstance(context, Mapping) else None
             required_text = ("task_ref", "operation_id", "started_by", "host_id", "harness", "session_id", "turn_id")
@@ -322,6 +357,7 @@ class TaskDecisionStore:
             }
 
     def mark_control_unknown(self, request_id: str) -> None:
+        request_id = self.canonical_request_id(request_id)
         with self._center._lock, self._center._connection:
             self._center._connection.execute(
                 "UPDATE human_requests SET task_control_state='unknown', task_control_lease_until=? WHERE request_id=? "
@@ -344,6 +380,7 @@ class TaskDecisionStore:
         effects = {key: sorted(set(items)) for key, items in raw_effects.items()}
         with self._center._lock, self._center._connection:
             row = self._row(request_id)
+            request_id = str(row["request_id"])
             if str(row["task_control_id"] or "") != control_id:
                 from .core import ValidationError
                 raise ValidationError("action-owner acknowledgment does not match the current control")
@@ -378,6 +415,7 @@ class TaskDecisionStore:
             raise ValidationError("resume requires a bounded new directive reference")
         with self._center._lock, self._center._connection:
             row = self._row(request_id)
+            request_id = str(row["request_id"])
             if actor not in json.loads(str(row["allowed_actors_json"])):
                 from .core import ValidationError
                 raise ValidationError("human response actor is not allowed")
@@ -415,6 +453,7 @@ class TaskDecisionStore:
     def record_late_instruction(self, request_id: str, actor: str, value: str) -> dict[str, Any]:
         with self._center._lock, self._center._connection:
             row = self._row(request_id)
+            request_id = str(row["request_id"])
             if actor not in json.loads(str(row["allowed_actors_json"])):
                 from .core import ValidationError
                 raise ValidationError("human response actor is not allowed")
