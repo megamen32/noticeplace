@@ -711,18 +711,23 @@ class MatrixMessageSender:
         default_room_id: str = "",
         timeout_seconds: float = 8,
         runner: Any = urllib.request.urlopen,
+        userio_url: str = "",
+        userio_token: str = "",
     ) -> None:
         self._homeserver = homeserver.rstrip("/")
         self._token = token
         self._default_room_id = default_room_id
         self._timeout_seconds = timeout_seconds
         self._runner = runner
+        self._userio_url = userio_url
+        self._userio_token = userio_token
 
     def send(self, payload: dict[str, Any], delivery_key: str) -> dict[str, Any]:
         """Use a stable Matrix transaction id so retries cannot duplicate a message."""
         target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
         room_id = str(target.get("room_id") or self._default_room_id).strip()
-        if not self._homeserver or not self._token or not room_id:
+        account_ref = str(target.get("account_ref") or "").strip()
+        if not room_id or not account_ref and (not self._homeserver or not self._token):
             raise RuntimeError("Matrix message sender is not configured")
         incident = payload["incident"]
         title = str(incident.get("title") or "").strip()
@@ -734,6 +739,27 @@ class MatrixMessageSender:
         if source:
             text += f"\n\nSource: {source}"
         transaction_id = "notice-" + hashlib.sha256(delivery_key.encode()).hexdigest()[:32]
+        if account_ref:
+            # A selected connected account is owned by UserIO. Never borrow
+            # the unrelated global service identity for this destination.
+            if not self._userio_url or not self._userio_token:
+                raise MatrixDeliveryRejected("Selected Matrix account requires UserIO", status=403)
+            arguments = {"account_ref": account_ref, "text": text, "request_id": transaction_id}
+            conversation = str(target.get("conversation_id") or "").strip()
+            arguments["conversation_id" if conversation else "identifier"] = conversation or room_id
+            draft = self._userio_call("userio.messages.prepare", arguments)
+            if draft.get("body") != text or not draft.get("draft_id") or not draft.get("conversation_id"):
+                raise RuntimeError("UserIO returned no exact Matrix draft")
+            sent = self._userio_call("userio.messages.send", {
+                "draft_id": draft["draft_id"], "confirm": True, "expected_text": text,
+                "expected_chat_id": draft["conversation_id"], "expected_attachments": [],
+            })
+            receipt = str(sent.get("receipt") or "")
+            if sent.get("delivery_confirmed") is not True or not receipt.startswith("matrix:$"):
+                raise RuntimeError("UserIO Matrix delivery has no confirmed provider receipt; do not replay")
+            return {"event_id": receipt.removeprefix("matrix:"), "room_id": room_id,
+                    "account_ref": account_ref, "transaction_id": transaction_id,
+                    "draft_id": draft["draft_id"]}
         url = (
             f"{self._homeserver}/_matrix/client/v3/rooms/"
             f"{urllib.parse.quote(room_id, safe='')}/send/m.room.message/{transaction_id}"
@@ -769,6 +795,36 @@ class MatrixMessageSender:
         if not isinstance(event_id, str) or not event_id.startswith("$"):
             raise RuntimeError("Matrix message send returned no event id")
         return {"event_id": event_id, "room_id": room_id, "transaction_id": transaction_id}
+
+    def _userio_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        request = urllib.request.Request(self._userio_url,
+            data=json.dumps({"jsonrpc":"2.0", "id":name, "method":"tools/call",
+                             "params":{"name":name, "arguments":arguments}}).encode(),
+            headers={"Content-Type":"application/json", "Authorization":"Bearer " + self._userio_token},
+            method="POST")
+        try:
+            with self._runner(request, timeout=self._timeout_seconds) as response:
+                if not 200 <= int(response.status) < 300:
+                    raise RuntimeError("UserIO Matrix request failed")
+                raw = response.read(262145)
+                if len(raw) > 262144:
+                    raise RuntimeError("UserIO Matrix response exceeds bound")
+                envelope = json.loads(raw)
+        except urllib.error.HTTPError as error:
+            if error.code in {401,403,404}:
+                raise MatrixDeliveryRejected("UserIO rejected selected Matrix account", status=error.code) from None
+            raise
+        if not isinstance(envelope, dict) or envelope.get("error"):
+            raise RuntimeError("UserIO Matrix RPC failed; inspect the exact draft before replay")
+        result = envelope.get("result", {})
+        data = result.get("structuredContent")
+        if data is None:
+            data = json.loads("".join(part.get("text", "") for part in result.get("content", []) if part.get("type") == "text"))
+        if result.get("isError") or not isinstance(data, dict) or data.get("ok") is not True:
+            # Tool failures may include an already submitted, uncertain draft.
+            # Its durable UserIO claim prevents a second provider submission.
+            raise RuntimeError("UserIO Matrix draft failed; inspect its receipt before replay")
+        return data
 
 
 class TelegramMessageSender:
@@ -3107,14 +3163,20 @@ def message_adapters_from_environment(environment: Mapping[str, str] | None = No
     homeserver = environment.get("MATRIX_MESSAGE_HOMESERVER", "").strip()
     matrix_token = environment.get("MATRIX_MESSAGE_ACCESS_TOKEN", "").strip()
     room_id = environment.get("MATRIX_MESSAGE_ROOM_ID", "").strip()
-    if homeserver or matrix_token or room_id:
-        if not homeserver or not matrix_token or not room_id:
+    userio_url = environment.get("MATRIX_MESSAGE_USERIO_URL", "").strip()
+    userio_token = environment.get("MATRIX_MESSAGE_USERIO_TOKEN", "").strip()
+    if homeserver or matrix_token or room_id or userio_url or userio_token:
+        if (homeserver or matrix_token or room_id) and not (homeserver and matrix_token and room_id):
             raise RuntimeError("Matrix message adapter requires homeserver, access token, and room id")
+        if bool(userio_url) != bool(userio_token):
+            raise RuntimeError("Matrix selected-account adapter requires UserIO MCP URL and scoped token")
         adapters["matrix.message"] = MatrixMessageSender(
             homeserver,
             matrix_token,
             default_room_id=room_id,
             timeout_seconds=float(environment.get("MATRIX_MESSAGE_TIMEOUT_SECONDS", "8")),
+            userio_url=userio_url,
+            userio_token=userio_token,
         )
     raw_webhooks = environment.get("NOTIFY_MESSAGE_WEBHOOKS_JSON", "").strip()
     if not raw_webhooks:

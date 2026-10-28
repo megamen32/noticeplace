@@ -10,6 +10,7 @@ Telegram card and never becomes a phone call.
 from __future__ import annotations
 
 import tempfile
+import json
 import time
 import unittest
 import urllib.error
@@ -17,6 +18,54 @@ from pathlib import Path
 
 from notification_center.core import NotificationCenter
 from notification_center.http_api import DeliveryWorker, MatrixMessageSender
+
+
+class MatrixSelectedAccountTests(unittest.TestCase):
+    def test_selected_account_without_gateway_never_uses_global_identity(self):
+        def forbidden(*args, **kwargs):
+            self.fail('global Matrix service identity used for selected account')
+        sender = MatrixMessageSender('https://service.test', 'service-token', runner=forbidden)
+        from notification_center.http_api import MatrixDeliveryRejected
+        with self.assertRaises(MatrixDeliveryRejected):
+            sender.send({'target':{'account_ref':'matrix:qa-a','room_id':'!qa:test'},
+                         'incident':{'title':'QA'}}, 'selected-no-gateway')
+
+    def test_selected_account_uses_userio_exact_draft_instead_of_service_token(self):
+        calls = []
+        class Response:
+            status = 200
+            def __init__(self, value): self.value = value
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def read(self, *_): return json.dumps(self.value).encode()
+        def runner(request, *, timeout):
+            calls.append(request)
+            self.assertEqual('http://userio.test/mcp', request.full_url)
+            self.assertEqual('Bearer scoped-userio-token', request.get_header('Authorization'))
+            params = json.loads(request.data)['params']
+            if params['name'] == 'userio.messages.prepare':
+                self.assertEqual('matrix:qa-a', params['arguments']['account_ref'])
+                self.assertEqual('!qa:test', params['arguments']['identifier'])
+                data = {'ok':True,'draft_id':'draft-qa','conversation_id':'conv-qa',
+                        'body':params['arguments']['text'],'status':'proposed'}
+            else:
+                self.assertEqual('userio.messages.send', params['name'])
+                args = params['arguments']
+                self.assertEqual('draft-qa',args['draft_id'])
+                self.assertEqual('conv-qa',args['expected_chat_id'])
+                self.assertEqual([],args['expected_attachments'])
+                self.assertIs(args['confirm'],True)
+                self.assertEqual('QA title\n\nQA body',args['expected_text'])
+                data = {'ok':True,'delivery_confirmed':True,'receipt':'matrix:$qa-event'}
+            return Response({'result':{'content':[{'type':'text','text':json.dumps(data)}]}})
+        sender = MatrixMessageSender('https://service-matrix.test','service-token',runner=runner)
+        sender._userio_url = 'http://userio.test/mcp'
+        sender._userio_token = 'scoped-userio-token'
+        result = sender.send({'target':{'account_ref':'matrix:qa-a','room_id':'!qa:test'},
+                              'incident':{'title':'QA title','body':'QA body'}},'stable-qa-delivery')
+        self.assertEqual('$qa-event',result['event_id'])
+        self.assertEqual('matrix:qa-a',result['account_ref'])
+        self.assertEqual(2,len(calls))
 
 
 class MatrixDeliveryFailureTests(unittest.TestCase):
