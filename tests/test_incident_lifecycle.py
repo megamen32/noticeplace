@@ -145,7 +145,7 @@ class LifecycleTests(unittest.TestCase):
         self.addCleanup(reopened._connection.close)
         life=reopened.get_incident(self.inc)['lifecycle']
         self.assertEqual('http',life['group']['problem_type'])
-        self.assertEqual('profile_log',life['group']['consumer_id'])
+        self.assertEqual('test+probe',life['group']['consumer_id'])
         self.assertIsNone(life['verification_state'])
         finish=reopened.record_work_finished('agent',self.inc,'historical-finish',dict(attempt_id='legacy',session_id='session',harness='codex'))
         self.assertEqual('open',reopened.get_incident(self.inc)['state'])
@@ -155,7 +155,7 @@ class LifecycleTests(unittest.TestCase):
     def test_incomplete_health_is_not_typed_and_claimed_consumer_is_ignored(self):
         event={**self.event,'consumer_id':'claimed-other','dedup_key':'other','correlation_id':'other'}
         created=self.center.create_event('source','claimed-consumer',event)
-        self.assertEqual('profile_log',self.center.get_incident(created['incident_id'])['lifecycle']['group']['consumer_id'])
+        self.assertEqual('test+probe',self.center.get_incident(created['incident_id'])['lifecycle']['group']['consumer_id'])
         incomplete={k:v for k,v in self.event.items() if k not in ('source_id','host_id','signal_type','correlation_id')}
         incomplete['dedup_key']='untyped'
         created=self.center.create_event('source','untyped',incomplete)
@@ -349,3 +349,38 @@ class LifecycleTests(unittest.TestCase):
         incident=ungranted.create_event(token,'body-role',{**self.event,'dedup_key':'body-role','incident_role':'verifier','verification_owned_sources':True,'principal_id':'forged'})['incident_id']
         with self.assertRaises(AuthorizationError): ungranted.due_source_checks(token,'test','probe')
         self.assertNotIn('incident_role',ungranted._token_scope(token))
+
+    def test_builtin_delivery_profiles_do_not_split_a_legacy_producer_group(self):
+        self.center._tokens['source']['automatic_health_diagnosis']=False
+        groups=[]
+        for index,severity in enumerate(('important','critical')):
+            incident=self.center.create_event('source','severity:'+severity,{**self.event,'severity':severity,'dedup_key':'severity:'+severity,'correlation_id':'severity:'+severity,'signal_type':'load','consumer_id':'forged-producer'})['incident_id']
+            groups.append(self.center.get_incident(incident)['lifecycle']['group_key'])
+        self.assertEqual(groups[0],groups[1])
+        self.assertEqual('test+probe',self.center.get_incident(incident)['lifecycle']['group']['consumer_id'])
+
+    def test_real_consumers_keep_distinct_groups_for_same_source_host_type(self):
+        keys=[]
+        for index in range(2):
+            consumer=self.consumer()
+            incident=self.center.create_event(consumer['intake_token'],'real:'+str(index),{**self.event,'dedup_key':'real:'+str(index),'consumer_id':'forged-common'})['incident_id']
+            group=self.center.get_incident(incident)['lifecycle']
+            self.assertEqual(consumer['id'],group['group']['consumer_id'])
+            keys.append(group['group_key'])
+        self.assertNotEqual(keys[0],keys[1])
+
+    def test_existing_builtin_group_projection_upgrade_preserves_source_and_health(self):
+        import json
+        before=dict(self.center._connection.execute('SELECT * FROM incident_lifecycle WHERE incident_id=?',(self.inc,)).fetchone())
+        group=json.loads(before['metadata_json']);group['consumer_id']='profile_log'
+        self.center._connection.execute('UPDATE incident_lifecycle SET metadata_json=?,group_key=? WHERE incident_id=?',(json.dumps(group),'old-route-key',self.inc))
+        self.center._connection.commit()
+        reopened=NotificationCenter(Path(self.tmp.name)/'state.db',self.center._tokens)
+        self.addCleanup(reopened._connection.close)
+        after=dict(reopened._connection.execute('SELECT * FROM incident_lifecycle WHERE incident_id=?',(self.inc,)).fetchone())
+        self.assertEqual('test+probe',json.loads(after['metadata_json'])['consumer_id'])
+        self.assertEqual(before['group_key'],after['group_key'])
+        for key in before:
+            if key not in ('metadata_json','group_key'):
+                self.assertEqual(before[key],after[key],key)
+        self.assertEqual('open',reopened.get_incident(self.inc)['state'])

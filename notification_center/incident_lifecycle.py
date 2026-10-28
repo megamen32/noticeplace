@@ -10,6 +10,9 @@ import time
 import uuid
 
 
+BUILTIN_DELIVERY_PROFILES = frozenset({'profile_emergency', 'profile_important', 'profile_log'})
+
+
 PROBLEM_TYPE_ALIASES = {
     **dict.fromkeys(('load', 'loadavg', 'cpu_load', 'cpu'), 'cpu'),
     **dict.fromkeys(('disk', 'disk_space', 'disk_full', 'inodes'), 'disk'),
@@ -98,13 +101,28 @@ def initialize(center):
               (incident_id,generation,json.dumps(group,sort_keys=True),group_key(group),group['source_id'],observed))
 
 
+        # Built-in profiles select a notification route, not a producer. Repair
+        # only the projection keys; source trust, attempts and health are intact.
+        routed = center._connection.execute("""SELECT l.incident_id,l.metadata_json,l.group_key,i.consumer_id
+          FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id
+          WHERE i.consumer_id IN (?,?,?)""",tuple(sorted(BUILTIN_DELIVERY_PROFILES))).fetchall()
+        for row in routed:
+            group = json.loads(row['metadata_json'])
+            canonical = group_identity(group, row['consumer_id'])['consumer_id']
+            if group.get('consumer_id') != canonical:
+                group['consumer_id'] = canonical
+                center._connection.execute('UPDATE incident_lifecycle SET metadata_json=?,group_key=? WHERE incident_id=?',
+                    (json.dumps(group,sort_keys=True),group_key(group),row['incident_id']))
+
+
 def typed(event):
     return isinstance(event, dict) and all(str(event.get(k) or '').strip() for k in ('project','source_id','host_id','signal_type','correlation_id'))
 
 
 def group_identity(event, consumer_id):
     group = {key: str(event.get(key) or '') for key in ('project','source_id','host_id','signal_type','correlation_id')}
-    group['consumer_id'] = str(consumer_id or group['project'] + '+' + group['source_id'])
+    identity = str(consumer_id or '')
+    group['consumer_id'] = (identity if identity not in BUILTIN_DELIVERY_PROFILES else '') or group['project'] + '+' + group['source_id']
     group['problem_type'] = canonical_problem_type(event)
     return group
 
