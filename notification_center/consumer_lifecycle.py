@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import urllib.parse
+import urllib.error
 import urllib.request
 import uuid
 from typing import Callable
@@ -74,6 +75,20 @@ class SourceVerifier:
             binding = {'project': self.project, 'source_id': self.source_id, 'host_id': self.host_id}
             if saved and saved.get('binding') != binding:
                 raise VerificationPending('state directory belongs to another source identity')
+            if saved.get('status') == 'rejected_stale':
+                incident = urllib.parse.quote(saved['incident_id'], safe='')
+                current = self.transport('GET', '/v1/incidents/' + incident)
+                lifecycle = current.get('lifecycle') or {}
+                group = lifecycle.get('group') or {}
+                generation = lifecycle.get('generation')
+                if (any(group.get(field) != value for field, value in binding.items())
+                        or isinstance(generation, bool) or not isinstance(generation, int)
+                        or not lifecycle.get('request_id')
+                        or (lifecycle['request_id'], generation) == (
+                            saved['body']['request_id'], saved['body']['generation'])):
+                    raise VerificationPending('rejected source check needs a verified superseding request')
+                saved.update(status='superseded')
+                self._save(path, saved)
             if saved.get('status') == 'submitting':
                 incident = urllib.parse.quote(saved['incident_id'], safe='')
                 current = self.transport('GET', '/v1/incidents/' + incident)
@@ -110,7 +125,20 @@ class SourceVerifier:
                           'idempotency_key': key, 'body': body}
                 self._save(path, intent)
                 incident = urllib.parse.quote(request['incident_id'], safe='')
-                receipt = self.transport('POST', '/v1/incidents/' + incident + '/health/check-result', body, key)
+                try:
+                    receipt = self.transport('POST', '/v1/incidents/' + incident + '/health/check-result', body, key)
+                except urllib.error.HTTPError as error:
+                    # Only this definitive domain rejection proves the old POST did
+                    # not commit. Timeouts, 5xx and other errors retain the fence.
+                    if error.code == 400:
+                        try:
+                            rejected = json.loads(error.read(4096))
+                        except (ValueError, OSError):
+                            rejected = None
+                        if rejected == {'error': 'stale verification request or generation'}:
+                            intent.update(status='rejected_stale')
+                            self._save(path, intent)
+                    raise
                 intent.update(status='confirmed', receipt=receipt)
                 self._save(path, intent)
                 receipts.append(receipt)

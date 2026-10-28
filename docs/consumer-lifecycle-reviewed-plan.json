@@ -284,6 +284,10 @@
   },
   "registered_consumers": [
     {
+      "consumer_id": "consumer_7ad31d4110d744259bde4ee7580890e4",
+      "project": "noticeplace-qa-stop-20261023b"
+    },
+    {
       "consumer_id": "consumer_1df8b4668ab24b89b88859f1929d2880",
       "project": "tg-commentator"
     },
@@ -293,6 +297,13 @@
     }
   ],
   "consumer_grants": [
+    {
+      "consumer_id": "consumer_7ad31d4110d744259bde4ee7580890e4",
+      "project": "noticeplace-qa-stop-20261023b",
+      "incident_role": "verifier",
+      "verification_owned_sources": false,
+      "verification_sources": ["lifecycle-canary-20261028-01a17ea3"]
+    },
     {
       "consumer_id": "consumer_1df8b4668ab24b89b88859f1929d2880",
       "project": "tg-commentator",
