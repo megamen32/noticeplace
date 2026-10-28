@@ -3189,6 +3189,45 @@ class NotificationCenter:
                     (str(next_offset), time.time()),
                 )
 
+    @staticmethod
+    def _explicit_agent_prelaunch_negative(receipt: Mapping[str, Any], incident_id: str) -> bool:
+        """Recognize the trusted helper's explicit negative, never empty sessions."""
+        result = receipt.get('agent_receipt')
+        def identity(value):
+            return isinstance(value, str) and bool(value.strip()) and len(value) <= 128 and not any(ord(c) < 32 or ord(c) == 127 for c in value)
+        return bool(
+            receipt.get('status') == 'completed' and identity(receipt.get('job_id'))
+            and identity(receipt.get('route_id')) and isinstance(result, Mapping)
+            and result.get('status') == 'source_blocked'
+            and result.get('source') == 'agent-herder-owner-disarm'
+            and result.get('reason') == 'herder_owner_state_unknown'
+            and result.get('admission') == 'not_attempted'
+            and result.get('incident_id') == incident_id and identity(result.get('operation_id'))
+            and result.get('human_held') is True and result.get('non_retryable') is True
+            and result.get('retryable') is False
+            and not any(result.get(key) for key in ('session_id', 'sessionId', 'created', 'accepted', 'admitted'))
+            and result.get('outcome') not in ('accepted', 'unknown', 'admission_unknown', 'in_flight')
+            and result.get('delivery') not in ('accepted', 'unknown', 'admission_unknown', 'in_flight'))
+
+    def _manual_prelaunch_retry_allowed(self, delivery: Mapping[str, Any], incident_id: str) -> bool:
+        if delivery['status'] != 'sent' or not delivery['result_json']:
+            return False
+        try:
+            proof = json.loads(delivery['result_json'])
+            if (not isinstance(proof, Mapping) or proof.get('schema') != 'notify.agent-prelaunch.v1'
+                    or proof.get('delivery_id') != delivery['id'] or proof.get('incident_id') != incident_id
+                    or proof.get('agent_job') != HEALTH_DIAGNOSIS_AGENT_JOB
+                    or not self._explicit_agent_prelaunch_negative(proof, incident_id)):
+                return False
+            # The canonical owner gate is read again now, not inferred from the
+            # past refusal. The helper repeats this gate before its actual POST.
+            from .agent_job_helper import require_herder_owner_running, _herder_loopback_profile
+            import urllib.request
+            require_herder_owner_running(_herder_loopback_profile(), urllib.request.urlopen)
+        except Exception:
+            return False
+        return True
+
     def apply_telegram_action(self, incident_id: str, action: str, actor: str, telegram_message: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Apply an authorized compact Telegram control action to one active incident."""
         if action in {"mute", "unmute"}:
@@ -3219,10 +3258,11 @@ class NotificationCenter:
             with self._lock, self._connection:
                 now = time.time()
                 previous = self._connection.execute(
-                    "SELECT id, status FROM deliveries WHERE incident_id = ? AND channel = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                    "SELECT id, status, result_json FROM deliveries WHERE incident_id = ? AND channel = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
                     (incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}"),
                 ).fetchone()
-                restarted = previous is not None and str(previous["status"]) in {"failed", "cancelled"}
+                prelaunch_retry = previous is not None and self._manual_prelaunch_retry_allowed(previous, incident_id)
+                restarted = previous is not None and (str(previous["status"]) in {"failed", "cancelled"} or prelaunch_retry)
                 if restarted:
                     generation = int(self._connection.execute(
                         "SELECT COUNT(*) AS count FROM deliveries WHERE incident_id = ? AND channel = ?",
@@ -3236,7 +3276,7 @@ class NotificationCenter:
                         self._health_agent_delivery_target(),
                     )
                 else:
-                    delivery_id = self._schedule_delivery(incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}", "incident", now, self._health_agent_delivery_target())
+                    delivery_id = str(previous["id"]) if previous is not None else self._schedule_delivery(incident_id, f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}", "incident", now, self._health_agent_delivery_target())
                 if isinstance(telegram_message, Mapping) and (previous is None or restarted):
                     chat = telegram_message.get("chat")
                     message_id = telegram_message.get("message_id")
@@ -3249,7 +3289,7 @@ class NotificationCenter:
                     incident_id,
                     "telegram_ai_requested",
                     actor,
-                    {"delivery_id": delivery_id, "idempotent": previous is not None and not restarted, "restarted": restarted},
+                    {"delivery_id": delivery_id, "idempotent": previous is not None and not restarted, "restarted": restarted, "prelaunch_not_attempted": prelaunch_retry, "previous_delivery_id": str(previous["id"]) if previous else None},
                 )
             return {"action": action, "state": incident["state"], "idempotent": previous is not None and not restarted, "restarted": restarted, "agent_job_delivery_id": delivery_id}
         raise ValidationError("unsupported Telegram action")
@@ -3865,6 +3905,18 @@ class NotificationCenter:
         with self._lock, self._connection:
             event_type = "agent_job_failed" if summary["status"] == "failed" else "agent_job_completed"
             self._audit(incident_id, event_type, "worker", summary)
+            if job_name == HEALTH_DIAGNOSIS_AGENT_JOB and self._explicit_agent_prelaunch_negative(receipt, incident_id):
+                delivery = self._connection.execute('SELECT incident_id,channel,result_json FROM deliveries WHERE id=?',(delivery_id,)).fetchone()
+                if (delivery and delivery['incident_id'] == incident_id
+                        and delivery['channel'] == 'gptadmin.agent:' + HEALTH_DIAGNOSIS_AGENT_JOB
+                        and delivery['result_json'] is None):
+                    negative = {key:result[key] for key in ('status','source','reason','admission','operation_id','incident_id','human_held','retryable','non_retryable')}
+                    proof = dict(schema='notify.agent-prelaunch.v1',delivery_id=delivery_id,
+                                 incident_id=incident_id,agent_job=job_name,status='completed',
+                                 job_id=receipt['job_id'],route_id=receipt['route_id'],agent_receipt=negative)
+                    self._connection.execute('UPDATE deliveries SET result_json=? WHERE id=? AND result_json IS NULL',
+                        (json.dumps(proof,sort_keys=True),delivery_id))
+                    self._audit(incident_id,'agent_job_prelaunch_not_attempted','worker',proof)
         if job_name in {"health-diagnosis", HEALTH_REMEDIATION_AGENT_JOB} and summary.get("session_id") and summary.get("harness"):
             # The run-time session callback already posted this durable link
             # with the receipt's full model route (e.g. "provider/model") and
