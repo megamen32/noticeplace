@@ -696,6 +696,7 @@ def _launch_receipt(result: Mapping[str, Any], profile: Mapping[str, str], opera
         # owned by this invocation. Only stop it on setup failure when Herder's
         # native receipt explicitly says this call created it.
         "created": result.get("created") is True,
+        "coalesced": result.get("coalesced") is True,
         "delivery": str(result.get("delivery") or ""),
         "harness": str(result.get("selected_harness") or profile["harness"]),
         "model": str(result.get("model") or profile["model"]),
@@ -1614,7 +1615,11 @@ def run_profile(
         try:
             receipt["autopilot_armed"] = arm_session_autopilot(
                 launched["harness"], receipt["session_id"], launched["cwd"], runner,
-                notice_incident={"incidentId": str(incident.get("id") or ""), "project": incident_project})
+                # A related incident joins the executor; its original immutable
+                # autopilot binding remains intact. This job still records and
+                # observes the incoming incident independently below.
+                notice_incident=None if receipt.get("coalesced") else
+                {"incidentId": str(incident.get("id") or ""), "project": incident_project})
         except Exception:
             receipt["autopilot_armed"] = False
         if receipt["autopilot_armed"] is not True:

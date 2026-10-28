@@ -912,6 +912,28 @@ class HealthAutoselectAndAutopilotTests(unittest.TestCase):
         self.assertEqual("http://127.0.0.1:18787/api/autopilot/sessions/opencode/ses-arm-1", request.full_url)
         self.assertEqual(json.loads(request.data.decode()), {"enabled": True, "cwd": "/home/roomhacker/ServersAdministration"})
 
+    def test_related_incident_keeps_original_autopilot_binding_and_observes_incoming_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = {"url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+                       "harness": "opencode", "name": "health", "cwd": directory,
+                       "instruction": "repair", "mode": "queue", "model": agent_job_helper.HEALTH_LAUNCH_DEFAULT}
+            event = {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
+                     "incident": {"id": "inc_incoming", "project": "fleet-health"}}
+            with mock.patch.object(agent_job_helper, "_launch_policy", return_value={}), \
+                 mock.patch.object(agent_job_helper, "_selected_route_profile", side_effect=lambda profile, *_a, **_k: profile), \
+                 mock.patch.object(agent_job_helper, "require_herder_owner_running"), \
+                 mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1", "test-only")), \
+                 mock.patch.object(agent_job_helper, "source_launch_fields", return_value={}), \
+                 mock.patch.object(agent_job_helper, "project_launch", return_value=project_launch_response("ses_original", coalesced=True)), \
+                 mock.patch.object(agent_job_helper, "arm_session_autopilot", return_value=True) as arm, \
+                 mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}) as observe:
+                result = run_profile("health-diagnosis", event, Path(directory) / "unused.json", profile_override=profile)
+            self.assertTrue(result["coalesced"])
+            self.assertTrue(result["autopilot_armed"])
+            self.assertIsNone(arm.call_args.kwargs["notice_incident"])
+            self.assertEqual(observe.call_args.args[1]["incident"]["id"], "inc_incoming")
+            self.assertEqual(observe.call_args.args[2], "ses_original")
+
     def test_arm_session_autopilot_rejects_unconfirmed_or_invalid_targets(self) -> None:
         runner = mock.Mock(return_value=_Response({"harness": "opencode", "sessionId": "ses-arm-1", "enabled": False}))
         self.assertFalse(agent_job_helper.arm_session_autopilot("opencode", "ses-arm-1", "/cwd", runner))
