@@ -284,11 +284,24 @@
   },
   "registered_consumers": [
     {
+      "consumer_id": "consumer_1df8b4668ab24b89b88859f1929d2880",
+      "project": "tg-commentator"
+    },
+    {
       "consumer_id": "consumer_b85a89f421694cdd9213c7cdf873e991",
       "project": "autotelegramviews"
     }
   ],
   "consumer_grants": [
+    {
+      "consumer_id": "consumer_1df8b4668ab24b89b88859f1929d2880",
+      "project": "tg-commentator",
+      "incident_role": "verifier",
+      "verification_owned_sources": true,
+      "verification_sources": [
+        "tgc-engine-watchdog"
+      ]
+    },
     {
       "consumer_id": "consumer_b85a89f421694cdd9213c7cdf873e991",
       "project": "autotelegramviews",
