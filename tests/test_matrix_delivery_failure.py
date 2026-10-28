@@ -120,6 +120,59 @@ class MatrixDeliveryFailureTests(unittest.TestCase):
             "SELECT id, status, attempt, last_error FROM deliveries WHERE id = ?", (delivery_id,)
         ).fetchone()
 
+    def _selected_send_outcome(self, outcome):
+        calls=[]
+        class Response:
+            status=200
+            def __init__(self,data):self.data=data
+            def __enter__(self):return self
+            def __exit__(self,*_):pass
+            def read(self,*_):return json.dumps({'result':{'structuredContent':self.data}}).encode()
+        def runner(request,*,timeout):
+            params=json.loads(request.data)['params'];calls.append(params['name'])
+            if params['name']=='userio.messages.prepare':
+                if outcome=='prepare_timeout':raise TimeoutError('prepare response lost; no send')
+                return Response({'ok':True,'draft_id':'exact-draft','conversation_id':'qa-conversation',
+                                 'body':params['arguments']['text']})
+            if outcome=='send_timeout':raise TimeoutError('send response lost')
+            if outcome=='send_403':raise urllib.error.HTTPError(request.full_url,403,'Forbidden',{},None)
+            return Response({'ok':True,'delivery_confirmed':False,'receipt':''})
+        consumer=self.center.create_consumer(project='hermes',name='Exact QA scope',policy=[
+            {'id':'first','platform':'matrix','action':'message','target':{'room_id':'!qa:test',
+             'account_ref':'matrix:qa','conversation_id':'qa-conversation'},'retry_interval_seconds':1,'max_repeats':2},
+            {'id':'fallback','previous_step_id':'first','platform':'matrix','action':'call',
+             'target':{'room_id':'!qa:test'},'retry_interval_seconds':1,'max_repeats':1}])
+        created=self.center.create_event(consumer['intake_token'],'selected-delivery',dict(self.event))
+        sender=MatrixMessageSender('https://service.test','service-token',runner=runner,
+                                   userio_url='https://userio.test/mcp',userio_token='scoped-token')
+        worker=DeliveryWorker(self.center,object(),message_adapters={'matrix.message':sender})
+        self.assertEqual(1,worker.run_once())
+        return worker,created,calls
+
+    def test_selected_send_lost_response_is_uncertain_without_retry_or_fallback(self):
+        worker,created,calls=self._selected_send_outcome('send_timeout')
+        self.assertEqual('uncertain',self._delivery(created['initial_delivery_id'])['status'])
+        self.assertEqual(0,worker.run_once())
+        self.assertEqual(['userio.messages.prepare','userio.messages.send'],calls)
+        rows=self.center._connection.execute('SELECT channel,status FROM deliveries WHERE incident_id=?',
+                                            (created['incident_id'],)).fetchall()
+        self.assertEqual([('matrix.message','uncertain')],[(r['channel'],r['status']) for r in rows])
+
+    def test_selected_send_without_confirmed_receipt_is_uncertain(self):
+        worker,created,calls=self._selected_send_outcome('unconfirmed')
+        self.assertEqual('uncertain',self._delivery(created['initial_delivery_id'])['status'])
+        self.assertEqual(0,worker.run_once())
+        self.assertEqual(2,len(calls))
+
+    def test_selected_prepare_timeout_is_not_an_uncertain_send(self):
+        _worker,created,calls=self._selected_send_outcome('prepare_timeout')
+        self.assertEqual('queued',self._delivery(created['initial_delivery_id'])['status'])
+        self.assertEqual(['userio.messages.prepare'],calls)
+
+    def test_selected_send_definitive_403_remains_failed(self):
+        _worker,created,_calls=self._selected_send_outcome('send_403')
+        self.assertEqual('failed',self._delivery(created['initial_delivery_id'])['status'])
+
     def test_definitive_matrix_refusal_fails_once_and_is_never_retried(self) -> None:
         calls: list[object] = []
 

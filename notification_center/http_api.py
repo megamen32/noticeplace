@@ -700,6 +700,14 @@ class MatrixDeliveryRejected(RuntimeError):
         self.status = status
 
 
+class MatrixDeliveryUncertain(RuntimeError):
+    """The exact UserIO draft may have been sent; reconcile it, never replay."""
+
+    def __init__(self, draft_id: str) -> None:
+        super().__init__("Matrix delivery outcome unknown; inspect the existing UserIO draft")
+        self.draft_id = draft_id
+
+
 class MatrixMessageSender:
     """Send one idempotent text message through the Matrix Client-Server API."""
 
@@ -750,13 +758,18 @@ class MatrixMessageSender:
             draft = self._userio_call("userio.messages.prepare", arguments)
             if draft.get("body") != text or not draft.get("draft_id") or not draft.get("conversation_id"):
                 raise RuntimeError("UserIO returned no exact Matrix draft")
-            sent = self._userio_call("userio.messages.send", {
-                "draft_id": draft["draft_id"], "confirm": True, "expected_text": text,
-                "expected_chat_id": draft["conversation_id"], "expected_attachments": [],
-            })
+            try:
+                sent = self._userio_call("userio.messages.send", {
+                    "draft_id": draft["draft_id"], "confirm": True, "expected_text": text,
+                    "expected_chat_id": draft["conversation_id"], "expected_attachments": [],
+                })
+            except MatrixDeliveryRejected:
+                raise
+            except Exception as error:
+                raise MatrixDeliveryUncertain(str(draft["draft_id"])) from error
             receipt = str(sent.get("receipt") or "")
             if sent.get("delivery_confirmed") is not True or not receipt.startswith("matrix:$"):
-                raise RuntimeError("UserIO Matrix delivery has no confirmed provider receipt; do not replay")
+                raise MatrixDeliveryUncertain(str(draft["draft_id"]))
             return {"event_id": receipt.removeprefix("matrix:"), "room_id": room_id,
                     "account_ref": account_ref, "transaction_id": transaction_id,
                     "draft_id": draft["draft_id"]}
@@ -1550,6 +1563,14 @@ class DeliveryWorker:
                 return
             if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
                 self._center.schedule_health_outcome(str(delivery["incident_id"]), "interrupted", f"agent-interrupted:{delivery['id']}")
+            if isinstance(error, MatrixDeliveryUncertain):
+                self._center.complete_delivery(
+                    delivery["id"], "uncertain", str(error),
+                    claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    result={"uncertain": True, "userio_draft_id": error.draft_id},
+                    schedule_failure_neighbours=False,
+                )
+                return
             if isinstance(error, MatrixDeliveryRejected):
                 # A definitive refusal is never repeated: the same room will
                 # refuse the same way. The step ends here.
