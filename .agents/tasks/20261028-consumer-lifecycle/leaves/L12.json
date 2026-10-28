@@ -1,0 +1,31 @@
+{
+  "id": "L12",
+  "label": "Непрерывная проверка источника после завершения работы и STOP",
+  "status": "done",
+  "owner": "lifecycle-core",
+  "session": "lifecycle_core",
+  "harness": "codex",
+  "model": "gpt-6.1-sol",
+  "tier": "frontier",
+  "complexity": "L",
+  "depends_on": [
+    "L01",
+    "L04",
+    "L09"
+  ],
+  "estimate_minutes": {
+    "minimum": 15,
+    "maximum": 25
+  },
+  "description": "Разделить nonce каждого измерения и разрешение продолжения попытки. После degraded источник продолжает проверки независимо от STOP; новое обычное degraded не отменяет уже разрешённое продолжение той же сессии.",
+  "acceptance": "degraded→STOP→fresh healthy закрывает; delayed old nonce отвергается; несколько degraded раундов дают ровно один operation на attempt; UNKNOWN reconcile читает exact receipt после смены nonce без POST replay.",
+  "affected_files": [
+    "notification_center/incident_lifecycle.py",
+    "notification_center/core.py",
+    "tests/test_incident_lifecycle.py",
+    "tests/test_consumer_lifecycle.py",
+    "tests/test_http_api.py"
+  ],
+  "note": "Source acceptance only: 25 lifecycle tests (including real loopback HTTP finish→degraded→next due→healthy), 5 SDK, 6 credential and 31 HTTP tests passed; diff-check clean. Every nonhealthy measurement rearms a fresh nonce; ordinary degraded preserves one continuation per finished attempt. Exact accepted-receipt GET reconciliation survives nonce rotation without POST replay. Additive schema upgrade preserves prior continuation. DB consumer grants retain authenticated hash lookup, project/severity and revocation. Runtime/config unchanged; installed-product acceptance remains L05/L06.",
+  "started_at": "2026-10-28T14:39:59.676098+00:00"
+}

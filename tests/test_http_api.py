@@ -622,10 +622,10 @@ class HttpApiTests(unittest.TestCase):
             "evidence_refs": ["metric:disk"],
             "health": {"source_id": "host:host-a", "host_id": "host-a", "signal_type": "disk"},
         }
-        self.center._tokens['source-verifier'] = {'project':'hermes','max_severity':'critical','principal_id':'independent-probe','incident_role':'verifier','verification_sources':['host:host-a']}
+        self.center._tokens['source-verifier'] = {'project':'hermes','max_severity':'critical','principal_id':'independent-probe','incident_role':'verifier','verification_sources':['host:host-a'],'agent_jobs':['health-diagnosis']}
         verifier_auth = {"Authorization": "Bearer source-verifier"}
         auth = {"Authorization": "Bearer secret-token"}
-        status, created = self.request("POST", "/v1/events", signal, **auth, **{"Idempotency-Key": "health-signal-1"})
+        status, created = self.request("POST", "/v1/events", signal, **verifier_auth, **{"Idempotency-Key": "health-signal-1"})
         self.assertEqual(202, status)
         self.assertTrue(created["agent_job_delivery_id"])
         incident_id = str(created["incident_id"])

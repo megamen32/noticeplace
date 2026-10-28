@@ -47,6 +47,28 @@ def initialize(center):
         CREATE INDEX IF NOT EXISTS incident_check_receipts_request ON incident_check_receipts(request_id);
         ''')
 
+        columns = {row['name'] for row in center._connection.execute('PRAGMA table_info(incident_lifecycle)').fetchall()}
+        for name in ('continuation_json', 'last_check_receipt_json'):
+            if name not in columns:
+                center._connection.execute('ALTER TABLE incident_lifecycle ADD COLUMN ' + name + ' TEXT')
+        # Upgrade existing accepted receipts without replaying a delivery. A
+        # previously queued continuation retains its exact original operation.
+        legacy = center._connection.execute("""SELECT l.*,r.idempotency_key,r.result_json
+          FROM incident_lifecycle l JOIN incident_check_receipts r ON r.request_id=l.request_id
+          WHERE l.last_check_receipt_json IS NULL ORDER BY r.rowid""").fetchall()
+        for row in legacy:
+            result = json.loads(row['result_json'])
+            receipt = dict(idempotency_key=row['idempotency_key'],request_id=row['request_id'],result=result)
+            continuation = result.get('continuation')
+            if continuation:
+                continuation = {**continuation, 'delivery_id': result.get('continuation_delivery_id')}
+            nonhealthy = row['verification_state'] in ('degraded', 'unknown', 'stale')
+            center._connection.execute("""UPDATE incident_lifecycle SET last_check_receipt_json=?,
+              continuation_json=?,request_id=?,verification_due=?,verification_state=? WHERE incident_id=?""",
+              (json.dumps(receipt,sort_keys=True),json.dumps(continuation,sort_keys=True) if continuation else None,
+               'check_' + uuid.uuid4().hex if nonhealthy else row['request_id'],
+               time.time()+60 if nonhealthy else row['verification_due'], 'due' if row['verification_state']=='stale' else row['verification_state'], row['incident_id']))
+
         # One joined historical scan, not an incident-by-incident lookup. No
         # recovery or attempt is inferred from existing cards or session status.
         rows = center._connection.execute("""SELECT i.id, i.consumer_id, e.payload_json
@@ -124,11 +146,12 @@ def observe_degraded(center, token, incident_id, event):
         if any(group[k] != original[k] for k in group):
             raise ValidationError('health episode source identity cannot change')
         bind_source(center, token, prior)
+    pending_nonce = 'check_' + uuid.uuid4().hex if prior and prior['attempt_id'] else None
     center._connection.execute('''INSERT INTO incident_lifecycle
       (incident_id,generation,source_principal,metadata_json,group_key,source_id,latest_observed_at) VALUES (?,1,?,?,?,?,?)
       ON CONFLICT(incident_id) DO UPDATE SET generation=generation+1,
-      metadata_json=excluded.metadata_json, group_key=excluded.group_key, latest_observed_at=CASE WHEN latest_observed_at IS NULL OR excluded.latest_observed_at > latest_observed_at THEN excluded.latest_observed_at ELSE latest_observed_at END, verification_state=CASE WHEN request_id IS NOT NULL THEN 'stale' ELSE verification_state END''',
-      (incident_id,principal(center,token),json.dumps(group,sort_keys=True),group_key(group),group['source_id'],observed))
+      metadata_json=excluded.metadata_json, group_key=excluded.group_key, latest_observed_at=CASE WHEN latest_observed_at IS NULL OR excluded.latest_observed_at > latest_observed_at THEN excluded.latest_observed_at ELSE latest_observed_at END, verification_state=CASE WHEN attempt_id IS NOT NULL THEN 'due' ELSE verification_state END, request_id=CASE WHEN attempt_id IS NOT NULL THEN ? ELSE request_id END, verification_due=CASE WHEN attempt_id IS NOT NULL THEN ? ELSE verification_due END''',
+      (incident_id,principal(center,token),json.dumps(group,sort_keys=True),group_key(group),group['source_id'],observed,pending_nonce,time.time()))
 
 
 def view(center, incident_id):
@@ -139,12 +162,13 @@ def view(center, incident_id):
     result['group'] = json.loads(result.pop('metadata_json'))
     result.pop('source_principal')
     result.pop('executor_principal')
-    receipt = center._connection.execute('SELECT idempotency_key,request_id,result_json FROM incident_check_receipts WHERE request_id=? ORDER BY rowid DESC LIMIT 1',(result.get('request_id'),)).fetchone()
+    continuation = result.pop('continuation_json')
+    receipt = result.pop('last_check_receipt_json')
     if receipt:
-        receipt_result = json.loads(receipt['result_json'])
-        result['last_check_receipt'] = dict(idempotency_key=receipt['idempotency_key'], request_id=receipt['request_id'], result=receipt_result)
-        if result.get('verification_state') == 'degraded':
-            result['continuation'] = receipt_result.get('continuation')
+        result['last_check_receipt'] = json.loads(receipt)
+    if continuation:
+        result['continuation'] = json.loads(continuation)
+        result['continuation'].pop('delivery_id', None)
     return result
 
 
@@ -210,7 +234,7 @@ def finish(center, token, incident_id, key, body):
         center._connection.execute('INSERT INTO incident_finish_keys VALUES (?,?,?,?)',(key,incident_id,body['attempt_id'],encoded))
         center._connection.execute('INSERT INTO incident_verification_requests VALUES (?,?,?,?,?,?)',
             (request_id,incident_id,row['generation'],body['attempt_id'],encoded,json.dumps(result,sort_keys=True)))
-        center._connection.execute('''UPDATE incident_lifecycle SET attempt_state='work_finished', verification_state='due',verification_due=?,request_id=?,session_id=?,harness=?,attempt_id=?,executor_principal=? WHERE incident_id=?''',
+        center._connection.execute('''UPDATE incident_lifecycle SET attempt_state='work_finished', verification_state='due',verification_due=?,request_id=?,session_id=?,harness=?,attempt_id=?,executor_principal=?,continuation_json=NULL WHERE incident_id=?''',
             (due,request_id,body['session_id'],body['harness'],body['attempt_id'],principal(center,token),incident_id))
         center._audit(incident_id,'health.work_finished',principal(center,token),result)
         return result
@@ -227,7 +251,7 @@ def due_checks(center, token, project, source_id, limit=20):
         raise AuthorizationError('source verification scope is required')
     authenticated = principal(center, token)
     with center._lock:
-        rows=center._connection.execute("SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id WHERE i.project=? AND l.source_id=? AND (l.source_principal=? OR (l.source_principal='historical-unbound' AND ?)) AND i.state!='resolved' AND l.verification_state IN ('due','unknown') AND l.verification_due<=? ORDER BY l.verification_due LIMIT ?",(project,source_id,authenticated,int(exact),time.time(),max(1,min(100,int(limit))))).fetchall()
+        rows=center._connection.execute("SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id WHERE i.project=? AND l.source_id=? AND (l.source_principal=? OR (l.source_principal='historical-unbound' AND ?)) AND i.state!='resolved' AND l.verification_state IN ('due','unknown','degraded') AND l.verification_due<=? ORDER BY l.verification_due LIMIT ?",(project,source_id,authenticated,int(exact),time.time(),max(1,min(100,int(limit))))).fetchall()
         result=[]
         for row in rows:
             if json.loads(row['metadata_json'])['source_id']==source_id:
@@ -257,7 +281,7 @@ def check(center, token, incident_id, key, body):
             return json.loads(previous['result_json'])
         if row['request_id']!=body.get('request_id') or row['generation']!=body.get('generation'):
             raise ValidationError('stale verification request or generation')
-        if row['verification_state'] not in ('due','unknown'):
+        if row['verification_state'] not in ('due','unknown','degraded'):
             raise ValidationError('verification request already has a terminal result')
         if state!='unknown' and (not isinstance(body.get('evidence_refs'),list) or not body['evidence_refs']):
             raise ValidationError('a health measurement requires evidence_refs')
@@ -265,20 +289,29 @@ def check(center, token, incident_id, key, body):
         if state=='healthy':
             center._transition(incident_id,'resolved',principal(center,token))
             center.schedule_health_outcome(incident_id,'recovered','source-check:'+row['request_id'])
-        elif state=='degraded':
-            result['continuation']={f:row[f] for f in ('session_id','harness','attempt_id','request_id')}
-            result['continuation']['evidence_refs']=center._health_value(body['evidence_refs'])
-            result['continuation']['generation']=row['generation']
-        if state == 'degraded':
-            # Reuse the existing queue/policy gate. The new operation key is
-            # one per source check; Herder reads the incident-bound continuation
-            # and must resume this exact session under its normal STOP gate.
+        continuation = json.loads(row['continuation_json']) if row['continuation_json'] else None
+        if state == 'degraded' and not continuation:
+            continuation = {f:row[f] for f in ('session_id','harness','attempt_id','request_id','generation')}
+            continuation['evidence_refs'] = center._health_value(body['evidence_refs'])
             target = center._health_agent_delivery_target()
-            target['source_check_continuation'] = result['continuation']
-            result['continuation_delivery_id'] = center._schedule_delivery(
+            target['source_check_continuation'] = dict(continuation)
+            continuation['delivery_id'] = center._schedule_delivery(
                 incident_id, 'gptadmin.agent:health-diagnosis',
-                'source-check:' + row['request_id'], time.time(), target)
-        center._connection.execute('UPDATE incident_lifecycle SET verification_state=?,verification_due=? WHERE incident_id=?',(state,time.time()+60 if state=='unknown' else None,incident_id))
+                'source-check:' + row['attempt_id'], time.time(), target)
+        if state == 'degraded':
+            result['continuation'] = {k:v for k,v in continuation.items() if k != 'delivery_id'}
+            result['continuation_delivery_id'] = continuation.get('delivery_id')
+        if state == 'healthy':
+            continuation = None
+        # The accepted receipt keeps the submitted nonce. Only the next round
+        # rotates; a lost HTTP response can be reconciled through incident GET.
+        receipt = dict(idempotency_key=key,request_id=row['request_id'],result=result)
+        center._connection.execute("""UPDATE incident_lifecycle SET verification_state=?,verification_due=?,
+          request_id=?,continuation_json=?,last_check_receipt_json=? WHERE incident_id=?""",
+          (state,time.time()+60 if state!='healthy' else None,
+           'check_' + uuid.uuid4().hex if state!='healthy' else row['request_id'],
+           json.dumps(continuation,sort_keys=True) if continuation else None,
+           json.dumps(receipt,sort_keys=True),incident_id))
         center._connection.execute('INSERT INTO incident_check_receipts VALUES (?,?,?,?)',(key,row['request_id'],encoded,json.dumps(result,sort_keys=True)))
         center._audit(incident_id,'health.source_check',principal(center,token),{**result,'evidence_refs':center._health_value(body.get('evidence_refs') or [])})
         return result

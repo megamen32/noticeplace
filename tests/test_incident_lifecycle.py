@@ -39,12 +39,13 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(before,self.center._connection.execute("SELECT COUNT(*) FROM deliveries WHERE channel LIKE 'gptadmin.agent:%'").fetchone()[0])
         self.assertNotIn('continuation',unknown)
         self.assertEqual('open',self.center.get_incident(self.inc)['state'])
+        req=self.next_round()
         degraded=self.check(req,'degraded')
         self.assertEqual('session',degraded['continuation']['session_id'])
         self.assertEqual(req['generation'],degraded['continuation']['generation'])
         self.assertEqual(degraded['continuation'],self.center.get_incident(self.inc)['lifecycle']['continuation'])
         delivery=self.center._connection.execute('SELECT * FROM deliveries WHERE id=?',(degraded['continuation_delivery_id'],)).fetchone()
-        self.assertTrue(delivery['delivery_key'].endswith('source-check:'+req['request_id']))
+        self.assertTrue(delivery['delivery_key'].endswith('source-check:'+req['attempt_id']))
         import json
         self.assertEqual(degraded['continuation'],json.loads(delivery['target_json'])['source_check_continuation'])
         self.assertEqual(degraded,self.check(req,'degraded'))
@@ -124,9 +125,18 @@ class LifecycleTests(unittest.TestCase):
         body=dict(request_id=finished['request_id'],generation=finished['generation'],observed_state='healthy',actor='watchdog',evidence_refs=['probe'])
         self.assertEqual(401,request('POST',path+'/health/check-result','agent',body)[0])
         self.assertEqual(401,request('POST',path+'/health/verification','agent',body)[0])
-        status,result=request('POST',path+'/health/check-result','source',body,key='fresh-check')
+        status,result=request('POST',path+'/health/check-result','source',{**body,'observed_state':'degraded'},key='first-degraded')
+        self.assertEqual(200,status,result)
+        self.assertEqual('open',self.center.get_incident(self.inc)['state'])
+        self.assertEqual([],request('GET','/v1/verification-requests?project=test&source_id=probe','source')[1]['requests'])
+        self.center._connection.execute('UPDATE incident_lifecycle SET verification_due=0 WHERE incident_id=?',(self.inc,))
+        self.center._connection.commit()
+        second=request('GET','/v1/verification-requests?project=test&source_id=probe','source')[1]['requests'][0]
+        self.assertNotEqual(body['request_id'],second['request_id'])
+        status,result=request('POST',path+'/health/check-result','source',{**body,'request_id':second['request_id']},key='fresh-check')
         self.assertEqual(200,status,result)
         self.assertEqual('resolved',self.center.get_incident(self.inc)['state'])
+        self.assertEqual(1,self.center._connection.execute("SELECT COUNT(*) FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'").fetchone()[0])
 
     def test_historical_enrollment_has_groups_but_no_fabricated_health(self):
         self.center._connection.execute('DELETE FROM incident_lifecycle')
@@ -173,3 +183,112 @@ class LifecycleTests(unittest.TestCase):
         self.center.create_event('source','delayed-old',{**self.event,'observed_at':150})
         with self.assertRaises(ValidationError):
             self.center.resolve_event('source','late-recovery',{**self.event,'action':'resolve','event_type':'health.recovered','observed_at':200})
+
+    def next_round(self):
+        self.center._connection.execute('UPDATE incident_lifecycle SET verification_due=0 WHERE incident_id=?',(self.inc,))
+        self.center._connection.commit()
+        checks=self.center.due_source_checks('source','test','probe')
+        self.assertEqual(1,len(checks),'independent source must keep checking an unresolved incident')
+        return checks[0]
+
+    def test_degraded_then_held_executor_still_allows_next_healthy_check(self):
+        first=self.finish()
+        self.check(first,'degraded')
+        # No native resume or launch happens here: the executor may remain STOPped.
+        next_check=self.next_round()
+        self.assertNotEqual(first['request_id'],next_check['request_id'])
+        self.check(next_check,'healthy')
+        self.assertEqual('resolved',self.center.get_incident(self.inc)['state'])
+
+    def test_ordinary_degraded_preserves_one_continuation_and_fences_old_nonce(self):
+        first=self.finish()
+        degraded=self.check(first,'degraded')
+        old=self.next_round()
+        self.center.create_event('source','ordinary-new',{**self.event,'observed_at':300})
+        life=self.center.get_incident(self.inc)['lifecycle']
+        self.assertEqual(degraded['continuation'],life['continuation'])
+        with self.assertRaises(ValidationError): self.check(old,'healthy')
+        fresh=self.next_round()
+        self.assertNotEqual(old['request_id'],fresh['request_id'])
+        self.check(fresh,'degraded')
+        rows=self.center._connection.execute("SELECT * FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'").fetchall()
+        self.assertEqual(1,len(rows))
+
+    def test_repeated_degraded_rounds_schedule_once_per_finished_attempt(self):
+        first=self.finish()
+        result=self.check(first,'degraded')
+        second=self.next_round()
+        second_result=self.check(second,'degraded')
+        self.assertEqual(result['continuation'],second_result['continuation'])
+        self.assertEqual(result['continuation_delivery_id'],second_result['continuation_delivery_id'])
+        self.assertEqual(1,self.center._connection.execute("SELECT COUNT(*) FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'").fetchone()[0])
+
+    def test_unknown_reply_receipt_is_readable_after_nonce_rotation(self):
+        first=self.finish()
+        result=self.check(first,'unknown')
+        life=self.center.get_incident(self.inc)['lifecycle']
+        self.assertNotEqual(first['request_id'],life['request_id'])
+        receipt=life['last_check_receipt']
+        self.assertEqual('check:'+first['request_id']+':unknown',receipt['idempotency_key'])
+        self.assertEqual(first['request_id'],receipt['request_id'])
+        self.assertEqual(result,receipt['result'])
+        self.assertNotIn('continuation',life)
+
+    def test_new_attempt_clears_continuation_and_duplicate_finish_does_not_rearm(self):
+        first=self.finish()
+        self.check(first,'degraded')
+        current=self.center.get_incident(self.inc)['lifecycle']['request_id']
+        self.assertEqual(first,self.finish())
+        self.assertEqual(current,self.center.get_incident(self.inc)['lifecycle']['request_id'])
+        second=self.finish('two')
+        self.assertNotIn('continuation',self.center.get_incident(self.inc)['lifecycle'])
+        self.check(second,'degraded')
+        self.assertEqual(2,self.center._connection.execute("SELECT COUNT(*) FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'").fetchone()[0])
+
+    def test_additive_upgrade_rearms_old_terminal_degraded_without_new_delivery(self):
+        first=self.finish()
+        result=self.check(first,'degraded')
+        self.center._connection.execute("UPDATE incident_lifecycle SET request_id=?,verification_due=NULL WHERE incident_id=?",(first['request_id'],self.inc))
+        self.center._connection.execute('ALTER TABLE incident_lifecycle DROP COLUMN continuation_json')
+        self.center._connection.execute('ALTER TABLE incident_lifecycle DROP COLUMN last_check_receipt_json')
+        self.center._connection.commit()
+        reopened=NotificationCenter(Path(self.tmp.name)/'state.db',self.center._tokens)
+        self.addCleanup(reopened._connection.close)
+        life=reopened.get_incident(self.inc)['lifecycle']
+        self.assertIsNotNone(life['verification_due'])
+        self.assertNotEqual(first['request_id'],life['request_id'])
+        self.assertEqual(result['continuation'],life['continuation'])
+        self.assertEqual(first['request_id'],life['last_check_receipt']['request_id'])
+        self.assertEqual(1,reopened._connection.execute("SELECT COUNT(*) FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'").fetchone()[0])
+
+    def consumer(self,project='test'):
+        return self.center.create_consumer(project=project,name='Verifier fixture',policy=[dict(id='root',platform='telegram',action='message',target={'chat_id':-100},retry_interval_seconds=60,max_repeats=1)],max_severity='notice')
+
+    def test_registered_consumer_verifier_grant_preserves_db_scope_and_revocation(self):
+        consumer=self.consumer()
+        self.center._tokens['grant-owner']=dict(project='test',max_severity='emergency',incident_role='verifier',principal_id='source-owner',verification_owned_sources=True,verification_consumer_ids=[consumer['id']])
+        token=consumer['intake_token']
+        scope=self.center._token_scope(token)
+        self.assertEqual('verifier',scope.get('incident_role'))
+        self.assertEqual('consumer:'+consumer['id'],scope['principal_id'])
+        self.assertEqual('notice',scope['max_severity'])
+        self.assertEqual(consumer['id'],scope['consumer_id'])
+        event={**self.event,'dedup_key':'consumer-signal','source_id':'consumer:probe','correlation_id':'consumer-episode'}
+        incident=self.center.create_event(token,'consumer-open',event)['incident_id']
+        first=self.center.record_work_finished('agent',incident,'consumer-finish',dict(attempt_id='one',session_id='consumer-session',harness='codex'))
+        self.assertEqual(1,len(self.center.due_source_checks(token,'test','consumer:probe')))
+        self.center.record_source_check(token,incident,'consumer-healthy',dict(request_id=first['request_id'],generation=first['generation'],observed_state='healthy',evidence_refs=['probe']))
+        self.center._connection.execute('UPDATE consumers SET token_hash=? WHERE id=?',('revoked',consumer['id']))
+        self.center._connection.commit()
+        with self.assertRaises(AuthorizationError): self.center._token_scope(token)
+
+    def test_foreign_or_executor_or_ambiguous_consumer_grants_are_ignored(self):
+        consumer=self.consumer()
+        token=consumer['intake_token']
+        base=dict(project='test',incident_role='verifier',verification_owned_sources=True,verification_consumer_ids=[consumer['id']])
+        for grant in (dict(base,project='foreign'),dict(base,incident_role='executor'),dict(base,verification_consumer_ids=['other'])):
+            self.center._tokens['grant-owner']=grant
+            self.assertNotIn('incident_role',self.center._token_scope(token))
+        self.center._tokens['grant-owner']=base
+        self.center._tokens['grant-duplicate']=base
+        self.assertNotIn('incident_role',self.center._token_scope(token))

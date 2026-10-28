@@ -517,6 +517,20 @@ class NotificationCenter:
             if row is None:
                 raise AuthorizationError("invalid bearer token")
             scope = {"project": row["project"], "max_severity": row["max_severity"], "consumer_id": row["id"]}
+            # Consumer intake tokens remain DB-authenticated on every call.
+            # A server-owned exact-ID grant adds verification authority only;
+            # it never copies a bearer or overrides the stored project/ceiling.
+            grants = [grant for grant in self._tokens.values()
+                      if grant.get('incident_role') == 'verifier'
+                      and grant.get('project') == row['project']
+                      and isinstance(grant.get('verification_consumer_ids'), (list, tuple))
+                      and row['id'] in grant['verification_consumer_ids']]
+            if len(grants) == 1:
+                grant = grants[0]
+                scope.update(incident_role='verifier', principal_id='consumer:' + str(row['id']))
+                for field in ('verification_owned_sources', 'verification_sources'):
+                    if field in grant:
+                        scope[field] = grant[field]
         return scope
 
     def _scope(self, token: str, project: str) -> Mapping[str, Any]:
