@@ -87,9 +87,13 @@ def initialize(center):
                 center._connection.execute('ALTER TABLE incident_lifecycle ADD COLUMN ' + name + ' TEXT')
         # Upgrade existing accepted receipts without replaying a delivery. A
         # previously queued continuation retains its exact original operation.
+        # Pick the final receipt before paging: updating the lifecycle nonce
+        # must not hide a later receipt for that same legacy request.
         legacy = _migration_rows(center,
           'l.incident_id,l.generation,l.request_id,l.verification_state,l.verification_due,r.idempotency_key,r.result_json',
-          'incident_check_receipts r JOIN incident_lifecycle l ON r.request_id=l.request_id WHERE l.last_check_receipt_json IS NULL',
+          '''incident_check_receipts r JOIN incident_lifecycle l ON r.request_id=l.request_id
+            WHERE l.last_check_receipt_json IS NULL AND r.rowid=(SELECT MAX(latest.rowid)
+              FROM incident_check_receipts latest WHERE latest.request_id=r.request_id)''',
           'r.rowid', 'length(CAST(r.result_json AS BLOB))+length(CAST(r.idempotency_key AS BLOB))+length(CAST(l.incident_id AS BLOB))+length(CAST(l.request_id AS BLOB))+256')
         for row in legacy:
             result = json.loads(row['result_json'])

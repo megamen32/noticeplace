@@ -99,6 +99,37 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(request['attempt_id'],life['attempt_id'])
         self.assertGreater(sum('r.result_json,' in sql for sql in reads),2)
 
+    def test_legacy_receipt_pages_keep_latest_result_for_one_request(self):
+        import json
+        from unittest.mock import patch
+        from notification_center import incident_lifecycle
+        for state in ('unknown','degraded'):
+            with self.subTest(state=state):
+                req = self.finish('legacy:'+state)
+                latest = None
+                for index in range(3):
+                    latest = dict(incident_id=self.inc,request_id=req['request_id'],generation=req['generation'],
+                        observed_state=state,evidence_refs=['x'*1600],last=index)
+                    if state == 'degraded':
+                        latest['continuation'] = dict(session_id='session',harness='codex',attempt_id=req['attempt_id'],
+                            request_id=req['request_id'],generation=req['generation'],evidence_refs=['measurement:'+str(index)])
+                        latest['continuation_delivery_id'] = 'accepted-legacy-delivery:'+str(index)
+                    self.center._connection.execute('INSERT INTO incident_check_receipts VALUES (?,?,?,?)',
+                        ('legacy:'+state+':'+str(index),req['request_id'],'{}',json.dumps(latest)))
+                self.center._connection.execute('''UPDATE incident_lifecycle SET verification_state=?,
+                    last_check_receipt_json=NULL,continuation_json=NULL,completion_id=NULL WHERE incident_id=?''',(state,self.inc))
+                self.center._connection.commit()
+                with patch.object(incident_lifecycle,'MIGRATION_PAGE_BYTES',4096):
+                    incident_lifecycle.initialize(self.center)
+                life = self.center.get_incident(self.inc)['lifecycle']
+                self.assertEqual('legacy:'+state+':2',life['last_check_receipt']['idempotency_key'])
+                self.assertEqual(latest,life['last_check_receipt']['result'])
+                self.assertNotEqual(req['request_id'],life['request_id'])
+                if state == 'degraded':
+                    self.assertEqual(latest['continuation'],life['continuation'])
+                else:
+                    self.assertNotIn('continuation',life)
+
     def shared_episode(self, suffix, **changes):
         event = {**self.event, 'dedup_key': suffix, 'correlation_id': suffix, **changes}
         incident = self.center.create_event('source', 'intake:'+suffix, event)['incident_id']
