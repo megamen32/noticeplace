@@ -75,6 +75,12 @@ class HumanRequestTests(unittest.TestCase):
         for choices in ([{"label": "One", "value": "one"}], five_choices):
             with self.assertRaisesRegex(ValidationError, "between two and four"):
                 self.center.create_human_request("token", self.request(request_id=f"bad-{len(choices)}", choices=choices))
+        with self.assertRaisesRegex(ValidationError, "unique bounded label and value"):
+            self.center.create_human_request(
+                "token", self.request(request_id="long-ordinary-label", choices=[
+                    {"label": "x" * 81, "value": "long"}, {"label": "Later", "value": "later"},
+                ])
+            )
         with self.assertRaisesRegex(ValidationError, "not allowed"):
             self.center.resolve_human_request("token", "deploy-1", "telegram:7", "now")
 

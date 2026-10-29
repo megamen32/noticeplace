@@ -59,6 +59,8 @@ _SYNTHETIC_HEALTH_CORRELATION_PREFIX = "corr:live-health-canary:"
 _CHOICE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _CHOICE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _HEALTH_REPAIR_FIRST_PLAN_IDS = frozenset({"observe", "repair", "verify"})
+_HUMAN_REQUEST_CHOICE_LABEL_MAX = 80
+_TASK_DECISION_CHOICE_LABEL_MAX = 256
 
 
 class NotificationCenterError(Exception):
@@ -919,6 +921,10 @@ class NotificationCenter:
         self._scope(token, project)
         raw_choices = request.get("choices")
         choices: list[dict[str, str]] = []
+        choice_label_limit = (
+            _TASK_DECISION_CHOICE_LABEL_MAX if _task_context is not None
+            else _HUMAN_REQUEST_CHOICE_LABEL_MAX
+        )
         if mode == "choice":
             if not isinstance(raw_choices, list) or not 2 <= len(raw_choices) <= 4:
                 raise ValidationError("choice requests require between two and four choices")
@@ -928,7 +934,8 @@ class NotificationCenter:
                     raise ValidationError("human request choices must be objects")
                 label = str(raw.get("label") or "").strip()
                 value = str(raw.get("value") or "").strip()
-                if not label or not value or len(label) > 80 or len(value) > 128 or value in seen_values:
+                if (not label or not value or len(label) > choice_label_limit
+                        or len(value) > 128 or value in seen_values):
                     raise ValidationError("human request choices require unique bounded label and value")
                 seen_values.add(value)
                 choices.append({"label": label, "value": value})

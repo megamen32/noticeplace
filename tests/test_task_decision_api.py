@@ -159,6 +159,49 @@ class TaskDecisionApiTests(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
 
+    def test_task_decision_labels_match_board_256_character_bound(self) -> None:
+        actual_choices = [
+            {"value": "brief_table", "label": "Краткая таблица — только строки A, B, C с суммами и итог 2500"},
+            {"value": "table_with_total_row", "label": "Таблица с итоговой строкой — строки A, B, C плюс отдельная строка «Итого» с суммой 2500"},
+        ]
+        actual_mandate = _mandate(version="executor-question-labels")
+        actual_mandate.update(choices=actual_choices, timeout_value="brief_table")
+        with mock.patch.dict(os.environ, {
+            "EXMANAGER_NOTICE_QUESTION_BASE_URL": "https://notify.bezrabotnyi.com/_exmanager",
+        }), mock.patch("notification_center.http_api.ExManagerNoticeTransport", _FakeExManagerTransport):
+            status, created = self.request(
+                "POST", "/v1/task-decisions", "airlock-token", {"mandate": actual_mandate},
+            )
+            self.assertEqual(201, status)
+            self.assertEqual(actual_choices, created["question"]["choices"])
+
+            boundary_mandate = _mandate(version="executor-question-label-at-limit")
+            boundary_choices = [
+                {"value": "brief_table", "label": "x" * 256},
+                {"value": "table_with_total_row", "label": "y"},
+            ]
+            boundary_mandate.update(choices=boundary_choices, timeout_value="brief_table")
+            boundary_status, boundary_created = self.request(
+                "POST", "/v1/task-decisions", "airlock-token", {"mandate": boundary_mandate},
+            )
+            self.assertEqual(201, boundary_status)
+            self.assertEqual(boundary_choices, boundary_created["question"]["choices"])
+
+            over_limit_mandate = _mandate(version="executor-question-label-over-limit")
+            over_limit_choices = [
+                {"value": "brief_table", "label": "x" * 257},
+                {"value": "table_with_total_row", "label": "y"},
+            ]
+            over_limit_mandate.update(choices=over_limit_choices, timeout_value="brief_table")
+            rejected_status, rejected = self.request(
+                "POST", "/v1/task-decisions", "airlock-token", {"mandate": over_limit_mandate},
+            )
+
+        self.assertEqual(400, rejected_status)
+        self.assertIn("unique bounded label and value", rejected["error"])
+        self.assertEqual(2, len(_FakeExManagerTransport.instances))
+        self.assertEqual(2, sum(len(transport.submit_calls) for transport in _FakeExManagerTransport.instances))
+
     def test_board_answer_cas_uses_only_proposal_ref_and_herder_reads_same_row(self) -> None:
         herder_request_id = "d920a01e-a5f3-4dce-a640-b65b8e312433"
         _Authority.board_answer = None
