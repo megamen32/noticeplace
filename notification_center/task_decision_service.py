@@ -56,6 +56,70 @@ def _latest_accepted_direct_input(receipt: Mapping[str, Any]) -> tuple[str, str,
     return request_hash, input_id, job_id
 
 
+def _canonical_digest(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _board_task_decision_hashes(
+    *, task_ref: str, operation_id: str, project: str, recipient: str, purpose: str,
+    version: int, message: str, choices: list[dict[str, str]], timeout_value: str,
+    executor_question: Mapping[str, Any],
+) -> frozenset[str]:
+    """Rebuild Board's semantic and insertion-order legacy question hashes."""
+    semantic_question: dict[str, Any] = {
+        key: executor_question[key] for key in (
+            "humanRequestId", "sourceMessageId", "sourceMessageHash",
+            "sourceInputMessageId", "sourceJobId", "text", "choices", "timeoutValue",
+        )
+    }
+    semantic_question["contextRef"] = executor_question["contextRef"]
+    if "registrationRef" in executor_question:
+        semantic_question["registrationRef"] = dict(executor_question["registrationRef"])
+    else:
+        semantic_question["registrationMessageId"] = executor_question["registrationMessageId"]
+        semantic_question["registrationCallId"] = executor_question["registrationCallId"]
+    semantic_question["registrationTarget"] = dict(executor_question["registrationTarget"])
+    semantic_question["questionHash"] = executor_question["questionHash"]
+    material = {
+        "taskRef": task_ref, "operationId": operation_id, "project": project,
+        "recipient": recipient, "purpose": purpose, "version": version,
+        "message": message, "choices": choices, "timeoutValue": timeout_value,
+        "executorQuestion": semantic_question,
+    }
+    # Board's older constructor serialized this nested proof in a fixed field
+    # order. Recreate that supported contract from the already validated proof.
+    legacy_question: dict[str, Any] = {
+        key: executor_question[key] for key in (
+            "humanRequestId", "sourceMessageId", "sourceMessageHash",
+            "sourceInputMessageId", "sourceJobId", "text", "choices", "timeoutValue",
+        )
+    }
+    legacy_question["contextRef"] = executor_question["contextRef"]
+    if "registrationRef" in executor_question:
+        registration = executor_question["registrationRef"]
+        if not isinstance(registration, Mapping):
+            return frozenset()
+        legacy_question["registrationRef"] = {
+            "kind": registration["kind"],
+            "requestId": registration["requestId"],
+            "contextRef": registration["contextRef"],
+        }
+    else:
+        legacy_question["registrationMessageId"] = executor_question["registrationMessageId"]
+        legacy_question["registrationCallId"] = executor_question["registrationCallId"]
+    legacy_question["registrationTarget"] = {
+        "harness": executor_question["registrationTarget"]["harness"],
+        "sessionId": executor_question["registrationTarget"]["sessionId"],
+        "cwd": executor_question["registrationTarget"]["cwd"],
+    }
+    legacy_question["questionHash"] = executor_question["questionHash"]
+    legacy_material = {**material, "executorQuestion": legacy_question}
+    legacy = json.dumps(legacy_material, ensure_ascii=False, separators=(",", ":"))
+    semantic = _canonical_digest(material)
+    return frozenset((semantic, hashlib.sha256(legacy.encode("utf-8")).hexdigest()))
+
+
 class BoardTaskDecisionVerifier:
     """Verify task questions against current Board ownership and execution.
 
@@ -329,19 +393,65 @@ class BoardTaskDecisionVerifier:
                 return None
         return dict(card), dict(receipt), continuation
 
-    @staticmethod
-    def _task_reference_matches(context: Mapping[str, Any], receipt: Mapping[str, Any]) -> bool:
+    def _task_reference_matches(
+        self, context: Mapping[str, Any], card: Mapping[str, Any], receipt: Mapping[str, Any],
+        target: Mapping[str, Any],
+    ) -> bool:
         reference_id = str(context.get("task_decision_ref") or "")
         if not reference_id:
             return True  # Legacy Codex task decisions predate Board references.
         current = receipt.get("taskDecisionRequest")
-        if not isinstance(current, Mapping):
+        question = receipt.get("executorQuestion")
+        continuation = context.get("continuation")
+        actors = context.get("allowed_actors")
+        if (not isinstance(current, Mapping) or not isinstance(question, Mapping)
+                or not isinstance(continuation, Mapping) or not isinstance(actors, list)
+                or not all(isinstance(actor, str) and actor.strip() for actor in actors)
+                or actors != sorted(set(actors))):
             return False
+        purpose = str(context.get("purpose") or "")
+        version = str(context.get("version") or "")
+        try:
+            numeric_version = int(version)
+        except (TypeError, ValueError):
+            return False
+        if str(numeric_version) != version or numeric_version < 0:
+            return False
+        identity = [str(card.get("id") or ""), purpose, version]
+        expected_ref = "td-" + hashlib.sha256(
+            json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:40]
+        question_choices = target.get("question_choices")
+        message = target.get("question_text")
+        timeout_value = target.get("question_timeout_value")
+        original_continuation = dict(continuation)
+        if (not isinstance(question_choices, list) or not isinstance(message, str)
+                or not isinstance(timeout_value, str) or expected_ref != reference_id
+                or not purpose or not isinstance(current.get("requestHash"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", current["requestHash"])
+                or current.get("requestId") != reference_id or current.get("purpose") != purpose
+                or type(current.get("version")) is not int or current.get("version") != numeric_version
+                or current.get("requestHash") not in _board_task_decision_hashes(
+                    task_ref=str(card.get("id") or ""),
+                    operation_id=str(receipt.get("operationId") or ""),
+                    project=str(card.get("project") or ""), recipient=self._recipient,
+                    purpose=purpose, version=numeric_version, message=message,
+                    choices=question_choices, timeout_value=timeout_value,
+                    executor_question=question,
+                )):
+            return False
+        canonical = {
+            "task_ref": identity[0], "purpose": purpose, "version": version,
+            "mandate_ref": str(receipt.get("operationId") or ""),
+            "project": str(card.get("project") or ""), "recipient": self._recipient,
+            "message": message, "allowed_actors": actors, "choices": question_choices,
+            "timeout_value": timeout_value, "continuation": original_continuation,
+        }
+        calculated = _canonical_digest(canonical)
         return (
-            current.get("requestId") == reference_id
-            and str(current.get("requestHash") or "") == str(context.get("request_hash") or "")
-            and str(current.get("purpose") or "") == str(context.get("purpose") or "")
-            and str(current.get("version") or "") == str(context.get("version") or "")
+            isinstance(context.get("request_hash"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", context["request_hash"]) is not None
+            and context["request_hash"] == calculated
         )
 
     def verify(self, mandate: Mapping[str, Any]) -> dict[str, Any]:
@@ -412,7 +522,7 @@ class BoardTaskDecisionVerifier:
             str(context.get("task_ref") or ""), str(context.get("mandate_ref") or ""),
             expected_continuation=continuation,
         )
-        return bool(current and self._task_reference_matches(context, current[1]))
+        return bool(current and self._task_reference_matches(context, current[0], current[1], current[2]))
 
     def verify_board_answer(
         self, context: Mapping[str, Any], task_decision_ref: str, proposal_ref: str,
@@ -435,17 +545,17 @@ class BoardTaskDecisionVerifier:
         proposal = receipt.get("taskDecisionProposal")
         if not isinstance(question, Mapping) or not isinstance(decision_ref, Mapping) or not isinstance(proposal, Mapping):
             return None
-        expected_request_hash = str(context.get("request_hash") or "")
         expected_purpose = str(context.get("purpose") or "")
         expected_version = str(context.get("version") or "")
-        if (decision_ref.get("requestId") != task_decision_ref
-                or str(decision_ref.get("requestHash") or "") != expected_request_hash
+        if (not self._task_reference_matches(context, card, receipt, current_target)
+                or decision_ref.get("requestId") != task_decision_ref
                 or str(decision_ref.get("purpose") or "") != expected_purpose
                 or str(decision_ref.get("version") or "") != expected_version):
             return None
+        board_request_hash = str(decision_ref.get("requestHash") or "")
         if (proposal.get("proposalRef") != proposal_ref
                 or proposal.get("requestId") != task_decision_ref
-                or str(proposal.get("requestHash") or "") != expected_request_hash
+                or str(proposal.get("requestHash") or "") != board_request_hash
                 or str(proposal.get("purpose") or "") != expected_purpose
                 or str(proposal.get("version") or "") != expected_version
                 or proposal.get("humanRequestId") != continuation.get("human_request_id")
@@ -512,4 +622,4 @@ class BoardTaskDecisionVerifier:
             str(context.get("task_ref") or ""), str(context.get("mandate_ref") or ""),
             expected_continuation=continuation,
         )
-        return bool(current and self._task_reference_matches(context, current[1]))
+        return bool(current and self._task_reference_matches(context, current[0], current[1], current[2]))

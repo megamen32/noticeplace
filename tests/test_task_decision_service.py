@@ -456,17 +456,27 @@ class TaskDecisionServiceTests(unittest.TestCase):
         reference = "td-" + hashlib.sha256(
             json.dumps(["task-123", "execution-choice", "23"], separators=(",", ":")).encode()
         ).hexdigest()[:40]
-        request_hash = "a" * 64
+        board_question = question
+        board_material = {
+            "taskRef": "task-123", "operationId": OPERATION_ID,
+            "project": "integrator-dashboard", "recipient": "configured-owner",
+            "purpose": "execution-choice", "version": 23,
+            "message": question["text"], "choices": question["choices"],
+            "timeoutValue": question["timeoutValue"], "executorQuestion": board_question,
+        }
+        board_request_hash = hashlib.sha256(json.dumps(
+            board_material, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
         card["taskExecutionHistory"][-1]["taskDecisionRequest"] = {
             "requestId": reference,
-            "requestHash": request_hash,
+            "requestHash": board_request_hash,
             "purpose": "execution-choice",
             "version": 23,
         }
         card["taskExecutionHistory"][-1]["taskDecisionProposal"] = {
             "proposalRef": "proposal-1",
             "requestId": reference,
-            "requestHash": request_hash,
+            "requestHash": board_request_hash,
             "purpose": "execution-choice",
             "version": 23,
             "value": "csv",
@@ -480,13 +490,28 @@ class TaskDecisionServiceTests(unittest.TestCase):
         board = _Board(card)
         verifier = self.verifier(board)
         continuation = verifier.verify(_mandate(project="integrator-dashboard", timeout_value="csv"))["continuation"]
+        # Notice hashes its complete persisted mandate. This intentionally
+        # differs from Board's content-only task-question hash.
+        notice_material = {
+            "task_ref": "task-123", "purpose": "execution-choice", "version": "23",
+            "mandate_ref": OPERATION_ID, "project": "integrator-dashboard",
+            "recipient": "configured-owner", "message": question["text"],
+            "allowed_actors": ["telegram:42"],
+            "choices": question["choices"], "timeout_value": question["timeoutValue"],
+            "continuation": continuation,
+        }
+        notice_request_hash = hashlib.sha256(json.dumps(
+            notice_material, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
+        self.assertNotEqual(notice_request_hash, board_request_hash)
         context = {
             "task_ref": "task-123",
             "purpose": "execution-choice",
             "version": "23",
             "mandate_ref": OPERATION_ID,
-            "request_hash": request_hash,
+            "request_hash": notice_request_hash,
             "task_decision_ref": reference,
+            "allowed_actors": ["telegram:42"],
             "continuation": continuation,
         }
 
@@ -504,6 +529,52 @@ class TaskDecisionServiceTests(unittest.TestCase):
             "human_request_id": "d920a01e-a5f3-4dce-a640-b65b8e312433",
             "question_hash": question["questionHash"],
         }, answer)
+
+        task_request = card["taskExecutionHistory"][-1]["taskDecisionRequest"]
+        proposal = card["taskExecutionHistory"][-1]["taskDecisionProposal"]
+        self.assertNotEqual(notice_request_hash, task_request["requestHash"])
+        original_notice_hash = context["request_hash"]
+        context["request_hash"] = task_request["requestHash"]
+        self.assertIsNone(verifier.verify_board_answer(context, reference, "proposal-1"))
+        context["request_hash"] = original_notice_hash
+        original_proposal_hash = proposal["requestHash"]
+        proposal["requestHash"] = "f" * 64
+        self.assertIsNone(verifier.verify_board_answer(context, reference, "proposal-1"))
+        proposal["requestHash"] = original_proposal_hash
+        original_board_hash = task_request["requestHash"]
+        task_request["requestHash"] = "e" * 64
+        proposal["requestHash"] = "e" * 64
+        self.assertIsNone(verifier.verify_board_answer(context, reference, "proposal-1"))
+        task_request["requestHash"] = original_board_hash
+        proposal["requestHash"] = original_proposal_hash
+
+        # Also accept Board's supported pre-semantic constructor serialization,
+        # while continuing to bind the proposal to that exact Board reference.
+        legacy_question = {
+            key: question[key] for key in (
+                "humanRequestId", "sourceMessageId", "sourceMessageHash",
+                "sourceInputMessageId", "sourceJobId", "text", "choices", "timeoutValue",
+            )
+        }
+        legacy_question.update({
+            "contextRef": question["contextRef"],
+            "registrationMessageId": question["registrationMessageId"],
+            "registrationCallId": question["registrationCallId"],
+            "registrationTarget": {
+                "harness": "opencode", "sessionId": "opencode-session-17", "cwd": "/srv/qa/project",
+            },
+            "questionHash": question["questionHash"],
+        })
+        legacy_material = {**board_material, "executorQuestion": legacy_question}
+        legacy_board_hash = hashlib.sha256(json.dumps(
+            legacy_material, ensure_ascii=False, separators=(",", ":")
+        ).encode()).hexdigest()
+        self.assertNotEqual(notice_request_hash, legacy_board_hash)
+        task_request["requestHash"] = legacy_board_hash
+        proposal["requestHash"] = legacy_board_hash
+        self.assertEqual(answer, verifier.verify_board_answer(context, reference, "proposal-1"))
+        task_request["requestHash"] = board_request_hash
+        proposal["requestHash"] = board_request_hash
 
         # Saving the answer proposal is its own current Board CAS. It advances
         # the card version while keeping the original task decision version and
