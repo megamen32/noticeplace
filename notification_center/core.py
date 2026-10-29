@@ -1378,7 +1378,8 @@ class NotificationCenter:
     def _resolve_human_request_row(self, row: sqlite3.Row, actor: str, value: str, *,
                                    extra_allowed_actors: Collection[str] | None = None,
                                    verified_task_actor: bool = False,
-                                   task_decision_evidence: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                                   task_decision_evidence: Mapping[str, Any] | None = None,
+                                   enforce_task_deadline: bool = False) -> dict[str, Any]:
         """Resolve an already selected row; caller owns the lock and transport trust."""
         if row["kind"] != "user":
             raise ValidationError("secret requests require AskSecret/SSS, not an ordinary answer")
@@ -1410,15 +1411,17 @@ class NotificationCenter:
             })
             evidence = json.dumps(evidence_body,
                                   sort_keys=True, separators=(",", ":"))
+            deadline_predicate = " AND task_deadline_at>?" if enforce_task_deadline else ""
+            deadline_parameters = (resolved_at,) if enforce_task_deadline else ()
             update = self._connection.execute(
                 "UPDATE human_requests SET state='resolved', response_value=?, response_actor=?, resolved_at=?, "
                 "response_result_ref=?, task_decision_source='human', task_decision_value=?, "
                 "task_decision_actor=?, task_decided_at=?, task_decision_evidence_json=? "
                 "WHERE request_id=? AND state='pending' AND task_decision_source IS NULL "
                 "AND (task_control_state='clear' OR (task_control_state='acknowledged' AND task_control_kind='hold' AND task_resume_ref IS NOT NULL)) "
-                "AND task_notification_state='sent'",
+                "AND task_notification_state='sent'" + deadline_predicate,
                 (value, actor, resolved_at, self._selection_result_ref(str(row["request_id"]), value, actor),
-                 value, actor, resolved_at, evidence, row["request_id"]),
+                 value, actor, resolved_at, evidence, row["request_id"], *deadline_parameters),
             )
         else:
             update = self._connection.execute(
@@ -1430,6 +1433,9 @@ class NotificationCenter:
         if update.rowcount != 1:
             if current["state"] == "resolved" and current["response_actor"] == actor and current["response_value"] == value:
                 return self._human_request_result(current)
+            if (enforce_task_deadline and row["task_context_json"] and row["task_deadline_at"] is not None
+                    and float(row["task_deadline_at"]) <= resolved_at):
+                raise IdempotencyConflict("task answer arrived after its deadline")
             raise ValidationError(f"human request is {current['state']}")
         if value == "deep_analysis" and not row["native_harness"]:
             self._connection.execute(
@@ -1502,6 +1508,11 @@ class NotificationCenter:
                     "answer_accepted": False,
                     "control_requested": True,
                 }
+            deadline_at = row["task_deadline_at"]
+            if deadline_at is None or not math.isfinite(float(deadline_at)):
+                raise ValidationError("task question has no valid delivered-answer deadline")
+            if float(deadline_at) <= time.time():
+                raise IdempotencyConflict("task answer arrived after its deadline")
             evidence = {
                 "source": "exmanager_board",
                 "actor": actor,
@@ -1516,7 +1527,7 @@ class NotificationCenter:
             }
             result = self._resolve_human_request_row(
                 row, actor, value, extra_allowed_actors=[actor], verified_task_actor=True,
-                task_decision_evidence=evidence,
+                task_decision_evidence=evidence, enforce_task_deadline=True,
             )
             completion = self.human_request_completion(canonical_request_id)
             if not completion:

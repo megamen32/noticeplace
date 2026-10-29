@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from notification_center.core import AuthorizationError, NotificationCenter, ValidationError
+from notification_center.core import AuthorizationError, IdempotencyConflict, NotificationCenter, ValidationError
 from notification_center.http_api import DeliveryWorker, deliver_human_completion, send_human_request_telegram
 
 
@@ -216,7 +216,8 @@ class TaskDecisionTests(unittest.TestCase):
             "question_hash": "a" * 64,
         }
 
-        accepted = self.center.resolve_task_decision_from_board("token", task_decision_ref, "board-proposal-1")
+        with mock.patch("notification_center.core.time.time", return_value=1500.0):
+            accepted = self.center.resolve_task_decision_from_board("token", task_decision_ref, "board-proposal-1")
         current_request = self.center.get_human_request("token", herder_request_id)
         completion = accepted["completion"]
         idem = f"human-request:{herder_request_id}:attempt-1"
@@ -232,7 +233,8 @@ class TaskDecisionTests(unittest.TestCase):
              }) as resume, \
              mock.patch("notification_center.agent_job_helper.read_herder_human_request", return_value=herder_record):
             dispatch = deliver_human_completion(self.center, current_request, "exmanager-board", runner=object())
-        duplicate = self.center.resolve_task_decision_from_board("token", task_decision_ref, "board-proposal-1")
+        with mock.patch("notification_center.core.time.time", return_value=2000.0):
+            duplicate = self.center.resolve_task_decision_from_board("token", task_decision_ref, "board-proposal-1")
         herder_result = self.center.human_request_result_receipt("token", herder_request_id)
 
         self.assertEqual("accepted", accepted["answer_status"])
@@ -256,6 +258,59 @@ class TaskDecisionTests(unittest.TestCase):
         self.assertEqual(herder_request_id, accepted["completion"]["registry_request_id"])
         self.assertEqual(1, self.center._connection.execute("SELECT COUNT(*) FROM human_requests").fetchone()[0])
         self.assertEqual(1, self.center._connection.execute("SELECT COUNT(*) FROM human_request_completions").fetchone()[0])
+
+    def test_board_answer_after_delivered_deadline_cannot_win_while_timeout_worker_lags(self) -> None:
+        request = self.create()
+        request_id = str(request["request_id"])
+        canonical_request_id = self.center.task_decisions.canonical_request_id(request_id)
+        self.sent(request, at=100.0)
+        self.center._task_decision_verifier.board_answer = {
+            "request_id": request_id,
+            "proposal_ref": "late-board-proposal",
+            "actor": "testlogin",
+            "value": "continue",
+            "card_version": 24,
+            "stop_epoch": "initial-input-hash",
+            "source_message_id": "assistant-message-20",
+            "source_job_id": "dispatch-job-19",
+            "human_request_id": canonical_request_id,
+            "question_hash": "a" * 64,
+        }
+
+        with mock.patch("notification_center.core.time.time", return_value=1900.0):
+            with self.assertRaisesRegex(IdempotencyConflict, "arrived after its deadline"):
+                self.center.resolve_task_decision_from_board("token", request_id, "late-board-proposal")
+        still_pending = self.center.get_human_request("token", request_id)
+        self.assertEqual("pending", still_pending["state"])
+        self.assertIsNone(still_pending["response_value"])
+        self.assertIsNone(still_pending["task_decision"]["source"])
+
+        self.assertEqual(1, self.center.task_decisions.resolve_due(now_epoch=1900.0))
+        timed_out = self.center.get_human_request("token", request_id)
+        self.assertEqual("expired", timed_out["state"])
+        self.assertEqual(("timeout", "continue"),
+                         (timed_out["task_decision"]["source"], timed_out["task_decision"]["value"]))
+        self.assertIsNone(timed_out["response_value"])
+
+    def test_board_answer_deadline_is_rechecked_in_the_resolution_cas(self) -> None:
+        request = self.create()
+        request_id = str(request["request_id"])
+        self.sent(request, at=100.0)
+        self.center._task_decision_verifier.board_answer = {
+            "request_id": request_id, "proposal_ref": "boundary-proposal",
+            "actor": "testlogin", "value": "continue", "card_version": 24,
+            "stop_epoch": "initial-input-hash", "source_message_id": "assistant-message-20",
+            "source_job_id": "dispatch-job-19",
+            "human_request_id": self.center.task_decisions.canonical_request_id(request_id),
+            "question_hash": "a" * 64,
+        }
+
+        with mock.patch("notification_center.core.time.time", side_effect=[1899.999, 1900.0]):
+            with self.assertRaisesRegex(IdempotencyConflict, "arrived after its deadline"):
+                self.center.resolve_task_decision_from_board("token", request_id, "boundary-proposal")
+        current = self.center.get_human_request("token", request_id)
+        self.assertEqual("pending", current["state"])
+        self.assertIsNone(current["response_value"])
 
     def test_revoked_current_actor_policy_blocks_answer_and_timeout(self) -> None:
         request = self.create()
