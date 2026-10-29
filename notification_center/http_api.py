@@ -2001,14 +2001,18 @@ def deliver_human_completion(
             cwd = os.path.normpath(str(pending.get("cwd") or ""))
             idempotency_key = str(record.get("idempotencyKey") or "").strip()
             receipt = str(record.get("receipt") or "").strip()
+            legacy_receipt = f"agent-herder://{harness}/{session_id}/{idempotency_key}"
+            idempotency_prefix = f"human-request:{registry_request_id}:"
             if (
-                record.get("status") != "resumed"
+                str(record.get("requestId") or "") != registry_request_id
+                or record.get("status") != "resumed"
                 or str(record.get("resultRef") or "") != str(pending.get("result_ref") or "")
                 or str(target.get("agent") or target.get("harness") or "") != harness
                 or str(target.get("sessionId") or "") != session_id
                 or os.path.normpath(str(target.get("cwd") or "")) != cwd
-                or not idempotency_key
-                or receipt != f"agent-herder://{harness}/{session_id}/{idempotency_key}"
+                or not idempotency_key.startswith(idempotency_prefix)
+                or not idempotency_key.removeprefix(idempotency_prefix)
+                or (receipt != legacy_receipt and not re.fullmatch(r"resume-[0-9a-f]{32}", receipt))
             ):
                 return None
             input_id = "herder-resume-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:32]

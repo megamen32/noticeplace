@@ -189,7 +189,7 @@ class CompletionRouteTests(unittest.TestCase):
         result_ref = "6944969d-ac29-5003-fba0-a545f0c2891c"
         session_id = "opencode-l06-session"
         key = f"human-request:{request_id}:attempt-1"
-        transport_receipt = f"agent-herder://opencode/{session_id}/{key}"
+        transport_receipt = "resume-" + "4f" * 16
 
         class Center:
             def __init__(self):
@@ -244,22 +244,35 @@ class CompletionRouteTests(unittest.TestCase):
                 self.row.update(state=state, reason=reason)
                 return self.row.copy()
 
-        center = Center()
-        with patch.dict(os.environ, {"NOTIFY_HUMAN_COMPLETION_URL": NEW}), \
-                patch("notification_center.agent_job_helper.resume_bound_native_session", return_value={"status": "resumed"}) as resume, \
-                patch("notification_center.agent_job_helper.read_herder_human_request", return_value={
-                    "requestId": request_id, "status": "resumed", "resultRef": "different-answer",
-                    "target": {"agent": "opencode", "sessionId": "session", "cwd": "/tmp/l06"},
-                    "idempotencyKey": "k", "receipt": "agent-herder://opencode/session/k",
-                }):
-            result = deliver_human_completion(center, {"request_id": request_id}, "qa")
-            repeated = deliver_human_completion(center, {"request_id": request_id}, "qa")
+        valid_record = {
+            "requestId": request_id, "status": "resumed",
+            "resultRef": "6944969d-ac29-5003-fba0-a545f0c2891c",
+            "target": {"agent": "opencode", "sessionId": "session", "cwd": "/tmp/l06"},
+            "idempotencyKey": "human-request:1b45fd65-6013-4925-a781-afd5367d7b1f:attempt-1",
+            "receipt": "resume-" + "ab" * 16,
+        }
+        for changed in (
+            {"requestId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+            {"resultRef": "different-answer"},
+            {"target": {"agent": "opencode", "sessionId": "other-session", "cwd": "/tmp/l06"}},
+            {"idempotencyKey": ""},
+            {"idempotencyKey": "human-request:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:attempt-1"},
+            {"receipt": "resume-" + "z" * 32},
+        ):
+            with self.subTest(changed=changed):
+                center = Center()
+                record = {**valid_record, **changed}
+                with patch.dict(os.environ, {"NOTIFY_HUMAN_COMPLETION_URL": NEW}), \
+                        patch("notification_center.agent_job_helper.resume_bound_native_session", return_value={"status": "resumed"}) as resume, \
+                        patch("notification_center.agent_job_helper.read_herder_human_request", return_value=record):
+                    result = deliver_human_completion(center, {"request_id": request_id}, "qa")
+                    repeated = deliver_human_completion(center, {"request_id": request_id}, "qa")
 
-        self.assertEqual("unknown", result["status"])
-        self.assertEqual("unknown", repeated["status"])
-        self.assertEqual("unknown", center.row["state"])
-        self.assertEqual(1, center.resume_claims)
-        resume.assert_called_once()
+                self.assertEqual("unknown", result["status"])
+                self.assertEqual("unknown", repeated["status"])
+                self.assertEqual("unknown", center.row["state"])
+                self.assertEqual(1, center.resume_claims)
+                resume.assert_called_once()
 
 
 if __name__ == "__main__":
