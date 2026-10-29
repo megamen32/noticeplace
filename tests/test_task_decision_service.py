@@ -115,6 +115,36 @@ def _executor_question():
     return question
 
 
+def _open_code_card_with_question(question, direct_controls=None):
+    card = _card(
+        phase="waiting", hostId="qa-board", harness="opencode",
+        nativeSessionId="opencode-session-17", nativeTurnId=None,
+        nativeInputMessageId="input-message-18", nativeDispatchJobId="dispatch-job-19",
+        startedBy="testlogin",
+        projectBinding={
+            "contract": "integrator-host-readiness-v1", "projectId": "qa-project-1",
+            "cwd": "/srv/qa/project", "hostId": "qa-board", "harness": "opencode",
+        },
+    )
+    card["owner"] = "testlogin"
+    receipt = card["taskExecutionHistory"][-1]
+    receipt["executorQuestion"] = question
+    if direct_controls is not None:
+        receipt["sessionControls"] = {"direct": direct_controls}
+    return card
+
+
+def _rehash_executor_question(question):
+    hashed = {key: question[key] for key in (
+        "humanRequestId", "sourceMessageId", "sourceMessageHash", "sourceInputMessageId",
+        "sourceJobId", "text", "choices", "timeoutValue",
+    )}
+    question["questionHash"] = hashlib.sha256(
+        json.dumps(hashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return question
+
+
 class TaskDecisionServiceTests(unittest.TestCase):
     def verifier(self, board, actors=None):
         return BoardTaskDecisionVerifier(
@@ -321,6 +351,74 @@ class TaskDecisionServiceTests(unittest.TestCase):
                 with self.assertRaises(AuthorizationError):
                     self.verifier(_Board(card)).verify(_mandate(project="integrator-dashboard", timeout_value="csv"))
 
+    def test_latest_accepted_direct_input_is_the_current_question_source(self):
+        question = _executor_question()
+        question.pop("registrationMessageId")
+        question.pop("registrationCallId")
+        question["registrationRef"] = {
+            "kind": "herder-registry",
+            "requestId": question["humanRequestId"],
+            "contextRef": question["contextRef"],
+        }
+        direct = {
+            "phase": "accepted",
+            "requestHash": "d" * 64,
+            "nativeInputMessageId": "msg_direct_input_20",
+            "nativeDispatchJobId": "job_direct_dispatch_20",
+        }
+        question["sourceInputMessageId"] = direct["nativeInputMessageId"]
+        question["sourceJobId"] = direct["nativeDispatchJobId"]
+        _rehash_executor_question(question)
+        board = _Board(_open_code_card_with_question(question, [direct]))
+        verifier = self.verifier(board)
+
+        verified = verifier.verify(_mandate(project="integrator-dashboard", timeout_value="csv"))
+
+        self.assertEqual("msg_direct_input_20", verified["continuation"]["input_id"])
+        self.assertEqual("job_direct_dispatch_20", verified["continuation"]["job_id"])
+        self.assertEqual("d" * 64, verified["continuation"]["direct_request_hash"])
+        context = {
+            "task_ref": verified["task_ref"],
+            "mandate_ref": verified["mandate_ref"],
+            "continuation": verified["continuation"],
+        }
+        self.assertTrue(verifier.is_actor_allowed(context, "telegram:42"))
+
+    def test_old_pending_unknown_and_invalid_direct_inputs_are_not_current(self):
+        accepted = {
+            "phase": "accepted", "requestHash": "d" * 64,
+            "nativeInputMessageId": "msg_direct_input_20", "nativeDispatchJobId": "job_direct_dispatch_20",
+        }
+        old = {
+            "phase": "accepted", "requestHash": "c" * 64,
+            "nativeInputMessageId": "msg_old_input_19", "nativeDispatchJobId": "job_old_dispatch_19",
+        }
+        cases = [
+            ([old, accepted], "msg_old_input_19", "job_old_dispatch_19"),
+            ([{**accepted, "phase": "pending"}], "msg_direct_input_20", "job_direct_dispatch_20"),
+            ([old, {**accepted, "phase": "pending"}], "msg_old_input_19", "job_old_dispatch_19"),
+            ([{**accepted, "phase": "unknown"}], "msg_direct_input_20", "job_direct_dispatch_20"),
+            ([old, {**accepted, "phase": "unknown"}], "msg_old_input_19", "job_old_dispatch_19"),
+            ([{**accepted, "requestHash": "invalid"}], "msg_direct_input_20", "job_direct_dispatch_20"),
+            ([old, {**accepted, "requestHash": "invalid"}], "msg_old_input_19", "job_old_dispatch_19"),
+        ]
+        for controls, source_input, source_job in cases:
+            with self.subTest(controls=controls):
+                question = _executor_question()
+                question.pop("registrationMessageId")
+                question.pop("registrationCallId")
+                question["registrationRef"] = {
+                    "kind": "herder-registry",
+                    "requestId": question["humanRequestId"],
+                    "contextRef": question["contextRef"],
+                }
+                question["sourceInputMessageId"] = source_input
+                question["sourceJobId"] = source_job
+                _rehash_executor_question(question)
+                verifier = self.verifier(_Board(_open_code_card_with_question(question, controls)))
+                with self.assertRaises(AuthorizationError):
+                    verifier.verify(_mandate(project="integrator-dashboard", timeout_value="csv"))
+
     def test_board_answer_proposal_is_rechecked_from_current_card_cas_and_stop_epoch(self):
         card = _card(
             phase="waiting",
@@ -340,7 +438,21 @@ class TaskDecisionServiceTests(unittest.TestCase):
             },
         )
         card["owner"] = "testlogin"
-        card["taskExecutionHistory"][-1]["executorQuestion"] = _executor_question()
+        question = _executor_question()
+        question["sourceInputMessageId"] = "msg_direct_input_20"
+        question["sourceJobId"] = "job_direct_dispatch_20"
+        _rehash_executor_question(question)
+        receipt = card["taskExecutionHistory"][-1]
+        receipt["executorQuestion"] = question
+        direct_request_hash = "d" * 64
+        receipt["sessionControls"] = {
+            "direct": [{
+                "phase": "accepted", "requestHash": direct_request_hash,
+                "nativeInputMessageId": "msg_direct_input_20",
+                "nativeDispatchJobId": "job_direct_dispatch_20",
+            }],
+            "stops": [{"phase": "accepted", "requestHash": "historic-stop-request"}],
+        }
         reference = "td-" + hashlib.sha256(
             json.dumps(["task-123", "execution-choice", "23"], separators=(",", ":")).encode()
         ).hexdigest()[:40]
@@ -360,9 +472,9 @@ class TaskDecisionServiceTests(unittest.TestCase):
             "value": "csv",
             "authenticatedActor": "testlogin",
             "cardVersion": 23,
-            "stopEpoch": "input-message-18",
+            "stopEpoch": direct_request_hash,
             "sourceMessageId": "assistant-message-20",
-            "sourceJobId": "dispatch-job-19",
+            "sourceJobId": "job_direct_dispatch_20",
             "humanRequestId": "d920a01e-a5f3-4dce-a640-b65b8e312433",
         }
         board = _Board(card)
@@ -386,11 +498,11 @@ class TaskDecisionServiceTests(unittest.TestCase):
             "actor": "testlogin",
             "value": "csv",
             "card_version": 23,
-            "stop_epoch": "input-message-18",
+            "stop_epoch": direct_request_hash,
             "source_message_id": "assistant-message-20",
-            "source_job_id": "dispatch-job-19",
+            "source_job_id": "job_direct_dispatch_20",
             "human_request_id": "d920a01e-a5f3-4dce-a640-b65b8e312433",
-            "question_hash": _executor_question()["questionHash"],
+            "question_hash": question["questionHash"],
         }, answer)
 
         # Saving the answer proposal is its own current Board CAS. It advances
@@ -403,6 +515,19 @@ class TaskDecisionServiceTests(unittest.TestCase):
         self.assertEqual(24, after_proposal_cas["card_version"])
         self.assertEqual("23", context["version"])
 
+        direct = card["taskExecutionHistory"][-1]["sessionControls"]["direct"][-1]
+        direct["requestHash"] = "invalid"
+        card["taskExecutionHistory"][-1]["taskDecisionProposal"]["stopEpoch"] = "invalid"
+        self.assertIsNone(verifier.verify_board_answer(context, reference, "proposal-1"))
+        direct.update(phase="unknown", requestHash=direct_request_hash)
+        card["taskExecutionHistory"][-1]["taskDecisionProposal"]["stopEpoch"] = direct_request_hash
+        self.assertIsNone(verifier.verify_board_answer(context, reference, "proposal-1"))
+        direct["phase"] = "accepted"
+        card["taskExecutionHistory"][-1]["sessionControls"]["stops"].append({"phase": "unknown"})
+        self.assertIsNone(verifier.verify_board_answer(context, reference, "proposal-1"))
+        card["taskExecutionHistory"][-1]["sessionControls"]["stops"][-1]["phase"] = "accepted"
+        self.assertEqual(24, verifier.verify_board_answer(context, reference, "proposal-1")["card_version"])
+
         for change in (
             {"authenticatedActor": "attacker"},
             {"cardVersion": 22},
@@ -414,7 +539,7 @@ class TaskDecisionServiceTests(unittest.TestCase):
                 self.assertIsNone(verifier.verify_board_answer(context, reference, "proposal-1"))
                 card["taskExecutionHistory"][-1]["taskDecisionProposal"].update({
                     "authenticatedActor": "testlogin", "cardVersion": 23,
-                    "stopEpoch": "input-message-18", "sourceJobId": "dispatch-job-19",
+                    "stopEpoch": direct_request_hash, "sourceJobId": "job_direct_dispatch_20",
                 })
 
     def test_actor_and_timeout_checks_reverify_the_live_execution_receipt(self):

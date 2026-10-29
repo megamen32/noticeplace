@@ -35,6 +35,27 @@ def _clean_text(value: Any, *, limit: int, field: str) -> str:
     return result
 
 
+def _latest_accepted_direct_input(receipt: Mapping[str, Any]) -> tuple[str, str, str] | None:
+    """Return the exact latest accepted direct input, never an older attempt."""
+    controls = receipt.get("sessionControls")
+    direct = controls.get("direct") if isinstance(controls, Mapping) else None
+    if not isinstance(direct, list) or not direct:
+        return None
+    latest = direct[-1]
+    if not isinstance(latest, Mapping) or latest.get("phase") != "accepted":
+        return None
+    request_hash = latest.get("requestHash")
+    input_id = latest.get("nativeInputMessageId")
+    job_id = latest.get("nativeDispatchJobId")
+    if (not isinstance(request_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", request_hash)
+            or not isinstance(input_id, str) or not input_id.strip() or len(input_id) > 512
+            or any(ord(ch) < 32 for ch in input_id)
+            or not isinstance(job_id, str) or not job_id.strip() or len(job_id) > 512
+            or any(ord(ch) < 32 for ch in job_id)):
+        return None
+    return request_hash, input_id, job_id
+
+
 class BoardTaskDecisionVerifier:
     """Verify task questions against current Board ownership and execution.
 
@@ -175,6 +196,10 @@ class BoardTaskDecisionVerifier:
         else:
             input_id = receipt.get("nativeInputMessageId")
             job_id = receipt.get("nativeDispatchJobId")
+            direct_input = _latest_accepted_direct_input(receipt)
+            if direct_input is not None:
+                direct_request_hash, input_id, job_id = direct_input
+                continuation["direct_request_hash"] = direct_request_hash
             binding = receipt.get("projectBinding")
             project_id = binding.get("projectId") if isinstance(binding, Mapping) else None
             binding_host = binding.get("hostId") if isinstance(binding, Mapping) else None
@@ -443,7 +468,10 @@ class BoardTaskDecisionVerifier:
             latest_direct = direct[-1]
             if not isinstance(latest_direct, Mapping) or latest_direct.get("phase") != "accepted":
                 return None
-            expected_stop_epoch = str(latest_direct.get("requestHash") or "")
+            direct_input = _latest_accepted_direct_input(receipt)
+            if direct_input is None or continuation.get("direct_request_hash") != direct_input[0]:
+                return None
+            expected_stop_epoch = direct_input[0]
         else:
             expected_stop_epoch = str(receipt.get("messageInputId") or "")
         if not expected_stop_epoch or stop_epoch != expected_stop_epoch:
