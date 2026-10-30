@@ -964,7 +964,23 @@ class NativeCompletionUnavailable(RuntimeError):
     """The loopback refused the connection before receiving the completion."""
 
 
-def resume_bound_native_session(request_id: str, harness: str, session_id: str, cwd: str, result_ref: str, runner: Any = urllib.request.urlopen) -> dict[str, Any]:
+def bounded_human_answer(answer: Mapping[str, Any] | None) -> dict[str, str] | None:
+    """Bound the chosen answer for Herder: at most 512 characters, no control characters."""
+    if not isinstance(answer, Mapping):
+        return None
+
+    def clean(value: Any) -> str:
+        text = value if isinstance(value, str) else ""
+        return "".join(ch if ch.isprintable() else " " for ch in text).strip()[:512]
+
+    value = clean(answer.get("value"))
+    if not value:
+        return None
+    label = clean(answer.get("label"))
+    return {"value": value, "label": label} if label else {"value": value}
+
+
+def resume_bound_native_session(request_id: str, harness: str, session_id: str, cwd: str, result_ref: str, runner: Any = urllib.request.urlopen, answer: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Continue the one native session a question was bound to.
 
     This is Agent Herder's existing completion seam, not a second resume path:
@@ -994,6 +1010,10 @@ def resume_bound_native_session(request_id: str, harness: str, session_id: str, 
         "request_id": safe_request,
         "result_ref": safe_result,
     }
+    # Optional and additive: an older Herder ignores it. Secret answers never reach this path.
+    safe_answer = bounded_human_answer(answer)
+    if safe_answer:
+        body["answer"] = safe_answer
     request = urllib.request.Request(
         f"{base}/internal/human-requests/ask-user-completion",
         data=json.dumps(body, separators=(",", ":")).encode(),

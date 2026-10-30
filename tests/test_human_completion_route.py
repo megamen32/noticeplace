@@ -10,7 +10,7 @@ import urllib.request
 from unittest.mock import patch
 
 from notification_center.agent_job_helper import read_herder_human_request, resume_bound_native_session
-from notification_center.http_api import _human_completion_runner, deliver_human_completion
+from notification_center.http_api import _completion_answer, _human_completion_runner, deliver_human_completion
 
 
 OLD = "http://127.0.0.1:18787/internal/human-requests/ask-user-completion"
@@ -67,7 +67,7 @@ class CompletionRouteTests(unittest.TestCase):
             called.append((request.full_url, request.get_header("Authorization")))
             return object()
 
-        def native_resume(_rid, _harness, _sid, _cwd, _ref, routed_runner):
+        def native_resume(_rid, _harness, _sid, _cwd, _ref, routed_runner, **_answer):
             routed_runner(urllib.request.Request(OLD, data=b"{}", headers={
                 "Authorization": "Bearer fixture-herder-token",
             }, method="POST"), timeout=1)
@@ -114,6 +114,36 @@ class CompletionRouteTests(unittest.TestCase):
         payload = json.loads(request.data)
         self.assertEqual("human_request_get", payload["params"]["name"])
         self.assertEqual({"requestId": request_id}, payload["params"]["arguments"])
+
+    def test_task_answer_is_bounded_in_the_completion_body_and_is_optional(self) -> None:
+        request_id = "1b45fd65-6013-4925-a781-afd5367d7b1f"
+        result_ref = "6944969d-ac29-5003-fba0-a545f0c2891c"
+        bodies = []
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return None
+            def read(self, _limit): return json.dumps({"request_id": request_id, "status": "resumed"}).encode()
+
+        def runner(request, timeout):
+            bodies.append(json.loads(request.data))
+            return Response()
+
+        with patch("notification_center.agent_job_helper._herder_http_token", return_value="fixture-herder-token"),                 patch("notification_center.agent_job_helper._herder_loopback_profile", return_value={
+                    "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
+                }):
+            resume_bound_native_session(request_id, "opencode", "session-1", "/tmp", result_ref, runner,
+                                        answer={"value": "yes\x07" + "a" * 600, "label": "Да"})
+            resume_bound_native_session(request_id, "opencode", "session-1", "/tmp", result_ref, runner)
+
+        self.assertEqual({"value": ("yes " + "a" * 600)[:512], "label": "Да"}, bodies[0]["answer"])
+        self.assertEqual(result_ref, bodies[0]["result_ref"])
+        self.assertNotIn("answer", bodies[1])
+
+    def test_completion_answer_takes_the_label_of_the_choice_and_hides_secrets(self) -> None:
+        self.assertEqual({"value": "yes", "label": "Да"}, _completion_answer(
+            {"kind": "user", "response_value": "yes", "choices": [{"value": "yes", "label": "Да"}]}))
+        self.assertIsNone(_completion_answer({"kind": "secret", "response_value": "s3cr3t"}))
 
     def test_native_completion_uses_existing_protected_herder_bearer(self) -> None:
         request_id = "1b45fd65-6013-4925-a781-afd5367d7b1f"

@@ -1971,6 +1971,21 @@ def _human_completion_runner(runner: Any) -> Any:
     return send
 
 
+def _completion_answer(request: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The chosen value and label of an ordinary question; a secret answer stays opaque."""
+    if str(request.get("kind") or "user") == "secret":
+        return None
+    value = request.get("response_value")
+    if not isinstance(value, str) or not value:
+        return None
+    label = next(
+        (str(choice.get("label") or "") for choice in (request.get("choices") or [])
+         if isinstance(choice, Mapping) and str(choice.get("value") or "") == value),
+        "",
+    )
+    return {"value": value, "label": label}
+
+
 def deliver_human_completion(
     center: NotificationCenter,
     request: Mapping[str, Any],
@@ -2076,6 +2091,7 @@ def deliver_human_completion(
             str(pending.get("registry_request_id") or request_id),
             str(pending["harness"]), str(pending["session_id"]), str(pending["cwd"]),
             str(pending["result_ref"]), completion_runner,
+            answer=_completion_answer(request),
         )
     except NativeCompletionUnavailable as error:
         center.mark_human_completion(request_id, "retryable", str(error))
