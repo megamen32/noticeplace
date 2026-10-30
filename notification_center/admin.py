@@ -59,6 +59,17 @@ def parse_environment(path: Path) -> dict[str, str]:
     return values
 
 
+def _environment_json(encoded: str) -> str:
+    """Render compact JSON as one systemd EnvironmentFile value.
+
+    systemd keeps single-quoted content literally, so raw UTF-8 survives, while
+    backslash escapes from ensure_ascii would be dropped by systemd.
+    """
+    if "'" in encoded or "\n" in encoded or "\r" in encoded:
+        raise ValidationError("configuration JSON cannot contain single quotes or line breaks")
+    return f"'{encoded}'"
+
+
 def _atomic_environment_update(path: Path, updates: Mapping[str, str]) -> None:
     """Replace only named EnvironmentFile values, keeping mode and comments."""
     original = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -923,12 +934,12 @@ class AdminConfigStore:
         return {str(key): dict(route) for key, route in value.items()}
 
     def _apply_primary(self, scopes: Mapping[str, Mapping[str, Any]], actor: str, action: str, project: str, token: str) -> None:
-        encoded = json.dumps(scopes, sort_keys=True, separators=(",", ":"))
-        self._apply(self.primary_env, {"NOTIFY_CENTER_TOKENS_JSON": encoded}, actor, action, project, token)
+        encoded = json.dumps(scopes, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        self._apply(self.primary_env, {"NOTIFY_CENTER_TOKENS_JSON": _environment_json(encoded)}, actor, action, project, token)
 
     def _apply_routes(self, routes: Mapping[str, Mapping[str, Any]], actor: str) -> None:
-        encoded = json.dumps(routes, sort_keys=True, separators=(",", ":"))
-        self._apply(self.routes_env, {"TELEGRAM_SEVERITY_ROUTES_JSON": encoded}, actor, "routes_changed", "routes", None)
+        encoded = json.dumps(routes, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        self._apply(self.routes_env, {"TELEGRAM_SEVERITY_ROUTES_JSON": _environment_json(encoded)}, actor, "routes_changed", "routes", None)
 
     def _apply(self, path: Path, updates: Mapping[str, str], actor: str, action: str, subject: str, token: str | None) -> None:
         if self.apply_service:

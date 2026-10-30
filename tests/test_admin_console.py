@@ -14,7 +14,7 @@ from unittest import mock
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from notification_center.admin import AdminConfigStore
+from notification_center.admin import AdminConfigStore, _environment_json, parse_environment
 from notification_center.admin_http import build_admin_handler
 from notification_center.core import NotificationCenter, ValidationError
 from notification_center.health_workflow import HealthWorkflow
@@ -113,7 +113,7 @@ class AdminConsoleTests(unittest.TestCase):
             line for line in self.primary.read_text(encoding="utf-8").splitlines()
             if line.startswith("NOTIFY_CENTER_TOKENS_JSON=")
         )
-        scopes = json.loads(env_line.split("=", 1)[1])
+        scopes = json.loads(env_line.split("=", 1)[1].strip("'"))
         self.assertEqual(["health-diagnosis"], scopes["old-token"]["agent_jobs"])
         self.assertEqual("critical", scopes["old-token"]["max_severity"])
 
@@ -186,6 +186,22 @@ class AdminConsoleTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "keywords"):
             self.store.save_health_config({"targets": [{"target": "local", "log_rules": [{"backend": "journalctl", "keywords": ["x"] * 33}]}]}, "sso:operator")
         self.assertEqual(before, self.health_config.read_bytes())
+
+    def test_non_ascii_project_env_json_is_systemd_literal_and_still_parses(self) -> None:
+        project = "Олег и Никита"
+        token = self.store.create_project(project, "notice", "sso:operator")
+        self.assertEqual(project, json.loads(parse_environment(self.primary)["NOTIFY_CENTER_TOKENS_JSON"])[token]["project"])
+        self.assertEqual(project, self.store._scopes()[token]["project"])
+        line = next(line for line in self.primary.read_text(encoding="utf-8").splitlines() if line.startswith("NOTIFY_CENTER_TOKENS_JSON="))
+        systemd_value = line.split("=", 1)[1]
+        self.assertTrue(systemd_value.startswith("'") and systemd_value.endswith("'"))
+        # systemd keeps single-quoted content literally: strip the quotes, no backslash processing.
+        self.assertEqual(project, json.loads(systemd_value[1:-1])[token]["project"])
+        # Legacy ASCII-escaped lines written by the old writer still read back.
+        self.primary.write_text("NOTIFY_CENTER_TOKENS_JSON=" + json.dumps({"t": {"project": "Ол", "max_severity": "notice"}}) + "\n", encoding="utf-8")
+        self.assertEqual("Ол", json.loads(parse_environment(self.primary)["NOTIFY_CENTER_TOKENS_JSON"])["t"]["project"])
+        with self.assertRaises(ValidationError):
+            _environment_json(json.dumps({"a": "it's"}))
 
     def test_routes_are_validated_and_persisted_with_a_restart(self) -> None:
         self.store.set_routes({"critical": {"chat_id": "-100123", "message_thread_id": 42}}, "sso:operator")
