@@ -120,6 +120,13 @@ def _board_task_decision_hashes(
     return frozenset((semantic, hashlib.sha256(legacy.encode("utf-8")).hexdigest()))
 
 
+_HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def _valid_harness(value: Any) -> bool:
+    return isinstance(value, str) and _HARNESS_RE.fullmatch(value) is not None
+
+
 class BoardTaskDecisionVerifier:
     """Verify task questions against current Board ownership and execution.
 
@@ -239,7 +246,7 @@ class BoardTaskDecisionVerifier:
         host_id = receipt.get("hostId")
         session_id = receipt.get("nativeSessionId")
         harness = receipt.get("harness")
-        if (harness not in {"codex", "opencode"} or not isinstance(host_id, str) or not host_id.strip()
+        if (not _valid_harness(harness) or not isinstance(host_id, str) or not host_id.strip()
                 or len(host_id) > 256 or not isinstance(session_id, str) or not session_id.strip()
                 or len(session_id) > 512):
             return None

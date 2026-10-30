@@ -689,5 +689,27 @@ class TaskDecisionServiceTests(unittest.TestCase):
             self.assertIsNone(BoardTaskDecisionVerifier.from_environment())
 
 
+    def test_any_bounded_harness_verifies_through_the_neutral_binding_path(self):
+        question = _executor_question()
+        question["registrationTarget"]["harness"] = "zcode"
+        card = _open_code_card_with_question(question)
+        receipt = card["taskExecutionHistory"][-1]
+        receipt["harness"] = "zcode"
+        receipt["projectBinding"]["harness"] = "zcode"
+
+        verified = self.verifier(_Board(card)).verify(_mandate(project="integrator-dashboard"))
+
+        self.assertEqual("zcode", verified["continuation"]["harness"])
+        self.assertEqual("opencode-session-17", verified["continuation"]["session_id"])
+        self.assertEqual("dispatch-job-19", verified["continuation"]["job_id"])
+        self.assertNotIn("turn_id", verified["continuation"])
+
+    def test_rejects_empty_spaced_and_overlong_harness_strings(self):
+        for harness in ("", "open code", "z" * 65, "zcode/../x"):
+            with self.subTest(harness=harness):
+                with self.assertRaises(AuthorizationError):
+                    self.verifier(_Board(_card(harness=harness))).verify(_mandate())
+
+
 if __name__ == "__main__":
     unittest.main()
