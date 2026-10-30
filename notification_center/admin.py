@@ -29,7 +29,7 @@ from .incident_model_policy import (
 )
 from .telegram_cleanup import SETTING as CLEANUP_SETTING, enabled as cleanup_enabled
 
-PROJECT_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
+PROJECT_PATTERN = re.compile(r"^[\w.-](?:[\w .-]{0,94}[\w.-])?$")
 ROUTE_SEVERITIES = ("notice", "important", "critical", "emergency", "log")
 DEFAULT_CALLS_OVERRIDE_PATH = Path("/etc/systemd/system/notification-center.service.d/zzzz-disable-automatic-calls.conf")
 DEFAULT_HEALTH_CONFIG_PATH = Path("/etc/health-incident-fleet.json")
@@ -999,7 +999,7 @@ class AdminConfigStore:
     @staticmethod
     def _validate_project(project: str) -> None:
         if not PROJECT_PATTERN.fullmatch(project):
-            raise ValidationError("project must use letters, digits, dot, underscore, or hyphen")
+            raise ValidationError("project must use letters, digits, spaces, dot, underscore, or hyphen")
 
     @staticmethod
     def _validate_severity(severity: str) -> None:
