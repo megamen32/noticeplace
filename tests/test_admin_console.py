@@ -117,6 +117,122 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertEqual(["health-diagnosis"], scopes["old-token"]["agent_jobs"])
         self.assertEqual("critical", scopes["old-token"]["max_severity"])
 
+    def test_console_normalization_preserves_lifecycle_v2_scopes(self) -> None:
+        """A console action must never erase reviewed lifecycle-v2 fields.
+
+        Rebuilding the scope map from a whitelist dropped incident_role,
+        principal_id and the verification grants, which broke the
+        work-finished transition for every executor token.
+        """
+        scopes = {
+            "source-token": {
+                "project": "fleet-health", "max_severity": "notice",
+                "incident_role": "verifier", "principal_id": "source:fleet-health",
+                "verification_sources": ["host:roomhacker-server-100"],
+            },
+            "executor-token": {
+                "project": "fleet-health", "max_severity": "notice",
+                "incident_role": "executor", "principal_id": "executor:fleet-health",
+            },
+            "producer-token": {
+                "project": "other", "max_severity": "notice",
+                "incident_role": "producer", "principal_id": "source:other",
+                "verification_owned_sources": True,
+                "verification_consumer_ids": ["consumer-1"],
+            },
+        }
+        self.primary.write_text(
+            f'NOTIFY_CENTER_DB={self.database}\n'
+            f'NOTIFY_CENTER_TOKENS_JSON={json.dumps(scopes)}\n'
+            'OTHER=unchanged\n',
+            encoding="utf-8",
+        )
+
+        normalized = self.store._scopes()
+
+        self.assertEqual(3, len(normalized))
+        self.assertEqual("verifier", normalized["source-token"]["incident_role"])
+        self.assertEqual("source:fleet-health", normalized["source-token"]["principal_id"])
+        self.assertEqual(["host:roomhacker-server-100"], normalized["source-token"]["verification_sources"])
+        self.assertEqual("executor", normalized["executor-token"]["incident_role"])
+        self.assertEqual("executor:fleet-health", normalized["executor-token"]["principal_id"])
+        self.assertTrue(normalized["producer-token"]["verification_owned_sources"])
+        self.assertEqual(["consumer-1"], normalized["producer-token"]["verification_consumer_ids"])
+
+    def test_console_action_keeps_lifecycle_v2_fields_and_token_values(self) -> None:
+        """set_project_severity changes the severity and nothing else."""
+        scopes = {
+            "executor-token": {
+                "project": "fleet-health", "max_severity": "notice",
+                "incident_role": "executor", "principal_id": "executor:fleet-health",
+            },
+        }
+        self.primary.write_text(
+            f'NOTIFY_CENTER_DB={self.database}\n'
+            f'NOTIFY_CENTER_TOKENS_JSON={json.dumps(scopes)}\n'
+            'OTHER=unchanged\n',
+            encoding="utf-8",
+        )
+
+        self.store.set_project_severity("fleet-health", "critical", "test")
+
+        env_line = next(
+            line for line in self.primary.read_text(encoding="utf-8").splitlines()
+            if line.startswith("NOTIFY_CENTER_TOKENS_JSON=")
+        )
+        written = json.loads(env_line.split("=", 1)[1].strip("'"))
+        self.assertEqual(["executor-token"], list(written))
+        self.assertEqual("critical", written["executor-token"]["max_severity"])
+        self.assertEqual("executor", written["executor-token"]["incident_role"])
+        self.assertEqual("executor:fleet-health", written["executor-token"]["principal_id"])
+
+    def test_console_normalization_still_drops_unknown_scope_fields(self) -> None:
+        """Unknown fields keep their existing drop behaviour."""
+        self.primary.write_text(
+            f'NOTIFY_CENTER_DB={self.database}\n'
+            'NOTIFY_CENTER_TOKENS_JSON={"old-token":{"project":"existing","max_severity":"notice","unknown_field":"x"}}\n'
+            'OTHER=unchanged\n',
+            encoding="utf-8",
+        )
+        normalized = self.store._scopes()
+        self.assertNotIn("unknown_field", normalized["old-token"])
+
+    def test_console_normalization_rejects_invalid_lifecycle_values(self) -> None:
+        """Validation of lifecycle-v2 values must not be weakened."""
+        cases = [
+            ({"incident_role": "root"}, "incident_role must be producer, verifier or executor"),
+            ({"principal_id": ""}, "principal_id must be an explicit bounded identity"),
+            ({"verification_sources": ["*"]}, "verification sources must be explicit unique exact identities"),
+            ({"verification_owned_sources": "yes"}, "verification_owned_sources must be boolean"),
+            ({"verification_consumer_ids": ["*"]}, "consumer grants require exact reviewed identities"),
+        ]
+        for extra, message in cases:
+            with self.subTest(field=sorted(extra)):
+                scope = {"project": "existing", "max_severity": "notice", **extra}
+                self.primary.write_text(
+                    f'NOTIFY_CENTER_DB={self.database}\n'
+                    f'NOTIFY_CENTER_TOKENS_JSON={json.dumps({"old-token": scope})}\n',
+                    encoding="utf-8",
+                )
+                with self.assertRaises(ValidationError) as caught:
+                    self.store._scopes()
+                self.assertIn(message, str(caught.exception))
+
+    def test_console_normalization_keeps_duplicate_principals_of_separate_scopes(self) -> None:
+        """Each scope is validated on its own; uniqueness is not a live-map rule."""
+        scopes = {
+            "first": {"project": "one", "max_severity": "notice", "principal_id": "source:one"},
+            "second": {"project": "two", "max_severity": "notice", "principal_id": "source:one"},
+        }
+        self.primary.write_text(
+            f'NOTIFY_CENTER_DB={self.database}\n'
+            f'NOTIFY_CENTER_TOKENS_JSON={json.dumps(scopes)}\n',
+            encoding="utf-8",
+        )
+        normalized = self.store._scopes()
+        self.assertEqual("source:one", normalized["first"]["principal_id"])
+        self.assertEqual("source:one", normalized["second"]["principal_id"])
+
     def test_health_dashboard_is_first_and_projects_live_workflow_state(self) -> None:
         center = self.store._consumer_notification_center()
         workflow = HealthWorkflow(center, callback_secret="x" * 32)

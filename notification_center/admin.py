@@ -896,7 +896,49 @@ class AdminConfigStore:
                 if not isinstance(scope["automatic_health_diagnosis"], bool):
                     raise ValidationError("automatic_health_diagnosis must be boolean")
                 normalized[token]["automatic_health_diagnosis"] = scope["automatic_health_diagnosis"]
+            # Lifecycle-v2 fields belong to the credential, not to the console.
+            # Rebuilding the scope from a whitelist silently erased
+            # incident_role, principal_id and the verification grants, which
+            # broke the work-finished transition for every executor token.
+            # Keep the reviewed v2 fields exactly as stored, so a console action
+            # can only change what it was explicitly asked to change.
+            for field in ("incident_role", "principal_id", "verification_sources",
+                          "verification_owned_sources", "verification_consumer_ids"):
+                if field not in scope:
+                    continue
+                normalized[token][field] = self._validate_lifecycle_field(field, scope[field])
         return normalized
+
+    @staticmethod
+    def _validate_lifecycle_field(field: str, value: Any) -> Any:
+        """Validate one reviewed lifecycle-v2 scope field."""
+        if field == "incident_role":
+            if value not in ("producer", "verifier", "executor"):
+                raise ValidationError("incident_role must be producer, verifier or executor")
+            return value
+        if field == "principal_id":
+            if not isinstance(value, str) or not value.strip() or len(value) > 128:
+                raise ValidationError("principal_id must be an explicit bounded identity")
+            if any(ord(character) < 32 or ord(character) == 127 for character in value):
+                raise ValidationError("principal_id must be an explicit bounded identity")
+            return value
+        if field == "verification_owned_sources":
+            if not isinstance(value, bool):
+                raise ValidationError("verification_owned_sources must be boolean")
+            return value
+        if field == "verification_sources":
+            if (not isinstance(value, list)
+                    or any(not isinstance(item, str) or not item.strip() or "*" in item for item in value)
+                    or len(value) != len(set(value))):
+                raise ValidationError("verification sources must be explicit unique exact identities")
+            return list(value)
+        if field == "verification_consumer_ids":
+            if (not isinstance(value, list)
+                    or any(not isinstance(item, str) or not item or "*" in item for item in value)
+                    or len(value) != len(set(value))):
+                raise ValidationError("consumer grants require exact reviewed identities")
+            return list(value)
+        raise ValidationError("unsupported lifecycle scope field")
 
     def _routes(self) -> dict[str, dict[str, Any]]:
         raw = parse_environment(self.routes_env).get("TELEGRAM_SEVERITY_ROUTES_JSON", "{}")

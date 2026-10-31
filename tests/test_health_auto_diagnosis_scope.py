@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from notification_center.admin import AdminConfigStore
+from notification_center.admin import AdminConfigStore, parse_environment
 from notification_center.core import AuthorizationError, NotificationCenter, ValidationError
 from notification_center.health_workflow import HealthWorkflow
 
@@ -98,7 +98,7 @@ class AutomaticDiagnosisScopeTests(unittest.TestCase):
         self.assertIs(store._scopes()['fixture-token']['automatic_health_diagnosis'], False)
         store.create_project('unrelated.fixture', 'notice', 'fixture-human')
         store.set_project_severity('unrelated.fixture', 'important', 'fixture-human')
-        persisted = json.loads(primary.read_text().split('=', 1)[1])
+        persisted = json.loads(parse_environment(primary)['NOTIFY_CENTER_TOKENS_JSON'])
         self.assertIs(persisted['fixture-token']['automatic_health_diagnosis'], False)
 
     def test_nonboolean_policy_is_rejected(self):
@@ -118,7 +118,7 @@ class AutomaticDiagnosisScopeTests(unittest.TestCase):
         restarts = []
         store = AdminConfigStore(primary, self.root / 'routes.env', self.root / 'setter-state', restart=lambda: restarts.append(True))
         store.set_project_health_diagnosis('noticeplace.qa-default', False, 'fixture-request', expected_current=True)
-        persisted = json.loads(primary.read_text().split('=', 1)[1])
+        persisted = json.loads(parse_environment(primary)['NOTIFY_CENTER_TOKENS_JSON'])
         self.assertIs(persisted['fixture-token']['automatic_health_diagnosis'], False)
         self.assertEqual(len(restarts), 1)
         self.assertTrue(list((self.root / 'setter-state' / 'rollbacks').glob('*')))
