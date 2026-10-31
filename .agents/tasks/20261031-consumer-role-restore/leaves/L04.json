@@ -1,0 +1,26 @@
+{
+ "id": "L04",
+ "label": "Живая приёмка перехода work-finished и независимой проверки",
+ "status": "done",
+ "owner": "release-core",
+ "harness": "codex",
+ "model": "gpt-6.1-sol",
+ "tier": "frontier",
+ "complexity": "M",
+ "depends_on": [
+  "L01",
+  "L02",
+  "L03"
+ ],
+ "estimate_minutes": {
+  "minimum": 25,
+  "maximum": 45
+ },
+ "description": "Проверить на живом API восстановленный переход «исполнитель отчитался -> источник подтвердил -> инцидент закрыт». 1) Взять открытый fleet-health эпизод inc_50a3d5274cbe4b9388ec9f9973787df6 (или актуальный открытый на момент проверки) и отправить work-finished executor-токеном fleet-health с корректным Idempotency-Key: ожидается HTTP 200, инцидент остаётся открытым, попытка исполнения записана, verification_state='due'. 2) Отправить независимый check-result токеном источника fleet-health: ожидается HTTP 200 и закрытие инцидента. 3) Проверить, что живой health-сигнал fleet-health по server-44 создаёт новый эпизод, привязанный к source:fleet-health, и принимает повторные события. 4) Сверить, что консоль (/api) показывает корректные scope-ы и что независимая проверка закрывает инцидент. Значения токенов в отчёте не печатать — только статусы и идентификаторы эпизодов. Реальных звонков и сообщений людям не делать; проверка идёт через API и изолированный тестовый контур.",
+ "acceptance": "work-finished executor-токеном: HTTP 200, инцидент открыт, verification_state='due' (не 401). check-result токеном источника: HTTP 200, инцидент resolved. Новый живой сигнал fleet-health: эпизод создан с source_principal=source:fleet-health, повторное событие принято без ошибки привязки. Зафиксировать фактические HTTP-коды и идентификаторы эпизодов в отчёте листа.",
+ "affected_files": [
+  "API /v1/incidents/<id>/health/work-finished",
+  "API /v1/incidents/<id>/health/check-result"
+ ],
+ "note": "work-finished 200 (инцидент остался open, verification due) -> check-result 200 (resolved/healthy); живой сигнал создал эпизод source:fleet-health, повтор deduplicated; отчёт REPORT-L04.md."
+}

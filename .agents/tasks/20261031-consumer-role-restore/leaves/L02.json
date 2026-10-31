@@ -1,0 +1,23 @@
+{
+ "id": "L02",
+ "label": "Миграция привязки эпизодов на именованный principal источника",
+ "status": "done",
+ "owner": "release-core",
+ "harness": "codex",
+ "model": "gpt-6.1-sol",
+ "tier": "frontier",
+ "complexity": "M",
+ "depends_on": [
+  "L01"
+ ],
+ "estimate_minutes": {
+  "minimum": 20,
+  "maximum": 35
+ },
+ "description": "После L01 principal токена-источника становится именованным (source:<project>), а 36 эпизодов в БД остаются привязаны к старому principal вида credential:<sha256(токен)>. Из-за этого bind_source перестанет совпадать и эпизод не примет ни повторное событие источника, ни независимую проверку. Выполнить однократную аддитивную миграцию в БД mesh: для каждой строки incident_lifecycle с source_principal LIKE 'credential:%' заменить значение на principal_id токена, чей sha256 даёт этот хеш (соответствие вычисляется из v2-карты, 36 строк). Менять только source_principal; incident_id, source_id, group_key, generation, verification_state и остальные поля не трогать. Сначала выгрузить полный набор заменяемых строк и сверить счёт (ожидается 36) и уникальность соответствия (один хеш -> один principal_id). Миграцию выполнять в транзакции; при любом несовпадении — откат, без частичного состояния. Обработать только mesh-БД; прямой sqlite к локальной БД не применять, если узел работает в mesh-режиме.",
+ "acceptance": "После миграции: 0 строк с source_principal LIKE 'credential:%'; каждый заменённый source_principal равен principal_id из v2-карты для своего токена; количество строк до == после (36); все прочие поля строк incident_lifecycle побайтно не изменились (сравнение снимка до/после по колонкам кроме source_principal); mesh-БД консистентна, noticeplace-mesh-api.service на 100/44/88 не сообщает об ошибках после рестарта.",
+ "affected_files": [
+  "mesh БД /run/noticeplace-mesh/sql.sock (server-100)"
+ ],
+ "note": "37 строк credential:% -> именованные principal (36 плановых + 1 живой эпизод того же principal); только source_principal изменён; после COMMIT 0 credential-строк."
+}

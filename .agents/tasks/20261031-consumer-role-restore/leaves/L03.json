@@ -1,0 +1,24 @@
+{
+ "id": "L03",
+ "label": "Регрессия: admin-консоль не должна терять v2-поля при записи",
+ "status": "done",
+ "owner": "release-core",
+ "harness": "codex",
+ "model": "gpt-6.1-sol",
+ "tier": "frontier",
+ "complexity": "M",
+ "depends_on": [
+  "L01"
+ ],
+ "estimate_minutes": {
+  "minimum": 20,
+  "maximum": 40
+ },
+ "description": "Устранить сам дефект, а не только его последствие: admin-консоль (notification_center/admin.py, AdminConfigStore._scopes) нормализует карту токенов, отбрасывая incident_role, principal_id, verification_sources, verification_owned_sources, verification_consumer_ids, поэтому любое действие консоли (create_project, set_project_severity, revoke_project, project_health_diagnosis_changed) стирает роли и ломает переход work-finished. Исправить нормализацию так, чтобы она сохраняла все поля существующих scope-ов и добавляла/меняла только явно переданные, а не пересобирала карту с нуля по белому списку. Не ослаблять валидацию: неизвестные поля и некорректные значения по-прежнему отвергаться. Добавить регрессионный тест в tests/: карта с v2-ролями -> любое действие консоли -> роли и поля источника/исполнителя сохранены, значения токенов не изменились, количество проектов корректно.",
+ "acceptance": "Новый тест в tests/ падает на текущем коде до исправления и проходит после; на живой v2-карте нормализация консоли сохраняет incident_role у всех 53 токенов (сейчас 0) и не меняет значения токенов; существующие тесты консоли проходят без регрессии (pytest tests/ -k 'admin or console or scope' — зелёные); код задеплоен тем же релизным путём, что и L01, на 100/44/88.",
+ "affected_files": [
+  "notification_center/admin.py",
+  "tests/test_admin_console.py"
+ ],
+ "note": "_scopes() сохраняет 5 v2-полей с per-field валидацией; 53/53 роли сохраняются на живой карте; тесты admin/console 48 passed; коммит c031ab6 в origin/main; релизы установлены на 100/44/88."
+}

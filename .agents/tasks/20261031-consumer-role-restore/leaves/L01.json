@@ -1,0 +1,23 @@
+{
+ "id": "L01",
+ "label": "Восстановление v2-полей в карте токенов на 100/44/88",
+ "status": "done",
+ "owner": "release-core",
+ "harness": "codex",
+ "model": "gpt-6.1-sol",
+ "tier": "frontier",
+ "complexity": "L",
+ "depends_on": [],
+ "estimate_minutes": {
+  "minimum": 25,
+  "maximum": 45
+ },
+ "description": "Вернуть в /etc/notification-center.env на server-100/44/88 поля incident_role, principal_id, verification_sources, verification_owned_sources для 53 токенов, потерянных 30.10 при записи через admin-консоль. Источник значений: артефакт cutover /var/lib/notification-center-admin/rollbacks/1793319447-32213782/notification-center.env (v2-карта, 53 токена, candidate_scope_hash=8914b2fdd7db61a11192fceb937cf8e0b60d293998113c5b8ab295614db2d602). Значения токенов НЕ менять: v2-карта строго подмножество живой по значениям. Политические поля (max_severity, agent_jobs, automatic_health_diagnosis) сохранить из живой карты без изменений — расхождений 0. Проект «Олег и Никита» (28VBEOA...) остаётся единственным plain-токеном без reviewed-роли. Callback-карту /home/roomhacker/.config/gptadmin/health-callback.json НЕ менять: она уже содержит правильные executor-токены 27 проектов. Запись атомарная, mode 0600, uid сохранён; перед записью — резервная копия каждого узла; откат — восстановление копии. Порты, БД и прочие настройки каждого узла не трогать. После записи: restart соответствующих noticeplace-сервисов на узле и сверка scope-хеша на 100/44/88.",
+ "acceptance": "На каждом из 100/44/88: scope-хеш карты == 8914b2fdd7db61a11192fceb937cf8e0b60d293998113c5b8ab295614db2d602 для 53 токенов; incident_role присутствует у всех 53; principal_id непустой у всех v2-токенов; значения токенов совпадают с прежними (ни один producer-токен не изменился); set(проекты) == прежние 28; callback-карта не изменена (sha256 до == после). Продюсерские токены из /etc/fleet-health.env, /etc/fail2ban/notify-center.env, /etc/gptadmin/notify.env, /etc/telegramauto-ha/tgc/runtime*.env, /etc/noticeplace-voice-mcp.env принимаются API без изменений.",
+ "affected_files": [
+  "/etc/notification-center.env (server-100)",
+  "/etc/notification-center.env (server-44)",
+  "/etc/notification-center.env (server-88)"
+ ],
+ "note": "53 v2-роли восстановлены на 100/44/88; v2subset_hash==candidate; значения токенов и политполя не изменены; backup + идемпотентная атомарная запись."
+}
