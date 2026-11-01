@@ -140,11 +140,27 @@ class ReadyBindingTests(unittest.TestCase):
 
     def _delivery_tick(self) -> None:
         """Run the production bounded pool, not a manual completion helper."""
-        entry = runpy.run_path(str(Path(__file__).resolve().parents[1] / "bin" / "notify-center"))
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader(
+            "notice_delivery_daemon", str(Path(__file__).resolve().parents[1] / "bin" / "notify-center"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        daemon = importlib.util.module_from_spec(spec)
+        loader.exec_module(daemon)
         worker = http_api.DeliveryWorker(self.center, object())
-        with patch("time.sleep", side_effect=InterruptedError("one bounded tick")):
-            with self.assertRaises(InterruptedError):
-                entry["worker_loop"](worker, "agent", 2)
+        # Since f3c3d21 the pool waits on shutdown_event.wait, so the bounded
+        # tick stops through the event instead of a patched time.sleep.
+        stop = threading.Event()
+        real_iteration = daemon.worker_iteration
+        def bounded_iteration(*args, **kwargs):
+            result = real_iteration(*args, **kwargs)
+            if bounded_iteration.seen >= 1:
+                stop.set()
+            bounded_iteration.seen += 1
+            return result
+        bounded_iteration.seen = 0
+        with patch.object(daemon, "worker_iteration", bounded_iteration):
+            daemon.worker_loop(worker, "agent", 2, shutdown_event=stop)
 
     def _make_due(self) -> None:
         with self.center._lock, self.center._connection:
@@ -663,7 +679,9 @@ class ReadyBindingTests(unittest.TestCase):
         completion = _HerderHandler.completions[0]
         self.assertEqual("/internal/human-requests/ask-user-completion", completion["path"])
         self.assertEqual(request_id, completion["body"]["request_id"])
-        self.assertNotIn("repair", json.dumps(completion["body"]))
+        # Since e423952 the bounded answer crosses to Herder so the resumed
+        # session can act on it; secret answers still never do.
+        self.assertEqual({"value": "repair", "label": "Да, починить"}, completion["body"].get("answer"))
 
         # The resumed session reads the canonical answer from Notice Place.
         canonical = self._call("noticeplace_question_result", {"request_id": request_id})

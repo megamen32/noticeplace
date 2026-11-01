@@ -20,10 +20,10 @@ def test_instructions_recovery_names_real_resolve_flow():
     recovery = data_recovery = noticeplace_instructions()["api"]["recovery"]
     assert "action='resolve'" in data_recovery
     assert "НЕТ" in recovery  # для обычных инцидентов /health/* эндпоинтов нет — явно
-    # Repair-first: an executor resolves a health incident only with an
-    # independent source verification, never with the plan-selection gate.
-    assert "независимая проверка источника" in recovery
-    assert "source_id и verifier_id различаются" in recovery
+    # Repair-first: since d93c331 the executor publishes work-finished and the
+    # independent source closes the incident; the gate is not plan selection.
+    assert "work-finished" in recovery
+    assert "независимый watchdog/source" in recovery
     assert "requires explicit plan selection" not in recovery
 
 

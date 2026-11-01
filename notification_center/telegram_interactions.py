@@ -1031,6 +1031,7 @@ class TelegramInteractionPoller:
                             base_text=current_text,
                             chat_id=str(chat.get("id") or ""),
                             message_id=message.get("message_id"),
+                            entities=message.get("entities"),
                             choice_buttons=[{"choice_id": str(choice["choice_id"]), "label": str(choice["label"]),
                                              "callback_data": self._codec.encode("choice", incident_id, choice_id=str(index))}
                                             for index, choice in enumerate(self._center.latest_choice_request(incident_id)["choices"])],

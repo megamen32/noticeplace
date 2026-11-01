@@ -635,12 +635,20 @@ class HumanRequestHttpTests(unittest.TestCase):
         self.assertEqual("pending", result["status"])
 
     def test_ask_human_is_the_first_canonical_agent_tool(self) -> None:
-        """Make the preferred human interaction obvious during MCP discovery."""
+        """Make the preferred human interaction obvious during MCP discovery.
+
+        Since c875297 the public MCP contract is the single unified
+        ``noticeplace`` tool; the human question lives in its
+        ``noticeplace_ask_human`` action with the same 2..4 choices bound.
+        """
         tools = tool_specs()
-        self.assertEqual("ask_human", tools[0]["name"])
-        schema = tools[0]["inputSchema"]
-        self.assertEqual(2, schema["properties"]["choices"]["minItems"])
-        self.assertEqual(3, schema["properties"]["choices"]["maxItems"])
+        self.assertEqual(["noticeplace"], [tool["name"] for tool in tools])
+        actions = tools[0]["inputSchema"]["properties"]["action"]
+        self.assertIn("noticeplace_ask_human", actions["enum"])
+        self.assertIn("ask_human", actions["enum"])
+        # The unified description makes the human question discoverable and
+        # the handler keeps the same 2..4 choices bound (notify_mcp.py).
+        self.assertIn("choices", tools[0]["description"])
 
 
 if __name__ == "__main__":

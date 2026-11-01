@@ -74,6 +74,8 @@ class DeliveryWorkerTests(unittest.TestCase):
 
         worker = DeliveryWorker(
             self.center, Telegram(), android_phone=Android(),
+            # This scenario owns the quiet window: 0..24 is always quiet, so a
+            # critical call is suppressed while emergency still goes out.
             android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=24,
         )
         self.assertEqual(2, worker.run_once())
@@ -180,7 +182,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         worker = DeliveryWorker(
             self.center, Telegram(), android_phone=Android(),
             android_phone_emergency_call_escalation_seconds=0,
-            android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=24,
+            android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=0,
         )
         with mock.patch("notification_center.http_api.time.time", return_value=10**12):
             self.assertEqual(1, worker.run_once())
@@ -528,6 +530,9 @@ class DeliveryWorkerTests(unittest.TestCase):
             self.center,
             type("Telegram", (), {"send": lambda *_args: None})(),
             call_adapters={"phone.call": Phone()},
+            # The automatic-call quiet hours are a wall-clock policy; this
+            # scenario is about the adapter, so the window stays open.
+            android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=0,
         )
         self.assertEqual(1, worker.run_once())
         row = self.center._connection.execute(
@@ -592,7 +597,8 @@ class DeliveryWorkerTests(unittest.TestCase):
             def send(self, *_args):
                 raise AssertionError("telegram.call must not use message sender")
 
-        DeliveryWorker(self.center, Telegram(), call_adapters={"telegram.call": Call()}).run_once()
+        DeliveryWorker(self.center, Telegram(), call_adapters={"telegram.call": Call()},
+                           android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=0).run_once()
         row = self.center._connection.execute(
             "SELECT status FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)
         ).fetchone()
@@ -1655,13 +1661,14 @@ class DeliveryWorkerTests(unittest.TestCase):
         class Matrix:
             def send(self, payload: dict[str, object]) -> dict[str, object]:
                 calls.append(payload)
-                return {"answered": True, "actor": "matrix:@bezrabotnyi:chat.example"}
+                return {"answered": True, "actor": "@bezrabotnyi:chat.example"}
 
         class Telegram:
             def send(self, _payload: dict[str, object]) -> None:
                 raise AssertionError("Telegram is not the matrix escalation adapter")
 
-        self.assertEqual(1, DeliveryWorker(self.center, Telegram(), matrix_call=Matrix()).run_once())
+        self.assertEqual(1, DeliveryWorker(self.center, Telegram(), matrix_call=Matrix(),
+                                                 android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=0).run_once())
         self.assertEqual("acknowledged", self.center.get_incident(created["incident_id"])["state"])
         self.assertEqual(1, len(calls))
 
@@ -1802,7 +1809,8 @@ class DeliveryWorkerTests(unittest.TestCase):
         class Android:
             can_phone_call = True
 
-        self.assertEqual(1, DeliveryWorker(self.center, Telegram(), matrix_call=Matrix(), android_phone=Android()).run_once())
+        self.assertEqual(1, DeliveryWorker(self.center, Telegram(), matrix_call=Matrix(), android_phone=Android(),
+                                                 android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=0).run_once())
         queued = self.center.claim_due_deliveries(now_epoch=10**12)
         self.assertEqual(
             ["android.phone.call", "telegram.main"],
@@ -1994,7 +2002,8 @@ class DeliveryWorkerTests(unittest.TestCase):
                 calls.append(payload)
                 return {"answered": False, "actor": None}
 
-        worker = DeliveryWorker(self.center, Telegram(), matrix_call=Matrix())
+        worker = DeliveryWorker(self.center, Telegram(), matrix_call=Matrix(),
+                                   android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=0)
         rows = self.center._connection.execute(
             "SELECT channel, due_at FROM deliveries WHERE incident_id = ? ORDER BY due_at",
             (created["incident_id"],),
@@ -2034,13 +2043,14 @@ class DeliveryWorkerTests(unittest.TestCase):
         class Matrix:
             def send(_self, _payload: dict[str, object]) -> dict[str, object]:
                 self.center.resolve(created["incident_id"], "producer")
-                return {"answered": True, "actor": "matrix:@bezrabotnyi:chat.example"}
+                return {"answered": True, "actor": "@bezrabotnyi:chat.example"}
 
         class Telegram:
             def send(self, _payload: dict[str, object]) -> None:
                 raise AssertionError("Telegram is not the matrix escalation adapter")
 
-        self.assertEqual(1, DeliveryWorker(self.center, Telegram(), matrix_call=Matrix()).run_once())
+        self.assertEqual(1, DeliveryWorker(self.center, Telegram(), matrix_call=Matrix(),
+                                                 android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=0).run_once())
         self.assertEqual("resolved", self.center.get_incident(created["incident_id"])["state"])
         status = self.center._connection.execute(
             "SELECT status FROM deliveries WHERE incident_id = ? AND channel = 'matrix.call'", (created["incident_id"],)

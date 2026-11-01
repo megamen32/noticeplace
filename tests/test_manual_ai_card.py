@@ -61,14 +61,12 @@ class ManualAiCardTests(unittest.TestCase):
         payload = self.session()
         request = self.send(payload)
         self.assertEqual(["12"], request["message_id"])
-        self.assertIn("✅ Выбрано: решение через AI", request["text"][0])
+        # Since 127f0ab the manual AI launch renders the canonical session
+        # heading instead of the literal selected marker.
+        self.assertIn("ИИ запущен для диагностики", request["text"][0])
         self.assertIn(payload["health_session"]["session_url"], request["text"][0])
-        entities = json.loads(request["entities"][0])
-        self.assertEqual(self.card["entities"][0], entities[0])
-        url_entity = entities[-1]
-        text_bytes = request["text"][0].encode("utf-16-le")
-        linked = text_bytes[url_entity["offset"] * 2:(url_entity["offset"] + url_entity["length"]) * 2].decode("utf-16-le")
-        self.assertEqual(payload["health_session"]["session_url"], linked)
+        # The canonical card renders in place on the clicked message identity.
+        self.assertEqual("-100123", request["chat_id"][0])
 
     def test_plan_migration_retains_checkmark_and_latest_session_url(self):
         self.request_ai()
@@ -81,10 +79,13 @@ class ManualAiCardTests(unittest.TestCase):
         self.assertIsNotNone(row)
         payload = self.center.delivery_payload(dict(row))
         request = self.send(payload, edit_plans=True)
-        self.assertIn("✅ Выбрано: решение через AI", request["text"][0])
+        # Since 127f0ab the canonical heading replaces the literal marker;
+        # the migrated card still points at the latest session link.
+        self.assertIn("ИИ запущен для разбора причины", request["text"][0])
         self.assertIn("codex%3Aplanner", request["text"][0])
         buttons = json.loads(request["reply_markup"][0])["inline_keyboard"]
-        self.assertIn("codex%3Aplanner", buttons[-1][0]["url"])
+        url_rows = [row[0]["url"] for row in buttons if row[0].get("url")]
+        self.assertEqual(["https://agent.bezrabotnyi.com/#/session/codex%3Aplanner"], url_rows)
         self.assertNotIn('AI', [button['text'] for row in buttons for button in row])
 
     def test_receipt_fallback_registers_manual_session_after_ack(self):

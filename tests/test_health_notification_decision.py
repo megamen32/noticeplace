@@ -214,6 +214,15 @@ class HealthNotificationDecisionTests(unittest.TestCase):
                 return Response({'models': ['minimax-coding-plan/MiniMax-M3.1-Flash'], 'stale': False})
             if '/api/autopilot/sessions/' in url:
                 return Response({'enabled': True, 'sessionId': 'real-native-id'})
+            if '/api/settings/automation/disarm' in url:
+                # Since the fail-closed owner gate, the launch also confirms
+                # the fleet-wide Herder lever is open and every required node
+                # is uniquely confirmed before admitting.
+                return Response({'ok': True,
+                                 'state': {'disarmed': False,
+                                           'records': [{'scope': '*', 'forbidden': False}]},
+                                 'nodes': [{'hostId': host, 'status': 'confirmed'}
+                                           for host in ('server-100', 'server-44', 'server-88')]})
             if '/api/automation/project-launch' in url:
                 requests.append(request)
                 return Response({'outcome': 'accepted', 'operation_id': 'op-quiet',
@@ -225,6 +234,8 @@ class HealthNotificationDecisionTests(unittest.TestCase):
             return Response({'ok': True, 'sessionId': 'real-native-id', 'created': True})
         profile = {'url': 'http://127.0.0.1:18787/api/sessions/new-or-resume', 'name': 'diagnosis',
             'harness': 'opencode', 'cwd': self.tmp.name, 'instruction': 'Read only.', 'mode': 'queue',
+            # Since 772aa87 the launch fails closed without its dedicated bearer.
+            'health_launch_token': 'test-health-launch-token',
             'orchestrator_name': 'planner', 'orchestrator_model': 'configured', 'orchestrator_requested_model': 'configured'}
         details = {'messages': [{'role': 'assistant', 'text': json.dumps({'status': 'diagnosis_complete',
             'diagnosis': 'Сервис работает.', 'notify_user': False, 'notification_reason': 'Действий человека не требуется.'})}]}

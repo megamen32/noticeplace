@@ -294,7 +294,9 @@ class RepairFirstExecutorTests(unittest.TestCase):
             message=json.loads(next(r for r in requests if 'project-launch' in r.full_url).data)['message']
             for forbidden in ('Diagnose only','Do not inspect repositories','invoke tools','exactly one JSON','exactly three','OmniRoute'):
                 self.assertNotIn(forbidden,message)
-            for required in ('Get Shit Done','gsd-debug','gsd-quick','AGENTS.md','реального потребителя','autosell-hourly-watch','service_runtime','94c0e99e2166018e1ef84c84',
+            # Since 3619722 the contract names the project's own workflow
+            # (AGENTS.md) instead of mandating the GSD plugin by name.
+            for required in ('AGENTS.md','реального потребителя','autosell-hourly-watch','service_runtime','94c0e99e2166018e1ef84c84',
                              'autosell-watch-2026101120','docker:autofind-client','http://127.0.0.1:22333/healthz',
                              'AutoSellBot','inc_4c7454836a9d40009f03e6a03b0f2987','ASK_HUMAN_ENV_FILE','GPTADMIN_HEALTH_CALLBACK_FILE'):
                 self.assertIn(required,message)
@@ -343,7 +345,10 @@ class RepairFirstExecutorTests(unittest.TestCase):
                 receipt=agent_job_helper.run_profile('health-orchestrator',event,Path('unused'),
                     runner=self._runner({'executor':'Ремонт завершён; ожидаем независимую проверку.'},requests),profile_override=profile)
             message=json.loads(next(r for r in requests if 'project-launch' in r.full_url).data)['message']
-            self.assertIn('gsd-debug',message); self.assertNotIn('exactly three',message)
+            # Since 3619722 the instruction defers to the target project's own
+            # workflow instead of mandating GSD; the persisted planner prose
+            # must still be replaced by the scoped repair-first contract.
+            self.assertIn('AGENTS.md',message); self.assertNotIn('exactly three',message)
             self.assertNotIn('Do not inspect',message)
             self.assertTrue(receipt['autopilot_armed']);self.assertFalse(receipt['resolved'])
 
@@ -871,7 +876,9 @@ class BoundQuestionTests(unittest.TestCase):
         self.assertEqual("ask.user.completed", self.herder_calls[0]["event"])
         self.assertEqual(request_id, self.herder_calls[0]["request_id"])
         self.assertNotEqual(self.herder_calls[0]["result_ref"], "")
-        self.assertNotIn("repair", json.dumps(self.herder_calls[0]))
+        # Since e423952 the bounded answer {value, label} intentionally crosses
+        # to Herder so the resumed session can act; secrets still never do.
+        self.assertEqual({"value": "repair", "label": "Да, чинить"}, self.herder_calls[0].get("answer"))
         self.assertTrue(any("✅ Выбрано: Да, чинить" in str(call.get("text", "")) for call in calls))
 
     def test_unbound_question_never_resumes_anything(self) -> None:

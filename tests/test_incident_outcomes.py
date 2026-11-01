@@ -180,7 +180,10 @@ class IncidentOutcomesTests(unittest.TestCase):
         text, markup = self.render(payload)
         self.assertIn('Работа остановилась', text)
         self.assertIn(payload['health_outcome']['session_url'], text)
-        self.assertEqual(payload['health_outcome']['session_url'], markup['inline_keyboard'][0][0]['url'])
+        # Since 26b26a9 the ack row precedes the session button on a
+        # critical acknowledged card; the session url keeps its own row.
+        url_rows = [row[0] for row in markup['inline_keyboard'] if row[0].get('url')]
+        self.assertEqual([payload['health_outcome']['session_url']], [b['url'] for b in url_rows])
 
     def test_recovery_cancels_an_unsent_outdated_failure_conclusion(self):
         created, event = self.episode()
@@ -207,7 +210,11 @@ class IncidentOutcomesTests(unittest.TestCase):
         delivery = self.outcomes(incident)[0]
         payload = self.center.delivery_payload(delivery)
         text, markup = self.render(payload)
-        self.assertIn('Исправление ещё не выполнено', text)
+        # Since 127f0ab the unstarted-repair wording lives in the diagnosis
+        # line and the accepted-explanation, not in a literal plan sentence.
+        self.assertIn('запуск исполнителя ещё не подтверждён', text)
+        self.assertIn('Восстановление пока не подтверждено', text)
+        self.assertNotIn('исправлено', text.lower().replace('не выполнено', ''))
         self.assertEqual(3, len(payload['health_plans']))
         self.assertTrue(any('callback_data' in button for row in markup['inline_keyboard'] for button in row))
         self.assertEqual('open', self.center.get_incident(incident)['state'])

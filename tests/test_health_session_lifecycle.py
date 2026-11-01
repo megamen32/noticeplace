@@ -140,12 +140,23 @@ class HealthSessionLifecycleTests(unittest.TestCase):
         worker = Mock(_center=self.center)
         worker.claim_due.return_value = []
         ticks = iter([0, 0])  # initial archive/progress deadlines
+        # Since f3c3d21 the loop waits on shutdown_event.wait instead of
+        # time.sleep, so the bounded stop arms the event after two iterations.
+        import threading
+        stop = threading.Event()
+        real_iteration = daemon.worker_iteration
+        def bounded_iteration(*args, **kwargs):
+            result = real_iteration(*args, **kwargs)
+            if bounded_iteration.seen >= 1:
+                stop.set()
+            bounded_iteration.seen += 1
+            return result
+        bounded_iteration.seen = 0
         with patch.object(daemon, 'ThreadPoolExecutor', Executor), \
              patch.object(daemon.time, 'monotonic', side_effect=lambda: next(ticks,61)), \
-             patch.object(daemon.time, 'sleep', side_effect=[None,StopIteration('two bounded iterations')]), \
-             patch('notification_center.health_session_lifecycle._read_json_request', side_effect=read):
-            with self.assertRaises(StopIteration):
-                daemon.worker_loop(worker, 'agent', 1)
+             patch('notification_center.health_session_lifecycle._read_json_request', side_effect=read), \
+             patch.object(daemon, 'worker_iteration', bounded_iteration):
+            daemon.worker_loop(worker, 'agent', 1, shutdown_event=stop)
         self.assertEqual(1, sum(r.get_method() == 'POST' for r in requests))
         audit = self.center._connection.execute("SELECT payload_json FROM audit_events WHERE type='health_controller_archive'").fetchone()
         self.assertEqual('archived', json.loads(audit['payload_json'])['status'])

@@ -27,6 +27,12 @@ class HttpApiTests(unittest.TestCase):
     def setUp(self) -> None:
         """Start an isolated API server with separate producer and probe tokens."""
         self.tempdir = tempfile.TemporaryDirectory()
+        # The agent shell may export NOTIFY_MCP_HTTP_URL for its own MCP route;
+        # dispatch() would then proxy tools/call to the live server instead of
+        # this in-process registry. The suite must stay hermetic.
+        self._env_patch = mock.patch.dict(os.environ, {"NOTIFY_MCP_HTTP_URL": ""}, clear=False)
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
         self.center = NotificationCenter(
             Path(self.tempdir.name) / "notify.sqlite3",
             {

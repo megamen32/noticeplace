@@ -5649,6 +5649,15 @@ class NotificationCenter:
                               AND COALESCE(CAST(json_extract(d.result_json, '$.health_signed_callback_count') AS INTEGER), 0) = 3
                               )
                           )
+                          AND NOT EXISTS (
+                              SELECT 1 FROM alarm_deliveries edit
+                              WHERE edit.incident_id = d.incident_id
+                                AND edit.channel = 'telegram.edit'
+                                AND edit.status IN ('sent', 'superseded')
+                                AND json_valid(COALESCE(edit.result_json, '{{}}')) = 1
+                                AND COALESCE(CAST(json_extract(edit.result_json, '$.health_button_count') AS INTEGER), 0) = 3
+                                AND COALESCE(CAST(json_extract(edit.result_json, '$.health_signed_callback_count') AS INTEGER), 0) = 3
+                          )
                         GROUP BY d.incident_id
                     ) AS reconciliation"""
                 ).fetchall()
@@ -5666,7 +5675,12 @@ class NotificationCenter:
                        FROM deliveries d JOIN incidents i ON i.id = d.incident_id
                        WHERE i.event_type LIKE 'health.%' AND (d.channel LIKE 'telegram.%' AND d.channel NOT LIKE '%.call') AND d.status = 'sent' AND NOT """ + _SESSION_NOTICE_SQL
                 ).fetchall()
+                # A legacy card edited in place keeps its original sent
+                # receipt (the message identity is history), so its proof lives
+                # on the telegram.edit delivery that performed the migration.
+                # The aggregate SQL above applies the same rule.
                 invalid_sent_incidents: set[str] = set()
+                compliant_incidents: set[str] = set()
                 for row in sent_rows:
                     incident_id = str(row["incident_id"])
                     if self.health_incident_is_synthetic(incident_id):
@@ -5676,8 +5690,13 @@ class NotificationCenter:
                         for plan in self.latest_health_plans(incident_id)
                         if isinstance(plan, Mapping) and str(plan.get("plan_id") or plan.get("id") or "").strip()
                     )
-                    if not self._sent_health_delivery_matches_plans(row, attached_plan_ids):
+                    if self._sent_health_delivery_matches_plans(row, attached_plan_ids):
+                        # One proven card carries the current bundle; a legacy
+                        # card edited in place keeps its own first receipt.
+                        compliant_incidents.add(incident_id)
+                    else:
                         invalid_sent_incidents.add(incident_id)
+                invalid_sent_incidents -= compliant_incidents
                 reconciliation_required = len(
                     set(reconciliation_incidents) | invalid_sent_incidents
                 )

@@ -58,7 +58,12 @@ class OriginalBackfillTests(unittest.TestCase):
         for key in ("response_actor","response_value","resolved_at","expires_at","allowed_actors","choices","recipient"):
             self.assertEqual(before[key],result[key])
         self.assertIn("✅ Выбрано: Отправить 1",self.calls[0][1]["text"])
-        self.assertEqual([],json.loads(self.calls[0][1]["reply_markup"])["inline_keyboard"])
+        # Since 6a43747 the resolved card keeps its buttons with the accepted
+        # option marked instead of clearing the keyboard.
+        keyboard=json.loads(self.calls[0][1]["reply_markup"])
+        rows=[row[0]["text"] for row in keyboard["inline_keyboard"]]
+        self.assertTrue(any(t.startswith("✅") and "Отправить 1" in t for t in rows), rows)
+        self.assertFalse(any(t.startswith("✅") and "Отправить 1" not in t for t in rows), rows)
 
     def test_source_binding_is_immutable_and_project_scoped(self):
         self.center.enrich_human_request_original("owner","userio-1","Первый оригинал")
