@@ -5180,6 +5180,9 @@ class NotificationCenter:
         if not actor or len(actor) > 128:
             raise ValidationError("invalid actor")
         with self._lock, self._connection:
+            # Serialize the read/compare/write across admin and worker processes,
+            # not just threads in this NotificationCenter instance.
+            self._connection.execute("BEGIN IMMEDIATE")
             current = self.notification_rule_settings(incident_id)
             if current["revision"] != expected_revision:
                 raise ValidationError("rule settings changed; reload before saving")
