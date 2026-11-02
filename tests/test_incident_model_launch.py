@@ -362,6 +362,37 @@ class SelectedRouteLaunchTests(unittest.TestCase):
         self.assertEqual(DEFAULT_ROUTE, json.loads(launch[0].data)["model"])
         self.assertEqual(DEFAULT_ROUTE, receipt["model"])
 
+    def test_tg_commentator_implicit_model_uses_pinned_incident_route_without_fallback(self) -> None:
+        # Exact retained failure shape. Offline local-logic proof, no live launch.
+        policy = self._policy(
+            allowedHarnesses=["codex", "zcode", "opencode"], preferredHarness="codex",
+            models={"codex": "gpt-6.1-sol", "opencode": "omniroute/minimax-combo-m3.1",
+                    "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"},
+            projectRoutes={"/home/roomhacker/PycharmProjects/TelegramAuto": {
+                "aliases": ["TelegramAuto", "TGC", "tg-commentator", "autotelegramviews"],
+                "harnesses": ["opencode", "zcode"],
+                "allowedModels": ["*", "minimax*", "omniroute/minimax-*", "minimax-coding-plan/*"],
+                "deniedModels": ["codex/*", "openai/*", "gpt-*"],
+            }},
+        )
+        for snapshot in (HAND_ROUTE, ""):
+            with self.subTest(snapshot=snapshot):
+                calls: list = []
+                event = self._event(snapshot)
+                event["incident"]["project"] = "tg-commentator"
+                with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
+                     mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
+                    receipt = run_profile("health-diagnosis", event, Path("unused"),
+                                          profile_override=self._profile(), runner=self._runner(policy, calls))
+                launch = [call for call in calls if call.full_url.endswith("/api/automation/project-launch")]
+                self.assertEqual(len(launch), 1)
+                body = json.loads(launch[0].data)
+                self.assertEqual(body["project"], "tg-commentator")
+                self.assertEqual(body["harness"], "opencode")
+                self.assertEqual(body["model"], DEFAULT_ROUTE)
+                self.assertEqual(body["harness_order"], ["opencode"])
+                self.assertEqual(receipt["model"], DEFAULT_ROUTE)
+
     def test_a_project_route_for_a_different_model_fails_closed(self) -> None:
         calls: list = []
         policy = self._policy(projectRoutes={"fleet-health": {
@@ -475,16 +506,29 @@ class SelectedRouteLaunchTests(unittest.TestCase):
         launch = [call for call in calls if call.full_url.endswith("/api/automation/project-launch")]
         self.assertEqual([], launch)
 
-    def test_any_project_harness_fallback_fails_closed(self) -> None:
+    def test_health_launch_does_not_activate_the_projects_harness_fallback(self) -> None:
         calls: list = []
         policy = self._policy(projectRoutes={"fleet-health": {"harnesses": ["opencode", "codex"]}})
         with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
              mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
-            with self.assertRaisesRegex(RuntimeError, "requires OpenCode with no harness fallback"):
-                run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
-                            profile_override=self._profile(), runner=self._runner(policy, calls))
+            run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
+                        profile_override=self._profile(), runner=self._runner(policy, calls))
         launch = [call for call in calls if call.full_url.endswith("/api/automation/project-launch")]
-        self.assertEqual([], launch)
+        self.assertEqual(len(launch), 1)
+        self.assertEqual(json.loads(launch[0].data)["harness_order"], ["opencode"])
+
+    def test_explicit_project_model_and_codex_first_remain_fail_closed(self) -> None:
+        for route in (
+            {"harnesses": ["opencode", "codex"], "models": {"opencode": "omniroute/other-combo"}},
+            {"harnesses": ["codex", "opencode"]},
+        ):
+            with self.subTest(route=route):
+                calls: list = []
+                policy = self._policy(projectRoutes={"fleet-health": route})
+                with self.assertRaisesRegex(ValidationError, "projectRoute conflicts"):
+                    run_profile("health-diagnosis", self._event(HAND_ROUTE), Path("unused"),
+                                profile_override=self._profile(), runner=self._runner(policy, calls))
+                self.assertEqual([], [call for call in calls if call.full_url.endswith("/api/automation/project-launch")])
 
     def test_a_conflicting_herder_incident_execution_fails_closed(self) -> None:
         calls: list = []

@@ -249,7 +249,14 @@ def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, s
     global_models = policy.get("models") if isinstance(policy.get("models"), Mapping) else {}
     for harness in raw_harnesses if isinstance(raw_harnesses, list) else []:
         name = _bounded_text(harness, 32).lower()
-        model = _bounded_text(models.get(name) or global_models.get(name), 256)
+        # A project without its own model inherits the incident-purpose pin,
+        # not the ordinary harness default (which may name an older combo).
+        # Explicit project models still have to match the approved incident route.
+        implicit_model = (
+            f"{HEALTH_EXECUTION_PROFILE['provider']}/{HEALTH_EXECUTION_PROFILE['model']}"
+            if name == HEALTH_LAUNCH_HARNESS else global_models.get(name)
+        )
+        model = _bounded_text(models.get(name) or implicit_model, 256)
         if name and model:
             selected = health_execution_profile(name, model)
             if selected != HEALTH_EXECUTION_PROFILE:

@@ -518,8 +518,12 @@ def _selected_route_profile(profile: dict[str, str], policy: Mapping[str, Any], 
     if not order:
         raise RuntimeError(
             "the launch policy allows none of the harnesses this project can launch; no launch-policy write")
-    if require_opencode and order != [HEALTH_LAUNCH_HARNESS]:
-        raise RuntimeError("NoticePlace health diagnosis requires OpenCode with no harness fallback")
+    if require_opencode:
+        if order[0] != HEALTH_LAUNCH_HARNESS:
+            raise RuntimeError("NoticePlace health diagnosis requires OpenCode first with no harness fallback")
+        # The health purpose has its own pinned route. A project's ordinary
+        # fallback list is not permission to activate another harness here.
+        order = [HEALTH_LAUNCH_HARNESS]
     execution = health_launch_execution(route)
     return {
         **profile,
