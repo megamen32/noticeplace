@@ -67,6 +67,11 @@ def controls(codec: Any, incident: Mapping[str, Any], session: Any = None, *, ex
     muted = bool(incident.get('notifications_muted'))
     rows.append([{'text': 'Включить такие уведомления' if muted else 'Отключить такие уведомления',
                   'callback_data': codec.encode('unmute' if muted else 'mute', incident_id)}])
+    # The URL contains only a random incident identifier. SSO resolves the scope
+    # server-side; no bearer, callback secret, project token or recipient is exposed.
+    if re.fullmatch(r'inc_[0-9a-f]{32}', incident_id):
+        rows.append([{'text': 'Настроить это уведомление',
+                      'url': 'https://notify.bezrabotnyi.com/admin/?incident=' + urllib.parse.quote(incident_id, safe='')}])
     display_url = display_session_url(execution_identity) if not session else ''
     if display_url:
         rows.append([{'text': 'Сессия · ' + EXECUTOR_LABELS[execution_identity['harness']], 'url': display_url}])
