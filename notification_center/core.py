@@ -4233,8 +4233,15 @@ class NotificationCenter:
         with self._lock, self._connection:
             incident = self.get_incident(incident_id)
             original = self._health_original_event(incident_id)
-            manual_stop = status in {"human_stopped", "source_blocked"} and self.manual_ai_requested(incident_id)
-            if incident is None or (original is None and not manual_stop):
+            # Manual AI is also available on ordinary incidents. Its terminal
+            # or uncertain launch outcome must replace the selected card even
+            # when the producer did not send a typed health event.
+            manual_ai = self.manual_ai_requested(incident_id)
+            manual_outcome = manual_ai and (
+                status in {"failed", "interrupted", "human_stopped", "source_blocked"}
+                or (status == "unknown" and not self.latest_agent_session(incident_id))
+            )
+            if incident is None or (original is None and not manual_outcome):
                 return None
             if self.health_notification_review_required(incident_id) and self.original_telegram_card(incident_id) is None:
                 if status in {'failed', 'unknown', 'interrupted'} and not self.health_notification_decision(incident_id):
@@ -4259,6 +4266,8 @@ class NotificationCenter:
             step = "health.resolved" if status == "resolved" else f"health.outcome:{key}"
             target = {"health_outcome": outcome}
             card = self.original_telegram_card(incident_id)
+            if card is None and manual_ai:
+                card = self.manual_ai_card(incident_id)
             if card is not None:
                 target["incident_card"] = card
             return self._schedule_delivery(incident_id, "telegram.main", step, time.time(), target)

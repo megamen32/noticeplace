@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from notification_center.core import NotificationCenter, ValidationError
 from notification_center.health_workflow import HealthWorkflow
-from notification_center.http_api import TelegramSender
+from notification_center.http_api import DeliveryWorker, TelegramSender
 from notification_center.telegram_interactions import TelegramActionCodec
 
 
@@ -98,6 +98,63 @@ class ManualAiCardTests(unittest.TestCase):
         rows = self.center.claim_due_deliveries(channel_group="message")
         self.assertEqual(1, len(rows))
         self.assertIn("fallback-session", self.send(self.center.delivery_payload(rows[0]))["text"][0])
+
+    def test_terminal_launch_failure_replaces_manual_creating_card(self):
+        job = self.request_ai()
+        self.center.record_agent_job_result(self.incident, job["agent_job_delivery_id"],
+            "health-diagnosis", {"status": "failed"})
+        rows = self.center.claim_due_deliveries(channel_group="message")
+        self.assertEqual(1, len(rows), "manual ordinary incident must publish the failed launch outcome")
+        request = self.send(self.center.delivery_payload(rows[0]))
+        text = request["text"][0]
+        self.assertIn("Запуск ИИ не подтверждён", text)
+        self.assertNotIn("Проверьте исходную сессию", text)
+        self.assertNotIn("Создаётся сессия", text)
+        self.assertFalse(self.center.latest_agent_session(self.incident))
+
+    def test_interrupted_manual_launch_replaces_clicked_card_without_original_receipt(self):
+        self.center._connection.execute("UPDATE deliveries SET result_json=NULL WHERE id=?",
+            (self.created["initial_delivery_id"],))
+        self.center._connection.commit()
+        self.request_ai()
+        outcome_id = self.center.schedule_health_outcome(self.incident, "interrupted", "launch-error")
+        self.assertIsNotNone(outcome_id, "ordinary manual launch exceptions need a durable outcome")
+        rows = self.center.claim_due_deliveries(channel_group="message")
+        self.assertEqual(1, len(rows))
+        request = self.send(self.center.delivery_payload(rows[0]))
+        self.assertEqual(["12"], request["message_id"])
+        self.assertIn("Запуск ИИ не подтверждён", request["text"][0])
+
+    def test_worker_interruption_updates_manual_card_and_repeat_does_not_launch_again(self):
+        calls = []
+        class Adapter:
+            def send(self, payload, key):
+                calls.append(key)
+                raise RuntimeError("fixture: launch result unavailable")
+        job = self.request_ai()
+        worker = DeliveryWorker(self.center, None, agent_jobs={"health-diagnosis": Adapter()})
+        claimed = worker.claim_due()
+        self.assertEqual([job["agent_job_delivery_id"]], [row["id"] for row in claimed])
+        worker.deliver(claimed[0])
+        repeated = self.request_ai()
+        self.assertTrue(repeated["idempotent"])
+        self.assertEqual(job["agent_job_delivery_id"], repeated["agent_job_delivery_id"])
+        self.assertEqual(1, len(calls))
+        messages = self.center.claim_due_deliveries(channel_group="message")
+        self.assertEqual(1, len(messages))
+        request = self.send(self.center.delivery_payload(messages[0]))
+        self.assertIn("Запуск ИИ не подтверждён", request["text"][0])
+        self.assertEqual(["12"], request["message_id"])
+
+    def test_completed_job_without_session_does_not_claim_launch_success(self):
+        job = self.request_ai()
+        self.center.record_agent_job_result(self.incident, job["agent_job_delivery_id"],
+            "health-diagnosis", {"status": "completed"})
+        rows = self.center.claim_due_deliveries(channel_group="message")
+        self.assertEqual(1, len(rows))
+        request = self.send(self.center.delivery_payload(rows[0]))
+        self.assertIn("Запуск ИИ не подтверждён", request["text"][0])
+        self.assertNotIn("ИИ запущен", request["text"][0])
 
     def test_plain_incident_without_manual_request_rejects_session(self):
         with self.assertRaises(ValidationError):

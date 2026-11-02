@@ -111,9 +111,13 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
     elif outcome.get('observed_state') == 'degraded':
         heading = 'Восстановление не подтверждено'
         explanation = 'ИИ завершил этап, но исходный сервис всё ещё в состоянии деградации. Инцидент остаётся открытым; требуется продолжить проверку и исправление.'
-    elif status in {'failed', 'interrupted', 'source_blocked', 'human_stopped'}:
-        heading = 'Работа остановилась' if status == 'failed' else 'Требуется проверка выполнения'
-        explanation = 'Восстановление не подтверждено. Проверьте исходную сессию ИИ; инцидент остаётся открытым.'
+    elif status in {'failed', 'interrupted', 'source_blocked', 'human_stopped'} or (status == 'unknown' and not session_url(session)):
+        if session_url(session):
+            heading = 'Работа остановилась' if status == 'failed' else 'Требуется проверка выполнения'
+            explanation = 'Восстановление не подтверждено. Проверьте исходную сессию ИИ; инцидент остаётся открытым.'
+        else:
+            heading = 'Запуск ИИ не подтверждён'
+            explanation = 'Подтверждения создания сессии нет. Инцидент остаётся открытым; требуется проверить результат запуска, прежде чем повторять его.'
     elif session_url(session):
         heading = {'health-diagnosis': 'ИИ запущен для диагностики', 'health-orchestrator': 'ИИ запущен для разбора причины',
                    'health-remediation': 'ИИ запущен для исправления'}.get(session.get('stage'), 'ИИ запущен для работы над инцидентом')

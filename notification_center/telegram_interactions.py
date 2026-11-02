@@ -949,12 +949,12 @@ class TelegramInteractionPoller:
                         result = self._center.apply_telegram_action(incident_id, action, f"telegram:{actor_id}",
                             telegram_message=callback.get("message"))
                         if result.get("agent_job_delivery_id") and not result.get("idempotent"):
-                            self._dismiss_choice_message(callback, "решение через AI. Создаётся сессия…")
+                            self._dismiss_choice_message(callback, "решение через AI. Задание принято в очередь; запуск сессии ещё не подтверждён.")
                     if result.get("state") == "inactive":
                         self._answer(callback_id, "Инцидент уже закрыт; запуск не требуется")
                         return
                     session = self._center.latest_agent_session(incident_id)
-                    self._answer(callback_id, 'ИИ уже работает' if session else 'Задание на исправление принято в очередь')
+                    self._answer(callback_id, 'Сессия ИИ уже создана' if session else 'Задание на исправление принято в очередь')
                     return
                 result = self._center.apply_telegram_action(incident_id, action, f"telegram:{actor_id}")
                 if action in {"mute", "unmute"}:

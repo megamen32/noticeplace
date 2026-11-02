@@ -171,6 +171,8 @@ class TelegramInteractionTests(unittest.TestCase):
         edits = [p for m, p in calls if m == "editMessageText"]
         self.assertEqual(1, len(edits))
         self.assertIn("✅ Выбрано: решение через AI", edits[0]["text"])
+        self.assertIn("принято в очередь", edits[0]["text"])
+        self.assertNotIn("Создаётся сессия", edits[0]["text"])
         self.assertEqual([], json.loads(edits[0]["reply_markup"])["inline_keyboard"])
         job = self.center._connection.execute("SELECT target_json FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'").fetchone()
         self.assertEqual(12, json.loads(job[0])["ai_card"]["message_id"])

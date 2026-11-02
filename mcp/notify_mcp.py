@@ -27,6 +27,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 from zoneinfo import ZoneInfo
 
+# ShellMCP and other stdio clients may execute this file directly from any
+# directory, without a PYTHONPATH. Resolve only this installed package root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from notification_center.core import DEFAULT_CONSUMER_QUIET_HOURS
 from notification_center.instructions import MCP_INSTRUCTIONS, noticeplace_instructions
 

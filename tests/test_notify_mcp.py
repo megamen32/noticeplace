@@ -1,3 +1,7 @@
+import json
+import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,6 +27,20 @@ class _Phone:
 
     def phone_call(self, payload):
         self.payloads.append(payload)
+
+
+class StdioEntrypointTests(unittest.TestCase):
+    def test_tools_list_works_without_inherited_pythonpath_or_secrets(self):
+        entrypoint = Path(__file__).resolve().parents[1] / "mcp" / "notify_mcp.py"
+        with TemporaryDirectory() as tempdir:
+            result = subprocess.run([sys.executable, str(entrypoint)],
+                input=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n",
+                cwd=tempdir, env={"PATH": os.defpath, "HOME": tempdir},
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(0, result.returncode, result.stderr)
+        response = json.loads(result.stdout)
+        self.assertEqual(1, response["id"])
+        self.assertEqual(["noticeplace"], [tool["name"] for tool in response["result"]["tools"]])
 
 
 class DirectCallToolTests(unittest.TestCase):
