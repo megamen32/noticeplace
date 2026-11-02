@@ -381,7 +381,8 @@ def _notification_rule_page(rule: dict[str, Any], csrf: str, *, saved: bool = Fa
         f'<dl><dt>Проект</dt><dd>{esc(rule["project"])}</dd>'
         f'<dt>Источник</dt><dd>{esc(rule["source_id"] or "(не указан)")}</dd>'
         f'<dt>Получатель</dt><dd>{esc(rule["recipient"])}</dd>'
-        f'<dt>Ключ правила</dt><dd><code>{esc(rule["dedup_key"])}</code></dd>'
+        f'<dt>Группа уведомлений</dt><dd><code>{esc(rule["dedup_key"])}</code></dd>'
+        f'<dt>Причина для автозапуска ИИ</dt><dd><code>{esc(rule["ai_dedup_key"])}</code></dd>'
         f'<dt>Инцидент</dt><dd><code>{esc(rule["incident_id"])}</code></dd></dl>'
     )
 
@@ -410,7 +411,8 @@ def _notification_rule_page(rule: dict[str, Any], csrf: str, *, saved: bool = Fa
         + option_form("notifications", rule["notifications_enabled"], "Отправлять уведомления",
                       "Выключение не отключает автозапуск ИИ. Старая кнопка в Telegram продолжает работать.")
         + option_form("auto_ai", rule["auto_ai_enabled"], "Автоматически запускать ИИ",
-                      "Выключение не отключает уведомления. Включение влияет только на будущие события.")
+                      "Только для показанного источника и причины, независимо от группы Telegram. "
+                      "Не отменяет уже принятые или вручную запущенные сессии; действует на будущие события.")
         + f'<p class="hint">Версия правила: {rule["revision"]}. '
           'После сохранения страница загрузит фактические значения.</p>'
         '</main></body></html>'

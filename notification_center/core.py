@@ -335,8 +335,8 @@ class NotificationCenter:
             )
             # Extend the existing project/recipient/dedup rule, preserving every mute.
             mute_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(notification_mutes)")}
-            if "auto_ai_enabled" not in mute_columns:
-                self._connection.execute("ALTER TABLE notification_mutes ADD COLUMN auto_ai_enabled INTEGER NOT NULL DEFAULT 1")
+            if "auto_ai_by_source" not in mute_columns:
+                self._connection.execute("ALTER TABLE notification_mutes ADD COLUMN auto_ai_by_source TEXT NOT NULL DEFAULT '{}'")
             if "revision" not in mute_columns:
                 self._connection.execute("ALTER TABLE notification_mutes ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
             incident_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(incidents)")}
@@ -2270,7 +2270,7 @@ class NotificationCenter:
             self._audit(incident_id, "event_ingress", "producer", ingress)
             notifications_muted = self._notification_scope_muted(project, recipient, dedup_key)
             self._bind_telegram_family(incident_id, event, now)
-            rule_autostart = self._notification_rule_auto_ai_enabled(incident_id)
+            rule_autostart = self._notification_rule_auto_ai_enabled(incident_id, event)
             review_required = (rule_autostart and scope.get('automatic_health_diagnosis', True) is not False
                 and agent_job == HEALTH_DIAGNOSIS_AGENT_JOB and event.get('kind') == 'incident'
                 and event_type == 'health.degraded' and event.get('severity') in {'notice', 'important'}
@@ -5075,7 +5075,8 @@ class NotificationCenter:
             if incident is None:
                 raise ValidationError("incident not found")
             scope = (str(incident["project"]), str(incident["recipient"]), str(incident["collapse_key"] or incident["dedup_key"]))
-            was_muted = self._notification_scope_muted(*scope)
+            legacy_scope = (scope[0], scope[1], str(incident["dedup_key"]))
+            was_muted = self._notification_scope_muted(*scope) or self._notification_scope_muted(*legacy_scope)
             now = time.time()
             if muted:
                 self._connection.execute(
@@ -5093,11 +5094,14 @@ class NotificationCenter:
                     (now, *scope),
                 )
             else:
-                self._connection.execute(
-                    "UPDATE notification_mutes SET unmuted_at = ?, unmuted_by = ?, revision = revision + 1 "
-                    "WHERE project = ? AND recipient = ? AND dedup_key = ? AND unmuted_at IS NULL",
-                    (now, actor, *scope),
-                )
+                # A legacy exact-dedup mute can shadow a family mute. Explicit
+                # re-enable must clear both documented effective scopes atomically.
+                for candidate in dict.fromkeys((scope, legacy_scope)):
+                    self._connection.execute(
+                        "UPDATE notification_mutes SET unmuted_at = ?, unmuted_by = ?, revision = revision + 1 "
+                        "WHERE project = ? AND recipient = ? AND dedup_key = ? AND unmuted_at IS NULL",
+                        (now, actor, *candidate),
+                    )
                 if was_muted and str(incident["state"]) in DELIVERABLE_STATES:
                     previous = self._connection.execute(
                         "SELECT channel, target_json FROM deliveries WHERE incident_id = ? AND (channel LIKE 'telegram.%' AND channel NOT LIKE '%.call') "
@@ -5133,39 +5137,66 @@ class NotificationCenter:
             raise ValidationError("incident not found")
         return str(row["project"]), str(row["recipient"]), str(row["rule_key"])
 
-    def _notification_rule_auto_ai_enabled(self, incident_id: str) -> bool:
+    def _ai_source_identity(self, incident_id: str, event: Mapping[str, Any] | None = None) -> tuple[str, str, str]:
+        """Resolve a concrete source + original dedup key, never Telegram family."""
+        row = self._connection.execute(
+            "SELECT dedup_key FROM incidents WHERE id=?", (incident_id,),
+        ).fetchone()
+        if row is None:
+            raise ValidationError("incident not found")
+        if event is None:
+            # Pin a stable source for the incident link; never select latest
+            # cross-host event from a grouped or repeated card.
+            source_row = self._connection.execute(
+                "SELECT payload_json FROM events WHERE incident_id=? ORDER BY created_at, rowid LIMIT 1",
+                (incident_id,),
+            ).fetchone()
+            try:
+                event = json.loads(source_row["payload_json"]) if source_row else {}
+            except (TypeError, ValueError):
+                event = {}
+        if not isinstance(event, Mapping):
+            event = {}
+        source_id, reason = str(event.get("source_id") or ""), str(row["dedup_key"])
+        # An opaque key prevents arbitrary delimiters or lookalike source names
+        # from changing the exact-match boundary.
+        key = hashlib.sha256(json.dumps([source_id, reason], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+        return source_id, reason, key
+
+    def _notification_rule_auto_ai_enabled(
+        self, incident_id: str, event: Mapping[str, Any] | None = None,
+    ) -> bool:
         scope = self._incident_rule_scope(incident_id)
         row = self._connection.execute(
-            "SELECT auto_ai_enabled FROM notification_mutes WHERE project=? AND recipient=? AND dedup_key=?",
+            "SELECT auto_ai_by_source FROM notification_mutes WHERE project=? AND recipient=? AND dedup_key=?",
             scope,
         ).fetchone()
-        return row is None or bool(row["auto_ai_enabled"])
+        if row is None:
+            return True
+        try:
+            options = json.loads(row["auto_ai_by_source"] or "{}")
+        except (ValueError, TypeError):
+            raise ValidationError("invalid existing auto AI rule")
+        if not isinstance(options, dict):
+            raise ValidationError("invalid existing auto AI rule")
+        return options.get(self._ai_source_identity(incident_id, event)[2], True) is not False
 
     def notification_rule_settings(self, incident_id: str) -> dict[str, Any]:
         """Read one existing mute scope and its independent AI-autostart flag."""
         with self._lock:
             scope = self._incident_rule_scope(incident_id)
             row = self._connection.execute(
-                "SELECT auto_ai_enabled, revision FROM notification_mutes "
+                "SELECT auto_ai_by_source, revision FROM notification_mutes "
                 "WHERE project=? AND recipient=? AND dedup_key=?", scope,
             ).fetchone()
             incident = self.get_incident(incident_id)
-            source_row = self._connection.execute(
-                "SELECT payload_json FROM events WHERE incident_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                (incident_id,),
-            ).fetchone()
-            try:
-                event = json.loads(source_row["payload_json"]) if source_row else {}
-            except (ValueError, TypeError):
-                event = {}
-            if not isinstance(event, dict):
-                event = {}
+            source_id, reason, _ = self._ai_source_identity(incident_id)
             return {
                 "incident_id": incident_id, "project": scope[0], "recipient": scope[1],
-                "dedup_key": scope[2],
-                "source_id": str(event.get("source_id") or "")[:256],
+                "dedup_key": scope[2], "ai_dedup_key": reason,
+                "source_id": source_id[:256],
                 "notifications_enabled": not bool(incident["notifications_muted"]),
-                "auto_ai_enabled": bool(row["auto_ai_enabled"]) if row else True,
+                "auto_ai_enabled": self._notification_rule_auto_ai_enabled(incident_id),
                 "revision": int(row["revision"]) if row else 0,
             }
 
@@ -5182,7 +5213,11 @@ class NotificationCenter:
         with self._lock, self._connection:
             # Serialize the read/compare/write across admin and worker processes,
             # not just threads in this NotificationCenter instance.
-            self._connection.execute("BEGIN IMMEDIATE")
+            # MeshConnection.__enter__ already holds the Dqlite writer lease.
+            # sqlite3.Connection.__enter__ does NOT acquire a write lock until
+            # the first mutation; explicitly lock only that native SQLite case.
+            if isinstance(self._connection, sqlite3.Connection):
+                self._connection.execute("BEGIN IMMEDIATE")
             current = self.notification_rule_settings(incident_id)
             if current["revision"] != expected_revision:
                 raise ValidationError("rule settings changed; reload before saving")
@@ -5191,27 +5226,29 @@ class NotificationCenter:
                     self.set_incident_notifications_muted(incident_id, not enabled, actor)
             elif current["auto_ai_enabled"] != enabled:
                 scope = (current["project"], current["recipient"], current["dedup_key"])
+                source, reason, source_key = self._ai_source_identity(incident_id)
                 now = time.time()
+                row = self._connection.execute(
+                    "SELECT auto_ai_by_source FROM notification_mutes "
+                    "WHERE project=? AND recipient=? AND dedup_key=?", scope,
+                ).fetchone()
+                options = json.loads(row["auto_ai_by_source"] or "{}") if row else {}
+                if not isinstance(options, dict):
+                    raise ValidationError("invalid existing auto AI rule")
+                options[source_key] = enabled
                 self._connection.execute(
                     "INSERT INTO notification_mutes "
-                    "(project, recipient, dedup_key, muted_at, muted_by, unmuted_at, unmuted_by, auto_ai_enabled, revision) "
+                    "(project, recipient, dedup_key, muted_at, muted_by, unmuted_at, unmuted_by, auto_ai_by_source, revision) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1) "
                     "ON CONFLICT(project, recipient, dedup_key) DO UPDATE SET "
-                    "auto_ai_enabled=excluded.auto_ai_enabled, revision=notification_mutes.revision+1",
-                    (*scope, now, actor, now, actor, int(enabled)),
+                    "auto_ai_by_source=excluded.auto_ai_by_source, revision=notification_mutes.revision+1",
+                    (*scope, now, actor, now, actor, json.dumps(options, sort_keys=True)),
                 )
-                if not enabled:
-                    # Only unclaimed automatic jobs. A claimed job may have crossed an external boundary.
-                    self._connection.execute(
-                        "UPDATE deliveries SET status='cancelled', last_error='automatic AI disabled by operator', updated_at=? "
-                        "WHERE incident_id IN (SELECT id FROM incidents WHERE project=? AND recipient=? "
-                        "AND COALESCE(collapse_key,dedup_key)=?) "
-                        "AND status='queued' AND channel LIKE 'gptadmin.agent:%'",
-                        (now, *scope),
-                    )
+                # Only future automatic scheduling changes. Existing claimed,
+                # queued and manually requested sessions retain their owner.
                 self._audit(incident_id, "notification_rule_ai_changed", actor,
-                            {"project": scope[0], "recipient": scope[1], "dedup_key": scope[2],
-                             "auto_ai_enabled": enabled})
+                            {"project": scope[0], "recipient": scope[1],
+                             "source_id": source, "dedup_key": reason, "auto_ai_enabled": enabled})
             return self.notification_rule_settings(incident_id)
 
     def list_notification_mutes(self, active_only: bool = True, project: str | None = None) -> list[dict[str, Any]]:

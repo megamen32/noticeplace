@@ -71,7 +71,7 @@ def controls(codec: Any, incident: Mapping[str, Any], session: Any = None, *, ex
     # server-side; no bearer, callback secret, project token or recipient is exposed.
     if re.fullmatch(r'inc_[0-9a-f]{32}', incident_id):
         rows.append([{'text': 'Настроить это уведомление',
-                      'url': 'https://notify.bezrabotnyi.com/admin/?incident=' + urllib.parse.quote(incident_id, safe='')}])
+                      'url': 'https://notify.bezrabotnyi.com/admin/#/notification-rule/' + urllib.parse.quote(incident_id, safe='')}])
     display_url = display_session_url(execution_identity) if not session else ''
     if display_url:
         rows.append([{'text': 'Сессия · ' + EXECUTOR_LABELS[execution_identity['harness']], 'url': display_url}])

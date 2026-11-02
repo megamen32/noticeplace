@@ -121,7 +121,7 @@ class NotificationRuleSettingsTests(unittest.TestCase):
         })
         buttons = [button for row in rows for button in row]
         url = next(b["url"] for b in buttons if b["text"] == "Настроить это уведомление")
-        self.assertEqual(f"https://notify.bezrabotnyi.com/admin/?incident={incident_id}", url)
+        self.assertEqual(f"https://notify.bezrabotnyi.com/admin/#/notification-rule/{incident_id}", url)
         self.assertTrue(any(b.get("callback_data", "").startswith("n:mute:") for b in buttons))
         self.assertNotIn("token=", url)
         self.assertNotIn("bearer=", url)
