@@ -783,6 +783,16 @@ class AdminConfigStore:
                     if isinstance(target, dict) and str(target.get("chat_id") or "") == default_chat:
                         target["topic_id"] = topic_id
 
+    def notification_rule_settings(self, incident_id: str) -> dict[str, Any]:
+        return self._consumer_notification_center().notification_rule_settings(incident_id)
+
+    def set_notification_rule_option(
+        self, incident_id: str, option: str, enabled: bool, expected_revision: int, actor: str,
+    ) -> dict[str, Any]:
+        return self._consumer_notification_center().set_notification_rule_option(
+            incident_id, option, enabled, expected_revision, actor,
+        )
+
     def _consumer_notification_center(self) -> NotificationCenter:
         if self._consumer_center is None:
             database = parse_environment(self.primary_env).get("NOTIFY_CENTER_DB", "").strip()

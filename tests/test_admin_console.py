@@ -72,6 +72,40 @@ class AdminConsoleTests(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, error.read()
 
+    def test_notification_rule_deep_link_sso_and_independent_readback(self) -> None:
+        center = self.store._consumer_notification_center()
+        event = center.create_event("old-token", "rule-ui-synthetic-1", {
+            "schema": "notify.event.v1", "project": "existing", "recipient": "sandbox",
+            "kind": "incident", "severity": "notice", "title": "Synthetic rule",
+            "dedup_key": "sandbox:example", "event_type": "sandbox.event",
+            "source_id": "sandbox:source",
+        })
+        incident_id = event["incident_id"]
+        url = "/admin/?incident=" + incident_id
+        status, _ = self._request("GET", url, admin=False)
+        self.assertEqual(403, status)
+        status, page = self._request("GET", url)
+        self.assertEqual(200, status)
+        self.assertIn(b"sandbox:example", page)
+        self.assertIn(b"sandbox:source", page)
+        self.assertIn(b"auto_ai", page)
+        csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
+        values = {"csrf": csrf, "incident_id": incident_id, "option": "auto_ai",
+                  "enabled": "false", "revision": "0"}
+        status, page = self._request("POST", "/admin/notification-rule/save", values)
+        self.assertEqual(200, status)  # POST redirects to readback.
+        self.assertIn("Автоматически запускать ИИ: выключено".encode(), page)
+        self.assertIn("Отправлять уведомления: включено".encode(), page)
+        values.update(option="notifications", enabled="false", revision="1")
+        status, page = self._request("POST", "/admin/notification-rule/save", values)
+        self.assertEqual(200, status)
+        self.assertIn("Отправлять уведомления: выключено".encode(), page)
+        self.assertIn("Автоматически запускать ИИ: выключено".encode(), page)
+        values.update(option="auto_ai", enabled="true", revision="0")
+        status, _ = self._request("POST", "/admin/notification-rule/save", values)
+        self.assertEqual(400, status)  # Stale CAS cannot change the stored policy.
+        self.assertFalse(center.notification_rule_settings(incident_id)["auto_ai_enabled"])
+
     def test_sso_header_gate_csrf_and_one_time_token_display(self) -> None:
         status, _ = self._request("GET", "/admin/", admin=False)
         self.assertEqual(403, status)

@@ -80,7 +80,19 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
             if parsed.path not in ("/", "/admin", "/admin/"):
                 self._reply(HTTPStatus.NOT_FOUND, _page("Not found", "Unknown admin path."))
                 return
-            query = urllib.parse.parse_qs(parsed.query).get("history", [""])[-1][:128]
+            params = urllib.parse.parse_qs(parsed.query)
+            incident_id = params.get("incident", [""])[-1]
+            if incident_id:
+                try:
+                    rule = store.notification_rule_settings(incident_id)
+                except ValidationError:
+                    self._reply(HTTPStatus.NOT_FOUND, _page("Rule not found", "The incident does not exist."))
+                    return
+                self._reply(HTTPStatus.OK, _notification_rule_page(
+                    rule, _csrf(csrf_secret), saved=params.get("saved", [""])[-1] == "1",
+                ))
+                return
+            query = params.get("history", [""])[-1][:128]
             self._reply(HTTPStatus.OK, _dashboard(store.snapshot(query), _csrf(csrf_secret)))
 
         def do_POST(self) -> None:
@@ -90,6 +102,24 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
             try:
                 form = self._require_form()
                 actor = "sso:operator"
+                if self.path == "/admin/notification-rule/save":
+                    enabled_value = form.get("enabled")
+                    if enabled_value not in ("true", "false"):
+                        raise ValidationError("invalid enabled value")
+                    try:
+                        revision = int(form.get("revision", ""))
+                    except ValueError as error:
+                        raise ValidationError("invalid rule revision") from error
+                    incident_id = form.get("incident_id", "")
+                    store.set_notification_rule_option(
+                        incident_id, form.get("option", ""), enabled_value == "true", revision, actor,
+                    )
+                    self.send_response(HTTPStatus.SEE_OTHER)
+                    self.send_header("Location", "/admin/?incident=" +
+                                     urllib.parse.quote(incident_id, safe="") + "&saved=1")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
                 if self.path in ("/projects", "/admin/projects"):
                     token = store.create_project(form.get("project", ""), form.get("max_severity", ""), actor)
                     self._reply(HTTPStatus.OK, _token_page(form.get("project", ""), token))
@@ -341,6 +371,52 @@ def _badge(value: Any, classes: dict[str, str] | None = None) -> str:
         return ""
     cls = table.get(text.lower(), "sev-neutral")
     return f'<span class="badge {cls}">{html.escape(text)}</span>'
+
+
+def _notification_rule_page(rule: dict[str, Any], csrf: str, *, saved: bool = False) -> str:
+    """Readback and two separately versioned controls for one SSO-authorized rule."""
+    esc = lambda value: html.escape(str(value), quote=True)
+    status = '<p class="hint">Настройки сохранены. Ниже значения из базы.</p>' if saved else ''
+    scope = (
+        f'<dl><dt>Проект</dt><dd>{esc(rule["project"])}</dd>'
+        f'<dt>Источник</dt><dd>{esc(rule["source_id"] or "(не указан)")}</dd>'
+        f'<dt>Получатель</dt><dd>{esc(rule["recipient"])}</dd>'
+        f'<dt>Группа уведомлений</dt><dd><code>{esc(rule["dedup_key"])}</code></dd>'
+        f'<dt>Причина для автозапуска ИИ</dt><dd><code>{esc(rule["ai_dedup_key"])}</code></dd>'
+        f'<dt>Инцидент</dt><dd><code>{esc(rule["incident_id"])}</code></dd></dl>'
+    )
+
+    def option_form(option: str, enabled: bool, title: str, detail: str) -> str:
+        next_enabled = not enabled
+        label = "Выключить" if enabled else "Включить"
+        return (
+            f'<section class="card"><h2>{esc(title)}: {"включено" if enabled else "выключено"}</h2>'
+            f'<p class="hint">{esc(detail)}</p>'
+            '<form method="post" action="/admin/notification-rule/save">'
+            f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+            f'<input type="hidden" name="incident_id" value="{esc(rule["incident_id"])}">'
+            f'<input type="hidden" name="revision" value="{rule["revision"]}">'
+            f'<input type="hidden" name="option" value="{esc(option)}">'
+            f'<input type="hidden" name="enabled" value="{str(next_enabled).lower()}">'
+            f'<button type="submit">{label}</button></form></section>'
+        )
+    return (
+        '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>Настройки уведомления</title><style>{_ADMIN_CSS}</style></head><body>'
+        '<main><a href="/admin/">← Все настройки</a><h1>Настроить это уведомление</h1>'
+        f'{status}<section class="card"><h2>Область действия</h2>{scope}'
+        '<p class="hint">Изменение действует только для указанного проекта, получателя и ключа правила. '
+        'Сохранение не создаёт ИИ-сессию и не изменяет другие правила.</p></section>'
+        + option_form("notifications", rule["notifications_enabled"], "Отправлять уведомления",
+                      "Выключение не отключает автозапуск ИИ. Старая кнопка в Telegram продолжает работать.")
+        + option_form("auto_ai", rule["auto_ai_enabled"], "Автоматически запускать ИИ",
+                      "Только для показанного источника и причины, независимо от группы Telegram. "
+                      "Не отменяет уже принятые или вручную запущенные сессии; действует на будущие события.")
+        + f'<p class="hint">Версия правила: {rule["revision"]}. '
+          'После сохранения страница загрузит фактические значения.</p>'
+        '</main></body></html>'
+    )
 
 
 def _page(title: str, message: str) -> str:
