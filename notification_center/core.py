@@ -254,6 +254,7 @@ class NotificationCenter:
                     muted_by TEXT NOT NULL,
                     unmuted_at REAL,
                     unmuted_by TEXT,
+                    match_mode TEXT NOT NULL DEFAULT 'exact',
                     PRIMARY KEY (project, recipient, dedup_key)
                 );
                 CREATE TABLE IF NOT EXISTS runtime_settings (
@@ -339,6 +340,11 @@ class NotificationCenter:
                 self._connection.execute("ALTER TABLE notification_mutes ADD COLUMN auto_ai_by_source TEXT NOT NULL DEFAULT '{}'")
             if "revision" not in mute_columns:
                 self._connection.execute("ALTER TABLE notification_mutes ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+            # 'project' rows silence every dedup key of one source at once: keys
+            # that embed a varying detail (fail2ban embeds the banned IP) never
+            # match an exact mute again.
+            if "match_mode" not in mute_columns:
+                self._connection.execute("ALTER TABLE notification_mutes ADD COLUMN match_mode TEXT NOT NULL DEFAULT 'exact'")
             incident_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(incidents)")}
             event_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(events)")}
             for column in ("event_type", "producer", "plugin", "correlation_id", "parent_event_id", "parent_incident_id", "peer_ip", "source_ip", "proxy_ip", "forwarded_for"):
@@ -2854,7 +2860,7 @@ class NotificationCenter:
             raise ValidationError("unsupported delivery channel group")
         with self._lock, self._connection:
             rows = self._connection.execute(
-                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (? IS NULL OR d.id=?) AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key)) AND m.unmuted_at IS NULL)) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
+                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (? IS NULL OR d.id=?) AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.unmuted_at IS NULL AND (m.match_mode = 'prefix' AND (COALESCE(i.collapse_key,i.dedup_key) LIKE m.dedup_key || '%' ESCAPE '\\' OR i.dedup_key LIKE m.dedup_key || '%' ESCAPE '\\') OR m.match_mode != 'prefix' AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key))))) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
                 (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, delivery_id, delivery_id, limit),
             ).fetchall()
             result: list[dict[str, Any]] = []
@@ -3492,7 +3498,9 @@ class NotificationCenter:
     def apply_telegram_action(self, incident_id: str, action: str, actor: str, telegram_message: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Apply an authorized compact Telegram control action to one active incident."""
         if action in {"mute", "unmute"}:
-            result = self.set_incident_notifications_muted(incident_id, action == "mute", actor)
+            # The owner-facing «Отключить такие» covers the source's varying
+            # keys (fail2ban embeds every banned IP), unlike the exact API.
+            result = self.set_incident_notifications_muted(incident_id, action == "mute", actor, scope="source")
             return {"action": action, "state": "muted" if result["notifications_muted"] else "enabled", **result}
         if action == "ack":
             result = self.acknowledge_if_active(incident_id, actor)
@@ -5037,9 +5045,11 @@ class NotificationCenter:
         with self._lock:
             incident = self._row(self._connection.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone())
             if incident is not None:
-                incident["notifications_muted"] = self._notification_scope_muted(
-                    str(incident["project"]), str(incident["recipient"]), str(incident.get("collapse_key") or incident["dedup_key"])
-                ) or self._notification_scope_muted(str(incident['project']), str(incident['recipient']), str(incident['dedup_key']))
+                project, recipient = str(incident["project"]), str(incident["recipient"])
+                collapse, dedup = str(incident.get("collapse_key") or incident["dedup_key"]), str(incident["dedup_key"])
+                incident["notifications_muted"] = self._notification_scope_muted(project, recipient, collapse) \
+                    or self._notification_scope_muted(project, recipient, dedup) \
+                    or self._notification_prefix_muted(project, recipient, collapse, dedup)
                 incident["lifecycle"] = self.incident_lifecycle(incident_id)
             return incident
 
@@ -5066,42 +5076,92 @@ class NotificationCenter:
         ).fetchone()
         return row is not None and row["unmuted_at"] is None
 
-    def set_incident_notifications_muted(self, incident_id: str, muted: bool, actor: str) -> dict[str, Any]:
-        """Mute or restore one exact project/recipient/dedup notification scope."""
+    def _notification_prefix_muted(self, project: str, recipient: str, *keys: str) -> bool:
+        """Whether an active prefix rule covers any of these dedup keys.
+
+        Producers embed a varying detail in dedup keys (fail2ban embeds the
+        banned IP), so «Отключить такие» stores the stable key prefix and the
+        next event of the same source never escapes the mute with a new key.
+        """
+        rows = self._connection.execute(
+            "SELECT dedup_key FROM notification_mutes WHERE project = ? AND recipient = ? AND match_mode = 'prefix' AND unmuted_at IS NULL",
+            (project, recipient),
+        ).fetchall()
+        prefixes = [str(row["dedup_key"]) for row in rows]
+        return any(key.startswith(prefix) for key in keys for prefix in prefixes)
+
+    @staticmethod
+    def _notification_mute_prefix(dedup_key: str) -> str:
+        """Strip the trailing varying segment of a dedup key for the mute scope."""
+        key = str(dedup_key)
+        if ":" not in key:
+            return key
+        return key[: key.rindex(":") + 1]
+
+    @staticmethod
+    def _like_prefix_pattern(prefix: str) -> str:
+        """Escape one stored prefix for a LIKE pattern that matches its keys."""
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return escaped + "%"
+
+    def set_incident_notifications_muted(self, incident_id: str, muted: bool, actor: str, scope: str = "exact") -> dict[str, Any]:
+        """Mute or restore one notification scope of this incident's source.
+
+        scope="source" (Telegram button) widens a familyless dedup key to its
+        stable prefix, so varying keys of the same source stay silenced.
+        scope="exact" (default, HTTP API, rule settings) keeps the documented
+        one-scope contract.
+        """
+        if scope not in {"source", "exact"}:
+            raise ValidationError("invalid notification mute scope")
         with self._lock, self._connection:
             incident = self._connection.execute(
                 "SELECT project, recipient, dedup_key, collapse_key, state, consumer_id FROM incidents WHERE id = ?", (incident_id,)
             ).fetchone()
             if incident is None:
                 raise ValidationError("incident not found")
-            scope = (str(incident["project"]), str(incident["recipient"]), str(incident["collapse_key"] or incident["dedup_key"]))
-            legacy_scope = (scope[0], scope[1], str(incident["dedup_key"]))
-            was_muted = self._notification_scope_muted(*scope) or self._notification_scope_muted(*legacy_scope)
+            project, recipient = str(incident["project"]), str(incident["recipient"])
+            collapse = str(incident["collapse_key"]) if incident["collapse_key"] else None
+            dedup = str(incident["dedup_key"])
+            primary = collapse or dedup
+            if scope == "source" and collapse is None:
+                mute_key, match_mode = self._notification_mute_prefix(dedup), "prefix"
+            else:
+                mute_key, match_mode = primary, "exact"
+            was_muted = self._notification_scope_muted(project, recipient, primary) \
+                or self._notification_scope_muted(project, recipient, dedup) \
+                or self._notification_prefix_muted(project, recipient, primary, dedup)
             now = time.time()
             if muted:
                 self._connection.execute(
-                    "INSERT INTO notification_mutes(project, recipient, dedup_key, muted_at, muted_by, unmuted_at, unmuted_by) "
-                    "VALUES (?, ?, ?, ?, ?, NULL, NULL) ON CONFLICT(project, recipient, dedup_key) DO UPDATE SET "
-                    "muted_at=excluded.muted_at, muted_by=excluded.muted_by, unmuted_at=NULL, unmuted_by=NULL, revision=notification_mutes.revision+1",
-                    (*scope, now, actor),
+                    "INSERT INTO notification_mutes(project, recipient, dedup_key, muted_at, muted_by, unmuted_at, unmuted_by, match_mode) "
+                    "VALUES (?, ?, ?, ?, ?, NULL, NULL, ?) ON CONFLICT(project, recipient, dedup_key) DO UPDATE SET "
+                    "muted_at=excluded.muted_at, muted_by=excluded.muted_by, unmuted_at=NULL, unmuted_by=NULL, match_mode=excluded.match_mode, revision=notification_mutes.revision+1",
+                    (project, recipient, mute_key, now, actor, match_mode),
                 )
                 # A claimed delivery has not crossed the external send boundary
                 # yet; changing its state makes the worker's lease check fail.
+                # Prefix rules stop the queued cards of the covered keys too,
+                # not only the exact key of this incident.
+                covered = "(" + " OR ".join([
+                    "COALESCE(collapse_key,dedup_key) = ?",
+                    "dedup_key LIKE ? ESCAPE '\\'",
+                ] if match_mode == "prefix" else ["COALESCE(collapse_key,dedup_key) = ?"]) + ")"
+                covered_params = (mute_key, self._like_prefix_pattern(mute_key)) if match_mode == "prefix" else (mute_key,)
                 self._connection.execute(
                     "UPDATE deliveries SET status = 'cancelled', last_error = 'notifications disabled by operator', updated_at = ? "
-                    "WHERE incident_id IN (SELECT id FROM incidents WHERE project = ? AND recipient = ? AND COALESCE(collapse_key,dedup_key) = ?) "
+                    f"WHERE incident_id IN (SELECT id FROM incidents WHERE project = ? AND recipient = ? AND {covered}) "
                     "AND status IN ('queued', 'claimed') AND channel NOT LIKE 'gptadmin.agent:%'",
-                    (now, *scope),
+                    (now, project, recipient, *covered_params),
                 )
             else:
-                # A legacy exact-dedup mute can shadow a family mute. Explicit
-                # re-enable must clear both documented effective scopes atomically.
-                for candidate in dict.fromkeys((scope, legacy_scope)):
-                    self._connection.execute(
-                        "UPDATE notification_mutes SET unmuted_at = ?, unmuted_by = ?, revision = revision + 1 "
-                        "WHERE project = ? AND recipient = ? AND dedup_key = ? AND unmuted_at IS NULL",
-                        (now, actor, *candidate),
-                    )
+                # Re-enable clears exactly the rules that cover this incident:
+                # its exact scopes plus every active prefix rule matching its keys.
+                self._connection.execute(
+                    "UPDATE notification_mutes SET unmuted_at = ?, unmuted_by = ?, revision = revision + 1 "
+                    f"WHERE project = ? AND recipient = ? AND unmuted_at IS NULL AND (dedup_key IN (?, ?) OR (match_mode = 'prefix' AND ? LIKE dedup_key || '%' ESCAPE '\\'))",
+                    (now, actor, project, recipient, primary, dedup, primary),
+                )
                 if was_muted and str(incident["state"]) in DELIVERABLE_STATES:
                     previous = self._connection.execute(
                         "SELECT channel, target_json FROM deliveries WHERE incident_id = ? AND (channel LIKE 'telegram.%' AND channel NOT LIKE '%.call') "
@@ -5118,14 +5178,15 @@ class NotificationCenter:
                 incident_id,
                 "notifications_muted" if muted else "notifications_unmuted",
                 actor,
-                {"project": scope[0], "dedup_key": scope[2], "idempotent": was_muted == muted},
+                {"project": project, "scope": match_mode if muted else "covering", "dedup_key": mute_key, "idempotent": was_muted == muted},
             )
             return {
                 "incident_id": incident_id,
                 "notifications_muted": muted,
                 "idempotent": was_muted == muted,
-                "project": scope[0],
-                "dedup_key": scope[2],
+                "project": project,
+                "scope": match_mode,
+                "dedup_key": mute_key,
             }
 
     def _incident_rule_scope(self, incident_id: str) -> tuple[str, str, str]:
@@ -5263,7 +5324,7 @@ class NotificationCenter:
                 params.append(project)
             where = "WHERE " + " AND ".join(clauses) if clauses else ""
             rows = self._connection.execute(
-                f"SELECT project, recipient, dedup_key, muted_at, muted_by, unmuted_at, unmuted_by FROM notification_mutes {where} ORDER BY muted_at DESC",
+                f"SELECT project, recipient, dedup_key, match_mode, muted_at, muted_by, unmuted_at, unmuted_by FROM notification_mutes {where} ORDER BY muted_at DESC",
                 params,
             ).fetchall()
             return [dict(row) for row in rows]

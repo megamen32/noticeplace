@@ -3077,7 +3077,9 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     elif action == "snooze":
                         self._reply(HTTPStatus.OK, center.snooze(incident_id, float(body.get("until_epoch") or 0), actor))
                     elif action in {"mute", "unmute"}:
-                        self._reply(HTTPStatus.OK, center.set_incident_notifications_muted(incident_id, action == "mute", actor))
+                        # The documented HTTP contract stays one exact scope;
+                        # the Telegram button widens familyless keys via scope="source".
+                        self._reply(HTTPStatus.OK, center.set_incident_notifications_muted(incident_id, action == "mute", actor, scope="exact"))
                     else:
                         self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown action"})
                     return

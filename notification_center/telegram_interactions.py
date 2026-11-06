@@ -959,9 +959,10 @@ class TelegramInteractionPoller:
                 result = self._center.apply_telegram_action(incident_id, action, f"telegram:{actor_id}")
                 if action in {"mute", "unmute"}:
                     self._refresh_action_keyboard(callback, incident_id)
+                    source = str(result.get("project") or "источника")
                     self._answer(
                         callback_id,
-                        "Такие уведомления отключены" if action == "mute" else "Такие уведомления снова включены",
+                        f"Уведомления источника {source} отключены" if action == "mute" else f"Уведомления источника {source} снова включены",
                     )
                     return
                 if action == "ask" and result["state"] != "inactive":
