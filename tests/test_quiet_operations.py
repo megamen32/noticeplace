@@ -131,6 +131,18 @@ class QuietOperationsTests(unittest.TestCase):
             "SELECT COUNT(*) FROM deliveries d JOIN incidents i ON i.id=d.incident_id "
             "WHERE i.event_type='executor.launch_failed' AND d.channel='matrix.message'").fetchone()[0])
 
+    def test_watchdog_probe_preserves_uncertain_without_history_audit(self):
+        incident = self.create()['incident_id']
+        self.legacy_delivery(incident, status='uncertain')
+        with patch.object(self.center, 'latest_health_plans', side_effect=AssertionError('history scan')):
+            health = self.center.service_health()
+        self.assertTrue(health['service_ready'])
+        self.assertEqual('degraded', health['status'])
+        self.assertEqual(1, health['uncertain_deliveries'])
+        self.assertIsNone(health['reconciliation_required'])
+        self.assertEqual('uncertain', self.center._connection.execute(
+            "SELECT status FROM deliveries WHERE id='old'").fetchone()[0])
+
 
 if __name__ == '__main__':
     unittest.main()

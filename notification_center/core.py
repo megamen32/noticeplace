@@ -6045,6 +6045,42 @@ class NotificationCenter:
                 (key, str(value), time.time()),
             )
 
+    def service_health(self) -> dict[str, Any]:
+        """Bounded watchdog probe; historical card audits are not a liveness check.
+
+        Uncertain receipts remain visible and degraded. The separate service_ready
+        flag describes storage/dispatcher availability without clearing history.
+        Full reconciliation evidence is available from health(), not guessed here.
+        """
+        storage_ready = False
+        counts = {}
+        acquired = self._lock.acquire(timeout=0.25)
+        try:
+            if acquired:
+                counts = {row['status']: int(row['n']) for row in self._connection.execute(
+                    "SELECT status,COUNT(*) AS n FROM deliveries WHERE status IN ('queued','sending','uncertain') GROUP BY status"
+                ).fetchall()}
+                storage_ready = True
+        except sqlite3.Error:
+            pass
+        finally:
+            if acquired:
+                self._lock.release()
+        dispatcher_ready = time.time() - self._dispatcher_heartbeat <= 30
+        service_ready = storage_ready and dispatcher_ready
+        attention = bool(counts.get('uncertain', 0) or counts.get('sending', 0))
+        return {
+            'schema': 'notify.health.v1', 'service': 'notification-center',
+            'status': 'ok' if service_ready and not attention else 'degraded',
+            'service_ready': service_ready, 'storage_ready': storage_ready,
+            'dispatcher_ready': dispatcher_ready,
+            'queued_deliveries': counts.get('queued', 0) if storage_ready else None,
+            'sending_deliveries': counts.get('sending', 0) if storage_ready else None,
+            'uncertain_deliveries': counts.get('uncertain', 0) if storage_ready else None,
+            'reconciliation_required': None, 'reconciliation_status': 'not_evaluated',
+            'version': '0.1.0',
+        }
+
     def health(self) -> dict[str, Any]:
         """Probe durable dependencies and return only safe externally visible state."""
         storage_ready = False

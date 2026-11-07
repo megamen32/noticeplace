@@ -2733,7 +2733,7 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     self._reply(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                     return
                 try:
-                    health = center.health()
+                    health = center.service_health()
                 except Exception:
                     self._reply(HTTPStatus.SERVICE_UNAVAILABLE, {"schema": "notify.health.v1", "service": "notification-center", "status": "degraded", "storage_ready": False, "dispatcher_ready": False})
                     return
