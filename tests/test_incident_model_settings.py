@@ -405,7 +405,7 @@ class IncidentModelSettingTests(unittest.TestCase):
         self.assertIn(b'<datalist id="incident-model-routes">', page)
         self.assertIn(f'<option value="{DEFAULT_ROUTE}">'.encode(), page)
         self.assertIn("MiniMax Coding Plan".encode(), page)
-        self.assertIn("через OpenCode и OmniRoute".encode(), page)
+        self.assertIn("через OpenCode и прямой MiniMax Coding Plan".encode(), page)
         self.assertNotIn("OmniRoute и provider/model fallbacks не используются".encode(), page)
         self.assertNotIn(b'<select name="model">', page)
 
