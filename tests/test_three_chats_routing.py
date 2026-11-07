@@ -7,6 +7,7 @@ The per-source severity override re-weights future events of one source.
 from __future__ import annotations
 
 import json
+import time
 import tempfile
 import unittest
 import urllib.parse
@@ -248,6 +249,70 @@ class ThreeChatDeliveryTests(unittest.TestCase):
         send = next(payload for method, payload in self.calls if method == "sendMessage")
         self.assertEqual("-1004419894781", str(send["chat_id"]))
         self.assertIn("Как поступаем?", str(send["text"]))
+
+
+class StaleAlarmBoundTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.center = NotificationCenter(
+            Path(self.temp.name) / "notice.sqlite3",
+            {"producer": {"project": "fleet-health", "max_severity": "emergency"}},
+            default_quiet_hours=[],
+        )
+        self.addCleanup(self.center._connection.close)
+
+    def _event(self, key: str, severity: str = "critical") -> dict[str, object]:
+        with patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify"]'}):
+            return self.center.create_event("producer", key, {
+                "schema": "notify.event.v1", "project": "fleet-health", "recipient": "me",
+                "kind": "incident", "severity": severity, "title": "Падение", "dedup_key": key,
+            })
+
+    def test_stale_alarm_card_is_cancelled_instead_of_retried(self) -> None:
+        created = self._event("stale-alarm")
+        now = time.time()
+        with self.center._lock, self.center._connection:
+            self.center._connection.execute(
+                "UPDATE deliveries SET created_at = ?, updated_at = ?, due_at = ? WHERE id = ?",
+                (now - 25 * 3600, now - 24 * 3600, now - 3600, created["initial_delivery_id"]))
+        rows = self.center.claim_due_deliveries(now_epoch=now, limit=4, channel_group="message")
+        self.assertEqual([], [row for row in rows if row["id"] == created["initial_delivery_id"]])
+        status = self.center._connection.execute(
+            "SELECT status, last_error FROM deliveries WHERE id = ?", (created["initial_delivery_id"],)).fetchone()
+        self.assertEqual("cancelled", status["status"])
+        self.assertIn("устарела", status["last_error"])
+        audit = self.center._connection.execute(
+            "SELECT COUNT(*) c FROM audit_events WHERE incident_id = ? AND type = 'delivery_denied'",
+            (created["incident_id"],)).fetchone()
+        self.assertGreaterEqual(audit["c"], 1)
+
+    def test_fresh_alarm_card_still_claims(self) -> None:
+        created = self._event("fresh-alarm")
+        rows = self.center.claim_due_deliveries(now_epoch=time.time() + 30, limit=4, channel_group="message")
+        self.assertIn(created["initial_delivery_id"], [row["id"] for row in rows])
+
+
+class RuntimeRoutesFallbackTests(unittest.TestCase):
+    def test_empty_runtime_topics_keep_the_env_routes(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        center = NotificationCenter(Path(temp.name) / "notice.sqlite3", {}, default_quiet_hours=[])
+        self.addCleanup(center._connection.close)
+        center.set_runtime_setting("telegram_topics_json", "{}")
+        sender = TelegramSender("bot-token", "-100", center=center,
+                                severity_routes={"notify": {"chat_id": "-1002"}})
+        self.assertEqual({"notify": {"chat_id": "-1002"}}, sender._routes())
+
+    def test_nonempty_runtime_topics_still_override(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        center = NotificationCenter(Path(temp.name) / "notice.sqlite3", {}, default_quiet_hours=[])
+        self.addCleanup(center._connection.close)
+        center.set_runtime_setting("telegram_topics_json", json.dumps({"decisions": {"chat_id": "-1003"}}))
+        sender = TelegramSender("bot-token", "-100", center=center,
+                                severity_routes={"notify": {"chat_id": "-1002"}})
+        self.assertEqual({"decisions": {"chat_id": "-1003"}}, sender._routes())
 
 
 if __name__ == "__main__":

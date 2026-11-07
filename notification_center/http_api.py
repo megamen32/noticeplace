@@ -368,7 +368,9 @@ class TelegramSender:
             value = json.loads(raw)
         except json.JSONDecodeError:
             return self._severity_routes
-        return value if isinstance(value, dict) else self._severity_routes
+        # An empty runtime map clears no configured route: it only overrides
+        # when it actually names a route (2026-11-07 migration regression).
+        return value if isinstance(value, dict) and value else self._severity_routes
 
     def _send_overflow_document(
         self,
