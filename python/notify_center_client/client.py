@@ -76,6 +76,7 @@ class NotificationCenterClient:
         problem_type: str | None = None,
         correlation_id: str | None = None,
         observed_at: float | None = None,
+        source_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create one event, optionally waiting for ACK or resolution.
 
@@ -95,7 +96,7 @@ class NotificationCenterClient:
         }
         identity = {"source_id": source_id, "host_id": host_id, "signal_type": signal_type,
                     "problem_type": problem_type, "correlation_id": correlation_id}
-        if event_type is not None or any(value is not None for value in identity.values()) or observed_at is not None:
+        if event_type is not None or any(value is not None for value in identity.values()) or observed_at is not None or source_context is not None:
             if event_type != "health.degraded" or not idempotency_key:
                 raise ValueError("typed health requires health.degraded and a persisted idempotency key")
             if any(not isinstance(value, str) or not value.strip() or len(value) > 128 or
@@ -105,6 +106,10 @@ class NotificationCenterClient:
             if isinstance(observed_at, bool) or not isinstance(observed_at, (int, float)) or not math.isfinite(observed_at) or observed_at <= 0:
                 raise ValueError("typed health requires a positive finite observed_at")
             payload.update(event_type=event_type, observed_at=observed_at, **identity)
+            if source_context is not None:
+                if not isinstance(source_context, Mapping):
+                    raise ValueError("source_context must be an object")
+                payload["source_context"] = dict(source_context)
         accepted = self._request("POST", self.event_url, payload=payload, idempotency_key=key)
         accepted["idempotency_key"] = key
         if not wait_for_response:

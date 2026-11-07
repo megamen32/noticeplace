@@ -8,7 +8,9 @@ and the event contract.
 
 `NotificationCenterClient.emit` accepts `event_type="health.degraded"` with
 `source_id`, `host_id`, `signal_type`, `problem_type`, `correlation_id` and a
-positive epoch `observed_at`. Persist an explicit idempotency key before the
+positive epoch `observed_at`. An optional `source_context` mapping carries bounded
+producer evidence (schema `notify.source-context.v1`); the server validates and
+sanitizes it. Persist an explicit idempotency key before the
 call; reconcile an uncertain outcome instead of repeating it. Existing untyped
 `emit` calls remain supported.
 
@@ -20,8 +22,11 @@ The probe must take a fresh measurement and return `observed_state` plus
 selects an owned episode before probing or sending a result. Optional
 `max_checks` and `deadline_seconds` bound admission of further checks; each
 transport and probe still needs its own timeout. Unprocessed due checks remain
-on the server. A pending unknown POST is reconciled from its exact receipt,
-never re-sent. This release does not implement server cursors or long-polling.
+on the server. The verifier follows scoped cursor pages, with at most 100 pages
+per tick, respecting `max_checks` and the deadline before starting more work.
+A pending unknown POST is reconciled from its exact receipt, never re-sent.
+The paginated server supports a wait of up to five seconds without holding its
+lock. The HTTP pagination endpoint must be deployed before this is available.
 
 The verifier source file is linked to the canonical module in the repository;
 the built wheel contains its own regular copy and is independently installable.

@@ -116,50 +116,66 @@ class SourceVerifier:
                 saved.update(status='confirmed', receipt=result)
                 self._save(path, saved)
                 receipts.append(result)
-            query = urllib.parse.urlencode({'project': self.project, 'source_id': self.source_id})
-            requests = self.transport('GET', '/v1/verification-requests?' + query)['requests']
+            cursor = None
+            seen_cursors = set()
             processed = 0
-            for request in requests:
+            for _page in range(100):
                 if processed >= max_checks or (deadline is not None and time.monotonic() >= deadline):
                     break
-                group = request['group']
-                if (group.get('project'), group.get('source_id'), group.get('host_id')) != (
-                        self.project, self.source_id, self.host_id):
-                    raise ValueError('verification request does not match source identity')
-                if accept_group is not None and not accept_group(dict(group)):
-                    continue
-                processed += 1
-                if isinstance(request['generation'], bool) or not isinstance(request['generation'], int):
-                    raise ValueError('invalid verification generation')
-                observation = probe(dict(group))
-                state = observation.get('observed_state')
-                evidence = observation.get('evidence_refs')
-                if state not in ('healthy', 'degraded', 'unknown') or not isinstance(evidence, list):
-                    raise ValueError('invalid source observation')
-                if not evidence or not all(isinstance(ref, str) and ref.strip() for ref in evidence):
-                    raise ValueError('fresh source evidence is required')
-                body = {'request_id': request['request_id'], 'generation': request['generation'],
-                        'observed_state': state, 'evidence_refs': evidence}
-                key = 'source-check:' + uuid.uuid4().hex
-                intent = {'status': 'submitting', 'binding': binding, 'incident_id': request['incident_id'],
-                          'idempotency_key': key, 'body': body}
-                self._save(path, intent)
-                incident = urllib.parse.quote(request['incident_id'], safe='')
-                try:
-                    receipt = self.transport('POST', '/v1/incidents/' + incident + '/health/check-result', body, key)
-                except urllib.error.HTTPError as error:
-                    # Only this definitive domain rejection proves the old POST did
-                    # not commit. Timeouts, 5xx and other errors retain the fence.
-                    if error.code == 400:
-                        try:
-                            rejected = json.loads(error.read(4096))
-                        except (ValueError, OSError):
-                            rejected = None
-                        if rejected == {'error': 'stale verification request or generation'}:
-                            intent.update(status='rejected_stale')
-                            self._save(path, intent)
-                    raise
-                intent.update(status='confirmed', receipt=receipt)
-                self._save(path, intent)
-                receipts.append(receipt)
+                params = {'project': self.project, 'source_id': self.source_id, 'limit': min(20, max_checks)}
+                if cursor is not None:
+                    params['cursor'] = cursor
+                query = urllib.parse.urlencode(params)
+                page = self.transport('GET', '/v1/verification-requests?' + query)
+                requests = page['requests']
+                for request in requests:
+                    if processed >= max_checks or (deadline is not None and time.monotonic() >= deadline):
+                        break
+                    group = request['group']
+                    if (group.get('project'), group.get('source_id'), group.get('host_id')) != (
+                            self.project, self.source_id, self.host_id):
+                        raise ValueError('verification request does not match source identity')
+                    if accept_group is not None and not accept_group(dict(group)):
+                        continue
+                    processed += 1
+                    if isinstance(request['generation'], bool) or not isinstance(request['generation'], int):
+                        raise ValueError('invalid verification generation')
+                    observation = probe(dict(group))
+                    state = observation.get('observed_state')
+                    evidence = observation.get('evidence_refs')
+                    if state not in ('healthy', 'degraded', 'unknown') or not isinstance(evidence, list):
+                        raise ValueError('invalid source observation')
+                    if not evidence or not all(isinstance(ref, str) and ref.strip() for ref in evidence):
+                        raise ValueError('fresh source evidence is required')
+                    body = {'request_id': request['request_id'], 'generation': request['generation'],
+                            'observed_state': state, 'evidence_refs': evidence}
+                    key = 'source-check:' + uuid.uuid4().hex
+                    intent = {'status': 'submitting', 'binding': binding, 'incident_id': request['incident_id'],
+                              'idempotency_key': key, 'body': body}
+                    self._save(path, intent)
+                    incident = urllib.parse.quote(request['incident_id'], safe='')
+                    try:
+                        receipt = self.transport('POST', '/v1/incidents/' + incident + '/health/check-result', body, key)
+                    except urllib.error.HTTPError as error:
+                        # Only this definitive domain rejection proves the old POST did
+                        # not commit. Timeouts, 5xx and other errors retain the fence.
+                        if error.code == 400:
+                            try:
+                                rejected = json.loads(error.read(4096))
+                            except (ValueError, OSError):
+                                rejected = None
+                            if rejected == {'error': 'stale verification request or generation'}:
+                                intent.update(status='rejected_stale')
+                                self._save(path, intent)
+                        raise
+                    intent.update(status='confirmed', receipt=receipt)
+                    self._save(path, intent)
+                    receipts.append(receipt)
+                next_cursor = page.get('next_cursor')
+                if next_cursor is None:
+                    break
+                if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+                    raise ValueError('invalid or repeated verification cursor')
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
             return receipts

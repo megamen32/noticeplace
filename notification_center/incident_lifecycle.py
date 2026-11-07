@@ -3,7 +3,9 @@
 Token registration is server configuration, never event metadata. A verifier
 must declare verification_sources and principal_id, and cannot finish attempts.
 """
+import base64
 import hashlib
+import hmac
 import json
 import math
 import time
@@ -338,8 +340,15 @@ def finish(center, token, incident_id, key, body):
         return result
 
 
-def due_checks(center, token, project, source_id, limit=20):
-    from .core import AuthorizationError
+CURSOR_TTL_SECONDS = 300
+
+
+def due_checks_page(center, token, project, source_id, limit=20, cursor=None, wait_seconds=0):
+    from .core import AuthorizationError, ValidationError
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValidationError('limit must be an integer between 1 and 100')
+    if isinstance(wait_seconds, bool) or not isinstance(wait_seconds, (int, float)) or not math.isfinite(wait_seconds) or not 0 <= wait_seconds <= 5:
+        raise ValidationError('wait_seconds must be between 0 and 5')
     center.authorize_project(token,project)
     scope = center._token_scope(token)
     sources = scope.get('verification_sources', [])
@@ -348,14 +357,53 @@ def due_checks(center, token, project, source_id, limit=20):
     if not scope.get('principal_id') or not (exact or dynamic) or scope.get('incident_role')=='executor':
         raise AuthorizationError('source verification scope is required')
     authenticated = principal(center, token)
-    with center._lock:
-        rows=center._connection.execute("SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id WHERE i.project=? AND l.source_id=? AND (l.source_principal=? OR (l.source_principal='historical-unbound' AND ?)) AND i.state!='resolved' AND l.verification_state IN ('due','unknown','degraded') AND l.verification_due<=? ORDER BY l.verification_due LIMIT ?",(project,source_id,authenticated,int(exact),time.time(),max(1,min(100,int(limit))))).fetchall()
-        result=[]
-        for row in rows:
-            if json.loads(row['metadata_json'])['source_id']==source_id:
-                verifier(center,token,row['incident_id'])
-                result.append(view(center,row['incident_id']))
-        return result
+    key = hashlib.sha256(('noticeplace-cursor-v1:' + token).encode()).digest()
+    deadline = time.monotonic() + wait_seconds
+    position = None
+    expires = time.time() + CURSOR_TTL_SECONDS
+    if cursor is not None:
+        try:
+            if not isinstance(cursor, str) or len(cursor) > 2048:
+                raise ValueError()
+            encoded, signature = cursor.split('.')
+            expected = hmac.new(key, encoded.encode(), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                raise ValueError()
+            data = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
+            if data['scope'] != [authenticated, project, source_id] or data['expires'] <= time.time():
+                raise ValueError()
+            due, incident = data['due'], data['incident']
+            if isinstance(due, bool) or not isinstance(due, (int, float)) or not math.isfinite(due) or not isinstance(incident, str) or not incident:
+                raise ValueError()
+            position, expires = (due, incident), data['expires']
+        except (ValueError, KeyError, TypeError, UnicodeError, json.JSONDecodeError):
+            raise ValidationError('invalid or expired verification cursor') from None
+    while True:
+        with center._lock:
+            sql = "SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id WHERE i.project=? AND l.source_id=? AND (l.source_principal=? OR (l.source_principal='historical-unbound' AND ?)) AND i.state!='resolved' AND l.verification_state IN ('due','unknown','degraded') AND l.verification_due<=?"
+            params = [project, source_id, authenticated, int(exact), time.time()]
+            if position:
+                sql += ' AND (l.verification_due>? OR (l.verification_due=? AND l.incident_id>?))'
+                params.extend([position[0], position[0], position[1]])
+            rows = center._connection.execute(sql + ' ORDER BY l.verification_due,l.incident_id LIMIT ?', (*params, limit + 1)).fetchall()
+            result = []
+            for row in rows[:limit]:
+                if json.loads(row['metadata_json'])['source_id'] == source_id:
+                    verifier(center,token,row['incident_id'])
+                    result.append(view(center,row['incident_id']))
+            next_cursor = None
+            if len(rows) > limit:
+                last = rows[limit - 1]
+                payload = {'scope':[authenticated,project,source_id], 'due':last['verification_due'], 'incident':last['incident_id'], 'expires':expires}
+                encoded = base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).rstrip(b'=').decode()
+                next_cursor = encoded + '.' + hmac.new(key, encoded.encode(), hashlib.sha256).hexdigest()
+        if result or next_cursor or time.monotonic() >= deadline:
+            return {'requests':result, 'next_cursor':next_cursor, 'cursor_expires_at':expires if next_cursor else None}
+        time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+
+
+def due_checks(center, token, project, source_id, limit=20):
+    return due_checks_page(center, token, project, source_id, limit=max(1, min(100, int(limit))))['requests']
 
 
 def check(center, token, incident_id, key, body):
