@@ -550,6 +550,25 @@
       "note": "Historical QA ingress not a scheduled producer; no fabricated checker.",
       "registry_marker_present": true,
       "marker_scope": "central_registry_only"
+    },
+    {
+      "id": "router-haproxy-watchdog",
+      "marker": "NOTICEPLACE_CONSUMER_V2",
+      "classification": "health",
+      "project": "health-monitor",
+      "source_id": "router-haproxy-watchdog",
+      "source_path": "/home/roomhacker/ServersAdministartion/ops/router-health-lite/router-haproxy-watchdog",
+      "source_exists": true,
+      "source_marker_present": false,
+      "installed_executor": "/usr/local/sbin/router-haproxy-watchdog",
+      "installed_readback": "watchdog b52942b0 and verifier e9a6be01 installed on server100; typed mode disabled",
+      "source_check_method": "Fresh independent SSH service status plus HTTPS HEAD after three successful samples; exact episode identity and receipt readback",
+      "migration_status": "installed_typed_disabled",
+      "owner_leaf": "S04-2",
+      "note": "SDK 0.2.0 and verified quiet-policy/route cutover required; no production typed lifecycle claimed.",
+      "registry_marker_present": true,
+      "marker_scope": "source",
+      "installed_v2": false
     }
   ]
 }

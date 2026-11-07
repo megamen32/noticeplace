@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import urllib.parse
 import urllib.error
 import urllib.request
+import time
 import uuid
 from typing import Callable
 
@@ -57,14 +59,26 @@ class SourceVerifier:
         finally:
             os.close(directory)
 
-    def tick(self, probe: Callable[[dict], dict]) -> list[dict]:
+    def tick(self, probe: Callable[[dict], dict], *, max_checks: int = 20,
+             deadline_seconds: float | None = None,
+             accept_group: Callable[[dict], bool] | None = None) -> list[dict]:
         """Pull -> fresh source probe -> persist intent -> submit -> persist receipt.
 
         Call before ordinary events for the same episode/generation. Exceptions fence
         dependent recovery, not registration of an independent new fault.
         A crash/network ambiguity after intent never automatically replays POST.
         Unknown measurements may be checked again on the server's next due tick.
+        The optional deadline limits admission of additional checks; an in-flight
+        HTTP request or probe must enforce its own timeout. Unprocessed checks
+        stay due on the server and are pulled on the next existing timer tick.
+        accept_group selects an owned episode before any probe or result POST.
         """
+        if isinstance(max_checks, bool) or not isinstance(max_checks, int) or not 1 <= max_checks <= 100:
+            raise ValueError('max_checks must be between 1 and 100')
+        if deadline_seconds is not None and (isinstance(deadline_seconds, bool) or
+                not isinstance(deadline_seconds, (int, float)) or not math.isfinite(deadline_seconds) or deadline_seconds <= 0):
+            raise ValueError('deadline_seconds must be a positive finite number')
+        deadline = None if deadline_seconds is None else time.monotonic() + deadline_seconds
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         lock_fd = os.open(self.state_dir / 'verifier.lock', os.O_CREAT | os.O_RDWR, 0o600)
         with os.fdopen(lock_fd, 'w') as lock:
@@ -104,11 +118,17 @@ class SourceVerifier:
                 receipts.append(result)
             query = urllib.parse.urlencode({'project': self.project, 'source_id': self.source_id})
             requests = self.transport('GET', '/v1/verification-requests?' + query)['requests']
+            processed = 0
             for request in requests:
+                if processed >= max_checks or (deadline is not None and time.monotonic() >= deadline):
+                    break
                 group = request['group']
                 if (group.get('project'), group.get('source_id'), group.get('host_id')) != (
                         self.project, self.source_id, self.host_id):
                     raise ValueError('verification request does not match source identity')
+                if accept_group is not None and not accept_group(dict(group)):
+                    continue
+                processed += 1
                 if isinstance(request['generation'], bool) or not isinstance(request['generation'], int):
                     raise ValueError('invalid verification generation')
                 observation = probe(dict(group))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import urllib.error
@@ -68,11 +69,18 @@ class NotificationCenterClient:
         wait_for_response: bool = False,
         wait_timeout_seconds: float = 3600.0,
         poll_interval_seconds: float = 10.0,
+        event_type: str | None = None,
+        source_id: str | None = None,
+        host_id: str | None = None,
+        signal_type: str | None = None,
+        problem_type: str | None = None,
+        correlation_id: str | None = None,
+        observed_at: float | None = None,
     ) -> dict[str, Any]:
         """Create one event, optionally waiting for ACK or resolution.
 
-        A generated idempotency key is returned with the accepted event. Reuse
-        that key only when retrying the identical event after transport failure.
+        For typed health events the caller persists an explicit idempotency key
+        before submission and reconciles uncertain outcomes without replay.
         """
         key = idempotency_key or str(uuid.uuid4())
         payload = {
@@ -85,6 +93,18 @@ class NotificationCenterClient:
             "body": body,
             "dedup_key": dedup_key,
         }
+        identity = {"source_id": source_id, "host_id": host_id, "signal_type": signal_type,
+                    "problem_type": problem_type, "correlation_id": correlation_id}
+        if event_type is not None or any(value is not None for value in identity.values()) or observed_at is not None:
+            if event_type != "health.degraded" or not idempotency_key:
+                raise ValueError("typed health requires health.degraded and a persisted idempotency key")
+            if any(not isinstance(value, str) or not value.strip() or len(value) > 128 or
+                   any(ord(char) < 32 or ord(char) == 127 for char in value)
+                   for value in identity.values()):
+                raise ValueError("typed health requires bounded source identity fields")
+            if isinstance(observed_at, bool) or not isinstance(observed_at, (int, float)) or not math.isfinite(observed_at) or observed_at <= 0:
+                raise ValueError("typed health requires a positive finite observed_at")
+            payload.update(event_type=event_type, observed_at=observed_at, **identity)
         accepted = self._request("POST", self.event_url, payload=payload, idempotency_key=key)
         accepted["idempotency_key"] = key
         if not wait_for_response:
