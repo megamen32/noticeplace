@@ -26,13 +26,13 @@ _BEARER_RE = re.compile(r"(?i)\bbearer\s+\S+")
 
 HEALTH_EXECUTION_PROFILE = {
     "runtime": "opencode",
-    "provider": "omniroute",
-    "model": "glm-5.3-flash-minimax-m3.1",
+    "provider": "minimax-coding-plan",
+    "model": "MiniMax-M3.1-Flash",
     "reasoning": "default",
     "topic": "health",
 }
 
-# Incident execution is pinned to this project's exact existing OmniRoute combo.
+# Incident execution is pinned to the direct MiniMax subscription route.
 # Agent Herder keeps the launch/admission decision; it must declare the same
 # project route, and a mismatch fails closed rather than falling back.
 HEALTH_LAUNCH_MODELS: tuple[str, ...] = tuple(
@@ -218,7 +218,7 @@ def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, s
             "topic": _bounded_text(global_execution.get("topic") or expected["topic"], 64).lower(),
         }
         if observed != expected:
-            raise ValidationError("Agent Herder incidentExecution conflicts with NoticePlace's pinned OpenCode GLM 5.3 Flash + MiniMax combo")
+            raise ValidationError("Agent Herder incidentExecution conflicts with NoticePlace's pinned OpenCode direct MiniMax subscription")
     routes_map = policy.get("projectRoutes") if isinstance(policy, Mapping) else None
     route = resolve_project_route(routes_map, policy.get("projectAliases") if isinstance(policy, Mapping) else None, project) if project else None
     raw_harnesses: Any = []
@@ -241,7 +241,7 @@ def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, s
                       "reasoning": _bounded_text(route.get("reasoning") or HEALTH_EXECUTION_PROFILE["reasoning"], 16).lower(),
                       "topic": _bounded_text(route.get("topic") or HEALTH_EXECUTION_PROFILE["topic"], 64).lower()}
             if direct != HEALTH_EXECUTION_PROFILE:
-                raise ValidationError("Agent Herder projectRoute conflicts with NoticePlace's pinned OpenCode GLM 5.3 Flash + MiniMax combo")
+                raise ValidationError("Agent Herder projectRoute conflicts with NoticePlace's pinned OpenCode direct MiniMax subscription")
             return (dict(HEALTH_EXECUTION_PROFILE),)
     elif isinstance(route, list):
         raw_harnesses = route
@@ -260,7 +260,7 @@ def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, s
         if name and model:
             selected = health_execution_profile(name, model)
             if selected != HEALTH_EXECUTION_PROFILE:
-                raise ValidationError("Agent Herder projectRoute conflicts with NoticePlace's pinned OpenCode GLM 5.3 Flash + MiniMax combo")
+                raise ValidationError("Agent Herder projectRoute conflicts with NoticePlace's pinned OpenCode direct MiniMax subscription")
             return (selected,)
     return (dict(HEALTH_EXECUTION_PROFILE),)
 

@@ -1,7 +1,6 @@
-"""Pinned OmniRoute combo for NoticePlace health-incident analysis.
+"""Pinned direct MiniMax subscription for NoticePlace health-incident analysis.
 
-NoticePlace sends incident analysis through the existing OpenCode GLM 5.3
-Flash + MiniMax Coding Plan combo. Agent Herder stays the launch and admission
+NoticePlace sends incident analysis through OpenCode and the direct MiniMax Coding Plan. Agent Herder stays the launch and admission
 runtime and keeps its own allow/deny decision.
 
 This module is the single source of truth for the route contract:
@@ -22,12 +21,12 @@ from typing import Any, Mapping
 
 INCIDENT_MODEL_SETTING_KEY = "health_incident_model"
 
-# This is the exact existing OmniRoute combo ID selected by the owner.
-DEFAULT_INCIDENT_MODEL = "omniroute/glm-5.3-flash-minimax-m3.1"
+# The only approved route for new incident analyses.
+DEFAULT_INCIDENT_MODEL = "minimax-coding-plan/MiniMax-M3.1-Flash"
 LEGACY_INCIDENT_MODELS = (
     "omniroute/minimax-combo.m3.1",
     "omniroute/minimax-combo-m3.1",
-    "minimax-coding-plan/MiniMax-M3.1-Flash",
+    "omniroute/glm-5.3-flash-minimax-m3.1",
 )
 
 MAX_INCIDENT_MODEL_LENGTH = 256
@@ -42,7 +41,7 @@ _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 KNOWN_INCIDENT_MODELS: tuple[dict[str, Any], ...] = (
     {
         "value": DEFAULT_INCIDENT_MODEL,
-        "label": "OpenCode · GLM 5.3 Flash + MiniMax Coding Plan",
+        "label": "OpenCode · MiniMax Coding Plan",
         "default": True,
         "manual_only": False,
     },
@@ -67,7 +66,7 @@ def incident_model_error(value: Any) -> str | None:
 
     - the value is not empty and carries no control characters;
     - it is trimmed and at most 256 characters long;
-    - it is exactly the project-approved GLM 5.3 Flash + MiniMax combo route.
+    - it is exactly the project-approved direct MiniMax route.
     """
     raw = "" if value is None else str(value)
     if not raw.strip():

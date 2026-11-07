@@ -30,7 +30,7 @@ from notification_center.incident_model_policy import (
     read_incident_model,
 )
 
-DEFAULT_ROUTE = "omniroute/glm-5.3-flash-minimax-m3.1"
+DEFAULT_ROUTE = "minimax-coding-plan/MiniMax-M3.1-Flash"
 HAND_ROUTE = DEFAULT_ROUTE
 SECOND_HAND_ROUTE = "omniroute/qwen/qwen3-max"
 DISALLOWED_ROUTES = (
@@ -175,7 +175,7 @@ class IncidentModelSettingTests(unittest.TestCase):
         self.assertEqual([DEFAULT_ROUTE], [option["value"] for option in options])
         self.assertTrue(options[0]["default"])
         self.assertFalse(options[0]["manual_only"])
-        self.assertEqual("OpenCode · GLM 5.3 Flash + MiniMax Coding Plan", options[0]["label"])
+        self.assertEqual("OpenCode · MiniMax Coding Plan", options[0]["label"])
 
     def test_only_the_pinned_subscription_route_is_valid(self) -> None:
         self.assertTrue(is_incident_model(DEFAULT_ROUTE))
@@ -185,7 +185,7 @@ class IncidentModelSettingTests(unittest.TestCase):
                 self.assertFalse(is_incident_model(route))
                 with self.assertRaises(ValueError):
                     normalize_incident_model(route)
-        self.assertEqual("OpenCode · GLM 5.3 Flash + MiniMax Coding Plan", incident_model_label(HAND_ROUTE))
+        self.assertEqual("OpenCode · MiniMax Coding Plan", incident_model_label(HAND_ROUTE))
 
     def test_a_saved_route_is_trimmed_but_not_rewritten(self) -> None:
         self.assertEqual(HAND_ROUTE, normalize_incident_model(f"  {HAND_ROUTE}  "))
@@ -232,13 +232,13 @@ class IncidentModelSettingTests(unittest.TestCase):
                 self.assertEqual(route, self.store.incident_model_setting()["value"])
         self.assertEqual(0, self.restarts)
 
-    def test_the_former_direct_route_migrates_for_new_deliveries_only(self) -> None:
-        self._force_stored_value("minimax-coding-plan/MiniMax-M3.1-Flash")
+    def test_the_former_combo_route_migrates_for_new_deliveries_only(self) -> None:
+        self._force_stored_value("omniroute/glm-5.3-flash-minimax-m3.1")
         self.assertEqual(DEFAULT_ROUTE, read_incident_model(self._center()))
         state = self.store.incident_model_setting()
         self.assertEqual(DEFAULT_ROUTE, state["value"])
         self.assertTrue(state["migration_pending"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", self._stored_value())
+        self.assertEqual("omniroute/glm-5.3-flash-minimax-m3.1", self._stored_value())
 
     def test_the_default_is_used_until_the_operator_saves_something(self) -> None:
         state = self.store.incident_model_setting()
@@ -313,7 +313,7 @@ class IncidentModelSettingTests(unittest.TestCase):
         self.assertEqual("sso:operator", record["actor"])
         self.assertEqual("incident_model_changed", record["action"])
         self.assertEqual(HAND_ROUTE, record["model"])
-        self.assertEqual("OpenCode · GLM 5.3 Flash + MiniMax Coding Plan", record["label"])
+        self.assertEqual("OpenCode · MiniMax Coding Plan", record["label"])
         self.assertNotIn("secret", json.dumps(record).lower())
         self.assertNotIn("password", json.dumps(record).lower())
 
@@ -404,7 +404,7 @@ class IncidentModelSettingTests(unittest.TestCase):
         self.assertIn(b'list="incident-model-routes"', page)
         self.assertIn(b'<datalist id="incident-model-routes">', page)
         self.assertIn(f'<option value="{DEFAULT_ROUTE}">'.encode(), page)
-        self.assertIn("GLM 5.3 Flash + MiniMax Coding Plan".encode(), page)
+        self.assertIn("MiniMax Coding Plan".encode(), page)
         self.assertIn("через OpenCode и OmniRoute".encode(), page)
         self.assertNotIn("OmniRoute и provider/model fallbacks не используются".encode(), page)
         self.assertNotIn(b'<select name="model">', page)

@@ -24,7 +24,7 @@ from notification_center.health_workflow import (HEALTH_LAUNCH_DEFAULT, HEALTH_L
                                                 HealthWorkflow, health_launch_execution,
                                                 normalize_incident_model, selected_incident_model)
 
-DEFAULT_ROUTE = "omniroute/glm-5.3-flash-minimax-m3.1"
+DEFAULT_ROUTE = "minimax-coding-plan/MiniMax-M3.1-Flash"
 HAND_ROUTE = DEFAULT_ROUTE
 SECOND_HAND_ROUTE = "omniroute/qwen/qwen3-max"
 PAID_ROUTES = (
@@ -194,8 +194,8 @@ class IncidentModelSnapshotTests(unittest.TestCase):
                 execution = health_launch_execution(route)
                 self.assertEqual({
                     "runtime": "opencode",
-                    "provider": "omniroute",
-                    "model": "glm-5.3-flash-minimax-m3.1",
+                    "provider": "minimax-coding-plan",
+                    "model": "MiniMax-M3.1-Flash",
                     "reasoning": "default",
                     "topic": "health",
                 }, execution)
@@ -292,7 +292,7 @@ class SelectedRouteLaunchTests(unittest.TestCase):
             "allowedHarnesses": ["opencode", "codex"],
             "preferredHarness": "opencode",
             "models": {"opencode": DEFAULT_ROUTE, "codex": "gpt-6.1-sol"},
-            "incidentExecution": {"runtime": "opencode", "provider": "omniroute", "model": DEFAULT_ROUTE, "reasoning": "default", "topic": "health"},
+            "incidentExecution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": DEFAULT_ROUTE, "reasoning": "default", "topic": "health"},
         }
         policy.update(overrides)
         return policy
@@ -351,7 +351,7 @@ class SelectedRouteLaunchTests(unittest.TestCase):
     def test_the_exact_herder_project_route_launches_the_existing_combo_unchanged(self) -> None:
         calls: list = []
         policy = self._policy(projectRoutes={"fleet-health": {
-            "runtime": "opencode", "provider": "omniroute", "model": DEFAULT_ROUTE,
+            "runtime": "opencode", "provider": "minimax-coding-plan", "model": DEFAULT_ROUTE,
         }})
         with mock.patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "t")), \
              mock.patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
