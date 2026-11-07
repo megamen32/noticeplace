@@ -15,6 +15,10 @@ from notification_center.http_api import DeliveryWorker, send_human_request_tele
 
 class HealthNotificationDecisionTests(unittest.TestCase):
     def setUp(self):
+        # Card flows need a scheduled delivery; «Логи» ships disabled.
+        _modes = unittest.mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'})
+        _modes.start()
+        self.addCleanup(_modes.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.center = NotificationCenter(Path(self.tmp.name) / 'db', {'token': {'project': 'fleet',

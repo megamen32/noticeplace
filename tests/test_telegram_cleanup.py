@@ -18,6 +18,10 @@ from notification_center.telegram_cleanup import SETTING, should_delete
 
 class TelegramCleanupTests(unittest.TestCase):
     def setUp(self):
+        # Card flows need a scheduled delivery; «Логи» ships disabled.
+        _modes = unittest.mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'})
+        _modes.start()
+        self.addCleanup(_modes.stop)
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.center = NotificationCenter(Path(self.temp.name)/'db.sqlite',
             {'token': {'project': 'dns', 'max_severity': 'emergency'}}, default_quiet_hours=[])

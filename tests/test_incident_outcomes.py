@@ -18,6 +18,10 @@ from notification_center.telegram_interactions import TelegramActionCodec
 
 class IncidentOutcomesTests(unittest.TestCase):
     def setUp(self):
+        # Card flows need a scheduled delivery; «Логи» ships disabled.
+        _modes = unittest.mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'})
+        _modes.start()
+        self.addCleanup(_modes.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'state.sqlite3'
         self.tokens = {'producer': {'project': 'fleet', 'max_severity': 'emergency'}}
@@ -263,7 +267,7 @@ class IncidentOutcomesTests(unittest.TestCase):
         def open_request(request, **kwargs):
             sent.append(urllib.parse.parse_qs(request.data.decode()))
             return Response()
-        sender = TelegramSender('fake', '-1001', action_codec=TelegramActionCodec('x'*32), severity_routes={'health':{'chat_id':'-1001','message_thread_id':1,'enabled':True}})
+        sender = TelegramSender('fake', '-1001', action_codec=TelegramActionCodec('x'*32), severity_routes={'decisions':{'chat_id':'-1001','message_thread_id':1,'enabled':True}})
         with patch('notification_center.http_api.urllib.request.urlopen', side_effect=open_request):
             sender.send(payload)
         return sent[0]['text'][0], json.loads(sent[0].get('reply_markup',['{}'])[0])

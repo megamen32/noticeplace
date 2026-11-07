@@ -71,6 +71,10 @@ class _HerderHandler(BaseHTTPRequestHandler):
 
 class ReadyBindingTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Card flows need a scheduled delivery; «Логи» ships disabled.
+        _modes = unittest.mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'})
+        _modes.start()
+        self.addCleanup(_modes.stop)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.center = NotificationCenter(
@@ -437,7 +441,7 @@ class ReadyBindingTests(unittest.TestCase):
             'source_id':'host:site','host_id':'100','signal_type':'https','correlation_id':'site-episode'}
         incident=self.center.create_event('p','incident-create',event)
         worker=http_api.DeliveryWorker(self.center,http_api.TelegramSender('bot-token','-100',
-            action_codec=TelegramActionCodec('s'*32),center=self.center,severity_routes={'health':{'chat_id':'-100','message_thread_id':324}}))
+            action_codec=TelegramActionCodec('s'*32),center=self.center,severity_routes={'decisions':{'chat_id':'-100','message_thread_id':324}}))
         original=urllib.request.urlopen
         def network(request,**kwargs):
             if urllib.parse.urlsplit(request.full_url).hostname != 'api.telegram.org':

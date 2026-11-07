@@ -435,7 +435,7 @@ class HealthWorkflowTests(unittest.TestCase):
             "-100123",
             action_codec=TelegramActionCodec("x" * 32),
             severity_routes={"health": {"chat_id": "-100123", "message_thread_id": 77}},
-            active_modes={"health"},
+            active_modes={"decisions"},
         )
         requests: list[object] = []
 
@@ -470,7 +470,7 @@ class HealthWorkflowTests(unittest.TestCase):
             "bot-token",
             "-100123",
             severity_routes={"health": {"chat_id": "-100123", "message_thread_id": 77}},
-            active_modes={"health"},
+            active_modes={"decisions"},
         )
         with self.assertRaisesRegex(RuntimeError, "signed callback"):
             sender.send({
@@ -481,7 +481,7 @@ class HealthWorkflowTests(unittest.TestCase):
 
     def test_telegram_sender_edits_legacy_health_card_in_place(self) -> None:
         codec = TelegramActionCodec("x" * 32)
-        sender = TelegramSender("bot-token", "-100123", action_codec=codec, active_modes={"health"})
+        sender = TelegramSender("bot-token", "-100123", action_codec=codec, active_modes={"decisions"})
         captured: dict[str, str] = {}
 
         class FakeResponse:
@@ -514,7 +514,7 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertEqual(3, receipt["health_signed_callback_count"])
 
     def test_legacy_health_edit_preserves_historical_document_and_sends_no_new_card(self) -> None:
-        sender = TelegramSender("bot-token", "-100123", action_codec=TelegramActionCodec("x" * 32), active_modes={"health"})
+        sender = TelegramSender("bot-token", "-100123", action_codec=TelegramActionCodec("x" * 32), active_modes={"decisions"})
         requests: list[object] = []
 
         class FakeResponse:

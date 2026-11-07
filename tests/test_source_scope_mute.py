@@ -9,6 +9,7 @@ audible, and the HTTP API keeps its documented exact-scope contract.
 """
 from __future__ import annotations
 
+from unittest import mock
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +31,9 @@ class SourceScopeMuteTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"producer": {"project": "fail2ban.server-100", "max_severity": "critical"}})
+        self.env = mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'})
+        self.env.start()
+        self.addCleanup(self.env.stop)
         self.first = ban_event(self.center, "sshd", "203.0.113.10", "ban-1")
 
     def tearDown(self) -> None:

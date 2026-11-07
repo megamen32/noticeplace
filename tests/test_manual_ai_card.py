@@ -14,6 +14,10 @@ from notification_center.telegram_interactions import TelegramActionCodec
 
 class ManualAiCardTests(unittest.TestCase):
     def setUp(self):
+        # Card flows need a scheduled delivery; «Логи» ships disabled.
+        _modes = unittest.mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'})
+        _modes.start()
+        self.addCleanup(_modes.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.center = NotificationCenter(Path(self.tmp.name) / "state.db",

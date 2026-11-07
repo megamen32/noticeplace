@@ -121,6 +121,10 @@ def _opencode_mandate(human_request_id: str) -> dict[str, object]:
 
 class TaskDecisionApiTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Card flows need a scheduled delivery; «Логи» ships disabled.
+        _modes = mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'})
+        _modes.start()
+        self.addCleanup(_modes.stop)
         _FakeExManagerTransport.instances.clear()
         _FakeExManagerTransport.submit_results.clear()
         _FakeExManagerTransport.query_results.clear()
