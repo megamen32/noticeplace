@@ -599,6 +599,16 @@ class NotificationCenter:
                 for field in ('verification_owned_sources', 'verification_sources'):
                     if field in grant:
                         scope[field] = grant[field]
+            # A server-owned grant that names this consumer may also carry the
+            # deterministic diagnosis policy: the ATV container pins the dosor
+            # to its intake token, so the executor launch policy has to travel
+            # with the grant or the executor never spawns (2026-11-06 dosor).
+            for grant in grants:
+                if isinstance(grant.get('agent_jobs'), (list, tuple)) and grant.get('agent_jobs'):
+                    scope['agent_jobs'] = [str(value) for value in grant['agent_jobs']]
+                if 'automatic_health_diagnosis' in grant:
+                    scope['automatic_health_diagnosis'] = grant['automatic_health_diagnosis']
+                break
         return scope
 
     def _scope(self, token: str, project: str) -> Mapping[str, Any]:
