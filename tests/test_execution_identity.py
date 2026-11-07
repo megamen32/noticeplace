@@ -62,7 +62,7 @@ class ExecutionIdentityTests(unittest.TestCase):
             self.assertEqual(1,len(calls))
             initial=calls[0][1];markup=json.loads(initial['reply_markup']);buttons=[b for row in markup['inline_keyboard'] for b in row]
             self.assertIn('Исполнитель: OpenCode',initial['text']);self.assertIn(self.identity['model'],initial['text'])
-            self.assertIn(self.identity['cwd'],initial['text']);self.assertIn('Проект уведомления: hermes',initial['text'])
+            self.assertIn(self.identity['cwd'],initial['text']);self.assertEqual('Сервис: Hermes',initial['text'].splitlines()[0])
             self.assertNotIn('Уведомление · hermes',initial['text'])
             self.assertNotIn('Инцидент принят',initial['text'])
             self.assertNotIn('Проверка и исправление выполняются',initial['text'])
@@ -105,8 +105,9 @@ class ExecutionIdentityTests(unittest.TestCase):
         legacy['body']='OpenCode ses_actual_repair says done. '+legacy['body']
         created=self.center.create_event('p','legacy',legacy)
         text,keyboard=render(self.center.incident_card_payload(created['incident_id']),self.codec)
-        self.assertIn('Исполнитель не указан',text)
-        self.assertFalse(any('url' in b for row in keyboard['inline_keyboard'] for b in row))
+        self.assertNotIn('Исполнитель:',text)
+        self.assertFalse(any(b.get('url', '').startswith('https://agent.bezrabotnyi.com/#/session/')
+                             for row in keyboard['inline_keyboard'] for b in row))
 
     def test_producer_encode_uri_component_preserves_exact_native_identity(self):
         identity={**self.identity,'session_id':"ses_!'()*",'session_url':"https://agent.bezrabotnyi.com/#/session/opencode%3Ases_!'()*"}
@@ -118,7 +119,8 @@ class ExecutionIdentityTests(unittest.TestCase):
         new=self.center.create_event('p','no-url',{**self.event,'dedup_key':'no-url','execution_identity':identity})
         text,keyboard=render(self.center.incident_card_payload(new['incident_id']),self.codec)
         self.assertIn('Исполнитель: OpenCode',text)
-        self.assertFalse(any('url' in b for row in keyboard['inline_keyboard'] for b in row))
+        self.assertFalse(any(b.get('url', '').startswith('https://agent.bezrabotnyi.com/#/session/')
+                             for row in keyboard['inline_keyboard'] for b in row))
 
     def test_bound_health_receipt_outranks_display_metadata_and_keeps_progress(self):
         created=self.center.create_event('p','bound',{**self.event,'event_type':'health.degraded','kind':'incident',

@@ -95,49 +95,43 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
     # A recorded native launch outranks producer display metadata. Display-only
     # identity never becomes ai_session or a launch/current-running assertion.
     identity = session or payload.get('execution_identity') or {}
-    executor = EXECUTOR_LABELS.get(identity.get('harness')) if isinstance(identity, Mapping) else None
+    identity_url = display_session_url(identity)
+    has_confirmed_identity = (isinstance(identity, Mapping)
+                              and identity.get('harness') in EXECUTOR_LABELS
+                              and isinstance(identity.get('session_id'), str)
+                              and bool(identity.get('session_id')))
+    confirmed_session = bool(session_url(session) or identity_url or has_confirmed_identity)
+    executor = EXECUTOR_LABELS.get(identity.get('harness')) if confirmed_session and isinstance(identity, Mapping) else None
     state = incident.get('state')
     status = str(outcome.get('status') or '')
     members = payload.get('group_members') or []
     remaining = sum(member.get('state') != 'resolved' for member in members)
     informational = incident.get('kind') == 'notification' and not session_url(session)
     if informational:
-        heading = {'emergency': 'Аварийная ситуация', 'critical': 'Требуется внимание',
-                   'important': 'Важное уведомление'}.get(incident.get('severity'), 'Уведомление')
         if incident.get('event_type') == 'agent.done':
             explanation = 'Сессия сообщила о завершении работы. Это информационное уведомление о её результате.'
         else:
             explanation = 'Информационное уведомление о работе сессии. Текущее состояние сессии не указано.'
-        if display_session_url(identity):
+        if identity_url:
             explanation += ' Подробности доступны по ссылке на сессию.'
     elif state == 'resolved':
-        heading = 'Изменилась срочность проблемы' if status == 'phase_changed' else 'Состояние восстановилось'
         explanation = ('Сигнал ещё активен. Прежний этап закрыт; восстановление не подтверждено.' if status == 'phase_changed'
                        else 'Мониторинг подтвердил восстановление. Инцидент закрыт; действий от вас не требуется.')
     elif outcome.get('observed_state') == 'degraded':
-        heading = 'Восстановление не подтверждено'
         explanation = 'ИИ завершил этап, но исходный сервис всё ещё в состоянии деградации. Инцидент остаётся открытым; требуется продолжить проверку и исправление.'
     elif status in {'failed', 'interrupted', 'source_blocked', 'human_stopped'} or (status == 'unknown' and not session_url(session)):
         if session_url(session):
-            heading = 'Работа остановилась' if status == 'failed' else 'Требуется проверка выполнения'
             explanation = 'Восстановление не подтверждено. Проверьте исходную сессию ИИ; инцидент остаётся открытым.'
         else:
-            heading = 'Запуск ИИ не подтверждён'
             explanation = 'Подтверждения создания сессии нет. Инцидент остаётся открытым; требуется проверить результат запуска, прежде чем повторять его.'
     elif session_url(session):
-        heading = {'health-diagnosis': 'ИИ запущен для диагностики', 'health-orchestrator': 'ИИ запущен для разбора причины',
-                   'health-remediation': 'ИИ запущен для исправления'}.get(session.get('stage'), 'ИИ запущен для работы над инцидентом')
-        explanation = 'Восстановление ещё не подтверждено. Решение потребуется только при вопросе помощника.'
+        explanation = ''
     else:
-        heading = {'emergency': 'Аварийная ситуация', 'critical': 'Требуется внимание',
-                   'important': 'Важное уведомление'}.get(incident.get('severity'), 'Уведомление')
-        explanation = 'Инцидент принят. Восстановление пока не подтверждено.'
+        explanation = ''
     if len(members) > 1 and 0 < remaining < len(members):
-        heading = 'Часть сервисов восстановилась'
         explanation = (f'В группе остаётся открытых инцидентов: {remaining}. '
                        'Проверка и исправление продолжаются; восстановление всей группы ещё не подтверждено.')
     elif len(members) > 1 and remaining == 0:
-        heading = 'Все инциденты группы закрыты'
         explanation = 'Состояние каждого сервиса и история проверки доступны по отдельным ссылкам ниже.'
     health = payload.get('health_context') or {}
     host = sanitize_bounded_text(health.get('host_id'), 256)
@@ -151,21 +145,16 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
                                                            'Мониторинг сообщил о проблеме сервиса')
     if host and host not in title:
         title += ': ' + host
-    text = heading
-    if executor:
-        text += '\n\nИсполнитель: ' + executor
-    elif health and not informational and state != 'resolved':
-        text += '\n\nДиагностика: запуск исполнителя ещё не подтверждён.'
-    else:
-        text += '\n\nИсполнитель не указан.'
-    if executor:
-        model = sanitize_bounded_text(identity.get('model'), 256)
-        cwd = sanitize_bounded_text(identity.get('cwd'), 220)
-        if model:
-            text += '\nМодель: ' + model
-        if cwd:
-            text += '\nРабочий каталог: ' + cwd
-    text += '\n\n' + title
+    project = sanitize_bounded_text(incident.get('project'), 96)
+    if project and re.fullmatch(r'[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*', project):
+        project = ' '.join(part[:1].upper() + part[1:] for part in re.split(r'[-_]+', project))
+    service = sanitize_bounded_text(health.get('service_name') or health.get('service'), 180) or project or host
+    severity = incident.get('severity')
+    if severity == 'emergency':
+        title = 'Аварийная ситуация: ' + title
+    elif severity == 'critical':
+        title = 'Критично: ' + title
+    text = 'Сервис: ' + service + '\n\n' + title
     body = sanitize_bounded_text(incident.get('body'), 800)
     if signal == 'https':
         # Describe the probe failure without claiming that the origin is down.
@@ -180,8 +169,16 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
         text += '\n\nИсходное сообщение: ' + original_title
     if body:
         text += '\n\n' + (body if re.search('[А-Яа-яЁё]', body) else 'Данные проверки: ' + body)
-    text += '\n\n' + explanation
-    text += '\n\nПроект уведомления: ' + sanitize_bounded_text(incident['project'], 96)
+    if explanation:
+        text += '\n\n' + explanation
+    if executor:
+        text += '\n\nИсполнитель: ' + executor
+        model = sanitize_bounded_text(identity.get('model'), 256)
+        cwd = sanitize_bounded_text(identity.get('cwd'), 220)
+        if model:
+            text += '\nМодель: ' + model
+        if cwd:
+            text += '\nРабочий каталог: ' + cwd
     if state == 'acknowledged':
         text += '\nВы прочитали уведомление.'
         if not informational:

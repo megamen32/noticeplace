@@ -36,7 +36,8 @@ class IncidentCardContextTests(unittest.TestCase):
             self.assertIn('TLS', text)
             self.assertIn('DNS', text)
             self.assertIn('via=proxy-1', text)
-            self.assertIn('запуск исполнителя ещё не подтверждён', text)
+            self.assertNotIn('Диагностика: запуск исполнителя', text)
+            self.assertNotIn('Исполнитель:', text)
             self.assertNotIn('Исполнитель не указан', text)
             self.assertNotIn('исправление выполняются', text)
             center.record_health_agent_session(incident_id, 'launch-context', 'health-diagnosis',
