@@ -18,6 +18,19 @@ from .selected_card import apply_selected_card, apply_selection_receipt, canonic
 
 LOG = logging.getLogger(__name__)
 
+# One-letter codes keep the signed sevset callback inside Telegram's 64-byte
+# budget: debug, info, notice, important, critical, emergency.
+SEVERITY_CODES = {"d": "debug", "i": "info", "n": "notice", "p": "important", "c": "critical", "e": "emergency"}
+SEVERITY_PICKER_LABELS = {
+    "debug": "🐞 debug — отладочный шум",
+    "info": "🔵 info — информация",
+    "notice": "⚪ notice — обычное событие",
+    "important": "🟠 important — важное",
+    "critical": "🔴 critical — критичное",
+    "emergency": "🚨 emergency — аварийное",
+}
+
+
 
 class TelegramActionCodec:
     """Sign compact callback data so an incident action cannot be forged."""
@@ -36,6 +49,12 @@ class TelegramActionCodec:
         if action == "health_plan":
             if not plan_id or choice_id is not None:
                 raise ValueError("health_plan callback requires a plan_id")
+            unsigned = f"n:{action}:{incident_id}:{plan_id}"
+        elif action == "sevset":
+            # Severity codes are one letter so the signed callback fits the
+            # 64-byte Telegram budget: d,i,n,p,c,e (debug..emergency).
+            if not plan_id or plan_id not in SEVERITY_CODES or choice_id is not None:
+                raise ValueError("sevset callback requires a severity code")
             unsigned = f"n:{action}:{incident_id}:{plan_id}"
         elif action in {"choice", "human_choice"}:
             if plan_id is not None or not choice_id or ":" in choice_id:
@@ -99,8 +118,15 @@ class TelegramActionCodec:
                 return None
             return action, incident_id
         action, incident_id, plan_id, signature = parts[1:]
-        if action not in {"health_plan", "choice", "human_choice"}:
+        if action not in {"health_plan", "choice", "human_choice", "sevset"}:
             return None
+        if action == "sevset":
+            if plan_id not in SEVERITY_CODES:
+                return None
+            expected = self.encode(action, incident_id, plan_id=plan_id).rsplit(":", 1)[1]
+            if not hmac.compare_digest(signature, expected):
+                return None
+            return action, incident_id, plan_id
         expected = (
             self.encode(action, incident_id, plan_id)
             if action == "health_plan"
@@ -310,6 +336,32 @@ class TelegramInteractionPoller:
 
     def _answer(self, callback_id: str, text: str) -> None:
         self._api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:180]})
+
+    def _open_severity_picker(self, callback: Mapping[str, Any], callback_id: str, incident_id: str) -> None:
+        """Send the «изменить важность» picker for this card's source."""
+        chat_id = str(callback.get("message", {}).get("chat", {}).get("id") or "")
+        if not chat_id:
+            self._answer(callback_id, "Кнопка доступна только в чате")
+            return
+        try:
+            current = self._center.get_source_severity(incident_id)
+        except ValidationError as error:
+            self._answer(callback_id, str(error)[:180])
+            return
+        override = current.get("override_severity")
+        state = (f"Текущая важность источника «{current['project']}»: "
+                 f"{override or current['incident_severity']}"
+                 + (f" (правило оператора, было {current['incident_severity']})" if override else " (от производителя)"))
+        text = (
+            f"{state}\n\nВыберите новую важность для этого источника. Правило действует "
+            "для новых уведомлений: ниже critical они идут в «Логи» (по умолчанию выключен)."
+        )
+        keyboard = {"inline_keyboard": [
+            [{"text": SEVERITY_PICKER_LABELS[severity], "callback_data": self._codec.encode("sevset", incident_id, plan_id=code)}]
+            for code, severity in SEVERITY_CODES.items()
+        ]}
+        self._message(chat_id, text, keyboard)
+        self._answer(callback_id, "Выберите важность в сообщении выше")
 
     def _message(self, chat_id: str, text: str, reply_markup: Mapping[str, Any] | None = None) -> None:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:1200]}
@@ -942,6 +994,9 @@ class TelegramInteractionPoller:
             parsed = self._codec.decode(data)
             if parsed is not None and len(parsed) == 2:
                 action, incident_id = parsed
+                if action == "sev":
+                    self._open_severity_picker(callback, callback_id, incident_id)
+                    return
                 if action == "ai":
                     # Hold the same queue lock used for final delivery admission:
                     # the checkmark must be visible before a session can edit it.
@@ -984,6 +1039,18 @@ class TelegramInteractionPoller:
                     label = self._health_plan_label(plan_id, title)
                     self._mark_health_choice_message(callback, incident_id, plan_id, label, plans)
                     self._answer(callback_id, f"✅ Выбрано: {label}")
+                    return
+                if action == "sevset":
+                    severity = SEVERITY_CODES.get(plan_id)
+                    if severity is None:
+                        self._answer(callback_id, "Неизвестная важность")
+                        return
+                    result = self._center.set_source_severity(incident_id, severity, f"telegram:{actor_id}")
+                    self._answer(
+                        callback_id,
+                        f"⚖ Важность источника {result['project']} изменена на {severity}. "
+                        "Правило действует для новых уведомлений: ниже critical они идут в «Логи» (по умолчанию выключен).",
+                    )
                     return
                 if action == "choice":
                     with self._center.delivery_send_lock():

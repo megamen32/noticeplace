@@ -257,6 +257,14 @@ class NotificationCenter:
                     match_mode TEXT NOT NULL DEFAULT 'exact',
                     PRIMARY KEY (project, recipient, dedup_key)
                 );
+                CREATE TABLE IF NOT EXISTS source_severity_overrides (
+                    project TEXT NOT NULL,
+                    recipient TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    updated_by TEXT NOT NULL,
+                    PRIMARY KEY (project, recipient)
+                );
                 CREATE TABLE IF NOT EXISTS runtime_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -2255,6 +2263,7 @@ class NotificationCenter:
                     (project, recipient, consumer_id, dedup_key),
                 ).fetchone()
             deduplicated = existing is not None
+            event = self._apply_source_severity(event, project, recipient)
             if existing is None:
                 incident_id = f"inc_{uuid.uuid4().hex}"
                 self._connection.execute(
@@ -2671,6 +2680,15 @@ class NotificationCenter:
             return "matrix_only_policy"
         if self.matrix_route_scope_denied(incident_id, channel, target):
             return "matrix_route_scope"
+        if channel == "telegram.main":
+            from .http_api import telegram_mode, telegram_active_modes_from_environment
+            incident = self._row(self._connection.execute(
+                "SELECT severity, event_type FROM incidents WHERE id = ?", (incident_id,)
+            ).fetchone())
+            if incident is not None and telegram_mode(dict(incident)) not in telegram_active_modes_from_environment():
+                # The «Логи» chat ships disabled by owner order (23:10): routine
+                # noise is never queued, only decisions and notifications are.
+                return "inactive_telegram_mode"
         return None
 
     def delivery_attempt_ceiling(self, delivery: Mapping[str, Any]) -> int | None:
@@ -5097,6 +5115,68 @@ class NotificationCenter:
         if ":" not in key:
             return key
         return key[: key.rindex(":") + 1]
+
+    def _apply_source_severity(self, event: Mapping[str, Any], project: str, recipient: str) -> Mapping[str, Any]:
+        """Apply the operator's «изменить важность» rule for this source.
+
+        The producer severity stays in the durable event payload for the
+        idempotency contract; the effective severity drives the incident card
+        and every routing threshold from this event on.
+        """
+        row = self._connection.execute(
+            "SELECT severity FROM source_severity_overrides WHERE project = ? AND recipient = ?",
+            (project, recipient),
+        ).fetchone()
+        if row is None or str(row["severity"]) == str(event["severity"]):
+            return event
+        applied = dict(event)
+        applied["severity"] = str(row["severity"])
+        self._audit(None, "source_severity_applied", "policy", {
+            "project": project, "recipient": recipient,
+            "producer_severity": str(event["severity"]), "severity": str(row["severity"]),
+        })
+        return applied
+
+    def set_source_severity(self, incident_id: str, severity: str, actor: str) -> dict[str, Any]:
+        """Set the operator's per-source notification importance from a card button."""
+        if severity not in SEVERITIES:
+            raise ValidationError("unsupported severity")
+        with self._lock, self._connection:
+            incident = self._connection.execute(
+                "SELECT project, recipient FROM incidents WHERE id = ?", (incident_id,)
+            ).fetchone()
+            if incident is None:
+                raise ValidationError("incident not found")
+            project, recipient = str(incident["project"]), str(incident["recipient"])
+            self._connection.execute(
+                "INSERT INTO source_severity_overrides(project, recipient, severity, updated_at, updated_by) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(project, recipient) DO UPDATE SET "
+                "severity=excluded.severity, updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                (project, recipient, severity, time.time(), actor[:128]),
+            )
+            self._audit(incident_id, "source_severity_changed", actor, {"project": project, "severity": severity})
+            return {"incident_id": incident_id, "project": project, "recipient": recipient, "severity": severity}
+
+    def get_source_severity(self, incident_id: str) -> dict[str, Any]:
+        """Read the current per-source importance rule for one card's picker."""
+        with self._lock:
+            incident = self._connection.execute(
+                "SELECT project, recipient, severity FROM incidents WHERE id = ?", (incident_id,)
+            ).fetchone()
+            if incident is None:
+                raise ValidationError("incident not found")
+            row = self._connection.execute(
+                "SELECT severity, updated_at, updated_by FROM source_severity_overrides WHERE project = ? AND recipient = ?",
+                (str(incident["project"]), str(incident["recipient"])),
+            ).fetchone()
+            return {
+                "incident_id": incident_id,
+                "project": str(incident["project"]),
+                "incident_severity": str(incident["severity"]),
+                "override_severity": str(row["severity"]) if row is not None else None,
+                "updated_at": float(row["updated_at"]) if row is not None else None,
+                "updated_by": str(row["updated_by"]) if row is not None else None,
+            }
 
     @staticmethod
     def _like_prefix_pattern(prefix: str) -> str:
