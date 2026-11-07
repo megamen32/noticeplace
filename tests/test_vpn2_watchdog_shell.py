@@ -40,7 +40,7 @@ case "$url" in
   "$PRIMARY_HEALTH_URL")
     grep -F "header = \\"Authorization: Bearer $PRIMARY_HEALTH_TOKEN\\"" "$config" >/dev/null || exit 96
     output=$(sed -n 's/^output = "\\(.*\\)"$/\\1/p' "$config")
-    printf '%s' "${FAKE_HEALTH_BODY:-{\\"schema\\":\\"notify.health.v1\\",\\"service\\":\\"notification-center\\",\\"status\\":\\"ok\\",\\"service_ready\\":true,\\"storage_ready\\":true,\\"dispatcher_ready\\":true}}" >"$output"
+    if [ "${FAKE_HEALTH_NO_BODY:-0}" = 1 ]; then : >"$output"; else printf '%s' "${FAKE_HEALTH_BODY:-{\\"schema\\":\\"notify.health.v1\\",\\"service\\":\\"notification-center\\",\\"status\\":\\"ok\\",\\"service_ready\\":true,\\"storage_ready\\":true,\\"dispatcher_ready\\":true}}" >"$output"; fi
     printf '%s' "${FAKE_HEALTH_HTTP:-200}"
     exit "${FAKE_HEALTH_RC:-0}"
     ;;
@@ -288,6 +288,11 @@ esac
         self.assertEqual("0", self.state()["DOWN"])
         self.assertEqual(0, sum("api.telegram.org" in url for url in self.curl_urls()))
 
+        before = dict(self.state())
+        result = self.run_cycle(1015, FAKE_HEALTH_HTTP="503", FAKE_HEALTH_NO_BODY="1")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(before, self.state())
+
         result = self.run_cycle(1020, FAKE_HEALTH_HTTP="401", FAKE_HEALTH_RC="1")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("1", self.state()["DOWN"])
@@ -329,7 +334,7 @@ esac
         """Historical uncertainty is diagnostic, not service downtime or repeat spam."""
         body = '{"schema":"notify.health.v1","service":"notification-center","status":"degraded","service_ready":true,"storage_ready":true,"dispatcher_ready":true,"queued":0,"sending":9,"uncertain":1171,"reconciliation_required":null,"reconciliation_status":"not_evaluated"}'
         for now in (1000, 1010, 1020):
-            result = self.run_cycle(now, FAKE_HEALTH_BODY=body)
+            result = self.run_cycle(now, FAKE_HEALTH_BODY=body, FAKE_HEALTH_HTTP="503")
             self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("0", self.state()["DOWN"])
         self.assertEqual("0", self.state()["FAILURE_COUNT"])
