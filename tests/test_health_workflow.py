@@ -288,7 +288,7 @@ class HealthWorkflowTests(unittest.TestCase):
         codec = TelegramActionCodec("x" * 32)
         sender = TelegramSender("bot-token", "-100123", action_codec=codec, center=self.center)
         self.workflow.attach_plans(self.created["incident_id"], "plans-2", self._plans(), actor="gptadmin")
-        self.center.set_runtime_setting("telegram_topics_json", json.dumps({"health": {"chat_id": "-100123", "message_thread_id": 77}}))
+        self.center.set_runtime_setting("telegram_topics_json", json.dumps({"decisions": {"chat_id": "-100123", "message_thread_id": 77}}))
         captured: dict[str, str] = {}
 
         class FakeResponse:
@@ -313,10 +313,10 @@ class HealthWorkflowTests(unittest.TestCase):
 
         reply_markup = json.loads(captured["reply_markup"])
         buttons = [button for row in reply_markup["inline_keyboard"] for button in row]
-        plan_buttons = [button for button in buttons if self.workflow.codec.decode(button["callback_data"]) is not None]
-        self.assertEqual(6, len(buttons))
+        plan_buttons = [button for button in buttons if "callback_data" in button and self.workflow.codec.decode(button["callback_data"]) is not None]
+        self.assertEqual(8, len(buttons))
         self.assertEqual({"observe", "repair", "verify"}, {self.workflow.codec.decode(button["callback_data"])[1] for button in plan_buttons})
-        self.assertEqual({"Прочитал", "Исправить через ИИ", "Отключить такие уведомления"}, {button["text"] for button in buttons if button not in plan_buttons})
+        self.assertEqual({"Прочитал", "Исправить через ИИ", "Отключить такие уведомления", "⚖ Изменить важность"}, {button["text"] for button in buttons if button not in plan_buttons and "callback_data" in button})
         self.assertEqual("77", captured["message_thread_id"])
         self.assertEqual({"observe", "repair", "verify"}, set(receipt["health_plan_ids"]))
         self.assertEqual(3, receipt["health_button_count"])
@@ -325,7 +325,7 @@ class HealthWorkflowTests(unittest.TestCase):
     def test_telegram_sender_reports_completed_plan_that_remains_degraded(self) -> None:
         codec = TelegramActionCodec("x" * 32)
         sender = TelegramSender("bot-token", "-100123", action_codec=codec, center=self.center)
-        self.center.set_runtime_setting("telegram_topics_json", json.dumps({"health": {"chat_id": "-100123", "message_thread_id": 77}}))
+        self.center.set_runtime_setting("telegram_topics_json", json.dumps({"decisions": {"chat_id": "-100123", "message_thread_id": 77}}))
         captured: dict[str, str] = {}
 
         class FakeResponse:
@@ -405,7 +405,7 @@ class HealthWorkflowTests(unittest.TestCase):
         payload = self.center.delivery_payload(dict(delivery))
         self.assertEqual(recorded["session_url"], payload["health_session"]["session_url"])
 
-        self.center.set_runtime_setting("telegram_topics_json", json.dumps({"health": {"chat_id": "-100123", "message_thread_id": 77}}))
+        self.center.set_runtime_setting("telegram_topics_json", json.dumps({"decisions": {"chat_id": "-100123", "message_thread_id": 77}}))
         captured: dict[str, str] = {}
 
         class FakeResponse:
@@ -434,8 +434,8 @@ class HealthWorkflowTests(unittest.TestCase):
             "bot-token",
             "-100123",
             action_codec=TelegramActionCodec("x" * 32),
-            severity_routes={"health": {"chat_id": "-100123", "message_thread_id": 77}},
-            active_modes={"health"},
+            severity_routes={"decisions": {"chat_id": "-100123", "message_thread_id": 77}},
+            active_modes={"decisions"},
         )
         requests: list[object] = []
 
@@ -469,8 +469,8 @@ class HealthWorkflowTests(unittest.TestCase):
         sender = TelegramSender(
             "bot-token",
             "-100123",
-            severity_routes={"health": {"chat_id": "-100123", "message_thread_id": 77}},
-            active_modes={"health"},
+            severity_routes={"decisions": {"chat_id": "-100123", "message_thread_id": 77}},
+            active_modes={"decisions"},
         )
         with self.assertRaisesRegex(RuntimeError, "signed callback"):
             sender.send({
@@ -481,7 +481,7 @@ class HealthWorkflowTests(unittest.TestCase):
 
     def test_telegram_sender_edits_legacy_health_card_in_place(self) -> None:
         codec = TelegramActionCodec("x" * 32)
-        sender = TelegramSender("bot-token", "-100123", action_codec=codec, active_modes={"health"})
+        sender = TelegramSender("bot-token", "-100123", action_codec=codec, active_modes={"decisions"})
         captured: dict[str, str] = {}
 
         class FakeResponse:
@@ -510,11 +510,11 @@ class HealthWorkflowTests(unittest.TestCase):
             )
         self.assertTrue(captured["url"].endswith("/editMessageText"))
         buttons = [button for row in json.loads(captured["reply_markup"])["inline_keyboard"] for button in row]
-        self.assertEqual(6, len(buttons))
+        self.assertEqual(8, len(buttons))
         self.assertEqual(3, receipt["health_signed_callback_count"])
 
     def test_legacy_health_edit_preserves_historical_document_and_sends_no_new_card(self) -> None:
-        sender = TelegramSender("bot-token", "-100123", action_codec=TelegramActionCodec("x" * 32), active_modes={"health"})
+        sender = TelegramSender("bot-token", "-100123", action_codec=TelegramActionCodec("x" * 32), active_modes={"decisions"})
         requests: list[object] = []
 
         class FakeResponse:
@@ -575,7 +575,7 @@ class HealthWorkflowTests(unittest.TestCase):
         edit = next(payload for method, payload in calls if method == "editMessageText")
         self.assertIn("✅ Выбран путь: Проверить", edit["text"])
         buttons = [button for row in json.loads(edit["reply_markup"])["inline_keyboard"] for button in row]
-        self.assertEqual(["Observe", "Repair", "✅ Verify", "Прочитал", "Исправить через ИИ", "Отключить такие уведомления"], [button["text"] for button in buttons])
+        self.assertEqual(["Observe", "Repair", "✅ Verify", "Прочитал", "Исправить через ИИ", "Отключить такие уведомления", "⚖ Изменить важность", "Настроить это уведомление"], [button["text"] for button in buttons if "text" in button])
 
         duplicate = self.center.select_health_plan(self.created["incident_id"], "cb-1", "verify", "telegram:42")
         self.assertTrue(duplicate["idempotent"])

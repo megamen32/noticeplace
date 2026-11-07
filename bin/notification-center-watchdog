@@ -17,7 +17,9 @@ from notification_center.watchdog import Watchdog, WatchdogConfig, probe_health
 def direct_telegram(message: str) -> None:
     """Send directly to Telegram using watchdog-local credentials; raises on transport failure."""
     token = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
+    # Watchdog alarms are emergency-surface incidents: they follow the
+    # «Уведомления» chat, never the disabled log chat (owner order 23:10).
+    chat_id = os.environ.get("TELEGRAM_NOTIFICATIONS_CHAT_ID") or os.environ["TELEGRAM_CHAT_ID"]
     data = urllib.parse.urlencode({"chat_id": chat_id, "text": message, "disable_web_page_preview": "true"}).encode()
     request = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data, method="POST")
     with urllib.request.urlopen(request, timeout=float(os.environ.get("TELEGRAM_TIMEOUT_SECONDS", "10"))) as response:

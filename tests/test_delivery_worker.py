@@ -144,7 +144,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         )
 
         class Telegram:
-            active_modes = {"health"}
+            active_modes = {"decisions"}
 
             def send(self, _payload: dict[str, object]) -> None:
                 return None
@@ -653,7 +653,10 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertTrue(all(isinstance(adapter, WebhookCallSender) for adapter in adapters.values()))
 
     def test_inactive_standard_mode_is_cancelled_without_telegram_send(self) -> None:
-        created = self.center.create_event("producer", "inactive-critical", {**self.event, "severity": "debug"})
+        # Scheduling admits the card while «Логи» is enabled; the dispatch
+        # fence then cancels it because the operator's active set excludes it.
+        with mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'}):
+            created = self.center.create_event("producer", "inactive-critical", {**self.event, "severity": "debug"})
 
         class Telegram:
             active_modes = {"important"}
@@ -697,7 +700,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         sent: list[dict[str, object]] = []
 
         class Telegram:
-            active_modes = {"health"}
+            active_modes = {"decisions"}
 
             def send(self, payload: dict[str, object]) -> None:
                 sent.append(payload)
@@ -727,7 +730,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         sent: list[dict[str, object]] = []
 
         class Telegram:
-            active_modes = {"health"}
+            active_modes = {"decisions"}
             def send(self, payload: dict[str, object]) -> dict[str, object]:
                 sent.append(payload)
                 return {"message_id": 22, "chat_id": "-1001"}
@@ -765,7 +768,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         sent: list[dict[str, object]] = []
 
         class Telegram:
-            active_modes = {"health"}
+            active_modes = {"decisions"}
 
             def send(self, payload: dict[str, object]) -> None:
                 sent.append(payload)
@@ -834,7 +837,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         sent: list[dict[str, object]] = []
 
         class Telegram:
-            active_modes = {"health"}
+            active_modes = {"decisions"}
 
             def send(self, payload: dict[str, object]) -> None:
                 sent.append(payload)
@@ -866,7 +869,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         sent: list[dict[str, object]] = []
 
         class Telegram:
-            active_modes = {"health"}
+            active_modes = {"decisions"}
 
             def send(self, payload: dict[str, object]) -> None:
                 sent.append(payload)
@@ -893,7 +896,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         sent: list[dict[str, object]] = []
 
         class Telegram:
-            active_modes = {"health"}
+            active_modes = {"decisions"}
 
             def send(self, payload: dict[str, object]) -> None:
                 sent.append(payload)
@@ -1494,7 +1497,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         sent: list[dict[str, object]] = []
 
         class Telegram:
-            active_modes = {"health"}
+            active_modes = {"decisions"}
 
             def send(self, payload: dict[str, object]) -> None:
                 sent.append(payload)
@@ -1559,7 +1562,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         )
 
         class Telegram:
-            active_modes = {"health"}
+            active_modes = {"decisions"}
 
             def send(self, _payload: dict[str, object]) -> None:
                 return None
@@ -1594,7 +1597,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         calls: list[dict[str, object]] = []
 
         class Telegram:
-            active_modes = {"health"}
+            active_modes = {"decisions"}
 
             def send(self, payload: dict[str, object]) -> None:
                 sent.append(payload)
@@ -1772,7 +1775,8 @@ class DeliveryWorkerTests(unittest.TestCase):
 
     def test_important_is_single_shot_without_repeat_or_call(self) -> None:
         important = {**self.event, "severity": "important", "dedup_key": "gateway:important"}
-        created = self.center.create_event("producer", "important", important)
+        with mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'}):
+            created = self.center.create_event("producer", "important", important)
 
         class Telegram:
             def send(self, _payload: dict[str, object]) -> None:

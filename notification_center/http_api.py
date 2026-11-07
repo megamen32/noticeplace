@@ -41,8 +41,8 @@ from .exmanager_notice_transport import (
     render_task_question,
 )
 
-ACTIVE_TELEGRAM_MODES = frozenset(("emergency", "important", "log", "health"))
-SUPPORTED_TELEGRAM_MODES = frozenset((*ACTIVE_TELEGRAM_MODES, "health"))
+ACTIVE_TELEGRAM_MODES = frozenset(("decisions", "notify"))
+SUPPORTED_TELEGRAM_MODES = frozenset(("decisions", "notify", "log", "health", "emergency", "important"))
 SEVERITY_TITLES = {'debug': 'Отладка', 'info': 'Информация', 'notice': 'Обратите внимание',
                    'important': 'Важно', 'critical': 'Критично', 'emergency': 'Срочно'}
 TELEGRAM_TEXT_LIMIT = 4096
@@ -159,11 +159,27 @@ def telegram_active_modes(raw: str) -> set[str]:
 
 
 def telegram_mode(incident: dict[str, Any]) -> str:
-    """Map an incident to the operator-facing forum mode."""
+    """Map an incident to the operator-facing chat mode.
+
+    The owner split the Telegram surface into three chats (order 23:10):
+    «Решения» carries every card with buttons, «Уведомления» only
+    emergency+critical incidents and their closures, «Логи» the routine rest
+    and is disabled by default.
+    """
     if str(incident.get("event_type") or "").startswith("health."):
-        return "health"
+        return "decisions"
     severity = str(incident["severity"])
-    return severity if severity in {"emergency", "important"} else "log"
+    return "notify" if severity in {"emergency", "critical"} else "log"
+
+def telegram_mode_for_payload(payload: Mapping[str, Any]) -> str:
+    """Resolve the delivery mode with the card's interactive content.
+
+    A question or plan keyboard makes the card a «Решения» card regardless of
+    the incident severity: the owner must always see the buttons.
+    """
+    if any(payload.get(key) for key in ("human_question", "choices", "health_plans", "health_session")):
+        return "decisions"
+    return telegram_mode(payload["incident"])
 
 
 def telegram_inline_keyboard(action_codec: TelegramActionCodec, incident: dict[str, Any], choices: list[dict[str, Any]] | None = None) -> dict[str, list[list[dict[str, str]]]]:
@@ -208,13 +224,13 @@ def _health_plans_ready(payload: Mapping[str, Any]) -> bool:
     return True
 
 
-def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[str, Any]], incident: dict[str, Any], active_modes: set[str] | None = None) -> dict[str, str]:
+def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[str, Any]], incident: dict[str, Any], active_modes: set[str] | None = None, mode: str | None = None) -> dict[str, str]:
     """Resolve operator-owned project topics before severity routes."""
-    mode = telegram_mode(incident)
+    mode = mode or telegram_mode(incident)
     if active_modes is not None and mode not in active_modes:
         return {}
     project = str(incident.get("project") or "")
-    project_route = severity_routes.get(project) if project not in {"health", "log", "important", "emergency", "debug", "info", "notice", "critical"} else None
+    project_route = severity_routes.get(project) if project not in {"health", "log", "important", "emergency", "debug", "info", "notice", "critical", "decisions", "notify"} else None
     configured = project_route if project_route is not None else severity_routes.get(mode, severity_routes.get(str(incident.get("severity") or ""), {}))
     if configured.get("enabled") is False:
         return {}
@@ -225,11 +241,10 @@ def telegram_destination(default_chat_id: str, severity_routes: dict[str, dict[s
         or not configured.get("message_thread_id")
     ):
         return {}
-    # Health cards contain actionable plan callbacks.  Never fall back to the
-    # general chat when the dedicated operator topic is absent: that would
-    # make a real user miss the required Health surface and could expose
-    # controls in the wrong conversation.
-    if mode == "health" and (not str(configured.get("chat_id") or "").strip() or not configured.get("message_thread_id")):
+    # The decision and notification chats are separate supergroups: an
+    # unrouted decisions card must not silently land in the disabled log
+    # chat, and a route without a chat id is treated as absent.
+    if mode in {"decisions", "notify"} and not str(configured.get("chat_id") or "").strip():
         return {}
     destination = {"chat_id": str(configured.get("chat_id") or default_chat_id)}
     thread_id = configured.get("message_thread_id")
@@ -326,7 +341,7 @@ def telegram_delivery_destination(default_chat_id: str, severity_routes: dict[st
         if target.get("topic_id") is not None:
             destination["message_thread_id"] = str(target["topic_id"])
         return destination
-    return telegram_destination(default_chat_id, severity_routes, payload["incident"], active_modes)
+    return telegram_destination(default_chat_id, severity_routes, payload["incident"], active_modes, mode=telegram_mode_for_payload(payload))
 
 
 class TelegramSender:
@@ -464,13 +479,13 @@ class TelegramSender:
             raise RuntimeError('Удаление Telegram-карточки не подтверждено')
         destination = ({'chat_id': str(card['chat_id'])} if isinstance(card, dict)
                        else telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes))
-        mode = telegram_mode(incident)
+        mode = telegram_mode_for_payload(payload)
         if self._active_modes is not None and mode not in self._active_modes:
             raise RuntimeError(f'Telegram mode is inactive: {mode}')
         if not destination:
             raise RuntimeError('Telegram topic route is not configured')
-        if mode == 'health' and self._action_codec is None:
-            raise RuntimeError('Telegram health delivery requires signed callback configuration')
+        if mode == 'decisions' and self._action_codec is None:
+            raise RuntimeError('Telegram decision delivery requires signed callback configuration')
         text, action_keyboard = render(payload, self._action_codec)
         health_keyboard = None
         if isinstance(health_plans, list) and health_plans and incident.get('state') != 'resolved' and not payload.get('human_question'):
@@ -1133,7 +1148,7 @@ class DeliveryWorker:
         if isinstance(target, dict) and any(isinstance(target.get(key), dict) for key in ("health_session", "health_outcome")):
             return
         incident_id = str(delivery["incident_id"])
-        health_mode = telegram_mode(incident) == "health"
+        health_mode = str(incident.get("event_type") or "").startswith("health.")
         if (self._incident_call_order and str(delivery['delivery_key']).endswith(':initial')
             and str(incident.get('kind') or '') == 'incident'
             and str(incident['severity']) in {'critical','emergency'}
@@ -1175,12 +1190,12 @@ class DeliveryWorker:
     def _send_critical_pre_call_context(self, payload: dict[str, Any], call_delivery: Mapping[str, Any]) -> str:
         """Send the durable incident-card refresh before a critical phone call."""
         incident = payload["incident"]
-        if telegram_mode(incident) == "health":
+        if str(incident.get("event_type") or "").startswith("health."):
             return "sent"
         if str(incident["severity"]) != "critical":
             return "sent"
         active_modes = getattr(self._telegram, "active_modes", None)
-        if active_modes is not None and telegram_mode(incident) not in active_modes:
+        if active_modes is not None and telegram_mode_for_payload(payload) not in active_modes:
             return "blocked"
         context_id = self._center.queue_incident_card_refresh(
             str(incident["id"]), now=time.time(), step=f"pre-call:{call_delivery['id']}"
@@ -1290,7 +1305,7 @@ class DeliveryWorker:
                     # Rebuild the payload and validate the exact lease while the
                     # coalescer/claim-reclaimer is excluded from the final send.
                     payload = self._center.delivery_payload(delivery)
-                    is_health = telegram_mode(payload["incident"]) == "health"
+                    is_health = str(payload["incident"].get("event_type") or "").startswith("health.")
                     if not self._center.delivery_is_claimed(
                         str(delivery["id"]),
                         claimed_at=delivery.get("claimed_at"),
@@ -1308,8 +1323,8 @@ class DeliveryWorker:
                         return
                     if delivery["channel"] == "telegram.main":
                         active_modes = getattr(self._telegram, "active_modes", None)
-                        if active_modes is not None and telegram_mode(payload["incident"]) not in active_modes:
-                            if telegram_mode(payload["incident"]) == "health":
+                        if active_modes is not None and telegram_mode_for_payload(payload) not in active_modes:
+                            if str(payload["incident"].get("event_type") or "").startswith("health."):
                                 self._center.complete_delivery(
                                     delivery["id"],
                                     "retry",
@@ -2272,7 +2287,10 @@ def send_human_request_telegram(
     if is_task_decision and str(request.get("project") or "") == "airlock":
         return _send_airlock_task_question(center, producer_token, request)
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    default_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    # AskHuman questions are «Решения» cards: the owner answers their buttons
+    # in the decisions chat, never in the disabled log chat.
+    default_chat_id = (os.environ.get("TELEGRAM_DECISIONS_CHAT_ID", "").strip()
+                       or os.environ.get("TELEGRAM_CHAT_ID", "").strip())
     if not bot_token or not default_chat_id:
         return {"status": "not_configured"}
     if is_task_decision and not center.task_decisions.reserve_notification(str(request["request_id"])):
@@ -2285,13 +2303,20 @@ def send_human_request_telegram(
         # delayed or uncertain. No private-card fallback may bypass that fence.
         with center.delivery_send_lock():
             card = center.original_telegram_card(str(request['incident_id']))
-            if card is None:
+            incident = center.get_incident(str(request['incident_id']))
+            if card is None and incident is not None and telegram_mode(incident) not in telegram_active_modes_from_environment():
+                # The incident's chat is inactive («Логи» off by owner order):
+                # an edit would never materialize, so the question reaches the
+                # owner as its own decision card in «Решения».
+                pass
+            elif card is None:
                 with center._connection:
                     center.queue_incident_card_refresh(str(request['incident_id']))
                 return {'status': 'queued', 'incident_id': request['incident_id']}
-            center.bind_human_request_message(producer_token, str(request['request_id']), card['chat_id'], card['message_id'])
-            center.queue_incident_card_refresh(str(request['incident_id']))
-            return {'status': 'queued', **card, 'edited_in_place': True}
+            else:
+                center.bind_human_request_message(producer_token, str(request['request_id']), card['chat_id'], card['message_id'])
+                center.queue_incident_card_refresh(str(request['incident_id']))
+                return {'status': 'queued', **card, 'edited_in_place': True}
     destination: dict[str, str] = {"chat_id": default_chat_id}
     project = str(request.get("project") or "")
     project_route = None
@@ -3077,7 +3102,9 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     elif action == "snooze":
                         self._reply(HTTPStatus.OK, center.snooze(incident_id, float(body.get("until_epoch") or 0), actor))
                     elif action in {"mute", "unmute"}:
-                        self._reply(HTTPStatus.OK, center.set_incident_notifications_muted(incident_id, action == "mute", actor))
+                        # The documented HTTP contract stays one exact scope;
+                        # the Telegram button widens familyless keys via scope="source".
+                        self._reply(HTTPStatus.OK, center.set_incident_notifications_muted(incident_id, action == "mute", actor, scope="exact"))
                     else:
                         self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown action"})
                     return

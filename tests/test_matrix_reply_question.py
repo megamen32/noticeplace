@@ -31,6 +31,10 @@ class MatrixReplyQuestionTests(unittest.TestCase):
     """Run real loopback requests against one isolated in-memory-shaped store."""
 
     def setUp(self) -> None:
+        # Card flows need a scheduled delivery; «Логи» ships disabled.
+        _modes = mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'})
+        _modes.start()
+        self.addCleanup(_modes.stop)
         self.tempdir = tempfile.TemporaryDirectory()
         self.center = NotificationCenter(
             Path(self.tempdir.name) / "notify.sqlite3",

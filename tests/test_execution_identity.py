@@ -24,6 +24,10 @@ from notification_center.telegram_interactions import TelegramActionCodec
 
 class ExecutionIdentityTests(unittest.TestCase):
     def setUp(self):
+        # Card flows need a scheduled delivery; «Логи» ships disabled.
+        _modes = unittest.mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'})
+        _modes.start()
+        self.addCleanup(_modes.stop)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.path=Path(self.temp.name)/'notice.sqlite3'
         self.tokens={'p':{'project':'hermes','max_severity':'critical','agent_jobs':['health-diagnosis']}}

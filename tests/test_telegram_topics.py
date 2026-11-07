@@ -13,26 +13,32 @@ class TelegramTopicTests(unittest.TestCase):
     def test_log_uses_log_mode_and_inactive_modes_do_not_route(self) -> None:
         routes = {
             "log": {"chat_id": "-1001", "message_thread_id": 11},
-            "important": {"chat_id": "-1001", "message_thread_id": 12},
+            "notify": {"chat_id": "-1002"},
             "emergency": {"chat_id": "-1001", "message_thread_id": 13},
         }
-        self.assertEqual("11", telegram_destination("-1001", routes, {"kind": "log", "severity": "info"}, {"log", "important", "emergency"})["message_thread_id"])
-        self.assertEqual("11", telegram_destination("-1001", routes, {"kind": "incident", "severity": "critical"}, {"log", "important", "emergency"})["message_thread_id"])
+        self.assertEqual("11", telegram_destination("-1001", routes, {"kind": "log", "severity": "info"}, {"log", "notify"})["message_thread_id"])
+        # critical maps to the dedicated notify chat since owner order 23:10
+        self.assertEqual({"chat_id": "-1002"}, telegram_destination("-1001", routes, {"kind": "incident", "severity": "critical"}, {"log", "notify"}))
+        # logs off by default: routine noise never routes
+        self.assertEqual({}, telegram_destination("-1001", routes, {"kind": "log", "severity": "info"}, {"decisions", "notify"}))
+        self.assertEqual({}, telegram_destination("-1001", routes, {"kind": "incident", "severity": "critical"}, {"decisions"}))
 
     def test_active_modes_default_include_all_operator_notifications(self) -> None:
-        self.assertEqual({"emergency", "important", "log", "health"}, telegram_active_modes(""))
+        self.assertEqual({"decisions", "notify"}, telegram_active_modes(""))
         self.assertEqual({"important"}, telegram_active_modes(json.dumps(["important"])))
 
     def test_health_incidents_can_use_an_explicit_health_topic(self) -> None:
-        routes = {"health": {"chat_id": "-1001", "message_thread_id": 77}}
+        routes = {"decisions": {"chat_id": "-1001", "message_thread_id": 77}}
         incident = {"kind": "incident", "severity": "critical", "event_type": "health.degraded"}
-        self.assertEqual("77", telegram_destination("-1001", routes, incident, {"health"})["message_thread_id"])
+        self.assertEqual("77", telegram_destination("-1001", routes, incident, {"decisions"})["message_thread_id"])
         self.assertEqual({}, telegram_destination("-1001", routes, incident, {"log"}))
 
     def test_health_incidents_never_fall_back_to_the_general_chat(self) -> None:
         incident = {"kind": "incident", "severity": "critical", "event_type": "health.degraded"}
-        self.assertEqual({}, telegram_destination("-1001", {}, incident, {"health"}))
-        self.assertEqual({}, telegram_destination("-1001", {"health": {"chat_id": "-1001"}}, incident, {"health"}))
+        self.assertEqual({}, telegram_destination("-1001", {}, incident, {"decisions"}))
+        # «Решения» is a plain supergroup: a chat-only route is complete and
+        # must not demand a forum topic.
+        self.assertEqual({"chat_id": "-1001"}, telegram_destination("-1001", {"decisions": {"chat_id": "-1001"}}, incident, {"decisions"}))
 
     def test_reconcile_creates_only_missing_active_topics(self) -> None:
         calls: list[tuple[str, str]] = []

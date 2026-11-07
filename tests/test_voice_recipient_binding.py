@@ -12,14 +12,15 @@ from notification_center.core import NotificationCenter, ValidationError
 
 
 KEY = 'existing-userio-notice-service-key'
-EXPIRES = int(time.time()) + 300
 
 
 def proof(**changes):
+    # Fresh expiry per proof: a fixed module constant expires inside long
+    # suite runs and turns every binding test into a false negative.
     fields = dict(v=1, call_id='d89d60d5-a408-47a8-a8de-c6eadc91ea44',
                   receipt_id='incoming-receipt', caller='@recipient:test',
                   account_ref='matrix:assistant', room_id='!voice:test',
-                  expires_at=EXPIRES)
+                  expires_at=int(time.time()) + 300)
     fields.update(changes)
     raw = json.dumps(fields, sort_keys=True, separators=(',', ':')).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip('=') + '.' + hmac.new(KEY.encode(), raw, hashlib.sha256).hexdigest()

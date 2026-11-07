@@ -14,6 +14,10 @@ from notification_center.telegram_interactions import TelegramActionCodec, Teleg
 
 class AgentHerderChoiceTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Card flows need a scheduled delivery; «Логи» ships disabled.
+        _modes = unittest.mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'})
+        _modes.start()
+        self.addCleanup(_modes.stop)
         self.tempdir = tempfile.TemporaryDirectory()
         self.center = NotificationCenter(
             Path(self.tempdir.name) / "notify.sqlite3",

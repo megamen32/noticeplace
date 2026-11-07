@@ -79,7 +79,7 @@ class AdminTopicRouteTests(unittest.TestCase):
             self.assertEqual(900, original_topics["agent-herder"]["message_thread_id"])
             self.assertEqual(
                 {"chat_id": "-1001", "message_thread_id": "900"},
-                telegram_destination("42", original_topics, {"project": "agent-herder", "kind": "incident", "severity": "critical", "event_type": "health.degraded"}, {"health"}),
+                telegram_destination("42", original_topics, {"project": "agent-herder", "kind": "incident", "severity": "critical", "event_type": "health.degraded"}, {"decisions"}),
             )
 
     def test_chat_only_human_request_route_rejects_a_topic_id(self):

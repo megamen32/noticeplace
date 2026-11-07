@@ -37,7 +37,7 @@ class IncidentCardDeliveryTests(unittest.TestCase):
         self.calls=[]
         codec=TelegramActionCodec('x'*32)
         self.worker=DeliveryWorker(self.center, TelegramSender('fake-token', '-100', action_codec=codec, center=self.center,
-            severity_routes={'health': {'chat_id': '-100', 'message_thread_id': 324}}))
+            severity_routes={'decisions': {'chat_id': '-100', 'message_thread_id': 324}}))
         def network(request, **kwargs):
             payload={k:v[0] for k,v in urllib.parse.parse_qs(request.data.decode()).items()}
             method=request.full_url.rsplit('/',1)[-1]; self.calls.append((method,payload))
@@ -131,15 +131,17 @@ class IncidentCardDeliveryTests(unittest.TestCase):
         self.assertFalse(self.center.get_incident(distinct['incident_id'])['notifications_muted'])
 
     def test_sound_is_explicit_for_new_messages_and_never_on_edits(self):
-        self.worker.deliver(self.claim(self.initial_id))
+        with patch.dict('os.environ', {'TELEGRAM_ACTIVE_MODES_JSON': '["decisions","notify","log"]'}):
+            self.worker.deliver(self.claim(self.initial_id))
         self.assertEqual('false',self.calls[0][1]['disable_notification'])
         with patch('notification_center.core.time.time',return_value=time.time()+16):
             self.worker.deliver(self.claim(self.status_id))
         for method,payload in self.calls:
             if method=='editMessageText': self.assertNotIn('disable_notification',payload)
-        ordinary=self.center.create_event('p','routine',{'schema':'notify.event.v1','project':'fleet-health','recipient':'me',
-            'kind':'incident','severity':'notice','title':'Обычное уведомление','dedup_key':'routine'})
-        self.worker.deliver(self.claim(ordinary['initial_delivery_id']))
+        with patch.dict('os.environ', {'TELEGRAM_ACTIVE_MODES_JSON': '["decisions","notify","log"]'}):
+            ordinary=self.center.create_event('p','routine',{'schema':'notify.event.v1','project':'fleet-health','recipient':'me',
+                'kind':'incident','severity':'notice','title':'Обычное уведомление','dedup_key':'routine'})
+            self.worker.deliver(self.claim(ordinary['initial_delivery_id']))
         self.assertEqual('true',self.calls[-1][1]['disable_notification'])
 
     def test_group_recovery_is_partial_in_both_member_orders_and_uses_same_card(self):
