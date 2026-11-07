@@ -3,7 +3,7 @@
   "parent": "S13",
   "label": "Явная стадия call admission",
   "kind": "task",
-  "status": "queued",
+  "status": "done",
   "description": "В receipts отделить proven pre-admission failure от accepted/UNKNOWN; не считать любой failed разрешением fallback.",
   "acceptance": "Connection refused до admission классифицируется доказанно; неизвестная доставка не даёт повторного звонка.",
   "affected_files": [
@@ -17,7 +17,7 @@
   ],
   "estimate_minutes": 15,
   "created_at": "2026-11-07T20:50:35+03:00",
-  "updated_at": "2026-11-07T20:50:35+03:00",
+  "updated_at": "2026-11-07T22:22:07+03:00",
   "progress_events": [
     {
       "at": "2026-11-07T20:50:35+03:00",
@@ -49,6 +49,25 @@
       },
       "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
       "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T22:22:07+03:00",
+      "note": "RED/GREEN и установка проверены.",
+      "changes": {
+        "status": "done",
+        "result": "До отправки control-запроса ConnectionRefusedError получает not_admitted; общий failed, UNKNOWN и voice_call_id не разрешают повтор. 50 тестов, backend 6061663 установлен; evidence/terra-matrix.md"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b744-b259-72e2-81c9-972fd848946c",
+        "source": "native_environment"
+      },
+      "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+      "harness": "codex"
     }
-  ]
+  ],
+  "result": "До отправки control-запроса ConnectionRefusedError получает not_admitted; общий failed, UNKNOWN и voice_call_id не разрешают повтор. 50 тестов, backend 6061663 установлен; evidence/terra-matrix.md",
+  "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+  "harness": "codex"
 }

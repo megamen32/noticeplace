@@ -3,7 +3,7 @@
   "parent": "S13",
   "label": "Восстановить supported control tunnel",
   "kind": "task",
-  "status": "queued",
+  "status": "done",
   "description": "Проверить отсутствие фиксированного Airlock SDK app; через разрешённую конфигурацию/плагин восстановить tunnel. Развязать core Matrix control и необязательный secretary SDK discovery.",
   "acceptance": "Socket 100→88 действительно принимает соединение; работающий voice runtime не перезапускается ради названий.",
   "affected_files": [
@@ -16,7 +16,7 @@
   "estimate_minutes": 15,
   "estimate_unknown_reason": "Это оценка минимального исправления; объём уточняется по указанному исследованию. При большей причине добавить bounded leaves, не выдавать 15 минут за полный срок.",
   "created_at": "2026-11-07T20:50:34+03:00",
-  "updated_at": "2026-11-07T20:50:34+03:00",
+  "updated_at": "2026-11-07T22:21:57+03:00",
   "progress_events": [
     {
       "at": "2026-11-07T20:50:34+03:00",
@@ -47,6 +47,25 @@
       },
       "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
       "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T22:21:57+03:00",
+      "note": "Установлено и проверено на рабочем пути.",
+      "changes": {
+        "status": "done",
+        "result": "Control 100→88 подключается с host и из backend; SDK discovery отделён; установлен 6061663, voice не перезапускался. evidence/terra-matrix.md"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b744-b259-72e2-81c9-972fd848946c",
+        "source": "native_environment"
+      },
+      "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+      "harness": "codex"
     }
-  ]
+  ],
+  "result": "Control 100→88 подключается с host и из backend; SDK discovery отделён; установлен 6061663, voice не перезапускался. evidence/terra-matrix.md",
+  "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+  "harness": "codex"
 }
