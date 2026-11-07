@@ -3,7 +3,7 @@
   "parent": "S14",
   "label": "Исправить policy и receipts эскалации",
   "kind": "task",
-  "status": "queued",
+  "status": "blocked",
   "description": "Настроить Matrix→Telegram только после доказанного non-admission/terminal outcome согласно policy; Android unavailable не блокирует сетевые каналы. Repair missing supported Telegram path без competing caller.",
   "acceptance": "Фактический канал и outcome видны; accepted/UNKNOWN не повторяются; no phone fallback для QA.",
   "affected_files": [
@@ -21,7 +21,7 @@
   "estimate_minutes": 15,
   "estimate_unknown_reason": "Это оценка минимального исправления; объём уточняется по указанному исследованию. При большей причине добавить bounded leaves, не выдавать 15 минут за полный срок.",
   "created_at": "2026-11-07T20:50:38+03:00",
-  "updated_at": "2026-11-07T20:58:09+03:00",
+  "updated_at": "2026-11-07T22:46:06+03:00",
   "progress_events": [
     {
       "at": "2026-11-07T20:50:38+03:00",
@@ -92,6 +92,27 @@
       },
       "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
       "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T22:46:06+03:00",
+      "note": "Не менять чужой core и не разрешать redial UNKNOWN.",
+      "changes": {
+        "status": "blocked",
+        "result": "UserIO not_admitted и UNKNOWN guards установлены; 44 targeted tests проходят. QA Matrix-only policy joined, но receipt Notice Place после ACK становится cancelled; evidence/terra-matrix.md.",
+        "blocker": "Исправление ACK/complete относится к занятому Lead Notice Place core; S07 и S12 остаются зависимостями эскалации."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b744-b259-72e2-81c9-972fd848946c",
+        "source": "native_environment"
+      },
+      "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+      "harness": "codex"
     }
-  ]
+  ],
+  "result": "UserIO not_admitted и UNKNOWN guards установлены; 44 targeted tests проходят. QA Matrix-only policy joined, но receipt Notice Place после ACK становится cancelled; evidence/terra-matrix.md.",
+  "blocker": "Исправление ACK/complete относится к занятому Lead Notice Place core; S07 и S12 остаются зависимостями эскалации.",
+  "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+  "harness": "codex"
 }

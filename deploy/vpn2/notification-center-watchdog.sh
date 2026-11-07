@@ -40,7 +40,6 @@ output = "$health_body"
 header = "Authorization: Bearer $PRIMARY_HEALTH_TOKEN"
 silent
 show-error
-fail-with-body
 proto = "=https"
 tlsv1.2
 connect-timeout = 3
@@ -48,7 +47,11 @@ max-time = ${PROBE_MAX_TIME_SECONDS:-8}
 retry = 0
 write-out = "%{http_code}"
 EOF
-) && [ "$code" = 200 ] && grep -q '"schema"[[:space:]]*:[[:space:]]*"notify.health.v1"' "$health_body" && grep -q '"service"[[:space:]]*:[[:space:]]*"notification-center"' "$health_body" && grep -q '"service_ready"[[:space:]]*:[[:space:]]*true' "$health_body" && grep -q '"storage_ready"[[:space:]]*:[[:space:]]*true' "$health_body" && grep -q '"dispatcher_ready"[[:space:]]*:[[:space:]]*true' "$health_body" && { grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' "$health_body" || grep -q '"status"[[:space:]]*:[[:space:]]*"degraded"' "$health_body"; }; then healthy=1; else healthy=0; fi
+) && { [ "$code" = 200 ] || [ "$code" = 503 ]; } && grep -q '"schema"[[:space:]]*:[[:space:]]*"notify.health.v1"' "$health_body" && grep -q '"service"[[:space:]]*:[[:space:]]*"notification-center"' "$health_body" && grep -q '"service_ready"[[:space:]]*:[[:space:]]*\(true\|false\)' "$health_body" && grep -q '"storage_ready"[[:space:]]*:[[:space:]]*\(true\|false\)' "$health_body" && grep -q '"dispatcher_ready"[[:space:]]*:[[:space:]]*\(true\|false\)' "$health_body" && { grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' "$health_body" || grep -q '"status"[[:space:]]*:[[:space:]]*"degraded"' "$health_body"; }; then health_contract=1; else health_contract=0; fi
+healthy=0
+if [ "$health_contract" = 1 ] && grep -q '"service_ready"[[:space:]]*:[[:space:]]*true' "$health_body" && grep -q '"storage_ready"[[:space:]]*:[[:space:]]*true' "$health_body" && grep -q '"dispatcher_ready"[[:space:]]*:[[:space:]]*true' "$health_body"; then healthy=1; fi
+unknown=0
+if [ "${code:-000}" = 503 ] && [ "$health_contract" = 0 ]; then unknown=1; fi
 degraded=0
 if [ "$healthy" = 1 ] && grep -q '"status"[[:space:]]*:[[:space:]]*"degraded"' "$health_body"; then degraded=1; fi
 send_channel() {
@@ -93,6 +96,7 @@ header = "Content-Type: application/json"
 EOF
   fi
 }
+if [ "$unknown" = 1 ]; then exit 0; fi
 send_pending() { LAST_ALERT_ATTEMPT=$now; for channel in $(printf %s "$channels" | tr ',' ' '); do if send_channel "$channel"; then case "$PENDING_KIND" in DOWN|RECOVERED) ALERT_SENT=1;; DEGRADED) DEGRADED_SENT=1;; esac; PENDING_KIND=; return 0; fi; done; return 1; }
 if [ "$healthy" = 1 ]; then FAILURE_COUNT=0; SUCCESS_COUNT=$((SUCCESS_COUNT + 1)); if [ "$DOWN" = 1 ] && [ "$SUCCESS_COUNT" -ge "$recovery_threshold" ]; then PENDING_KIND=RECOVERED; if [ $((now - LAST_ALERT_ATTEMPT)) -ge "$retry_seconds" ]; then send_pending || true; if [ -z "$PENDING_KIND" ]; then DOWN=0; ALERT_SENT=0; SUCCESS_COUNT=0; DEGRADED_SENT=$degraded; fi; fi; elif [ "$degraded" = 1 ]; then if [ "$DOWN" = 0 ] && { [ "$DEGRADED_SENT" = 0 ] || [ "$PENDING_KIND" = DEGRADED ]; } && [ $((now - LAST_ALERT_ATTEMPT)) -ge "$retry_seconds" ]; then PENDING_KIND=DEGRADED; send_pending || true; fi; else DEGRADED_SENT=0; if [ "$PENDING_KIND" = DEGRADED ]; then PENDING_KIND=; fi; fi
 else SUCCESS_COUNT=0; FAILURE_COUNT=$((FAILURE_COUNT + 1)); if [ "$FAILURE_COUNT" -ge "$fail_threshold" ]; then if [ "$DOWN" = 0 ]; then DOWN=1; ALERT_SENT=0; PENDING_KIND=DOWN; send_pending || true; elif { [ "$ALERT_SENT" = 0 ] || [ "$PENDING_KIND" = DOWN ]; } && [ $((now - LAST_ALERT_ATTEMPT)) -ge "$retry_seconds" ]; then PENDING_KIND=DOWN; send_pending || true; fi; fi
