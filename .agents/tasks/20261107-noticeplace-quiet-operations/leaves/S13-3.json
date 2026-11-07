@@ -3,7 +3,7 @@
   "parent": "S13",
   "label": "Поставить voice fix и проверить Matrix бот→бот",
   "kind": "task",
-  "status": "queued",
+  "status": "blocked",
   "description": "Только отдельные test account_ref/room_id, phone fallback отсутствует. Через настоящий Notice Place→UserIO→Matrix получить answer/end receipts.",
   "acceptance": "Два тестовых участника подтверждают соединение и звук; реальных наборов/уведомлений владельцу ноль.",
   "affected_files": [
@@ -16,7 +16,7 @@
   ],
   "estimate_minutes": 15,
   "created_at": "2026-11-07T20:50:36+03:00",
-  "updated_at": "2026-11-07T20:50:36+03:00",
+  "updated_at": "2026-11-07T22:22:20+03:00",
   "progress_events": [
     {
       "at": "2026-11-07T20:50:36+03:00",
@@ -47,6 +47,27 @@
       },
       "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
       "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T22:22:20+03:00",
+      "note": "Сохранены конкретные receipt и граница для согласованного S14.",
+      "changes": {
+        "status": "blocked",
+        "result": "Matrix A→B: ответ, завершение и двусторонний ненулевой звук доказаны; полный Notice Place→UserIO и чистый Secretary результат не доказаны. evidence/terra-matrix.md",
+        "blocker": "QA policy Notice Place настроена B→A, серверный UserIO route A→B; SDK turn завершился UNKNOWN; чужую policy и Airlock core не изменять, UNKNOWN не повторять."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b744-b259-72e2-81c9-972fd848946c",
+        "source": "native_environment"
+      },
+      "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+      "harness": "codex"
     }
-  ]
+  ],
+  "result": "Matrix A→B: ответ, завершение и двусторонний ненулевой звук доказаны; полный Notice Place→UserIO и чистый Secretary результат не доказаны. evidence/terra-matrix.md",
+  "blocker": "QA policy Notice Place настроена B→A, серверный UserIO route A→B; SDK turn завершился UNKNOWN; чужую policy и Airlock core не изменять, UNKNOWN не повторять.",
+  "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+  "harness": "codex"
 }
