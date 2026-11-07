@@ -357,6 +357,8 @@ class NotificationCenter:
                 self._connection.execute("ALTER TABLE notification_mutes ADD COLUMN match_mode TEXT NOT NULL DEFAULT 'exact'")
             incident_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(incidents)")}
             event_columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(events)")}
+            if 'payload_sha256' not in event_columns:
+                self._connection.execute('ALTER TABLE events ADD COLUMN payload_sha256 TEXT')
             for column in ("event_type", "producer", "plugin", "correlation_id", "parent_event_id", "parent_incident_id", "peer_ip", "source_ip", "proxy_ip", "forwarded_for"):
                 if column not in event_columns:
                     self._connection.execute(f"ALTER TABLE events ADD COLUMN {column} TEXT")
@@ -2248,9 +2250,11 @@ class NotificationCenter:
         with self._lock, self._connection:
             payload_json = json.dumps(dict(event), ensure_ascii=False, sort_keys=True)
             consumer_id = str(scope.get("consumer_id") or "") or self._builtin_profile_for_event(event)
-            previous = self._connection.execute("SELECT event_id, incident_id, payload_json FROM events WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
+            previous = self._connection.execute("SELECT event_id, incident_id, payload_json, payload_sha256 FROM events WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
             if previous is not None:
-                if previous["payload_json"] != payload_json:
+                matches = (previous['payload_sha256'] == hashlib.sha256(payload_json.encode()).hexdigest()
+                           if previous['payload_sha256'] else previous['payload_json'] == payload_json)
+                if not matches:
                     raise IdempotencyConflict("Idempotency-Key was already used with different event content")
                 previous_incident = self.get_incident(str(previous["incident_id"]))
                 initial = self._connection.execute(
@@ -2966,7 +2970,10 @@ class NotificationCenter:
                 holder = self._history_retention_holder = socket.gethostname()+':'+uuid.uuid4().hex
             if not self.claim_runtime_lease('history-retention',holder,ttl_seconds=90):
                 return None
-            return RetentionWorker(self._connection,batch_size=100).run_batch(dry_run=False)
+            worker = RetentionWorker(self._connection,batch_size=100)
+            from .history_compaction import compact_event_details
+            compact_event_details(self._connection,cutoff=time.time()-worker._effective_days()*86400,batch_size=100)
+            return worker.run_batch(dry_run=False)
 
     def claim_due_deliveries(self, now_epoch: float | None = None, limit: int = 20, lease_seconds: float = 60, channel_group: str | None = None, delivery_id: str | None = None) -> list[dict[str, Any]]:
         """Claim due work and reclaim an expired worker lease after a crash.
