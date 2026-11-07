@@ -1,0 +1,52 @@
+{
+  "id": "S01-2",
+  "parent": "S01",
+  "label": "Свести сбои запуска в одну проблему",
+  "kind": "task",
+  "status": "queued",
+  "description": "Агрегировать executor.launch_failed по общему маршруту/причине, не по каждому ATV посту. Без бесконечных новых critical и ретраев UNKNOWN.",
+  "acceptance": "100 failed jobs одного недоступного маршрута → одна открытая платформа-проблема; её карточка обновляется.",
+  "affected_files": [
+    "notification_center/core.py"
+  ],
+  "owner": "noticeplace-core",
+  "model": "gpt-6",
+  "depends_on": [
+    "S01-1"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:49:49+03:00",
+  "updated_at": "2026-11-07T20:49:49+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:49:49+03:00",
+      "note": "",
+      "changes": {
+        "id": "S01-2",
+        "parent": "S01",
+        "label": "Свести сбои запуска в одну проблему",
+        "kind": "task",
+        "status": "queued",
+        "description": "Агрегировать executor.launch_failed по общему маршруту/причине, не по каждому ATV посту. Без бесконечных новых critical и ретраев UNKNOWN.",
+        "acceptance": "100 failed jobs одного недоступного маршрута → одна открытая платформа-проблема; её карточка обновляется.",
+        "affected_files": [
+          "notification_center/core.py"
+        ],
+        "owner": "noticeplace-core",
+        "model": "gpt-6",
+        "depends_on": [
+          "S01-1"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

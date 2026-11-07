@@ -1,0 +1,44 @@
+{
+  "id": "S10",
+  "label": "Gemma 4 как ограниченный классификатор",
+  "kind": "milestone",
+  "status": "queued",
+  "description": "Поставка: Gemma 4 как ограниченный классификатор",
+  "acceptance": "Отчёт accuracy по классам, missed emergency, needless human и latency; эффект модели ещё не объявлен полезным.",
+  "owner": "classification-owner",
+  "depends_on": [
+    "S08"
+  ],
+  "estimate_minutes": 45,
+  "model": "gpt-6",
+  "created_at": "2026-11-07T20:50:25+03:00",
+  "updated_at": "2026-11-07T20:50:25+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:25+03:00",
+      "note": "",
+      "changes": {
+        "id": "S10",
+        "label": "Gemma 4 как ограниченный классификатор",
+        "kind": "milestone",
+        "status": "queued",
+        "description": "Поставка: Gemma 4 как ограниченный классификатор",
+        "acceptance": "Отчёт accuracy по классам, missed emergency, needless human и latency; эффект модели ещё не объявлен полезным.",
+        "owner": "classification-owner",
+        "depends_on": [
+          "S08"
+        ],
+        "estimate_minutes": 45,
+        "model": "gpt-6"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

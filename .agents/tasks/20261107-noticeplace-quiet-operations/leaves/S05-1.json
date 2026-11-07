@@ -1,0 +1,54 @@
+{
+  "id": "S05-1",
+  "parent": "S05",
+  "label": "Локализовать ATV exit 1 без повтора принятого job",
+  "kind": "research",
+  "status": "queued",
+  "description": "Прочитать correlated job/log/helper и protected config; установить точную причину 4a4c130eb0d1a94cb86733252dcc48cc. Секреты не выводить.",
+  "acceptance": "Есть доказанный failing transition, либо точный blocker и bounded воспроизведение на изолированном входе.",
+  "affected_files": [
+    "/home/roomhacker/gptadmin/go-hub/internal/hub/webhook_gateway.go",
+    "notification_center/agent_job_helper.py"
+  ],
+  "owner": "gptadmin-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S01"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:49:59+03:00",
+  "updated_at": "2026-11-07T20:49:59+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:49:59+03:00",
+      "note": "",
+      "changes": {
+        "id": "S05-1",
+        "parent": "S05",
+        "label": "Локализовать ATV exit 1 без повтора принятого job",
+        "kind": "research",
+        "status": "queued",
+        "description": "Прочитать correlated job/log/helper и protected config; установить точную причину 4a4c130eb0d1a94cb86733252dcc48cc. Секреты не выводить.",
+        "acceptance": "Есть доказанный failing transition, либо точный blocker и bounded воспроизведение на изолированном входе.",
+        "affected_files": [
+          "/home/roomhacker/gptadmin/go-hub/internal/hub/webhook_gateway.go",
+          "notification_center/agent_job_helper.py"
+        ],
+        "owner": "gptadmin-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S01"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "id": "S11-1",
+  "parent": "S11",
+  "label": "Устранить ошибки shadow и проверить held-out",
+  "kind": "task",
+  "status": "queued",
+  "description": "Подобрать минимальный prompt/schema и проверить unseen случаи. Учесть K01: Kev официально идентифицирован, runtime специализированный, русский и GPU fit требуют измерений; выбирать по тому же корпусу, не по чужим benchmark.",
+  "acceptance": "Ноль missed critical в приёмочном корпусе; ambiguous идёт в repair/enrichment; есть сравнение с deterministic baseline.",
+  "affected_files": [
+    "notification_center/incident_model_policy.py",
+    "tests"
+  ],
+  "owner": "classification-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S10",
+    "K01"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:28+03:00",
+  "updated_at": "2026-11-07T20:56:25+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:28+03:00",
+      "note": "",
+      "changes": {
+        "id": "S11-1",
+        "parent": "S11",
+        "label": "Устранить ошибки shadow и проверить held-out",
+        "kind": "task",
+        "status": "queued",
+        "description": "Подобрать минимальный prompt/schema, проверить unseen случаи. Альтернативы «Кеф/Лайя» сравнивать лишь при точном model ID, license и runnable artifact; не блокировать основной маршрут.",
+        "acceptance": "Ноль missed critical в приёмочном корпусе; ambiguous идёт в repair/enrichment; есть сравнение с deterministic baseline.",
+        "affected_files": [
+          "notification_center/incident_model_policy.py",
+          "tests"
+        ],
+        "owner": "classification-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S10"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:56:25+03:00",
+      "note": "",
+      "changes": {
+        "depends_on": [
+          "S10",
+          "K01"
+        ],
+        "description": "Подобрать минимальный prompt/schema и проверить unseen случаи. Учесть K01: Kev официально идентифицирован, runtime специализированный, русский и GPU fit требуют измерений; выбирать по тому же корпусу, не по чужим benchmark."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

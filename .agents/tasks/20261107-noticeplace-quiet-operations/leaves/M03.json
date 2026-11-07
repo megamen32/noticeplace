@@ -1,0 +1,44 @@
+{
+  "id": "M03",
+  "label": "Миграция: codex-daemon-watchdog / autosell",
+  "kind": "milestone",
+  "status": "queued",
+  "owner": "consumer-migration",
+  "depends_on": [
+    "S16"
+  ],
+  "estimate_minutes": 45,
+  "description": "Перевести только подтверждённые enabled producers. Retired/QA и обычные сообщения классифицировать отдельно, не включать автоматически.",
+  "acceptance": "Каждая строка имеет versioned adapter/явное исключение, installed receipt и source check либо точный blocker; нет фиктивного fleet complete.",
+  "model": "gpt-6",
+  "created_at": "2026-11-07T20:53:49+03:00",
+  "updated_at": "2026-11-07T20:53:49+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:53:49+03:00",
+      "note": "",
+      "changes": {
+        "id": "M03",
+        "label": "Миграция: codex-daemon-watchdog / autosell",
+        "kind": "milestone",
+        "status": "queued",
+        "owner": "consumer-migration",
+        "depends_on": [
+          "S16"
+        ],
+        "estimate_minutes": 45,
+        "description": "Перевести только подтверждённые enabled producers. Retired/QA и обычные сообщения классифицировать отдельно, не включать автоматически.",
+        "acceptance": "Каждая строка имеет versioned adapter/явное исключение, installed receipt и source check либо точный blocker; нет фиктивного fleet complete.",
+        "model": "gpt-6"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

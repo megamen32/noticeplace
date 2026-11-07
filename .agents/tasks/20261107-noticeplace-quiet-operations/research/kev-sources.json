@@ -1,0 +1,14 @@
+[
+  {
+    "name": "kev-readme",
+    "url": "https://raw.githubusercontent.com/jaredpalmer/kev/main/README.md",
+    "sha256": "0b68530a29d58de5792574ba8cb4afd735d6c98c96de99f30d2de53cf84fbfd4",
+    "retrieved_at": "2026-11-07T17:56:56.676826+00:00"
+  },
+  {
+    "name": "kev-4b-card",
+    "url": "https://huggingface.co/jaredpalmer/kev-4b/raw/main/README.md",
+    "sha256": "e423ce0e3caf0a1e6ff996a58522946a97711e0439c5fea332a8861b02498435",
+    "retrieved_at": "2026-11-07T17:56:57.015348+00:00"
+  }
+]

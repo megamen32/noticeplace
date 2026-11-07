@@ -1,0 +1,54 @@
+{
+  "id": "M01-1",
+  "parent": "M01",
+  "label": "Подключить SDK: fleet-health",
+  "status": "queued",
+  "kind": "task",
+  "owner": "consumer-fleet-health",
+  "model": "gpt-6",
+  "depends_on": [
+    "S16"
+  ],
+  "estimate_minutes": 15,
+  "estimate_unknown_reason": "Оценён существующий адаптер; число live экземпляров уточняет S16. Если есть дополнительные hosts или реальная несовместимость, добавить отдельные install/repair листья до принятия.",
+  "affected_files": [
+    "/home/roomhacker/ServersAdministartion/automation/fleet-health/fleet_health_source_v2.py"
+  ],
+  "description": "Сопоставить runtime с source path. Добавить stable identity, достаточный redacted контекст и verifier через SDK; события не-инциденты сохранить по их назначению. Для fail2ban успешный ban — log. Платежи/заказы не повторять. Hermes — только scripts/plugin/config; core read-only.",
+  "acceptance": "Контракт и source probe проверены на безопасном fixture; сохранены business behavior, idempotency, no-replay. Изменён только владелец адаптера.",
+  "created_at": "2026-11-07T20:53:44+03:00",
+  "updated_at": "2026-11-07T20:53:44+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:53:44+03:00",
+      "note": "",
+      "changes": {
+        "id": "M01-1",
+        "parent": "M01",
+        "label": "Подключить SDK: fleet-health",
+        "status": "queued",
+        "kind": "task",
+        "owner": "consumer-fleet-health",
+        "model": "gpt-6",
+        "depends_on": [
+          "S16"
+        ],
+        "estimate_minutes": 15,
+        "estimate_unknown_reason": "Оценён существующий адаптер; число live экземпляров уточняет S16. Если есть дополнительные hosts или реальная несовместимость, добавить отдельные install/repair листья до принятия.",
+        "affected_files": [
+          "/home/roomhacker/ServersAdministartion/automation/fleet-health/fleet_health_source_v2.py"
+        ],
+        "description": "Сопоставить runtime с source path. Добавить stable identity, достаточный redacted контекст и verifier через SDK; события не-инциденты сохранить по их назначению. Для fail2ban успешный ban — log. Платежи/заказы не повторять. Hermes — только scripts/plugin/config; core read-only.",
+        "acceptance": "Контракт и source probe проверены на безопасном fixture; сохранены business behavior, idempotency, no-replay. Изменён только владелец адаптера."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "id": "S06-2",
+  "parent": "S06",
+  "label": "Продолжение той же сессии и STOP",
+  "kind": "task",
+  "status": "queued",
+  "description": "Использовать существующие Herder/native completion outbox и autopilot. Вопрос/ответ коррелирован с текущим turn; сохранять human STOP и дедупликацию.",
+  "acceptance": "Один ответ продолжает именно исходную сессию; duplicate/restart/UNKNOWN не создают новый turn или агента.",
+  "affected_files": [
+    "notification_center/health_workflow.py",
+    "notification_center/herder_action_owner.py"
+  ],
+  "owner": "noticeplace-lifecycle",
+  "model": "gpt-6",
+  "depends_on": [
+    "S06-1"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:03+03:00",
+  "updated_at": "2026-11-07T20:50:03+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:03+03:00",
+      "note": "",
+      "changes": {
+        "id": "S06-2",
+        "parent": "S06",
+        "label": "Продолжение той же сессии и STOP",
+        "kind": "task",
+        "status": "queued",
+        "description": "Использовать существующие Herder/native completion outbox и autopilot. Вопрос/ответ коррелирован с текущим turn; сохранять human STOP и дедупликацию.",
+        "acceptance": "Один ответ продолжает именно исходную сессию; duplicate/restart/UNKNOWN не создают новый turn или агента.",
+        "affected_files": [
+          "notification_center/health_workflow.py",
+          "notification_center/herder_action_owner.py"
+        ],
+        "owner": "noticeplace-lifecycle",
+        "model": "gpt-6",
+        "depends_on": [
+          "S06-1"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

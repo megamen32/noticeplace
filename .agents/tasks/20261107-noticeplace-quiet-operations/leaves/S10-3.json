@@ -1,0 +1,54 @@
+{
+  "id": "S10-3",
+  "parent": "S10",
+  "label": "Поставить shadow режим классификации",
+  "kind": "task",
+  "status": "queued",
+  "description": "Через production queue классифицировать копии обезличенных наблюдений, сравнить с baseline; никаких внешних действий от shadow.",
+  "acceptance": "Отчёт accuracy по классам, missed emergency, needless human и latency; эффект модели ещё не объявлен полезным.",
+  "affected_files": [
+    "deploy",
+    "docs"
+  ],
+  "owner": "classification-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S10-2"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:27+03:00",
+  "updated_at": "2026-11-07T20:50:27+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:27+03:00",
+      "note": "",
+      "changes": {
+        "id": "S10-3",
+        "parent": "S10",
+        "label": "Поставить shadow режим классификации",
+        "kind": "task",
+        "status": "queued",
+        "description": "Через production queue классифицировать копии обезличенных наблюдений, сравнить с baseline; никаких внешних действий от shadow.",
+        "acceptance": "Отчёт accuracy по классам, missed emergency, needless human и latency; эффект модели ещё не объявлен полезным.",
+        "affected_files": [
+          "deploy",
+          "docs"
+        ],
+        "owner": "classification-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S10-2"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

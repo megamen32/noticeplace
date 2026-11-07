@@ -1,0 +1,54 @@
+{
+  "id": "F02-2",
+  "parent": "F02",
+  "label": "Оценить сутки и устранить выявленные регрессии",
+  "kind": "task",
+  "description": "После 24часов сравнить показатели и receipts; при дефекте новый bounded fix+affected canary и только нужное повторное окно. Не выдавать отсутствие событий за тест emergency.",
+  "acceptance": "Необоснованные уведомления0, duplicates0, orphan actionable sources0 либо явный незакрытый blocker; нет manual QA владельца.",
+  "affected_files": [
+    "docs"
+  ],
+  "status": "queued",
+  "owner": "lead",
+  "model": "gpt-6",
+  "depends_on": [
+    "F02-1"
+  ],
+  "estimate_minutes": 15,
+  "wait_reason": "Перед выполнением требуется 24 часа автоматического наблюдения после F02-1.",
+  "created_at": "2026-11-07T20:54:48+03:00",
+  "updated_at": "2026-11-07T20:54:48+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:54:48+03:00",
+      "note": "",
+      "changes": {
+        "id": "F02-2",
+        "parent": "F02",
+        "label": "Оценить сутки и устранить выявленные регрессии",
+        "kind": "task",
+        "description": "После 24часов сравнить показатели и receipts; при дефекте новый bounded fix+affected canary и только нужное повторное окно. Не выдавать отсутствие событий за тест emergency.",
+        "acceptance": "Необоснованные уведомления0, duplicates0, orphan actionable sources0 либо явный незакрытый blocker; нет manual QA владельца.",
+        "affected_files": [
+          "docs"
+        ],
+        "status": "queued",
+        "owner": "lead",
+        "model": "gpt-6",
+        "depends_on": [
+          "F02-1"
+        ],
+        "estimate_minutes": 15,
+        "wait_reason": "Перед выполнением требуется 24 часа автоматического наблюдения после F02-1."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

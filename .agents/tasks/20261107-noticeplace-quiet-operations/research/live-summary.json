@@ -1,0 +1,318 @@
+{
+  "captured_at": "2026-11-07T17:33:21.930649+00:00",
+  "counts": [
+    {
+      "state": "acknowledged",
+      "n": 51
+    },
+    {
+      "state": "open",
+      "n": 5407
+    },
+    {
+      "state": "resolved",
+      "n": 5113
+    }
+  ],
+  "old_7d": [
+    {
+      "state": "acknowledged",
+      "n": 46
+    },
+    {
+      "state": "open",
+      "n": 4154
+    },
+    {
+      "state": "resolved",
+      "n": 4717
+    }
+  ],
+  "producer_7d": [
+    {
+      "project": "agent-herder",
+      "event_type": "agent.done",
+      "n": 24
+    },
+    {
+      "project": "agent-herder",
+      "event_type": "health.degraded",
+      "n": 17
+    },
+    {
+      "project": "agent-herder",
+      "event_type": "notification",
+      "n": 5
+    },
+    {
+      "project": "atv-views",
+      "event_type": "health.degraded",
+      "n": 1
+    },
+    {
+      "project": "autosell-landing",
+      "event_type": "lead.created",
+      "n": 2
+    },
+    {
+      "project": "autotelegramviews",
+      "event_type": "health.degraded",
+      "n": 313
+    },
+    {
+      "project": "autotelegramviews",
+      "event_type": "business_check",
+      "n": 94
+    },
+    {
+      "project": "autotelegramviews",
+      "event_type": "executor.launch_failed",
+      "n": 19
+    },
+    {
+      "project": "autotelegramviews",
+      "event_type": "incident",
+      "n": 14
+    },
+    {
+      "project": "autotelegramviews",
+      "event_type": "ops.recovery",
+      "n": 1
+    },
+    {
+      "project": "codex-daemon.server-100",
+      "event_type": "health.degraded",
+      "n": 1
+    },
+    {
+      "project": "fail2ban.server-100",
+      "event_type": "incident",
+      "n": 87
+    },
+    {
+      "project": "fail2ban.server-44",
+      "event_type": "incident",
+      "n": 425
+    },
+    {
+      "project": "fail2ban.server-88",
+      "event_type": "incident",
+      "n": 11
+    },
+    {
+      "project": "fleet-health",
+      "event_type": "health.degraded",
+      "n": 171
+    },
+    {
+      "project": "fleet-health",
+      "event_type": "incident",
+      "n": 2
+    },
+    {
+      "project": "fleet-health",
+      "event_type": "executor.launch_failed",
+      "n": 1
+    },
+    {
+      "project": "gptadmin.server-100",
+      "event_type": "incident",
+      "n": 2
+    },
+    {
+      "project": "health-monitor",
+      "event_type": "incident",
+      "n": 149
+    },
+    {
+      "project": "hermes",
+      "event_type": "notification",
+      "n": 27
+    },
+    {
+      "project": "hermes",
+      "event_type": "incident",
+      "n": 5
+    },
+    {
+      "project": "integration",
+      "event_type": "incident",
+      "n": 13
+    },
+    {
+      "project": "omniroute-guard",
+      "event_type": "health.degraded",
+      "n": 26
+    },
+    {
+      "project": "omniroute-guard",
+      "event_type": "executor.launch_failed",
+      "n": 2
+    },
+    {
+      "project": "openwrt-router-health",
+      "event_type": "incident",
+      "n": 44
+    },
+    {
+      "project": "tg-commentator",
+      "event_type": "incident",
+      "n": 26
+    },
+    {
+      "project": "tg-commentator",
+      "event_type": "health.degraded",
+      "n": 3
+    },
+    {
+      "project": "tg-commentator",
+      "event_type": "business_check",
+      "n": 3
+    },
+    {
+      "project": "video-watching",
+      "event_type": "health.degraded",
+      "n": 40
+    },
+    {
+      "project": "video-watching",
+      "event_type": "notification",
+      "n": 1
+    },
+    {
+      "project": "video-watching",
+      "event_type": "executor.launch_failed",
+      "n": 1
+    },
+    {
+      "project": "winramp",
+      "event_type": "health.degraded",
+      "n": 21
+    },
+    {
+      "project": "winramp",
+      "event_type": "notification",
+      "n": 8
+    },
+    {
+      "project": "winramp",
+      "event_type": "incident",
+      "n": 8
+    },
+    {
+      "project": "winramp",
+      "event_type": "executor.launch_failed",
+      "n": 1
+    }
+  ],
+  "mute_modes": [
+    {
+      "project": "fail2ban.server-100",
+      "match_mode": "exact",
+      "n": 2
+    },
+    {
+      "project": "fail2ban.server-44",
+      "match_mode": "exact",
+      "n": 15
+    },
+    {
+      "project": "fleet-health",
+      "match_mode": "exact",
+      "n": 1
+    },
+    {
+      "project": "health-monitor",
+      "match_mode": "exact",
+      "n": 1
+    },
+    {
+      "project": "noticeplace-qa-stop-20261023b",
+      "match_mode": "exact",
+      "n": 3
+    },
+    {
+      "project": "tg-commentator",
+      "match_mode": "exact",
+      "n": 2
+    }
+  ],
+  "calls_24h": [
+    {
+      "channel": "matrix.call",
+      "status": "cancelled",
+      "last_error": null,
+      "n": 7
+    },
+    {
+      "channel": "matrix.call",
+      "status": "cancelled",
+      "last_error": "Автоматический звонок отменён: тихие часы",
+      "n": 37
+    },
+    {
+      "channel": "matrix.call",
+      "status": "cancelled",
+      "last_error": "Повторный звонок об этой проблеме ограничен настройкой интервала",
+      "n": 24
+    },
+    {
+      "channel": "matrix.call",
+      "status": "failed",
+      "last_error": "Звонок завершён без ответа",
+      "n": 4
+    },
+    {
+      "channel": "matrix.call",
+      "status": "uncertain",
+      "last_error": "Звонок не подтверждён; автоматическое повторение остановлено",
+      "n": 8
+    },
+    {
+      "channel": "matrix.call",
+      "status": "uncertain",
+      "last_error": "Результат звонка неизвестен",
+      "n": 12
+    },
+    {
+      "channel": "matrix.call",
+      "status": "uncertain",
+      "last_error": "Результат звонка неизвестен; повтор и переход к другому каналу остановлены",
+      "n": 15
+    },
+    {
+      "channel": "telegram.call",
+      "status": "uncertain",
+      "last_error": "Результат звонка неизвестен; повтор и переход к другому каналу остановлены",
+      "n": 4
+    }
+  ],
+  "repair_24h": [
+    {
+      "status": "failed",
+      "n": 37
+    },
+    {
+      "status": "queued",
+      "n": 1
+    },
+    {
+      "status": "sent",
+      "n": 31
+    }
+  ],
+  "router_24h": [
+    {
+      "state": "resolved",
+      "n": 74,
+      "min_duration": 22.388263702392578,
+      "max_duration": 536.1201541423798
+    }
+  ],
+  "verification": [
+    {
+      "n": 1152,
+      "pending": 0
+    }
+  ]
+}

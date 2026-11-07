@@ -1,0 +1,44 @@
+{
+  "id": "K01",
+  "label": "Сравнить Kev и Gemma на реальных правилах",
+  "kind": "milestone",
+  "status": "queued",
+  "owner": "classification-owner",
+  "depends_on": [
+    "S10-1"
+  ],
+  "estimate_minutes": 45,
+  "description": "Проверить официальный специализированный runtime Kev без предположения о совместимости с Ollama. Публикуется доказанный выбор; непригодность модели не блокирует исправление Notice Place.",
+  "acceptance": "Есть воспроизводимый результат Kev против Gemma или конкретная runtime/resource причина отказа; основной маршрут остаётся рабочим.",
+  "model": "gpt-6",
+  "created_at": "2026-11-07T20:56:20+03:00",
+  "updated_at": "2026-11-07T20:56:20+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:56:20+03:00",
+      "note": "",
+      "changes": {
+        "id": "K01",
+        "label": "Сравнить Kev и Gemma на реальных правилах",
+        "kind": "milestone",
+        "status": "queued",
+        "owner": "classification-owner",
+        "depends_on": [
+          "S10-1"
+        ],
+        "estimate_minutes": 45,
+        "description": "Проверить официальный специализированный runtime Kev без предположения о совместимости с Ollama. Публикуется доказанный выбор; непригодность модели не блокирует исправление Notice Place.",
+        "acceptance": "Есть воспроизводимый результат Kev против Gemma или конкретная runtime/resource причина отказа; основной маршрут остаётся рабочим.",
+        "model": "gpt-6"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

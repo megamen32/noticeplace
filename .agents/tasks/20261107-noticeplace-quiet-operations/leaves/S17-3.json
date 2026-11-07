@@ -1,0 +1,52 @@
+{
+  "id": "S17-3",
+  "parent": "S17",
+  "label": "Поставить registry coverage и проверить полноту",
+  "kind": "task",
+  "description": "Сверка live event intake+enabled deployment inventory с новой registry и scoped token contracts.",
+  "acceptance": "coverage.complete=true только при нуле неизвестных enabled source и наличии installed receipt по каждому; иначе конкретный blocker.",
+  "affected_files": [
+    "docs/consumer-lifecycle-registry.json"
+  ],
+  "status": "queued",
+  "owner": "migration-lead",
+  "model": "gpt-6",
+  "depends_on": [
+    "S17-2"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:54:41+03:00",
+  "updated_at": "2026-11-07T20:54:41+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:54:41+03:00",
+      "note": "",
+      "changes": {
+        "id": "S17-3",
+        "parent": "S17",
+        "label": "Поставить registry coverage и проверить полноту",
+        "kind": "task",
+        "description": "Сверка live event intake+enabled deployment inventory с новой registry и scoped token contracts.",
+        "acceptance": "coverage.complete=true только при нуле неизвестных enabled source и наличии installed receipt по каждому; иначе конкретный blocker.",
+        "affected_files": [
+          "docs/consumer-lifecycle-registry.json"
+        ],
+        "status": "queued",
+        "owner": "migration-lead",
+        "model": "gpt-6",
+        "depends_on": [
+          "S17-2"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

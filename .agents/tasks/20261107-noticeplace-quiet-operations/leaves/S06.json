@@ -1,0 +1,63 @@
+{
+  "id": "S06",
+  "label": "Одна проблема — одна работающая сессия",
+  "kind": "milestone",
+  "status": "queued",
+  "description": "Поставка: Одна проблема — одна работающая сессия",
+  "acceptance": "1000 повторов → один executor; вопрос максимум один; recovery только по source verifier.",
+  "owner": "noticeplace-lifecycle",
+  "depends_on": [
+    "S05",
+    "S02"
+  ],
+  "estimate_minutes": 45,
+  "model": "gpt-6",
+  "created_at": "2026-11-07T20:50:02+03:00",
+  "updated_at": "2026-11-07T20:58:07+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:02+03:00",
+      "note": "",
+      "changes": {
+        "id": "S06",
+        "label": "Одна проблема — одна работающая сессия",
+        "kind": "milestone",
+        "status": "queued",
+        "description": "Поставка: Одна проблема — одна работающая сессия",
+        "acceptance": "1000 повторов → один executor; вопрос максимум один; recovery только по source verifier.",
+        "owner": "noticeplace-lifecycle",
+        "depends_on": [
+          "S05"
+        ],
+        "estimate_minutes": 45,
+        "model": "gpt-6"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:58:07+03:00",
+      "note": "",
+      "changes": {
+        "depends_on": [
+          "S05",
+          "S02"
+        ]
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

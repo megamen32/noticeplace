@@ -1,0 +1,54 @@
+{
+  "id": "S04-2",
+  "parent": "S04",
+  "label": "Добавить typed source и независимый verifier",
+  "kind": "task",
+  "status": "queued",
+  "description": "Передавать health.degraded с source/host/signal/correlation, наблюдениями и source-owned fresh check; одна episode/family identity.",
+  "acceptance": "Сигнал получает executor route; recovery не основан на одном старом success или отчёте самого исполнителя.",
+  "affected_files": [
+    "/home/roomhacker/ServersAdministartion/ops/router-health-lite",
+    "/usr/local/sbin/router-haproxy-watchdog"
+  ],
+  "owner": "infra-router",
+  "model": "gpt-6",
+  "depends_on": [
+    "S04-1"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:49:57+03:00",
+  "updated_at": "2026-11-07T20:49:57+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:49:57+03:00",
+      "note": "",
+      "changes": {
+        "id": "S04-2",
+        "parent": "S04",
+        "label": "Добавить typed source и независимый verifier",
+        "kind": "task",
+        "status": "queued",
+        "description": "Передавать health.degraded с source/host/signal/correlation, наблюдениями и source-owned fresh check; одна episode/family identity.",
+        "acceptance": "Сигнал получает executor route; recovery не основан на одном старом success или отчёте самого исполнителя.",
+        "affected_files": [
+          "/home/roomhacker/ServersAdministartion/ops/router-health-lite",
+          "/usr/local/sbin/router-haproxy-watchdog"
+        ],
+        "owner": "infra-router",
+        "model": "gpt-6",
+        "depends_on": [
+          "S04-1"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

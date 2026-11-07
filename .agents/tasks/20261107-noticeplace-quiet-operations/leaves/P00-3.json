@@ -1,0 +1,52 @@
+{
+  "id": "P00-3",
+  "parent": "P00",
+  "label": "Опубликовать план и handoff",
+  "kind": "task",
+  "status": "queued",
+  "description": "Опубликовать читаемый план и только собственные документы в main; проверить ссылку.",
+  "acceptance": "Доступна публичная страница плана, артефакты сохранены, продукт не объявлен исправленным.",
+  "affected_files": [
+    ".agents/tasks/20261107-noticeplace-quiet-operations"
+  ],
+  "owner": "lead",
+  "model": "gpt-6",
+  "depends_on": [
+    "P00-2"
+  ],
+  "estimate_minutes": 10,
+  "created_at": "2026-11-07T20:48:59+03:00",
+  "updated_at": "2026-11-07T20:48:59+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:48:59+03:00",
+      "note": "",
+      "changes": {
+        "id": "P00-3",
+        "parent": "P00",
+        "label": "Опубликовать план и handoff",
+        "kind": "task",
+        "status": "queued",
+        "description": "Опубликовать читаемый план и только собственные документы в main; проверить ссылку.",
+        "acceptance": "Доступна публичная страница плана, артефакты сохранены, продукт не объявлен исправленным.",
+        "affected_files": [
+          ".agents/tasks/20261107-noticeplace-quiet-operations"
+        ],
+        "owner": "lead",
+        "model": "gpt-6",
+        "depends_on": [
+          "P00-2"
+        ],
+        "estimate_minutes": 10
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

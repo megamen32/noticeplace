@@ -1,0 +1,70 @@
+{
+  "id": "K01-1",
+  "parent": "K01",
+  "label": "Проверить Kev runtime и бюджет на 44",
+  "kind": "research",
+  "description": "Официальный kev.serve: adapter+pointer head, /v1/systemone; Ollama совместимость не заявлена. Измерить доступную GPU/RAM, сосуществование с очередь/Ollama, pinned revisions/license. Kev4B card рекомендует около16GB свободной VRAM, на44 всего12GB; не обещать fit. Проверить 0.8B как feasibility или разрешённый другой host.",
+  "acceptance": "Выбран поддержанный runtime/размер с измеренной памятью либо точный no-fit; существующие задачи/Ollama не повреждены.",
+  "affected_files": [
+    "docs/classifier-evaluation"
+  ],
+  "owner": "classification-owner",
+  "model": "gpt-6",
+  "status": "queued",
+  "depends_on": [
+    "S10-1"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:56:23+03:00",
+  "updated_at": "2026-11-07T20:58:10+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:56:23+03:00",
+      "note": "",
+      "changes": {
+        "id": "K01-1",
+        "parent": "K01",
+        "label": "Проверить Kev runtime и бюджет на 44",
+        "kind": "research",
+        "description": "Официальный kev.serve: adapter+pointer head, /v1/systemone; Ollama совместимость не заявлена. Измерить доступную GPU/RAM, сосуществование с очередь/Ollama, pinned revisions/license. Kev4B card рекомендует около16GB свободной VRAM, на44 всего12GB; не обещать fit. Проверить 0.8B как feasibility или разрешённый другой host.",
+        "acceptance": "Выбран поддержанный runtime/размер с измеренной памятью либо точный no-fit; существующие задачи/Ollama не повреждены.",
+        "affected_files": [
+          "notification_center/incident_model_policy.py",
+          "docs"
+        ],
+        "owner": "classification-owner",
+        "model": "gpt-6",
+        "status": "queued",
+        "depends_on": [
+          "S10-1"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:58:10+03:00",
+      "note": "",
+      "changes": {
+        "affected_files": [
+          "docs/classifier-evaluation"
+        ]
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

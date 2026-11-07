@@ -1,0 +1,54 @@
+{
+  "id": "M13-2",
+  "parent": "M13",
+  "label": "Изолировать тестовый consumer QA",
+  "status": "queued",
+  "kind": "task",
+  "owner": "consumer-QA",
+  "model": "gpt-6",
+  "depends_on": [
+    "S16"
+  ],
+  "estimate_minutes": 15,
+  "estimate_unknown_reason": "Оценён существующий адаптер; число live экземпляров уточняет S16. Если есть дополнительные hosts или реальная несовместимость, добавить отдельные install/repair листья до принятия.",
+  "affected_files": [
+    "/home/roomhacker/agents-projects/noticeplace/tests/test_health_workflow.py"
+  ],
+  "description": "Закрепить test-only project/token/recipients, убрать тестовые источники из production counters/retention исключений. Не отправлять владельцу.",
+  "acceptance": "Тестовый producer проходит полный lifecycle в отдельном scope, не достигает owner контактов.",
+  "created_at": "2026-11-07T20:54:37+03:00",
+  "updated_at": "2026-11-07T20:54:37+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:54:37+03:00",
+      "note": "",
+      "changes": {
+        "id": "M13-2",
+        "parent": "M13",
+        "label": "Изолировать тестовый consumer QA",
+        "status": "queued",
+        "kind": "task",
+        "owner": "consumer-QA",
+        "model": "gpt-6",
+        "depends_on": [
+          "S16"
+        ],
+        "estimate_minutes": 15,
+        "estimate_unknown_reason": "Оценён существующий адаптер; число live экземпляров уточняет S16. Если есть дополнительные hosts или реальная несовместимость, добавить отдельные install/repair листья до принятия.",
+        "affected_files": [
+          "/home/roomhacker/agents-projects/noticeplace/tests/test_health_workflow.py"
+        ],
+        "description": "Закрепить test-only project/token/recipients, убрать тестовые источники из production counters/retention исключений. Не отправлять владельцу.",
+        "acceptance": "Тестовый producer проходит полный lifecycle в отдельном scope, не достигает owner контактов."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

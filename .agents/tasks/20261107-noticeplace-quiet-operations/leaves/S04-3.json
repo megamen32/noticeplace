@@ -1,0 +1,52 @@
+{
+  "id": "S04-3",
+  "parent": "S04",
+  "label": "Поставить watchdog и проверить без сетевого простоя",
+  "kind": "task",
+  "status": "queued",
+  "description": "Установить версионированный скрипт, проверить реальные probes и воспроизвести флаппинг через отдельный QA источник.",
+  "acceptance": "Реальный маршрут измерен; записанная серия 74 флапов не создаёт 74 owner карточки; настоящий отказ сохраняется.",
+  "affected_files": [
+    "/home/roomhacker/ServersAdministartion/ops/router-health-lite"
+  ],
+  "owner": "infra-router",
+  "model": "gpt-6",
+  "depends_on": [
+    "S04-2"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:49:58+03:00",
+  "updated_at": "2026-11-07T20:49:58+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:49:58+03:00",
+      "note": "",
+      "changes": {
+        "id": "S04-3",
+        "parent": "S04",
+        "label": "Поставить watchdog и проверить без сетевого простоя",
+        "kind": "task",
+        "status": "queued",
+        "description": "Установить версионированный скрипт, проверить реальные probes и воспроизвести флаппинг через отдельный QA источник.",
+        "acceptance": "Реальный маршрут измерен; записанная серия 74 флапов не создаёт 74 owner карточки; настоящий отказ сохраняется.",
+        "affected_files": [
+          "/home/roomhacker/ServersAdministartion/ops/router-health-lite"
+        ],
+        "owner": "infra-router",
+        "model": "gpt-6",
+        "depends_on": [
+          "S04-2"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

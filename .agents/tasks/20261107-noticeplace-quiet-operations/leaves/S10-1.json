@@ -1,0 +1,54 @@
+{
+  "id": "S10-1",
+  "parent": "S10",
+  "label": "Размеченный корпус и ограничения решения",
+  "kind": "task",
+  "status": "queued",
+  "description": "Собрать redacted representative corpus всех source families, human-blocker/emergency/insufficient-context/инъекции; ожидаемые ответы задать до прогона. Схема log/repair/important/emergency + reason/confidence.",
+  "acceptance": "Есть held-out часть и детерминированные floors: emergency не понижается; incomplete не уходит в log.",
+  "affected_files": [
+    "tests",
+    "docs"
+  ],
+  "owner": "classification-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S08"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:26+03:00",
+  "updated_at": "2026-11-07T20:50:26+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:26+03:00",
+      "note": "",
+      "changes": {
+        "id": "S10-1",
+        "parent": "S10",
+        "label": "Размеченный корпус и ограничения решения",
+        "kind": "task",
+        "status": "queued",
+        "description": "Собрать redacted representative corpus всех source families, human-blocker/emergency/insufficient-context/инъекции; ожидаемые ответы задать до прогона. Схема log/repair/important/emergency + reason/confidence.",
+        "acceptance": "Есть held-out часть и детерминированные floors: emergency не понижается; incomplete не уходит в log.",
+        "affected_files": [
+          "tests",
+          "docs"
+        ],
+        "owner": "classification-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S08"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

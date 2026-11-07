@@ -1,0 +1,54 @@
+{
+  "id": "S17-2",
+  "parent": "S17",
+  "label": "Подключить найденные дополнительные источники",
+  "kind": "task",
+  "description": "Для каждого нового producer создать отдельный bounded adapter/install leaf до правки; известные aliases связать с существующими M-листьями. Не создавать второй consumer на alias.",
+  "acceptance": "Нет enabled producer без явного contract/status; неизвестный объём расширяет план, а не получает фиктивный PASS.",
+  "affected_files": [
+    "docs/consumer-lifecycle-registry.json"
+  ],
+  "status": "queued",
+  "owner": "migration-lead",
+  "model": "gpt-6",
+  "depends_on": [
+    "S17-1"
+  ],
+  "estimate_minutes": 15,
+  "estimate_unknown_reason": "Дополнительные enabled producers ещё не локализованы; S17-1 задаёт число отдельных новых leaves.",
+  "created_at": "2026-11-07T20:54:41+03:00",
+  "updated_at": "2026-11-07T20:54:41+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:54:41+03:00",
+      "note": "",
+      "changes": {
+        "id": "S17-2",
+        "parent": "S17",
+        "label": "Подключить найденные дополнительные источники",
+        "kind": "task",
+        "description": "Для каждого нового producer создать отдельный bounded adapter/install leaf до правки; известные aliases связать с существующими M-листьями. Не создавать второй consumer на alias.",
+        "acceptance": "Нет enabled producer без явного contract/status; неизвестный объём расширяет план, а не получает фиктивный PASS.",
+        "affected_files": [
+          "docs/consumer-lifecycle-registry.json"
+        ],
+        "status": "queued",
+        "owner": "migration-lead",
+        "model": "gpt-6",
+        "depends_on": [
+          "S17-1"
+        ],
+        "estimate_minutes": 15,
+        "estimate_unknown_reason": "Дополнительные enabled producers ещё не локализованы; S17-1 задаёт число отдельных новых leaves."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

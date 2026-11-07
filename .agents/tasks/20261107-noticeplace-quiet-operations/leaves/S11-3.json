@@ -1,0 +1,54 @@
+{
+  "id": "S11-3",
+  "parent": "S11",
+  "label": "Расширить классификацию после доказанного эффекта",
+  "kind": "task",
+  "status": "queued",
+  "description": "Включать прошедшие corpus families; отрицательный эффект оставляет их на deterministic policy, а не задерживает основную тихую работу.",
+  "acceptance": "Сравнение показывает уменьшение лишних обращений без потери нужных; classifier отказ безопасен.",
+  "affected_files": [
+    "deploy",
+    "docs"
+  ],
+  "owner": "classification-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S11-2"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:30+03:00",
+  "updated_at": "2026-11-07T20:50:30+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:30+03:00",
+      "note": "",
+      "changes": {
+        "id": "S11-3",
+        "parent": "S11",
+        "label": "Расширить классификацию после доказанного эффекта",
+        "kind": "task",
+        "status": "queued",
+        "description": "Включать прошедшие corpus families; отрицательный эффект оставляет их на deterministic policy, а не задерживает основную тихую работу.",
+        "acceptance": "Сравнение показывает уменьшение лишних обращений без потери нужных; classifier отказ безопасен.",
+        "affected_files": [
+          "deploy",
+          "docs"
+        ],
+        "owner": "classification-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S11-2"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

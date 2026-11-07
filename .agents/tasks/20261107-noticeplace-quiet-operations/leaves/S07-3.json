@@ -1,0 +1,54 @@
+{
+  "id": "S07-3",
+  "parent": "S07",
+  "label": "Проверить failover без дублей",
+  "kind": "task",
+  "status": "queued",
+  "description": "Изолированная QA доставка через alternate healthy node с тем же action ID; readback mesh и outbox.",
+  "acceptance": "Переключение узла не удваивает сессию, сообщение, вопрос или вызов; STOP сохраняется.",
+  "affected_files": [
+    "deploy",
+    "tests"
+  ],
+  "owner": "release-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S07-2"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:07+03:00",
+  "updated_at": "2026-11-07T20:50:07+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:07+03:00",
+      "note": "",
+      "changes": {
+        "id": "S07-3",
+        "parent": "S07",
+        "label": "Проверить failover без дублей",
+        "kind": "task",
+        "status": "queued",
+        "description": "Изолированная QA доставка через alternate healthy node с тем же action ID; readback mesh и outbox.",
+        "acceptance": "Переключение узла не удваивает сессию, сообщение, вопрос или вызов; STOP сохраняется.",
+        "affected_files": [
+          "deploy",
+          "tests"
+        ],
+        "owner": "release-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S07-2"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

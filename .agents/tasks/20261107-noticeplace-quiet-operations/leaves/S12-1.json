@@ -1,0 +1,54 @@
+{
+  "id": "S12-1",
+  "parent": "S12",
+  "label": "Контракт retention и preview очистки",
+  "kind": "task",
+  "status": "queued",
+  "description": "Разделить подробную историю 7 дней, текущее состояние, правила/STOP и минимальные no-replay tombstones. Проверить Dqlite FK, inflight, pending requests и receipt references.",
+  "acceptance": "Preview показывает категории и counts; active/UNKNOWN не уничтожаются и не превращаются в recovered.",
+  "affected_files": [
+    "notification_center/mesh_store.py",
+    "notification_center/core.py"
+  ],
+  "owner": "retention-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S06"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:31+03:00",
+  "updated_at": "2026-11-07T20:50:31+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:31+03:00",
+      "note": "",
+      "changes": {
+        "id": "S12-1",
+        "parent": "S12",
+        "label": "Контракт retention и preview очистки",
+        "kind": "task",
+        "status": "queued",
+        "description": "Разделить подробную историю 7 дней, текущее состояние, правила/STOP и минимальные no-replay tombstones. Проверить Dqlite FK, inflight, pending requests и receipt references.",
+        "acceptance": "Preview показывает категории и counts; active/UNKNOWN не уничтожаются и не превращаются в recovered.",
+        "affected_files": [
+          "notification_center/mesh_store.py",
+          "notification_center/core.py"
+        ],
+        "owner": "retention-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S06"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

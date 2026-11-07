@@ -1,0 +1,72 @@
+{
+  "id": "K01-2",
+  "parent": "K01",
+  "label": "Изолированная проверка Kev и сравнение",
+  "kind": "task",
+  "description": "Bounded test serving без публичного порта и owner notifications. Тот же held-out корпус: русский, английский, mixed logs, incomplete, injection; choice/noul, calibration/latency/VRAM. Не pip install kev (другой пакет), только pinned официальный repo. При no-fit вернуть доказательство, не менять базовую модель молча.",
+  "acceptance": "Реальные ответы и метрики отделены от авторских benchmark; русский особенно проверен, потому что card заявляет English.",
+  "affected_files": [
+    "docs/classifier-evaluation"
+  ],
+  "owner": "classification-owner",
+  "model": "gpt-6",
+  "status": "queued",
+  "depends_on": [
+    "K01-1"
+  ],
+  "estimate_minutes": 15,
+  "estimate_unknown_reason": "15 минут активной проверки; первоначальная загрузка весов отдельно и зависит от сети. Нельзя ждать крупную модель вместо поставки тишины.",
+  "created_at": "2026-11-07T20:56:24+03:00",
+  "updated_at": "2026-11-07T20:58:11+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:56:24+03:00",
+      "note": "",
+      "changes": {
+        "id": "K01-2",
+        "parent": "K01",
+        "label": "Изолированная проверка Kev и сравнение",
+        "kind": "task",
+        "description": "Bounded test serving без публичного порта и owner notifications. Тот же held-out корпус: русский, английский, mixed logs, incomplete, injection; choice/noul, calibration/latency/VRAM. Не pip install kev (другой пакет), только pinned официальный repo. При no-fit вернуть доказательство, не менять базовую модель молча.",
+        "acceptance": "Реальные ответы и метрики отделены от авторских benchmark; русский особенно проверен, потому что card заявляет English.",
+        "affected_files": [
+          "notification_center/incident_model_policy.py",
+          "docs"
+        ],
+        "owner": "classification-owner",
+        "model": "gpt-6",
+        "status": "queued",
+        "depends_on": [
+          "K01-1"
+        ],
+        "estimate_minutes": 15,
+        "estimate_unknown_reason": "15 минут активной проверки; первоначальная загрузка весов отдельно и зависит от сети. Нельзя ждать крупную модель вместо поставки тишины."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:58:11+03:00",
+      "note": "",
+      "changes": {
+        "affected_files": [
+          "docs/classifier-evaluation"
+        ]
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

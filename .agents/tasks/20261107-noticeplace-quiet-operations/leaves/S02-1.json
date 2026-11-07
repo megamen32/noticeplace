@@ -1,0 +1,48 @@
+{
+  "id": "S02-1",
+  "parent": "S02",
+  "label": "Доставить существующий notification-rule экран",
+  "kind": "task",
+  "status": "queued",
+  "description": "Проверить commit 6f11f756 и зависимости, собрать и установить актуальную console штатно. Не переписывать готовый экран.",
+  "acceptance": "Ссылка из incident card открывает нужное правило в обычном браузере через SSO.",
+  "affected_files": [
+    "/home/roomhacker/ServersAdministartion/automation/noticeplace-console"
+  ],
+  "owner": "noticeplace-console",
+  "model": "gpt-6",
+  "depends_on": [],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:49:51+03:00",
+  "updated_at": "2026-11-07T20:49:51+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:49:51+03:00",
+      "note": "",
+      "changes": {
+        "id": "S02-1",
+        "parent": "S02",
+        "label": "Доставить существующий notification-rule экран",
+        "kind": "task",
+        "status": "queued",
+        "description": "Проверить commit 6f11f756 и зависимости, собрать и установить актуальную console штатно. Не переписывать готовый экран.",
+        "acceptance": "Ссылка из incident card открывает нужное правило в обычном браузере через SSO.",
+        "affected_files": [
+          "/home/roomhacker/ServersAdministartion/automation/noticeplace-console"
+        ],
+        "owner": "noticeplace-console",
+        "model": "gpt-6",
+        "depends_on": [],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

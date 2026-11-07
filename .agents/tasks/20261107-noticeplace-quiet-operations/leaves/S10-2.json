@@ -1,0 +1,52 @@
+{
+  "id": "S10-2",
+  "parent": "S10",
+  "label": "Адаптер существующей очереди Ollama 44",
+  "kind": "task",
+  "status": "queued",
+  "description": "Закрепить digest gemma4, JSON schema, no tools, bounded prompt, cache по значимому изменению, deadline; overload/failure → deterministic repair policy.",
+  "acceptance": "Недоступность/медленность модели не блокирует emergency и не обнуляет incidents; shared queue не заменяется.",
+  "affected_files": [
+    "notification_center/incident_model_policy.py"
+  ],
+  "owner": "classification-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S10-1"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:26+03:00",
+  "updated_at": "2026-11-07T20:50:26+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:26+03:00",
+      "note": "",
+      "changes": {
+        "id": "S10-2",
+        "parent": "S10",
+        "label": "Адаптер существующей очереди Ollama 44",
+        "kind": "task",
+        "status": "queued",
+        "description": "Закрепить digest gemma4, JSON schema, no tools, bounded prompt, cache по значимому изменению, deadline; overload/failure → deterministic repair policy.",
+        "acceptance": "Недоступность/медленность модели не блокирует emergency и не обнуляет incidents; shared queue не заменяется.",
+        "affected_files": [
+          "notification_center/incident_model_policy.py"
+        ],
+        "owner": "classification-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S10-1"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

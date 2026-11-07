@@ -1,0 +1,44 @@
+{
+  "id": "F02",
+  "label": "Подтвердить устойчивую тишину за сутки",
+  "kind": "milestone",
+  "status": "queued",
+  "owner": "lead",
+  "depends_on": [
+    "F01"
+  ],
+  "estimate_minutes": 35,
+  "description": "Подтвердить устойчивую тишину за сутки",
+  "acceptance": "Финальный отчёт содержит реальные receipts и оставшиеся границы; никаких обещаний вместо выполненной работы.",
+  "model": "gpt-6",
+  "created_at": "2026-11-07T20:54:46+03:00",
+  "updated_at": "2026-11-07T20:54:46+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:54:46+03:00",
+      "note": "",
+      "changes": {
+        "id": "F02",
+        "label": "Подтвердить устойчивую тишину за сутки",
+        "kind": "milestone",
+        "status": "queued",
+        "owner": "lead",
+        "depends_on": [
+          "F01"
+        ],
+        "estimate_minutes": 35,
+        "description": "Подтвердить устойчивую тишину за сутки",
+        "acceptance": "Финальный отчёт содержит реальные receipts и оставшиеся границы; никаких обещаний вместо выполненной работы.",
+        "model": "gpt-6"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

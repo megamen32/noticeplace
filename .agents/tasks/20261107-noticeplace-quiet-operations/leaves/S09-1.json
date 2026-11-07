@@ -1,0 +1,73 @@
+{
+  "id": "S09-1",
+  "parent": "S09",
+  "label": "Polling с cursor и ограниченным ожиданием",
+  "kind": "task",
+  "status": "queued",
+  "description": "Добавить к существующему pull cursor/limit/optional wait, jitter/backoff/deadline и durable checkpoint; webhook лишь необязательный сигнал опросить API.",
+  "acceptance": "Разрыв соединения и перезапуск не теряют и не повторяют checks; idle poll ограничен.",
+  "affected_files": [
+    "notification_center/http_api.py",
+    "python/notify_center_client"
+  ],
+  "owner": "sdk-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S08",
+    "S03"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:22+03:00",
+  "updated_at": "2026-11-07T20:58:08+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:22+03:00",
+      "note": "",
+      "changes": {
+        "id": "S09-1",
+        "parent": "S09",
+        "label": "Polling с cursor и ограниченным ожиданием",
+        "kind": "task",
+        "status": "queued",
+        "description": "Добавить к существующему pull cursor/limit/optional wait, jitter/backoff/deadline и durable checkpoint; webhook лишь необязательный сигнал опросить API.",
+        "acceptance": "Разрыв соединения и перезапуск не теряют и не повторяют checks; idle poll ограничен.",
+        "affected_files": [
+          "notification_center/http_api.py",
+          "python/notify_center_client"
+        ],
+        "owner": "sdk-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S08"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:58:08+03:00",
+      "note": "",
+      "changes": {
+        "depends_on": [
+          "S08",
+          "S03"
+        ]
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

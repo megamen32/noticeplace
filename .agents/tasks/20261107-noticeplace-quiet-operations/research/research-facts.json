@@ -1,0 +1,36 @@
+{
+  "research_window_utc": [
+    "2026-11-07T17:25:05Z",
+    "2026-11-07T17:45:05Z"
+  ],
+  "production_changes": false,
+  "human_test_calls": 0,
+  "owner_test_notifications": 0,
+  "watchdog_vpn2": {
+    "health_http_status_with_configured_token": 401,
+    "state_failure_count": 341373,
+    "down": true,
+    "alert_sent": true,
+    "limitation": "Stored alert_sent is not independently verified receipt delivery"
+  },
+  "matrix": {
+    "sample_receipts": 12,
+    "sample_status": "failed",
+    "error": "ConnectionRefusedError",
+    "control_socket_on_100_accepts": false,
+    "target_socket_on_88_listens": true,
+    "tunnel_restarts": 122855,
+    "missing_fixed_sdk_app_container": true
+  },
+  "atv_failed_job": "4a4c130eb0d1a94cb86733252dcc48cc",
+  "atv_shell_root_cause": "not yet established; failure result omitted by gateway",
+  "source_state": {
+    "canonical_head": "b429559",
+    "remote_main": "b904eb900021c20523c55f3b6d29eabff9b81087",
+    "installed_noticeplace_commit": "8ec6d0107f2c",
+    "foreign_tracked_wip": [
+      ".gitignore",
+      "bin/notify-center"
+    ]
+  }
+}

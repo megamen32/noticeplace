@@ -1,0 +1,63 @@
+{
+  "id": "S11",
+  "label": "Калибровка и включение Gemma без потери сигналов",
+  "kind": "milestone",
+  "status": "queued",
+  "description": "Поставка: Калибровка и включение Gemma без потери сигналов",
+  "acceptance": "Сравнение показывает уменьшение лишних обращений без потери нужных; classifier отказ безопасен.",
+  "owner": "classification-owner",
+  "depends_on": [
+    "S10",
+    "K01"
+  ],
+  "estimate_minutes": 45,
+  "model": "gpt-6",
+  "created_at": "2026-11-07T20:50:28+03:00",
+  "updated_at": "2026-11-07T20:56:26+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:28+03:00",
+      "note": "",
+      "changes": {
+        "id": "S11",
+        "label": "Калибровка и включение Gemma без потери сигналов",
+        "kind": "milestone",
+        "status": "queued",
+        "description": "Поставка: Калибровка и включение Gemma без потери сигналов",
+        "acceptance": "Сравнение показывает уменьшение лишних обращений без потери нужных; classifier отказ безопасен.",
+        "owner": "classification-owner",
+        "depends_on": [
+          "S10"
+        ],
+        "estimate_minutes": 45,
+        "model": "gpt-6"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:56:26+03:00",
+      "note": "",
+      "changes": {
+        "depends_on": [
+          "S10",
+          "K01"
+        ]
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

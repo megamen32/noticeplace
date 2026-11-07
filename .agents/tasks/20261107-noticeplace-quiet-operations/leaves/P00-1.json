@@ -1,0 +1,67 @@
+{
+  "id": "P00-1",
+  "parent": "P00",
+  "label": "Зафиксировать причины и доказательства",
+  "kind": "research",
+  "status": "done",
+  "description": "Сохранить отчёт, измерения, ограничения и список невыясненных причин без секретов.",
+  "acceptance": "Отчёт отделяет live-факты, гипотезы и будущие исправления.",
+  "affected_files": [
+    ".agents/tasks/20261107-noticeplace-quiet-operations/research"
+  ],
+  "owner": "lead",
+  "model": "gpt-6",
+  "depends_on": [],
+  "estimate_minutes": 10,
+  "created_at": "2026-11-07T20:48:58+03:00",
+  "updated_at": "2026-11-07T20:57:22+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:48:58+03:00",
+      "note": "",
+      "changes": {
+        "id": "P00-1",
+        "parent": "P00",
+        "label": "Зафиксировать причины и доказательства",
+        "kind": "research",
+        "status": "queued",
+        "description": "Сохранить отчёт, измерения, ограничения и список невыясненных причин без секретов.",
+        "acceptance": "Отчёт отделяет live-факты, гипотезы и будущие исправления.",
+        "affected_files": [
+          ".agents/tasks/20261107-noticeplace-quiet-operations/research"
+        ],
+        "owner": "lead",
+        "model": "gpt-6",
+        "depends_on": [],
+        "estimate_minutes": 10
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:57:22+03:00",
+      "note": "",
+      "changes": {
+        "status": "done",
+        "actual_minutes": 10,
+        "result": "Сохранены research.md, live-summary, latency samples/summary, Gemma synthetic summary, Matrix/watchdog facts, screenshot 404 и официальные Kev sources. Live-факты и непроверенные причины отделены; никаких production изменений."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ],
+  "actual_minutes": 10,
+  "result": "Сохранены research.md, live-summary, latency samples/summary, Gemma synthetic summary, Matrix/watchdog facts, screenshot 404 и официальные Kev sources. Live-факты и непроверенные причины отделены; никаких production изменений."
+}

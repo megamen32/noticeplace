@@ -1,0 +1,97 @@
+{
+  "id": "S14-2",
+  "parent": "S14",
+  "label": "Исправить policy и receipts эскалации",
+  "kind": "task",
+  "status": "queued",
+  "description": "Настроить Matrix→Telegram только после доказанного non-admission/terminal outcome согласно policy; Android unavailable не блокирует сетевые каналы. Repair missing supported Telegram path без competing caller.",
+  "acceptance": "Фактический канал и outcome видны; accepted/UNKNOWN не повторяются; no phone fallback для QA.",
+  "affected_files": [
+    "notification_center/incident_call_chain.py",
+    "notification_center/core.py",
+    "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/noticeplace_calls.py"
+  ],
+  "owner": "userio-escalation",
+  "model": "gpt-6",
+  "depends_on": [
+    "S14-1",
+    "S12",
+    "S07"
+  ],
+  "estimate_minutes": 15,
+  "estimate_unknown_reason": "Это оценка минимального исправления; объём уточняется по указанному исследованию. При большей причине добавить bounded leaves, не выдавать 15 минут за полный срок.",
+  "created_at": "2026-11-07T20:50:38+03:00",
+  "updated_at": "2026-11-07T20:58:09+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:38+03:00",
+      "note": "",
+      "changes": {
+        "id": "S14-2",
+        "parent": "S14",
+        "label": "Исправить policy и receipts эскалации",
+        "kind": "task",
+        "status": "queued",
+        "description": "Настроить Matrix→Telegram только после доказанного non-admission/terminal outcome согласно policy; Android unavailable не блокирует сетевые каналы. Repair missing supported Telegram path без competing caller.",
+        "acceptance": "Фактический канал и outcome видны; accepted/UNKNOWN не повторяются; no phone fallback для QA.",
+        "affected_files": [
+          "notification_center/escalation.py",
+          "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/noticeplace_calls.py"
+        ],
+        "owner": "userio-escalation",
+        "model": "gpt-6",
+        "depends_on": [
+          "S14-1"
+        ],
+        "estimate_minutes": 15,
+        "estimate_unknown_reason": "Это оценка минимального исправления; объём уточняется по указанному исследованию. При большей причине добавить bounded leaves, не выдавать 15 минут за полный срок."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:56:17+03:00",
+      "note": "Уточнён существующий source path вместо предполагаемого escalation.py.",
+      "changes": {
+        "affected_files": [
+          "notification_center/incident_call_chain.py",
+          "notification_center/core.py",
+          "/home/roomhacker/agents-projects/universal-userio/src/universal_userio/noticeplace_calls.py"
+        ]
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:58:09+03:00",
+      "note": "",
+      "changes": {
+        "depends_on": [
+          "S14-1",
+          "S12",
+          "S07"
+        ]
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

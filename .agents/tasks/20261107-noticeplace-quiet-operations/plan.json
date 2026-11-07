@@ -1,0 +1,38 @@
+{
+  "title": "Notice Place: тишина для человека, работа для ИИ",
+  "goal": "Человек получает только необходимое решение или чрезвычайную ситуацию; один исполнитель устраняет проблему, источник независимо проверяет результат.",
+  "business_result": "Действующие настройки, быстрая доска, отсутствие повторных карточек и сессий, подтверждённое закрытие, работающие Matrix/Telegram эскалации, 7 дней подробной истории.",
+  "mode": "fullcycle",
+  "deliverable": "plan",
+  "decomposition": "complete",
+  "default_model": "gpt-6",
+  "slots": 3,
+  "recon": [
+    "74 закрытых Smart Edge эпизода за сутки, нет hysteresis, timeout после частичной загрузки :: /usr/local/sbin/router-haproxy-watchdog; live mesh 2026-11-07",
+    "404 настроек: исправление 6f11f756 существует в исходниках, отсутствует в installed console :: Vibe; /opt/noticeplace-console/panel/app.js",
+    "Dashboard 3–8 секунд из-за owner-запроса Herder, DB миллисекунды :: research/dashboard-latency-authorized.jsonl",
+    "10571 incidents, 5458 незакрытых; исторические mute только exact-IP :: research/live-summary.json; live notification_mutes",
+    "Matrix control socket ConnectionRefused; tunnel на 88 не стартует без SDK app :: live UserIO receipts; socket connect без отправки",
+    "vpn2 watchdog получает HTTP 401 с настроенным токеном :: read-only request 2026-11-07 17:44 UTC",
+    "Gemma4 доступна через очередь 44; 6/8 правильных синтетических классов, 16–26 секунд :: Ollama /api/chat",
+    "SourceVerifier уже есть; 26 зарегистрированных потребителей, coverage.complete=false :: notification_center/consumer_lifecycle.py; docs/consumer-lifecycle-registry.json",
+    "Точная причина ATV shell exit 1 ещё не установлена; GPTAdmin теряет result при ошибке :: job 4a4c130eb0d1a94cb86733252dcc48cc; webhook_gateway.go"
+  ],
+  "acceptance_scenario": "Изолированные источники и тестовые аккаунты: 1000 повторов → один исполнитель, ноль сообщений владельцу; ответ на необходимый вопрос продолжает ту же сессию; emergency доставляется один раз; только fresh source check закрывает; mute работает после reload и нового эпизода; Matrix бот→бот без телефона; TTL не повторяет действий; затем 24 часа автоматического production наблюдения.",
+  "current_progress": "Исследование 17:25–17:45 UTC завершено. Подтверждены причины. Реализация и очистка не начинались; все задачи ниже — будущая работа.",
+  "external_waits": "24 часа наблюдения после поставки отдельно от активной работы. Точный срок уточняется после локализации shell failure и live inventory. Kev идентифицирован; официальный runtime и русский корпус проверяет K01, основной ремонт не ждёт установки крупной модели.",
+  "updated_at": "2026-11-07T20:56:27+03:00",
+  "revisions": [
+    {
+      "at": "2026-11-07T20:56:27+03:00",
+      "reason": "Пользователь уточнил название Kev и официальный источник.",
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "summary": "Добавлено ограниченное сравнение Kev/Gemma с проверкой специализированного runtime, языка и доступной памяти; первый релиз тишины не зависит от него."
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "id": "S17",
+  "label": "Оставшиеся живые источники и расхождения registry",
+  "kind": "milestone",
+  "status": "queued",
+  "owner": "migration-lead",
+  "depends_on": [
+    "S16"
+  ],
+  "estimate_minutes": 45,
+  "description": "Оставшиеся живые источники и расхождения registry",
+  "acceptance": "coverage.complete=true только при нуле неизвестных enabled source и наличии installed receipt по каждому; иначе конкретный blocker.",
+  "model": "gpt-6",
+  "created_at": "2026-11-07T20:54:39+03:00",
+  "updated_at": "2026-11-07T20:54:39+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:54:39+03:00",
+      "note": "",
+      "changes": {
+        "id": "S17",
+        "label": "Оставшиеся живые источники и расхождения registry",
+        "kind": "milestone",
+        "status": "queued",
+        "owner": "migration-lead",
+        "depends_on": [
+          "S16"
+        ],
+        "estimate_minutes": 45,
+        "description": "Оставшиеся живые источники и расхождения registry",
+        "acceptance": "coverage.complete=true только при нуле неизвестных enabled source и наличии installed receipt по каждому; иначе конкретный blocker.",
+        "model": "gpt-6"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

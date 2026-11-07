@@ -1,0 +1,54 @@
+{
+  "id": "S08-2",
+  "parent": "S08",
+  "label": "Экспортировать SourceVerifier в публичный SDK",
+  "kind": "task",
+  "status": "queued",
+  "description": "Переиспользовать pull verification requests, свежую проверку, durable intent и reconciliation. Emit/recover/query/check в одном клиенте; идемпотентность и restart.",
+  "acceptance": "Установка SDK даёт рабочий цикл; stale generation и work_finished не закрывают инцидент.",
+  "affected_files": [
+    "python/notify_center_client",
+    "notification_center/consumer_lifecycle.py"
+  ],
+  "owner": "sdk-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S08-1"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:10+03:00",
+  "updated_at": "2026-11-07T20:50:10+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:10+03:00",
+      "note": "",
+      "changes": {
+        "id": "S08-2",
+        "parent": "S08",
+        "label": "Экспортировать SourceVerifier в публичный SDK",
+        "kind": "task",
+        "status": "queued",
+        "description": "Переиспользовать pull verification requests, свежую проверку, durable intent и reconciliation. Emit/recover/query/check в одном клиенте; идемпотентность и restart.",
+        "acceptance": "Установка SDK даёт рабочий цикл; stale generation и work_finished не закрывают инцидент.",
+        "affected_files": [
+          "python/notify_center_client",
+          "notification_center/consumer_lifecycle.py"
+        ],
+        "owner": "sdk-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S08-1"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

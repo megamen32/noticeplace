@@ -1,0 +1,52 @@
+{
+  "id": "S07-2",
+  "parent": "S07",
+  "label": "Доставить release на 88",
+  "kind": "task",
+  "status": "queued",
+  "description": "Установить тот же artifact, не нарушая UserIO voice; native consumer readback.",
+  "acceptance": "88 использует ту же policy и правила; соседние voice services сохранены.",
+  "affected_files": [
+    "deploy"
+  ],
+  "owner": "release-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S07-1"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:06+03:00",
+  "updated_at": "2026-11-07T20:50:06+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:06+03:00",
+      "note": "",
+      "changes": {
+        "id": "S07-2",
+        "parent": "S07",
+        "label": "Доставить release на 88",
+        "kind": "task",
+        "status": "queued",
+        "description": "Установить тот же artifact, не нарушая UserIO voice; native consumer readback.",
+        "acceptance": "88 использует ту же policy и правила; соседние voice services сохранены.",
+        "affected_files": [
+          "deploy"
+        ],
+        "owner": "release-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S07-1"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

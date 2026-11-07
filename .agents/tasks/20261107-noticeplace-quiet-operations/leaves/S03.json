@@ -1,0 +1,46 @@
+{
+  "id": "S03",
+  "label": "Убрать задержку доски и мусор карточек",
+  "kind": "milestone",
+  "status": "queued",
+  "description": "Поставка: Убрать задержку доски и мусор карточек",
+  "acceptance": "Первый полезный экран p95<2s; человек понимает источник/влияние/что нужно; настройки работают после reload.",
+  "owner": "noticeplace-ui",
+  "depends_on": [
+    "S01",
+    "S02"
+  ],
+  "estimate_minutes": 45,
+  "model": "gpt-6",
+  "created_at": "2026-11-07T20:49:53+03:00",
+  "updated_at": "2026-11-07T20:49:53+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:49:53+03:00",
+      "note": "",
+      "changes": {
+        "id": "S03",
+        "label": "Убрать задержку доски и мусор карточек",
+        "kind": "milestone",
+        "status": "queued",
+        "description": "Поставка: Убрать задержку доски и мусор карточек",
+        "acceptance": "Первый полезный экран p95<2s; человек понимает источник/влияние/что нужно; настройки работают после reload.",
+        "owner": "noticeplace-ui",
+        "depends_on": [
+          "S01",
+          "S02"
+        ],
+        "estimate_minutes": 45,
+        "model": "gpt-6"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

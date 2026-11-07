@@ -1,0 +1,73 @@
+{
+  "id": "S06-1",
+  "parent": "S06",
+  "label": "Устойчивые family/episode/attempt идентификаторы",
+  "kind": "task",
+  "status": "queued",
+  "description": "Сохранить stable family/rule отдельно от episode и generation. Обновления направлять текущей bound session; terminal/reopen выполняется атомарно.",
+  "acceptance": "Конкурентные события не создают двух executors; старая карточка указывает актуальное состояние и связанную проблему.",
+  "affected_files": [
+    "notification_center/incident_lifecycle.py",
+    "notification_center/core.py"
+  ],
+  "owner": "noticeplace-lifecycle",
+  "model": "gpt-6",
+  "depends_on": [
+    "S05",
+    "S02"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:02+03:00",
+  "updated_at": "2026-11-07T20:58:08+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:02+03:00",
+      "note": "",
+      "changes": {
+        "id": "S06-1",
+        "parent": "S06",
+        "label": "Устойчивые family/episode/attempt идентификаторы",
+        "kind": "task",
+        "status": "queued",
+        "description": "Сохранить stable family/rule отдельно от episode и generation. Обновления направлять текущей bound session; terminal/reopen выполняется атомарно.",
+        "acceptance": "Конкурентные события не создают двух executors; старая карточка указывает актуальное состояние и связанную проблему.",
+        "affected_files": [
+          "notification_center/incident_lifecycle.py",
+          "notification_center/core.py"
+        ],
+        "owner": "noticeplace-lifecycle",
+        "model": "gpt-6",
+        "depends_on": [
+          "S05"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:58:08+03:00",
+      "note": "",
+      "changes": {
+        "depends_on": [
+          "S05",
+          "S02"
+        ]
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

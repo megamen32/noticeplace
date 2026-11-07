@@ -1,0 +1,71 @@
+{
+  "id": "P00-2",
+  "parent": "P00",
+  "label": "Проверить полноту плана",
+  "kind": "task",
+  "status": "done",
+  "description": "Сверить жалобы, потребителей, зависимости, откат, полномочия и критерии приёмки.",
+  "acceptance": "Каждая жалоба и найденный дефект имеют задачу; check --handoff проходит.",
+  "affected_files": [
+    ".agents/tasks/20261107-noticeplace-quiet-operations"
+  ],
+  "owner": "lead",
+  "model": "gpt-6",
+  "depends_on": [
+    "P00-1"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:48:59+03:00",
+  "updated_at": "2026-11-07T20:58:17+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:48:59+03:00",
+      "note": "",
+      "changes": {
+        "id": "P00-2",
+        "parent": "P00",
+        "label": "Проверить полноту плана",
+        "kind": "task",
+        "status": "queued",
+        "description": "Сверить жалобы, потребителей, зависимости, откат, полномочия и критерии приёмки.",
+        "acceptance": "Каждая жалоба и найденный дефект имеют задачу; check --handoff проходит.",
+        "affected_files": [
+          ".agents/tasks/20261107-noticeplace-quiet-operations"
+        ],
+        "owner": "lead",
+        "model": "gpt-6",
+        "depends_on": [
+          "P00-1"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:58:17+03:00",
+      "note": "",
+      "changes": {
+        "status": "done",
+        "actual_minutes": 15,
+        "result": "Полная декомпозиция прошла check --handoff; покрыты 26 registry consumers, отдельная сверка active aliases, Kev, звонки, TTL, source verification и rollback. Уточнены source paths и последовательность пересекающихся правок core/http."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ],
+  "actual_minutes": 15,
+  "result": "Полная декомпозиция прошла check --handoff; покрыты 26 registry consumers, отдельная сверка active aliases, Kev, звонки, TTL, source verification и rollback. Уточнены source paths и последовательность пересекающихся правок core/http."
+}

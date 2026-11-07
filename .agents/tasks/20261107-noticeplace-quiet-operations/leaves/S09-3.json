@@ -1,0 +1,56 @@
+{
+  "id": "S09-3",
+  "parent": "S09",
+  "label": "Поставить API/SDK и проверить отказ транспорта",
+  "kind": "task",
+  "status": "queued",
+  "description": "Версионированная поставка с обратной совместимостью; изолированный disconnect/restart и receipt reconciliation.",
+  "acceptance": "Старые consumers продолжают emit; новый SDK достаёт отложенную проверку ровно один раз логически.",
+  "affected_files": [
+    "deploy",
+    "python",
+    "tests"
+  ],
+  "owner": "sdk-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S09-2"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:24+03:00",
+  "updated_at": "2026-11-07T20:50:24+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:24+03:00",
+      "note": "",
+      "changes": {
+        "id": "S09-3",
+        "parent": "S09",
+        "label": "Поставить API/SDK и проверить отказ транспорта",
+        "kind": "task",
+        "status": "queued",
+        "description": "Версионированная поставка с обратной совместимостью; изолированный disconnect/restart и receipt reconciliation.",
+        "acceptance": "Старые consumers продолжают emit; новый SDK достаёт отложенную проверку ровно один раз логически.",
+        "affected_files": [
+          "deploy",
+          "python",
+          "tests"
+        ],
+        "owner": "sdk-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S09-2"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

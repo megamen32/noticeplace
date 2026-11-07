@@ -1,0 +1,7 @@
+{
+  "samples": 12,
+  "min_seconds": 3.007,
+  "median_seconds": 8.0685,
+  "max_seconds": 8.115,
+  "method": "12 authorized loopback dashboard calls; not a browser SLA estimate"
+}

@@ -1,0 +1,52 @@
+{
+  "id": "F02-3",
+  "parent": "F02",
+  "label": "Передать финальный продукт и эксплуатационный контракт",
+  "kind": "task",
+  "description": "Проверить main/installed sync всех owned changes; записать режимы тишины/emergency, menu/mute, TTL, модель, rollback и владельцев. Удалить лишь собственные временные деревья после published evidence.",
+  "acceptance": "Финальный отчёт содержит реальные receipts и оставшиеся границы; никаких обещаний вместо выполненной работы.",
+  "affected_files": [
+    "docs"
+  ],
+  "status": "queued",
+  "owner": "lead",
+  "model": "gpt-6",
+  "depends_on": [
+    "F02-2"
+  ],
+  "estimate_minutes": 10,
+  "created_at": "2026-11-07T20:54:48+03:00",
+  "updated_at": "2026-11-07T20:54:48+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:54:48+03:00",
+      "note": "",
+      "changes": {
+        "id": "F02-3",
+        "parent": "F02",
+        "label": "Передать финальный продукт и эксплуатационный контракт",
+        "kind": "task",
+        "description": "Проверить main/installed sync всех owned changes; записать режимы тишины/emergency, menu/mute, TTL, модель, rollback и владельцев. Удалить лишь собственные временные деревья после published evidence.",
+        "acceptance": "Финальный отчёт содержит реальные receipts и оставшиеся границы; никаких обещаний вместо выполненной работы.",
+        "affected_files": [
+          "docs"
+        ],
+        "status": "queued",
+        "owner": "lead",
+        "model": "gpt-6",
+        "depends_on": [
+          "F02-2"
+        ],
+        "estimate_minutes": 10
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

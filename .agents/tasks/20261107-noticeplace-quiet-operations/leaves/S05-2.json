@@ -1,0 +1,56 @@
+{
+  "id": "S05-2",
+  "parent": "S05",
+  "label": "Сохранить ошибку и исправить выявленный запуск",
+  "kind": "task",
+  "status": "queued",
+  "description": "Сохранять redacted structured result при shell error; исправить минимальную подтверждённую причину в helper/config seam. Не повторять старую заявку.",
+  "acceptance": "Новая изолированная заявка возвращает session receipt либо полезную redacted причину; UNKNOWN не ретраится.",
+  "affected_files": [
+    "/home/roomhacker/gptadmin/go-hub/internal/hub/webhook_gateway.go",
+    "notification_center/agent_job_helper.py"
+  ],
+  "owner": "gptadmin-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S05-1"
+  ],
+  "estimate_minutes": 15,
+  "estimate_unknown_reason": "Это оценка минимального исправления; объём уточняется по указанному исследованию. При большей причине добавить bounded leaves, не выдавать 15 минут за полный срок.",
+  "created_at": "2026-11-07T20:50:00+03:00",
+  "updated_at": "2026-11-07T20:50:00+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:00+03:00",
+      "note": "",
+      "changes": {
+        "id": "S05-2",
+        "parent": "S05",
+        "label": "Сохранить ошибку и исправить выявленный запуск",
+        "kind": "task",
+        "status": "queued",
+        "description": "Сохранять redacted structured result при shell error; исправить минимальную подтверждённую причину в helper/config seam. Не повторять старую заявку.",
+        "acceptance": "Новая изолированная заявка возвращает session receipt либо полезную redacted причину; UNKNOWN не ретраится.",
+        "affected_files": [
+          "/home/roomhacker/gptadmin/go-hub/internal/hub/webhook_gateway.go",
+          "notification_center/agent_job_helper.py"
+        ],
+        "owner": "gptadmin-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S05-1"
+        ],
+        "estimate_minutes": 15,
+        "estimate_unknown_reason": "Это оценка минимального исправления; объём уточняется по указанному исследованию. При большей причине добавить bounded leaves, не выдавать 15 минут за полный срок."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

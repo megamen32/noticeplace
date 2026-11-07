@@ -1,0 +1,40 @@
+{
+  "id": "P00",
+  "label": "Передать исследование и проверяемый план",
+  "kind": "milestone",
+  "status": "queued",
+  "description": "Результат этапа: Передать исследование и проверяемый план",
+  "acceptance": "Доступна публичная страница плана, артефакты сохранены, продукт не объявлен исправленным.",
+  "owner": "lead",
+  "depends_on": [],
+  "estimate_minutes": 35,
+  "model": "gpt-6",
+  "created_at": "2026-11-07T20:48:55+03:00",
+  "updated_at": "2026-11-07T20:48:55+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:48:55+03:00",
+      "note": "",
+      "changes": {
+        "id": "P00",
+        "label": "Передать исследование и проверяемый план",
+        "kind": "milestone",
+        "status": "queued",
+        "description": "Результат этапа: Передать исследование и проверяемый план",
+        "acceptance": "Доступна публичная страница плана, артефакты сохранены, продукт не объявлен исправленным.",
+        "owner": "lead",
+        "depends_on": [],
+        "estimate_minutes": 35,
+        "model": "gpt-6"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

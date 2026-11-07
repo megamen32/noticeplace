@@ -1,0 +1,44 @@
+{
+  "id": "S05",
+  "label": "Восстановить диагностируемый запуск исполнителя",
+  "kind": "milestone",
+  "status": "queued",
+  "description": "Поставка: Восстановить диагностируемый запуск исполнителя",
+  "acceptance": "Совпадают incident, attempt, native session и живой turn; sent/accepted не выдаются за работу.",
+  "owner": "gptadmin-owner",
+  "depends_on": [
+    "S01"
+  ],
+  "estimate_minutes": 45,
+  "model": "gpt-6",
+  "created_at": "2026-11-07T20:49:59+03:00",
+  "updated_at": "2026-11-07T20:49:59+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:49:59+03:00",
+      "note": "",
+      "changes": {
+        "id": "S05",
+        "label": "Восстановить диагностируемый запуск исполнителя",
+        "kind": "milestone",
+        "status": "queued",
+        "description": "Поставка: Восстановить диагностируемый запуск исполнителя",
+        "acceptance": "Совпадают incident, attempt, native session и живой turn; sent/accepted не выдаются за работу.",
+        "owner": "gptadmin-owner",
+        "depends_on": [
+          "S01"
+        ],
+        "estimate_minutes": 45,
+        "model": "gpt-6"
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

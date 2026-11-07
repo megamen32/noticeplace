@@ -1,0 +1,54 @@
+{
+  "id": "S11-2",
+  "parent": "S11",
+  "label": "Ограниченное включение по source family",
+  "kind": "task",
+  "status": "queued",
+  "description": "Versioned feature flag и мгновенный rollback. Не отдавать модели полномочия закрытия, запуска произвольного кода, звонка или выбора получателя.",
+  "acceptance": "Включён один совместимый источник; decision audit объясняет решение без персональных/секретных данных.",
+  "affected_files": [
+    "notification_center/incident_model_policy.py",
+    "deploy"
+  ],
+  "owner": "classification-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S11-1"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:29+03:00",
+  "updated_at": "2026-11-07T20:50:29+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:29+03:00",
+      "note": "",
+      "changes": {
+        "id": "S11-2",
+        "parent": "S11",
+        "label": "Ограниченное включение по source family",
+        "kind": "task",
+        "status": "queued",
+        "description": "Versioned feature flag и мгновенный rollback. Не отдавать модели полномочия закрытия, запуска произвольного кода, звонка или выбора получателя.",
+        "acceptance": "Включён один совместимый источник; decision audit объясняет решение без персональных/секретных данных.",
+        "affected_files": [
+          "notification_center/incident_model_policy.py",
+          "deploy"
+        ],
+        "owner": "classification-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S11-1"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

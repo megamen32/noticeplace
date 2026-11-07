@@ -1,0 +1,54 @@
+{
+  "id": "S08-3",
+  "parent": "S08",
+  "label": "Опубликовать SDK и эталонный consumer",
+  "kind": "task",
+  "status": "queued",
+  "description": "Versioned package + минимальный исполняемый пример с настоящим test source, scope token и readback installed server.",
+  "acceptance": "Один пример проходит emit→executor→work_finished→fresh check→closed, без owner сообщений.",
+  "affected_files": [
+    "python",
+    "docs/consumer-lifecycle-deployment.md"
+  ],
+  "owner": "sdk-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S08-2"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:14+03:00",
+  "updated_at": "2026-11-07T20:50:14+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:14+03:00",
+      "note": "",
+      "changes": {
+        "id": "S08-3",
+        "parent": "S08",
+        "label": "Опубликовать SDK и эталонный consumer",
+        "kind": "task",
+        "status": "queued",
+        "description": "Versioned package + минимальный исполняемый пример с настоящим test source, scope token и readback installed server.",
+        "acceptance": "Один пример проходит emit→executor→work_finished→fresh check→closed, без owner сообщений.",
+        "affected_files": [
+          "python",
+          "docs/consumer-lifecycle-deployment.md"
+        ],
+        "owner": "sdk-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S08-2"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

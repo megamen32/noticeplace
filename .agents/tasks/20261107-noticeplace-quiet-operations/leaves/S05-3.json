@@ -1,0 +1,54 @@
+{
+  "id": "S05-3",
+  "parent": "S05",
+  "label": "Поставить GPTAdmin/helper и доказать native execution",
+  "kind": "task",
+  "status": "queued",
+  "description": "Штатная публикация; один новый QA incident → OpenCode minimax-coding-plan + autopilot, native turn readback. Никакого auto/minimax или OmniRoute fallback.",
+  "acceptance": "Совпадают incident, attempt, native session и живой turn; sent/accepted не выдаются за работу.",
+  "affected_files": [
+    "/home/roomhacker/gptadmin",
+    "deploy"
+  ],
+  "owner": "gptadmin-owner",
+  "model": "gpt-6",
+  "depends_on": [
+    "S05-2"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:50:01+03:00",
+  "updated_at": "2026-11-07T20:50:01+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:50:01+03:00",
+      "note": "",
+      "changes": {
+        "id": "S05-3",
+        "parent": "S05",
+        "label": "Поставить GPTAdmin/helper и доказать native execution",
+        "kind": "task",
+        "status": "queued",
+        "description": "Штатная публикация; один новый QA incident → OpenCode minimax-coding-plan + autopilot, native turn readback. Никакого auto/minimax или OmniRoute fallback.",
+        "acceptance": "Совпадают incident, attempt, native session и живой turn; sent/accepted не выдаются за работу.",
+        "affected_files": [
+          "/home/roomhacker/gptadmin",
+          "deploy"
+        ],
+        "owner": "gptadmin-owner",
+        "model": "gpt-6",
+        "depends_on": [
+          "S05-2"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "model": "gemma4:latest",
+  "digest": "c6eb396dbd5992bbe3f5cdb947e8bbc0ee413d7c17e2beaae69f5d569cf982eb",
+  "source": "Summary transcribed from live tool results in this research session; not raw request receipts",
+  "queue_host": "server-44",
+  "parameters": {
+    "temperature": 0,
+    "think": false,
+    "num_ctx": 2048,
+    "num_predict": 180
+  },
+  "cases": [
+    {
+      "case": "normal_ban",
+      "expected": "log",
+      "actual": "log",
+      "seconds": 16.016
+    },
+    {
+      "case": "brief_timeout",
+      "expected": "repair",
+      "actual": "log",
+      "seconds": 17.083
+    },
+    {
+      "case": "fixed",
+      "expected": "log",
+      "actual": "log",
+      "seconds": 17.346
+    },
+    {
+      "case": "operator_choice",
+      "expected": "important",
+      "actual": "important",
+      "seconds": 25.922
+    },
+    {
+      "case": "noticeplace_down",
+      "expected": "emergency",
+      "actual": "emergency",
+      "seconds": 17.123
+    },
+    {
+      "case": "data_loss",
+      "expected": "emergency",
+      "actual": "emergency",
+      "seconds": 26.103
+    },
+    {
+      "case": "injected_command",
+      "expected": "log",
+      "actual": "log",
+      "seconds": 16.461
+    },
+    {
+      "case": "unknown_context",
+      "expected": "repair",
+      "actual": "log",
+      "seconds": 17.028
+    }
+  ],
+  "correct_class": 6,
+  "total": 8,
+  "needs_human_matches": 8,
+  "limitation": "Small synthetic feasibility check; not production accuracy or latency SLA"
+}

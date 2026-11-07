@@ -1,0 +1,56 @@
+{
+  "id": "M08-3",
+  "parent": "M08",
+  "label": "Поставить и сверить agent-herder, autosell-proxy",
+  "kind": "task",
+  "status": "queued",
+  "owner": "consumer-migration",
+  "model": "gpt-6",
+  "depends_on": [
+    "M08-1",
+    "M08-2"
+  ],
+  "estimate_minutes": 15,
+  "affected_files": [
+    "/home/roomhacker/agents-projects/agent-herder/src/human-request/ask-human-producer.ts",
+    "/home/roomhacker/PycharmProjects/AutoFindClient/AutoSellBot/proxy_manager.py"
+  ],
+  "description": "Commit/push только owned source, штатная установка в доказанные runtime; отдельный receipt по каждому экземпляру и consumer. Не переустанавливать retired. Зафиксировать version/source/host/check/outcome в registry.",
+  "acceptance": "На каждом enabled экземпляре реально выполнен источник→NoticePlace→проверка→закрытие либо записано именованное исключение; owner тестовых сообщений ноль. SDK coverage не объявлять по unit test.",
+  "created_at": "2026-11-07T20:54:09+03:00",
+  "updated_at": "2026-11-07T20:54:09+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:54:09+03:00",
+      "note": "",
+      "changes": {
+        "id": "M08-3",
+        "parent": "M08",
+        "label": "Поставить и сверить agent-herder, autosell-proxy",
+        "kind": "task",
+        "status": "queued",
+        "owner": "consumer-migration",
+        "model": "gpt-6",
+        "depends_on": [
+          "M08-1",
+          "M08-2"
+        ],
+        "estimate_minutes": 15,
+        "affected_files": [
+          "/home/roomhacker/agents-projects/agent-herder/src/human-request/ask-human-producer.ts",
+          "/home/roomhacker/PycharmProjects/AutoFindClient/AutoSellBot/proxy_manager.py"
+        ],
+        "description": "Commit/push только owned source, штатная установка в доказанные runtime; отдельный receipt по каждому экземпляру и consumer. Не переустанавливать retired. Зафиксировать version/source/host/check/outcome в registry.",
+        "acceptance": "На каждом enabled экземпляре реально выполнен источник→NoticePlace→проверка→закрытие либо записано именованное исключение; owner тестовых сообщений ноль. SDK coverage не объявлять по unit test."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

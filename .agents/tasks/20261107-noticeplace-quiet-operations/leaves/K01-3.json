@@ -1,0 +1,70 @@
+{
+  "id": "K01-3",
+  "parent": "K01",
+  "label": "Опубликовать выбор classifier и интеграционный контракт",
+  "kind": "task",
+  "description": "Сохранить результаты и runtime receipts; убрать только свои тестовые процессы. Если Kev лучше и вписывается — включать через общий classifier interface и существующее управление GPU в отдельной поставке; иначе Gemma+guards. Не заменять всю Ollama очередь.",
+  "acceptance": "Опубликован обоснованный выбор, explicit fallback и требуемый deployment leaf при выборе Kev; неизвестное не выдаётся за установленное.",
+  "affected_files": [
+    "docs/classifier-evaluation"
+  ],
+  "owner": "classification-owner",
+  "model": "gpt-6",
+  "status": "queued",
+  "depends_on": [
+    "K01-2"
+  ],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:56:25+03:00",
+  "updated_at": "2026-11-07T20:58:14+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:56:25+03:00",
+      "note": "",
+      "changes": {
+        "id": "K01-3",
+        "parent": "K01",
+        "label": "Опубликовать выбор classifier и интеграционный контракт",
+        "kind": "task",
+        "description": "Сохранить результаты и runtime receipts; убрать только свои тестовые процессы. Если Kev лучше и вписывается — включать через общий classifier interface и существующее управление GPU в отдельной поставке; иначе Gemma+guards. Не заменять всю Ollama очередь.",
+        "acceptance": "Опубликован обоснованный выбор, explicit fallback и требуемый deployment leaf при выборе Kev; неизвестное не выдаётся за установленное.",
+        "affected_files": [
+          "notification_center/incident_model_policy.py",
+          "docs"
+        ],
+        "owner": "classification-owner",
+        "model": "gpt-6",
+        "status": "queued",
+        "depends_on": [
+          "K01-2"
+        ],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T20:58:14+03:00",
+      "note": "",
+      "changes": {
+        "affected_files": [
+          "docs/classifier-evaluation"
+        ]
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}

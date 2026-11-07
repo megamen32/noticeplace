@@ -1,0 +1,50 @@
+{
+  "id": "S01-1",
+  "parent": "S01",
+  "label": "Единая политика тишины",
+  "kind": "task",
+  "status": "queued",
+  "description": "В существующем dispatcher сделать log/repair внутренними. Вопрос человеку — после доказанного блокера; emergency — сразу. Не отключать обычные UserIO сообщения, STOP и настоящие аварии.",
+  "acceptance": "Повторы, agent.started/done и успешные ban дают ноль owner delivery; emergency не зависит от ИИ.",
+  "affected_files": [
+    "notification_center/core.py",
+    "tests/test_executor_outcome_policy.py"
+  ],
+  "owner": "noticeplace-core",
+  "model": "gpt-6",
+  "depends_on": [],
+  "estimate_minutes": 15,
+  "created_at": "2026-11-07T20:49:48+03:00",
+  "updated_at": "2026-11-07T20:49:48+03:00",
+  "progress_events": [
+    {
+      "at": "2026-11-07T20:49:48+03:00",
+      "note": "",
+      "changes": {
+        "id": "S01-1",
+        "parent": "S01",
+        "label": "Единая политика тишины",
+        "kind": "task",
+        "status": "queued",
+        "description": "В существующем dispatcher сделать log/repair внутренними. Вопрос человеку — после доказанного блокера; emergency — сразу. Не отключать обычные UserIO сообщения, STOP и настоящие аварии.",
+        "acceptance": "Повторы, agent.started/done и успешные ban дают ноль owner delivery; emergency не зависит от ИИ.",
+        "affected_files": [
+          "notification_center/core.py",
+          "tests/test_executor_outcome_policy.py"
+        ],
+        "owner": "noticeplace-core",
+        "model": "gpt-6",
+        "depends_on": [],
+        "estimate_minutes": 15
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+        "source": "mcp_metadata"
+      },
+      "session": "01a1b70a-9186-75b1-900a-8c0821e0238d",
+      "harness": "codex"
+    }
+  ]
+}
