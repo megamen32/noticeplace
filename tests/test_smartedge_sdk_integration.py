@@ -25,6 +25,10 @@ spec=importlib.util.spec_from_loader(loader.name,loader)
 edge=importlib.util.module_from_spec(spec);loader.exec_module(edge)
 
 class SmartEdgeIntegration(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        (ROOT / '.tmp').mkdir(exist_ok=True)
+
     def test_one_executor_then_fresh_check_closes(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
             root=Path(directory)
