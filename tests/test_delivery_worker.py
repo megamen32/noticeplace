@@ -33,11 +33,24 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"producer": {"project": "hermes", "max_severity": "emergency"}}, default_quiet_hours=[])
         self.event = {
             "schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident",
-            "severity": "critical", "title": "Gateway unavailable", "body": "three checks failed", "dedup_key": "gateway:100",
+            # Most delivery tests exercise a concrete transport contract. Use
+            # emergency so they remain admitted under quiet incident policy.
+            "severity": "emergency", "title": "Gateway unavailable", "body": "three checks failed", "dedup_key": "gateway:100",
         }
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def _pending_question_delivery(self, incident_id: str, request_id: str) -> str:
+        """Give nonemergency transport scenarios a persisted human question."""
+        self.center.create_human_request("producer", {
+            "schema": "ask_human.request.v1", "request_id": request_id,
+            "project": "hermes", "recipient": "me", "mode": "question",
+            "message": "Выберите допустимое действие для изолированного теста.",
+            "incident_id": incident_id, "allowed_actors": ["qa-operator"],
+            "native_target": {"harness": "opencode", "session_id": "qa-session", "cwd": "/tmp/qa"},
+        })
+        return self.center._schedule_delivery(incident_id, "telegram.main", "initial", 0)
 
     def test_critical_phone_quiet_hours_and_emergency_override(self) -> None:
         moscow = ZoneInfo("Europe/Moscow")
@@ -69,7 +82,11 @@ class DeliveryWorkerTests(unittest.TestCase):
                 "producer", f"quiet-{severity}",
                 {**self.event, "severity": severity, "dedup_key": f"quiet:{severity}"},
             )
-            self.center.complete_delivery(created["initial_delivery_id"], "sent")
+            initial_id = created["initial_delivery_id"]
+            if severity == "critical":
+                initial_id = self._pending_question_delivery(created["incident_id"], "quiet-critical-question")
+            if initial_id is not None:
+                self.center.complete_delivery(initial_id, "sent")
             self.center.schedule_escalation(created["incident_id"], "android.phone.call", due_epoch=0)
 
         worker = DeliveryWorker(
@@ -90,7 +107,8 @@ class DeliveryWorkerTests(unittest.TestCase):
         )
 
     def test_zero_delay_schedules_critical_phone_immediately(self) -> None:
-        created = self.center.create_event("producer", "phone-now", self.event)
+        created = self.center.create_event("producer", "phone-now", {**self.event, "severity": "critical"})
+        self._pending_question_delivery(created["incident_id"], "phone-now-question")
 
         class Telegram:
             def send(self, _payload: dict[str, object]) -> None:
@@ -195,6 +213,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_generic_message_channel_uses_registered_adapter_and_persists_receipt(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Matrix message route",
             policy=[{
                 "id": "matrix-root",
@@ -235,6 +254,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_generic_phone_channel_uses_the_central_agentcall_adapter(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Phone-only route",
             policy=[{
                 "id": "owner-phone",
@@ -287,6 +307,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_telegram_ack_cancels_the_five_minute_phone_escalation(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Telegram then phone",
             policy=[
                 {"kind": "telegram", "chat_id": 1},
@@ -508,6 +529,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_generic_phone_call_uses_registered_adapter_and_persists_receipt(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Phone route",
             policy=[{
                 "id": "phone-root",
@@ -545,6 +567,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_generic_call_respects_operator_kill_switch(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Disabled call route",
             policy=[{
                 "id": "phone-root",
@@ -575,6 +598,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_generic_telegram_call_uses_call_adapter_not_message_sender(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Telegram call route",
             policy=[{
                 "id": "telegram-call",
@@ -656,7 +680,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         # Scheduling admits the card while «Логи» is enabled; the dispatch
         # fence then cancels it because the operator's active set excludes it.
         with mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'}):
-            created = self.center.create_event("producer", "inactive-critical", {**self.event, "severity": "debug"})
+            created = self.center.create_event("producer", "inactive-critical", {**self.event, "kind": "notification", "event_type": "lead.created", "severity": "emergency"})
 
         class Telegram:
             active_modes = {"important"}
@@ -1106,6 +1130,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_successor_persistence_failure_does_not_requeue_sent_delivery(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Successor persistence failure",
             policy=[
                 {"id": "matrix-root-failure", "platform": "matrix", "action": "call", "target": {"room_id": "!ops:example.org"}, "retry_interval_seconds": 30, "max_repeats": 1},
@@ -1466,6 +1491,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_health_generic_telegram_policy_does_not_schedule_repeats(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Health generic Telegram",
             policy=[
                 {
@@ -1514,6 +1540,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_health_skips_telegram_repeat_but_keeps_matrix_successor(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Health Telegram then Matrix",
             policy=[
                 {
@@ -1676,13 +1703,14 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
 
     def test_initial_critical_telegram_delivery_schedules_one_matrix_call(self) -> None:
-        created = self.center.create_event("producer", "create", self.event)
+        created = self.center.create_event("producer", "create", {**self.event, "severity": "critical"})
+        self._pending_question_delivery(created["incident_id"], "critical-matrix-question")
 
         class Telegram:
             def send(self, _payload: dict[str, object]) -> None:
                 return None
 
-        worker = DeliveryWorker(self.center, Telegram(), matrix_call=object(), call_escalation_seconds=60)
+        worker = DeliveryWorker(self.center, Telegram(), matrix_call=object(), critical_call_escalation_seconds=60)
         self.assertEqual(1, worker.run_once())
         queued = self.center.claim_due_deliveries(now_epoch=10**12)
         self.assertEqual(["matrix.call"], [item["channel"] for item in queued])
@@ -1714,7 +1742,8 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual("automatic calls disabled by operator", status["last_error"])
 
     def test_runtime_phone_delay_is_used_for_new_escalations(self) -> None:
-        created = self.center.create_event("producer", "runtime-delay", self.event)
+        created = self.center.create_event("producer", "runtime-delay", {**self.event, "severity": "critical"})
+        self._pending_question_delivery(created["incident_id"], "runtime-delay-question")
 
         class Telegram:
             def send(self, _payload: dict[str, object]) -> None:
@@ -1734,7 +1763,8 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertAlmostEqual(10**12 + 17, row["due_at"])
 
     def test_critical_repeats_while_open_and_calls_matrix_after_its_deadline(self) -> None:
-        created = self.center.create_event("producer", "critical-repeat", self.event)
+        created = self.center.create_event("producer", "critical-repeat", {**self.event, "severity": "critical"})
+        self._pending_question_delivery(created["incident_id"], "critical-repeat-question")
 
         class Telegram:
             def send(self, _payload: dict[str, object]) -> None:
@@ -1777,6 +1807,7 @@ class DeliveryWorkerTests(unittest.TestCase):
         important = {**self.event, "severity": "important", "dedup_key": "gateway:important"}
         with mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'}):
             created = self.center.create_event("producer", "important", important)
+        self._pending_question_delivery(created["incident_id"], "important-question")
 
         class Telegram:
             def send(self, _payload: dict[str, object]) -> None:
@@ -1824,6 +1855,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_failed_middle_policy_delivery_schedules_both_neighbours(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Adjacent fallback",
             policy=[
                 {"id": "telegram-first", "platform": "telegram", "action": "message", "target": {"chat_id": -100123}, "retry_interval_seconds": 30, "max_repeats": 1},
@@ -1847,7 +1879,8 @@ class DeliveryWorkerTests(unittest.TestCase):
         )
 
     def test_initial_critical_delivery_schedules_one_phone_call_after_configured_delay(self) -> None:
-        created = self.center.create_event("producer", "create", self.event)
+        created = self.center.create_event("producer", "create", {**self.event, "severity": "critical"})
+        self._pending_question_delivery(created["incident_id"], "critical-phone-question")
 
         class Telegram:
             def send(self, _payload: dict[str, object]) -> None:
@@ -1882,8 +1915,9 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual([], self.center.claim_due_deliveries(now_epoch=10**12))
 
     def test_critical_phone_call_sends_context_before_call(self) -> None:
-        created = self.center.create_event("producer", "pre-call-context", self.event)
-        self.center.complete_delivery(created["initial_delivery_id"], "sent")
+        created = self.center.create_event("producer", "pre-call-context", {**self.event, "severity": "critical"})
+        initial_id = self._pending_question_delivery(created["incident_id"], "pre-call-context-question")
+        self.center.complete_delivery(initial_id, "sent")
         self.center.schedule_escalation(created["incident_id"], "android.phone.call", due_epoch=0)
         order: list[str] = []
 
@@ -1906,8 +1940,9 @@ class DeliveryWorkerTests(unittest.TestCase):
         self.assertEqual(["telegram", "phone"], order)
 
     def test_critical_phone_call_is_suppressed_when_context_receipt_is_unknown(self) -> None:
-        created = self.center.create_event("producer", "pre-call-unknown", self.event)
-        self.center.complete_delivery(created["initial_delivery_id"], "sent")
+        created = self.center.create_event("producer", "pre-call-unknown", {**self.event, "severity": "critical"})
+        initial_id = self._pending_question_delivery(created["incident_id"], "pre-call-unknown-question")
+        self.center.complete_delivery(initial_id, "sent")
         phone_id = self.center.schedule_escalation(created["incident_id"], "android.phone.call", due_epoch=0)
         telegram_calls: list[str] = []
         phone_calls: list[str] = []
@@ -1943,6 +1978,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_consumer_telegram_uses_policy_target_and_keeps_existing_phone_deadline(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Gateway producer",
             policy=[
                 {"kind": "telegram", "chat_id": -100123, "topic_id": 42},
@@ -1987,6 +2023,7 @@ class DeliveryWorkerTests(unittest.TestCase):
     def test_consumer_matrix_is_not_delivered_before_its_policy_deadline(self) -> None:
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Matrix producer",
             policy=[
                 {"kind": "telegram", "chat_id": -100123},

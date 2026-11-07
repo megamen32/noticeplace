@@ -27,7 +27,7 @@ class IncidentCardDeliveryTests(unittest.TestCase):
         self.addCleanup(self.center._connection.close)
         created = self.center.create_event('p', 'one-card', {
             'schema':'notify.event.v1', 'project':'fleet-health', 'recipient':'me', 'kind':'incident',
-            'severity':'critical', 'title':'Нагрузка сервера', 'body':'Проверяется загрузка', 'dedup_key':'health:load:host',
+            'severity':'emergency', 'title':'Нагрузка сервера', 'body':'Проверяется загрузка', 'dedup_key':'health:load:host',
             'event_type':'health.degraded', 'source_id':'host:load', 'host_id':'host', 'signal_type':'load',
             'correlation_id':'load-episode-1', 'source_fingerprint':'fp-1'})
         self.incident_id = created['incident_id']; self.initial_id = created['initial_delivery_id']
@@ -107,7 +107,7 @@ class IncidentCardDeliveryTests(unittest.TestCase):
     def test_grouping_preserves_individual_repairs_and_does_not_ack_every_host(self):
         # An explicit issue family permits grouping across hosts. Other checks
         # on the same signal/project remain separate without that identity.
-        event={'schema':'notify.event.v1','project':'fleet-health','recipient':'me','kind':'incident','severity':'critical',
+        event={'schema':'notify.event.v1','project':'fleet-health','recipient':'me','kind':'incident','severity':'emergency',
                'title':'Сервер перегружен','event_type':'health.degraded','signal_type':'load','issue_family':'cpu-pressure'}
         members=[]
         for host in ('100','88'):
@@ -140,14 +140,14 @@ class IncidentCardDeliveryTests(unittest.TestCase):
             if method=='editMessageText': self.assertNotIn('disable_notification',payload)
         with patch.dict('os.environ', {'TELEGRAM_ACTIVE_MODES_JSON': '["decisions","notify","log"]'}):
             ordinary=self.center.create_event('p','routine',{'schema':'notify.event.v1','project':'fleet-health','recipient':'me',
-                'kind':'incident','severity':'notice','title':'Обычное уведомление','dedup_key':'routine'})
+                'kind':'notification','severity':'notice','title':'Обычное уведомление','dedup_key':'routine'})
             self.worker.deliver(self.claim(ordinary['initial_delivery_id']))
         self.assertEqual('true',self.calls[-1][1]['disable_notification'])
 
     def test_group_recovery_is_partial_in_both_member_orders_and_uses_same_card(self):
         """Focused integration: render + actual recovery delivery; <1s / max5s."""
         from notification_center.incident_card import render
-        event={'schema':'notify.event.v1','project':'fleet-health','recipient':'me','kind':'incident','severity':'critical',
+        event={'schema':'notify.event.v1','project':'fleet-health','recipient':'me','kind':'incident','severity':'emergency',
                'title':'Сервер перегружен','event_type':'health.degraded','signal_type':'load','issue_family':'group-recovery'}
         for recovered_host in ('100','88'):
             with self.subTest(recovered_host=recovered_host):
@@ -181,7 +181,7 @@ class IncidentCardDeliveryTests(unittest.TestCase):
         """Focused integration: canonical keyboard -> real callback; <1s/max5s."""
         from notification_center.incident_card import render
         from notification_center.telegram_interactions import TelegramInteractionPoller
-        event={'schema':'notify.event.v1','project':'fleet-health','recipient':'me','kind':'incident','severity':'critical',
+        event={'schema':'notify.event.v1','project':'fleet-health','recipient':'me','kind':'incident','severity':'emergency',
                'title':'Сервер перегружен','event_type':'health.degraded','signal_type':'load','issue_family':'group-ack'}
         members=[]
         for host in ('100','88','44'):
@@ -194,7 +194,7 @@ class IncidentCardDeliveryTests(unittest.TestCase):
         recovery=self.center._connection.execute("SELECT id FROM deliveries WHERE incident_id=? AND json_extract(target_json,'$.health_outcome.status')='recovered'",(parent,)).fetchone()[0]
         self.worker.deliver(self.claim(recovery))
         payload=self.center.incident_card_payload(parent)
-        self.assertEqual({'critical'},{m['severity'] for m in payload['group_members']})
+        self.assertEqual({'emergency'},{m['severity'] for m in payload['group_members']})
         text,keyboard=render(payload,self.worker._telegram._action_codec)
         ack=next(b for row in keyboard['inline_keyboard'] for b in row if b.get('callback_data','').startswith('n:ack:'))
         self.assertEqual(('ack',child),self.worker._telegram._action_codec.decode(ack['callback_data']))

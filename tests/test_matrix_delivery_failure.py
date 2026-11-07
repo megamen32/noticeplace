@@ -78,7 +78,9 @@ class MatrixDeliveryFailureTests(unittest.TestCase):
         )
         self.event = {
             "schema": "notify.event.v1", "project": "hermes", "recipient": "me",
-            "kind": "incident", "severity": "notice", "title": "QA notice",
+            # This suite verifies isolated Matrix transport receipts and retry
+            # ceilings; use an admitted incident severity for that contract.
+            "kind": "incident", "severity": "emergency", "title": "QA notice",
             "body": "the isolated room must carry the notice",
             "dedup_key": "qa-room-notice-1",
         }
@@ -89,6 +91,7 @@ class MatrixDeliveryFailureTests(unittest.TestCase):
     def _consumer(self, max_repeats: int = 1):
         consumer = self.center.create_consumer(
             project="hermes",
+            max_severity="emergency",
             name="Matrix only route",
             policy=[{
                 "id": "matrix-root",
@@ -137,7 +140,7 @@ class MatrixDeliveryFailureTests(unittest.TestCase):
             if outcome=='send_timeout':raise TimeoutError('send response lost')
             if outcome=='send_403':raise urllib.error.HTTPError(request.full_url,403,'Forbidden',{},None)
             return Response({'ok':True,'delivery_confirmed':False,'receipt':''})
-        consumer=self.center.create_consumer(project='hermes',name='Exact QA scope',policy=[
+        consumer=self.center.create_consumer(project='hermes',name='Exact QA scope',max_severity='emergency',policy=[
             {'id':'first','platform':'matrix','action':'message','target':{'room_id':'!qa:test',
              'account_ref':'matrix:qa','conversation_id':'qa-conversation'},'retry_interval_seconds':1,'max_repeats':2},
             {'id':'fallback','previous_step_id':'first','platform':'matrix','action':'call',
