@@ -16,7 +16,7 @@
   ],
   "estimate_minutes": 15,
   "created_at": "2026-11-07T20:50:36+03:00",
-  "updated_at": "2026-11-07T22:22:20+03:00",
+  "updated_at": "2026-11-07T22:45:32+03:00",
   "progress_events": [
     {
       "at": "2026-11-07T20:50:36+03:00",
@@ -64,10 +64,26 @@
       },
       "session": "01a1b744-b259-72e2-81c9-972fd848946c",
       "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T22:45:32+03:00",
+      "note": "Проверено после разрешённого policy join и одного нового canary.",
+      "changes": {
+        "result": "Полный QA intake→Matrix A→B: новый вызов answered/completed, двусторонний звук; Notice Place audit ACK, но delivery ошибочно cancelled; voice post-call SUBMIT_FAILED. evidence/terra-matrix.md",
+        "blocker": "Занятый Lead Notice Place core: ACK отменяет текущую matrix.call delivery до её завершения. На portable voice 88 отсутствует systemctl для очереди транскрипции; документированной config/plugin seam не найдено. SDK turn UNKNOWN не повторять."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b744-b259-72e2-81c9-972fd848946c",
+        "source": "native_environment"
+      },
+      "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+      "harness": "codex"
     }
   ],
-  "result": "Matrix A→B: ответ, завершение и двусторонний ненулевой звук доказаны; полный Notice Place→UserIO и чистый Secretary результат не доказаны. evidence/terra-matrix.md",
-  "blocker": "QA policy Notice Place настроена B→A, серверный UserIO route A→B; SDK turn завершился UNKNOWN; чужую policy и Airlock core не изменять, UNKNOWN не повторять.",
+  "result": "Полный QA intake→Matrix A→B: новый вызов answered/completed, двусторонний звук; Notice Place audit ACK, но delivery ошибочно cancelled; voice post-call SUBMIT_FAILED. evidence/terra-matrix.md",
+  "blocker": "Занятый Lead Notice Place core: ACK отменяет текущую matrix.call delivery до её завершения. На portable voice 88 отсутствует systemctl для очереди транскрипции; документированной config/plugin seam не найдено. SDK turn UNKNOWN не повторять.",
   "session": "01a1b744-b259-72e2-81c9-972fd848946c",
   "harness": "codex"
 }
