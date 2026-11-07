@@ -1,0 +1,33 @@
+{
+  "created_at": "2026-11-07T20:05:08+00:00",
+  "details": "Published ccb8e326 core/HTTP fixes independently matched installed release metadata and source hashes on100/44/88. Exactly one new authorized consumer intake qa-s13-ack-20261108-a35157bc -> dlv_aecc5500b37d4fca93daf7c5fe1dac00 was cancelled by global quiet-hours guard BEFORE adapter admission (http_api.py:1247-1258); incident open, no ACK, result_json null. This is NOT evidence of ACK regression and does not accept/falsify the fix. QA consumer quiet_hours_json=[]; global android_phone_quiet_start_hour=0/end=12 applies to every .call. Acceptance remains unproven; no replay or second canary. Evidence: evidence/terra-matrix.md.",
+  "events": [
+    {
+      "action": "register",
+      "actor": "Lead",
+      "at": "2026-11-07T20:05:08+00:00",
+      "changes": {
+        "details": "Новый isolated botA→B answered/completed; incident acknowledged, delivery cancelled. Regression RED confirmed sent!=cancelled. core transition cancelling sending and http adapter omitted result; Lead core+Luna HTTP fix in progress.",
+        "source": "S13 consumer dlv_63f26414e3164357bea25761a188ca99; tests/test_delivery_worker.py::test_confirmed_matrix_answer_acknowledges_only_that_incident",
+        "status": "open",
+        "title": "ACK Matrix отменяет уже выполненный звонок и теряет квитанцию"
+      }
+    },
+    {
+      "action": "update",
+      "actor": "Terra S13 consumer acceptance",
+      "at": "2026-11-07T21:52:39+00:00",
+      "changes": {
+        "details": "Published ccb8e326 core/HTTP fixes independently matched installed release metadata and source hashes on100/44/88. Exactly one new authorized consumer intake qa-s13-ack-20261108-a35157bc -> dlv_aecc5500b37d4fca93daf7c5fe1dac00 was cancelled by global quiet-hours guard BEFORE adapter admission (http_api.py:1247-1258); incident open, no ACK, result_json null. This is NOT evidence of ACK regression and does not accept/falsify the fix. QA consumer quiet_hours_json=[]; global android_phone_quiet_start_hour=0/end=12 applies to every .call. Acceptance remains unproven; no replay or second canary. Evidence: evidence/terra-matrix.md."
+      },
+      "reason": ""
+    }
+  ],
+  "id": "Bd90883307716438db9b8",
+  "owner": "Lead",
+  "reporter": "Lead",
+  "source": "S13 consumer dlv_63f26414e3164357bea25761a188ca99; tests/test_delivery_worker.py::test_confirmed_matrix_answer_acknowledges_only_that_incident",
+  "status": "open",
+  "title": "ACK Matrix отменяет уже выполненный звонок и теряет квитанцию",
+  "updated_at": "2026-11-07T21:52:39+00:00"
+}

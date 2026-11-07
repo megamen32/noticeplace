@@ -16,7 +16,7 @@
   ],
   "estimate_minutes": 15,
   "created_at": "2026-11-07T20:50:36+03:00",
-  "updated_at": "2026-11-07T23:51:13+03:00",
+  "updated_at": "2026-11-08T00:53:41+03:00",
   "progress_events": [
     {
       "at": "2026-11-07T20:50:36+03:00",
@@ -96,10 +96,26 @@
       },
       "session": "01a1b744-b259-72e2-81c9-972fd848946c",
       "harness": "codex"
+    },
+    {
+      "at": "2026-11-08T00:53:41+03:00",
+      "note": "Single authorized canary cancelled pre-admission; preserved original and UNKNOWN receipts.",
+      "changes": {
+        "result": "ccb8e326 source hashes/release metadata confirmed on100/44/88. One new QA intake qa-s13-ack-20261108-a35157bc; policy A→B and two test participants verified, receiver ready. Delivery cancelled by global quiet-hours guard before UserIO admission; no call/ACK, no replay. Prior 590289e voice proof remains valid. evidence/terra-matrix.md",
+        "blocker": "Installed Notice Place http_api.py:1247 applies global android_phone_quiet_start_hour=0/end=12 to this isolated matrix.call despite consumer quiet_hours_json=[]. Lead owns core/policy seam; exactly-one-new-canary allowance consumed. ACK fix acceptance remains unproven; no second event or requeue."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b744-b259-72e2-81c9-972fd848946c",
+        "source": "native_environment"
+      },
+      "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+      "harness": "codex"
     }
   ],
-  "result": "UserIO portable queue 590289e published+installed; новый Matrix QA call answered/completed, двусторонний звук и обе расшифровки COMPLETE без voice_transport_error. evidence/terra-matrix.md",
-  "blocker": "Notice Place callback delivery dlv_515a3de1768f4e069d2de427aee8da7d ошибочно cancelled после ACK; этот core исправляет Lead. Входящая receiver receipt UNKNOWN не повторяется.",
+  "result": "ccb8e326 source hashes/release metadata confirmed on100/44/88. One new QA intake qa-s13-ack-20261108-a35157bc; policy A→B and two test participants verified, receiver ready. Delivery cancelled by global quiet-hours guard before UserIO admission; no call/ACK, no replay. Prior 590289e voice proof remains valid. evidence/terra-matrix.md",
+  "blocker": "Installed Notice Place http_api.py:1247 applies global android_phone_quiet_start_hour=0/end=12 to this isolated matrix.call despite consumer quiet_hours_json=[]. Lead owns core/policy seam; exactly-one-new-canary allowance consumed. ACK fix acceptance remains unproven; no second event or requeue.",
   "session": "01a1b744-b259-72e2-81c9-972fd848946c",
   "harness": "codex"
 }

@@ -1,0 +1,118 @@
+{
+  "observed_at": "2026-11-07T21:54:30.879840+00:00",
+  "request_id": "qa-s13-ack-20261108-a35157bc",
+  "intake": [
+    {
+      "event": "intake_submit_once",
+      "key": "qa-s13-ack-20261108-a35157bc"
+    },
+    {
+      "event": "intake_response",
+      "event_id": "evt_e8a186c1fccc44368666d17d65d9f354",
+      "incident_id": "inc_44644a9f49da46889180003f7164e41c",
+      "state": "open",
+      "initial_delivery_id": "dlv_aecc5500b37d4fca93daf7c5fe1dac00",
+      "agent_job_delivery_id": null,
+      "notifications_muted": false
+    }
+  ],
+  "installed": {
+    "revision": "ccb8e326a5356da53435e38d011f65bf25b55b6b",
+    "hosts": [
+      "roomhacker-server-100",
+      "server-44",
+      "roomhacker-server-88"
+    ],
+    "core_sha256": "b2f5f80845bc13e809f9f07982ef70e4dc376e5c9a19505df6199802ccc4575a",
+    "http_sha256": "e27f973c00c6953e94c2a7fcea84c6bfafafc70cc28aca63e144a8bfe5735495",
+    "method": "release metadata plus SHA256 equality to published commit; /opt/noticeplace is an artifact, not a Git checkout"
+  },
+  "policy": {
+    "consumer_id": "consumer_7ad31d4110d744259bde4ee7580890e4",
+    "stages": 1,
+    "kind": "matrix.call",
+    "account_ref": "matrix:ab023a689e926bf99d924e933ebd",
+    "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+    "room_id": "!vmxuOOunnmTUeuEdvi:chat.bezrabotnyi.com",
+    "participants": [
+      "@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+      "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"
+    ],
+    "max_repeats": 1,
+    "pending_before": 0,
+    "consumer_quiet_hours": [],
+    "global_quiet_start": 0,
+    "global_quiet_end": 12,
+    "timezone": "Europe/Moscow"
+  },
+  "receiver": {
+    "fixture": "b",
+    "ready": true,
+    "phone_fallback": false,
+    "outcome": "timeout_waiting_for_fixture_call",
+    "exit_code": 2,
+    "answered": false,
+    "voice_call_id": null,
+    "unknown_sdk_turn_replayed": false
+  },
+  "userio_readback": {
+    "request_id": "noticeplace:a45817cc8acacd9134f33737a99d5c6e56d7361ae2a3a13fdeb55fe5a7093f7f",
+    "matching_call_records": []
+  },
+  "voice88": {
+    "container_id": "9ece104afb71d6a187868d4f3a5ea8ec90e58ac26bd64bc81a997650bc43c09a",
+    "healthy": true,
+    "restarted": false,
+    "revision": "590289ecc1e64bb1a1e1e77994cd8907f4f9c312"
+  },
+  "acceptance": "BLOCKED_BEFORE_ADAPTER_ADMISSION",
+  "bug": "Bd90883307716438db9b8",
+  "scope_preserved": {
+    "new_intake_count": 1,
+    "people_contacted": 0,
+    "credentials_issued_or_rotated": 0,
+    "old_calls_replayed": 0,
+    "lead_fixture_incident_touched": false
+  },
+  "delivery_rows": [
+    {
+      "id": "dlv_aecc5500b37d4fca93daf7c5fe1dac00",
+      "incident_id": "inc_44644a9f49da46889180003f7164e41c",
+      "channel": "matrix.call",
+      "status": "cancelled",
+      "attempt": 1,
+      "last_error": "Автоматический звонок отменён: тихие часы",
+      "result_json": null,
+      "created_at": 1794088236.075619,
+      "updated_at": 1794088236.7616007
+    }
+  ],
+  "incident": {
+    "id": "inc_44644a9f49da46889180003f7164e41c",
+    "state": "open",
+    "acknowledged_at": null,
+    "resolved_at": null
+  },
+  "audit_events": [
+    {
+      "type": "incident_created",
+      "actor": "producer",
+      "created_at": 1794088236.0179
+    },
+    {
+      "type": "event_ingress",
+      "actor": "producer",
+      "created_at": 1794088236.0191882
+    },
+    {
+      "type": "delivery_scheduled",
+      "actor": "policy",
+      "created_at": 1794088236.0763688
+    },
+    {
+      "type": "delivery_cancelled",
+      "actor": "worker",
+      "created_at": 1794088236.8263788
+    }
+  ]
+}
