@@ -16,7 +16,7 @@
   ],
   "estimate_minutes": 15,
   "created_at": "2026-11-07T20:50:36+03:00",
-  "updated_at": "2026-11-07T22:45:32+03:00",
+  "updated_at": "2026-11-07T23:51:13+03:00",
   "progress_events": [
     {
       "at": "2026-11-07T20:50:36+03:00",
@@ -80,10 +80,26 @@
       },
       "session": "01a1b744-b259-72e2-81c9-972fd848946c",
       "harness": "codex"
+    },
+    {
+      "at": "2026-11-07T23:51:13+03:00",
+      "note": "Очередь установлена; real consumer canary без людей и без повтора UNKNOWN.",
+      "changes": {
+        "result": "UserIO portable queue 590289e published+installed; новый Matrix QA call answered/completed, двусторонний звук и обе расшифровки COMPLETE без voice_transport_error. evidence/terra-matrix.md",
+        "blocker": "Notice Place callback delivery dlv_515a3de1768f4e069d2de427aee8da7d ошибочно cancelled после ACK; этот core исправляет Lead. Входящая receiver receipt UNKNOWN не повторяется."
+      },
+      "actor": {
+        "host_id": null,
+        "harness": "codex",
+        "session_id": "01a1b744-b259-72e2-81c9-972fd848946c",
+        "source": "native_environment"
+      },
+      "session": "01a1b744-b259-72e2-81c9-972fd848946c",
+      "harness": "codex"
     }
   ],
-  "result": "Полный QA intake→Matrix A→B: новый вызов answered/completed, двусторонний звук; Notice Place audit ACK, но delivery ошибочно cancelled; voice post-call SUBMIT_FAILED. evidence/terra-matrix.md",
-  "blocker": "Занятый Lead Notice Place core: ACK отменяет текущую matrix.call delivery до её завершения. На portable voice 88 отсутствует systemctl для очереди транскрипции; документированной config/plugin seam не найдено. SDK turn UNKNOWN не повторять.",
+  "result": "UserIO portable queue 590289e published+installed; новый Matrix QA call answered/completed, двусторонний звук и обе расшифровки COMPLETE без voice_transport_error. evidence/terra-matrix.md",
+  "blocker": "Notice Place callback delivery dlv_515a3de1768f4e069d2de427aee8da7d ошибочно cancelled после ACK; этот core исправляет Lead. Входящая receiver receipt UNKNOWN не повторяется.",
   "session": "01a1b744-b259-72e2-81c9-972fd848946c",
   "harness": "codex"
 }
