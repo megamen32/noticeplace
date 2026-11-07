@@ -580,7 +580,43 @@ class HttpApiTests(unittest.TestCase):
         status, _ = self.request("POST", f"/v1/incidents/{incident_id}/ack", {"actor": "attacker"}, Authorization="Bearer wrong-token")
         self.assertEqual(401, status)
 
-    def test_mute_api_lists_and_restores_one_exact_notification_scope(self) -> None:
+    def test_mute_api_defaults_to_source_scope_for_ipv6_and_keeps_mutes_project_local(self) -> None:
+        event = {"schema": "notify.event.v1", "project": "hermes", "recipient": "me",
+                 "kind": "incident", "severity": "critical", "title": "SSH ban",
+                 "dedup_key": "fail2ban:fail2ban.server-100:sshd:2001:db8::1"}
+        status, created = self.request(
+            "POST", "/v1/events", event,
+            Authorization="Bearer secret-token", **{"Idempotency-Key": "mute-http-ipv6-1"},
+        )
+        self.assertEqual(202, status)
+        status, muted = self.request(
+            "POST", f"/v1/incidents/{created['incident_id']}/mute", {"actor": "api:test"},
+            Authorization="Bearer secret-token",
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(muted["notifications_muted"])
+        status, listing = self.request("GET", "/v1/mutes?project=hermes", Authorization="Bearer secret-token")
+        self.assertEqual(200, status)
+        self.assertEqual("prefix", listing["mutes"][0]["match_mode"])
+        self.assertEqual("fail2ban:fail2ban.server-100:sshd:2001:db8::", listing["mutes"][0]["dedup_key"])
+
+        sibling = {**event, "dedup_key": "fail2ban:fail2ban.server-100:sshd:2001:db8::2"}
+        status, next_ip = self.request(
+            "POST", "/v1/events", sibling,
+            Authorization="Bearer secret-token", **{"Idempotency-Key": "mute-http-ipv6-2"},
+        )
+        self.assertEqual(202, status)
+        self.assertTrue(next_ip["notifications_muted"])
+
+        other_source = {**event, "dedup_key": "fail2ban:fail2ban.server-100:nginx:2001:db8::2"}
+        status, other = self.request(
+            "POST", "/v1/events", other_source,
+            Authorization="Bearer secret-token", **{"Idempotency-Key": "mute-http-ipv6-other"},
+        )
+        self.assertEqual(202, status)
+        self.assertFalse(other["notifications_muted"])
+
+    def test_mute_api_explicit_exact_scope_remains_backward_compatible(self) -> None:
         event = {"schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident", "severity": "critical", "title": "Worker unavailable", "dedup_key": "worker:queue"}
         status, created = self.request(
             "POST", "/v1/events", event,
@@ -590,7 +626,7 @@ class HttpApiTests(unittest.TestCase):
         incident_id = str(created["incident_id"])
 
         status, muted = self.request(
-            "POST", f"/v1/incidents/{incident_id}/mute", {"actor": "api:test"},
+            "POST", f"/v1/incidents/{incident_id}/mute", {"actor": "api:test", "scope": "exact"},
             Authorization="Bearer secret-token",
         )
         self.assertEqual(200, status)
@@ -598,6 +634,15 @@ class HttpApiTests(unittest.TestCase):
         status, listing = self.request("GET", "/v1/mutes?project=hermes", Authorization="Bearer secret-token")
         self.assertEqual(200, status)
         self.assertEqual("worker:queue", listing["mutes"][0]["dedup_key"])
+        self.assertEqual("exact", listing["mutes"][0]["match_mode"])
+
+        sibling = {**event, "dedup_key": "worker:queue-next"}
+        status, next_key = self.request(
+            "POST", "/v1/events", sibling,
+            Authorization="Bearer secret-token", **{"Idempotency-Key": "mute-http-exact-sibling"},
+        )
+        self.assertEqual(202, status)
+        self.assertFalse(next_key["notifications_muted"])
 
         status, restored = self.request(
             "POST", f"/v1/incidents/{incident_id}/unmute", {"actor": "api:test"},

@@ -3112,9 +3112,12 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                     elif action == "snooze":
                         self._reply(HTTPStatus.OK, center.snooze(incident_id, float(body.get("until_epoch") or 0), actor))
                     elif action in {"mute", "unmute"}:
-                        # The documented HTTP contract stays one exact scope;
-                        # the Telegram button widens familyless keys via scope="source".
-                        self._reply(HTTPStatus.OK, center.set_incident_notifications_muted(incident_id, action == "mute", actor, scope="exact"))
+                        # Use the same source-wide default as the Telegram card;
+                        # callers can still request one exact key explicitly.
+                        scope = str(body.get("scope", "source"))
+                        self._reply(HTTPStatus.OK, center.set_incident_notifications_muted(
+                            incident_id, action == "mute", actor, scope=scope,
+                        ))
                     else:
                         self._reply(HTTPStatus.NOT_FOUND, {"error": "unknown action"})
                     return
