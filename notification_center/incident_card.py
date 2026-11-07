@@ -155,7 +155,10 @@ def render(payload: Mapping[str, Any], codec: Any = None) -> tuple[str, dict[str
     elif severity == 'critical':
         title = 'Критично: ' + title
     text = 'Сервис: ' + service + '\n\n' + title
-    body = sanitize_bounded_text(incident.get('body'), 800)
+    # Keep report structure (tables, lists and paragraphs) for the Telegram
+    # formatter while applying the same secret redaction and per-line bound.
+    raw_body = str(incident.get('body') or '').replace('\x00', '')
+    body = '\n'.join(sanitize_bounded_text(line, 800) for line in raw_body.splitlines())[:800].strip()
     if signal == 'https':
         # Describe the probe failure without claiming that the origin is down.
         reasons = []

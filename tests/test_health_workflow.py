@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from notification_center.core import NotificationCenter, ValidationError
-from notification_center.http_api import TelegramSender
+from notification_center.http_api import DeliveryWorker, TelegramSender
 from notification_center.telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 
 from notification_center import health_workflow
@@ -47,6 +47,44 @@ class HealthWorkflowTests(unittest.TestCase):
         incident = self.center.get_incident(self.created["incident_id"])
         assert incident is not None
         return incident
+
+    def _emergency_incident(self, key: str) -> dict[str, object]:
+        # These delivery-specific tests intentionally opt the isolated fixture
+        # into emergency; the default project scope remains critical.
+        self.center._tokens["producer-token"]["max_severity"] = "emergency"
+        created = self.center.create_event("producer-token", key, {
+            "schema": "notify.event.v1", "project": "hermes", "recipient": "me",
+            "kind": "incident", "severity": "emergency", "title": "Срочная проверка",
+            "body": "Требуется проверить состояние сервиса.", "dedup_key": key,
+            "event_type": "health.degraded", "source_id": "test-source", "host_id": "test-host",
+            "signal_type": "load", "correlation_id": key + ":1",
+        })
+        self._emergency_delivery_id = created.get("initial_delivery_id")
+        incident = self.center.get_incident(created["incident_id"])
+        assert incident is not None
+        return incident
+
+    def test_delivery_worker_runs_retention_after_deadline_tick_and_survives_failure(self) -> None:
+        calls: list[str] = []
+
+        class Decisions:
+            def resolve_due(self) -> None:
+                calls.append("decisions")
+
+        class Center:
+            task_decisions = Decisions()
+            def run_history_retention_tick(self) -> None:
+                calls.append("retention")
+                raise RuntimeError("private diagnostic detail")
+
+        worker = object.__new__(DeliveryWorker)
+        worker._center = Center()
+        worker._task_action_owner = None
+        with self.assertLogs("notification_center.http_api", level="WARNING") as logs:
+            self.assertEqual(0, worker.run_task_decision_tick())
+        self.assertEqual(["decisions", "retention"], calls)
+        self.assertIn("RuntimeError", logs.output[0])
+        self.assertNotIn("private diagnostic detail", logs.output[0])
 
     @staticmethod
     def _plans() -> list[dict[str, str]]:
@@ -202,7 +240,12 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertTrue(repeated["deduplicated"])
         self.assertNotEqual(first["incident_id"], second["incident_id"])
         self.assertFalse(second["deduplicated"])
-        self.assertNotEqual(first["initial_delivery_id"], second["initial_delivery_id"])
+        self.assertIsNone(first["initial_delivery_id"])
+        self.assertIsNone(second["initial_delivery_id"])
+        from notification_center.incident_card import render
+        card, _ = render({"incident": self.center.get_incident(second["incident_id"])})
+        self.assertIn("Hermes", card)
+        self.assertNotIn("Исполнитель:", card)
         self.assertEqual(2, self.center.get_incident(first["incident_id"])["occurrences"])
 
         recovered = self.center.resolve_event(
@@ -346,18 +389,19 @@ class HealthWorkflowTests(unittest.TestCase):
                 "health_outcome": {"plan_id": "plan-003", "observed_state": "degraded", "step": "validate keywords"},
             })
 
-        self.assertIn("Восстановление не подтверждено", captured["text"])
+        self.assertIn("ИИ завершил этап", captured["text"])
         self.assertNotIn("plan-003", captured["text"])
         self.assertIn("всё ещё в состоянии деградации", captured["text"])
         self.assertEqual("77", captured["message_thread_id"])
         self.assertIn("Отключить такие уведомления", captured["reply_markup"])
 
     def test_diagnosis_link_can_be_delivered_after_voice_ack(self) -> None:
-        self.center.acknowledge(self.created["incident_id"], "phone:confirmed")
-        initial = self.center._connection.execute("SELECT status FROM deliveries WHERE id=?", (self.created["initial_delivery_id"],)).fetchone()
+        incident = self._emergency_incident("delivery-diagnosis-voice-ack")
+        self.center.acknowledge(incident["id"], "test:confirmed")
+        initial = self.center._connection.execute("SELECT status FROM deliveries WHERE id=?", (self._emergency_delivery_id,)).fetchone()
         self.assertEqual("cancelled", initial[0])
         recorded = self.center.record_health_agent_session(
-            self.created["incident_id"], "diagnosis-started", "", "claude", "session-real",
+            incident["id"], "diagnosis-started", "", "claude", "session-real",
             "https://agent.bezrabotnyi.com", stage="health-diagnosis",
         )
         due = self.center.claim_due_deliveries(channel_group="message")
@@ -365,15 +409,16 @@ class HealthWorkflowTests(unittest.TestCase):
         self.center.complete_delivery(due[0]["id"], "sent", claimed_at=due[0]["claimed_at"], attempt=due[0]["attempt"])
         row = self.center._connection.execute("SELECT status FROM deliveries WHERE id=?", (due[0]["id"],)).fetchone()
         self.assertEqual("sent", row[0])
-        self.assertEqual("acknowledged", self._incident()["state"])
+        self.assertEqual("acknowledged", self.center.get_incident(incident["id"])["state"])
 
     def test_queued_session_link_survives_ack_and_is_idempotent(self) -> None:
-        self.workflow.attach_plans(self.created["incident_id"], "plans-survive", self._plans(), actor="gptadmin")
-        self.workflow.select_plan(self.created["incident_id"], "selection-survive", "repair", "telegram:42")
-        first = self.center.record_health_agent_session(self.created["incident_id"], "session-survive",
+        incident = self._emergency_incident("delivery-session-survives-ack")
+        self.workflow.attach_plans(incident["id"], "plans-survive", self._plans(), actor="gptadmin")
+        self.workflow.select_plan(incident["id"], "selection-survive", "repair", "telegram:42")
+        first = self.center.record_health_agent_session(incident["id"], "session-survive",
             "repair", "zcode", "session-live", "https://agent.bezrabotnyi.com")
-        self.center.acknowledge(self.created["incident_id"], "phone:confirmed")
-        second = self.center.record_health_agent_session(self.created["incident_id"], "session-survive",
+        self.center.acknowledge(incident["id"], "test:confirmed")
+        second = self.center.record_health_agent_session(incident["id"], "session-survive",
             "repair", "zcode", "session-live", "https://agent.bezrabotnyi.com")
         self.assertEqual(first["session_delivery_id"], second["session_delivery_id"])
         self.assertEqual([first["session_delivery_id"]], [d["id"] for d in self.center.claim_due_deliveries(channel_group="message")])
@@ -388,10 +433,11 @@ class HealthWorkflowTests(unittest.TestCase):
                 "claude", "session-other", "https://agent.bezrabotnyi.com")
 
     def test_remediation_session_sends_a_clickable_agent_herder_transcript_link(self) -> None:
-        self.workflow.attach_plans(self.created["incident_id"], "plans-session", self._plans(), actor="gptadmin")
-        self.workflow.select_plan(self.created["incident_id"], "selection-session", "repair", "telegram:42")
+        incident = self._emergency_incident("delivery-remediation-session")
+        self.workflow.attach_plans(incident["id"], "plans-session", self._plans(), actor="gptadmin")
+        self.workflow.select_plan(incident["id"], "selection-session", "repair", "telegram:42")
         recorded = self.center.record_health_agent_session(
-            self.created["incident_id"],
+            incident["id"],
             "session-started-1",
             "repair",
             "zcode",
@@ -421,7 +467,7 @@ class HealthWorkflowTests(unittest.TestCase):
         with patch("notification_center.http_api.urllib.request.urlopen", fake_urlopen):
             TelegramSender("bot-token", "-100123", action_codec=TelegramActionCodec("x" * 32), center=self.center).send(payload)
 
-        self.assertIn("ИИ запущен для исправления", captured["text"])
+        self.assertIn("Ссылка на сессию:", captured["text"])
         self.assertNotIn('Инцидент: inc_',captured['text'])
         self.assertIn(recorded["session_url"], captured["text"])
         keyboard = json.loads(captured["reply_markup"])

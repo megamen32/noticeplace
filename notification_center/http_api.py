@@ -6,6 +6,7 @@ import json
 import hashlib
 import hmac
 import ipaddress
+import logging
 import os
 import re
 import secrets
@@ -40,6 +41,8 @@ from .exmanager_notice_transport import (
     ExManagerNoticeTransportError,
     render_task_question,
 )
+
+_LOG = logging.getLogger(__name__)
 
 ACTIVE_TELEGRAM_MODES = frozenset(("decisions", "notify"))
 SUPPORTED_TELEGRAM_MODES = frozenset(("decisions", "notify", "log", "health", "emergency", "important"))
@@ -1628,6 +1631,12 @@ class DeliveryWorker:
     def run_task_decision_tick(self) -> int:
         """Advance receipt-started deadlines and reconcile controls on a worker tick."""
         self._center.task_decisions.resolve_due()
+        retention_tick = getattr(self._center, "run_history_retention_tick", None)
+        if callable(retention_tick):
+            try:
+                retention_tick()
+            except Exception as error:
+                _LOG.warning("history retention tick failed (%s)", type(error).__name__)
         return self._dispatch_task_controls()
 
     def _dispatch_task_controls(self, limit: int = 20) -> int:
