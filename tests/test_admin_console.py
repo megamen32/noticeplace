@@ -520,29 +520,32 @@ class AdminConsoleTests(unittest.TestCase):
 
     def test_history_page_shows_provenance_children_notifications_and_outcome(self) -> None:
         center = self.store._consumer_notification_center()
-        parent = center.create_event(
-            "old-token",
-            "admin-history-parent",
-            {
-                "schema": "notify.event.v1", "project": "existing", "recipient": "me",
-                "kind": "incident", "severity": "notice", "title": "Site down",
-                "dedup_key": "site:down", "event_type": "site.down", "producer": "monitor",
-                "plugin": "lol-nginx", "correlation_id": "admin-history-1",
-            },
-            request_meta={"peer_ip": "127.0.0.1", "source_ip": "192.0.2.44", "proxy_ip": "127.0.0.1"},
-        )
+        # «Логи» ships disabled; the history fixture still needs a delivered
+        # card, so this page runs with logs explicitly enabled.
+        with mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'}):
+            parent = center.create_event(
+                "old-token",
+                "admin-history-parent",
+                {
+                    "schema": "notify.event.v1", "project": "existing", "recipient": "me",
+                    "kind": "incident", "severity": "notice", "title": "Site down",
+                    "dedup_key": "site:down", "event_type": "site.down", "producer": "monitor",
+                    "plugin": "lol-nginx", "correlation_id": "admin-history-1",
+                },
+                request_meta={"peer_ip": "127.0.0.1", "source_ip": "192.0.2.44", "proxy_ip": "127.0.0.1"},
+            )
+            child = center.create_event(
+                "old-token",
+                "admin-history-child",
+                {
+                    "schema": "notify.event.v1", "project": "existing", "recipient": "me",
+                    "kind": "incident", "severity": "notice", "title": "Service stopped",
+                    "dedup_key": "site:service-stopped", "event_type": "service.stopped",
+                    "producer": "monitor", "plugin": "systemd", "correlation_id": "admin-history-1",
+                    "parent_incident_id": parent["incident_id"], "parent_event_id": parent["event_id"],
+                },
+            )
         center.complete_delivery(parent["initial_delivery_id"], "sent")
-        child = center.create_event(
-            "old-token",
-            "admin-history-child",
-            {
-                "schema": "notify.event.v1", "project": "existing", "recipient": "me",
-                "kind": "incident", "severity": "notice", "title": "Service stopped",
-                "dedup_key": "site:service-stopped", "event_type": "service.stopped",
-                "producer": "monitor", "plugin": "systemd", "correlation_id": "admin-history-1",
-                "parent_incident_id": parent["incident_id"], "parent_event_id": parent["event_id"],
-            },
-        )
         status, page = self._request("GET", "/admin/")
         self.assertEqual(200, status)
         self.assertIn(b"Event history", page)
