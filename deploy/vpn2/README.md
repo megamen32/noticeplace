@@ -20,6 +20,9 @@ need Node, npm, Python, a database, or the primary notification-center package.
   `telegram,matrix`, Matrix is attempted only when Telegram fails.
 - A total delivery failure remains pending in the mode-0600 state file and is
   retried after `ALERT_RETRY_SECONDS`, including across service restarts.
+- Outage and recovery alerts contain short Russian descriptions of the failure
+  and verified health recovery. The existing delivery order and state based
+  deduplication are unchanged.
 - The process lock is a bounded lease. `WATCHDOG_LOCK_STALE_SECONDS` defaults
   to 120 seconds; a fresh lease blocks overlap, while an expired lease is
   reclaimed even if its PID is missing, malformed, or has been reused.
@@ -57,6 +60,13 @@ install -o root -g root -m 0644 \
 Edit `/etc/notification-center-watchdog.env` with watchdog-only credentials.
 The health token must match the primary center's dedicated
 `NOTIFY_CENTER_HEALTH_TOKEN`; do not reuse an event-ingest token.
+
+When correcting a stale `DOWN=1` caused by a confirmed health-token mismatch,
+first preserve the state file with its owner and mode. Reconcile that historical
+auth failure to a fresh monitoring baseline before the fixed token can cause a
+timer cycle; this avoids sending a misleading recovery for the configuration
+repair. Keep the timer enabled so a subsequent health failure follows the
+normal threshold and delivery policy.
 
 Validate before enabling:
 
