@@ -149,11 +149,14 @@ NOTICEPLACE_COMMANDS: tuple[dict[str, str], ...] = (
     {"command": "start", "description": "Владельцу: разрешить новые AI-запуски; начать обращение"},
     {"command": "stop", "description": "Запретить новые AI-запуски и остановить текущие"},
     {"command": "status", "description": "Показать состояние ИИ, узлов и сессий"},
+    {"command": "notifications", "description": "Поиск и настройки уведомлений"},
     {"command": "help", "description": "Показать доступные команды"},
     {"command": "ask", "description": "Задать вопрос по уведомлению: /ask <id> <текст>"},
 )
 NOTICEPLACE_OWNED_COMMANDS = {item["command"] for item in NOTICEPLACE_COMMANDS}
 OWNER_CALLBACK_PREFIX = "np:owner:"
+NOTIFICATIONS_URL = "https://notify.bezrabotnyi.com/admin/#/incidents"
+NOTIFICATION_SETTINGS_URL = "https://notify.bezrabotnyi.com/admin/#/settings"
 
 
 class TelegramConsoleOwnerControl:
@@ -460,8 +463,23 @@ class TelegramInteractionPoller:
                          "description": str(row.get("description") or "")}
                         for row in actual if isinstance(row, Mapping)
                     ]
+                    if scope["type"] == "chat" and chat_id.isdigit() and int(chat_id) > 0:
+                        self._register_owner_menu_button(chat_id)
                 except Exception as error:  # noqa: BLE001 - menu failures must not stop incident polling
                     LOG.warning("Could not register owner command menu for configured chat: %s", type(error).__name__)
+
+    def _register_owner_menu_button(self, chat_id: str) -> None:
+        """Configure only the private owner scope admitted by command registration."""
+        desired = {"type": "web_app", "text": "Уведомления", "web_app": {"url": NOTIFICATIONS_URL}}
+        current = self._api("getChatMenuButton", {"chat_id": chat_id})
+        if current.get("result") != desired:
+            self._api("setChatMenuButton", {
+                "chat_id": chat_id,
+                "menu_button": json.dumps(desired, ensure_ascii=False, separators=(",", ":")),
+            })
+            current = self._api("getChatMenuButton", {"chat_id": chat_id})
+        if current.get("result") != desired:
+            raise RuntimeError("Telegram owner menu button readback mismatch")
 
     def _commands_for_chat(self, chat_id: str) -> list[dict[str, str]]:
         return list(self._commands_by_chat.get(chat_id) or NOTICEPLACE_COMMANDS)
@@ -697,13 +715,26 @@ class TelegramInteractionPoller:
         chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
         actor_id, chat_id, message_id = sender.get("id"), str(chat.get("id") or ""), message.get("message_id")
         action = command.split("@", 1)[0].lower()
-        if (action not in {"/stop", "/start", "/status", "/help"} or sender.get("is_bot") is True
+        if (action not in {"/stop", "/start", "/status", "/help", "/notifications"} or sender.get("is_bot") is True
                 or str(actor_id) not in self._owner_user_ids or chat_id not in self._owner_chat_ids):
             self._audit_owner_command(action, actor_id, chat_id, message_id, "denied")
             if callback_id:
                 self._answer(callback_id, "Нет доступа")
             return
         arguments = str(message.get("text") or "").strip().split()
+        if action == "/notifications":
+            if len(arguments) != 1:
+                self._audit_owner_command(action, actor_id, chat_id, message_id, "invalid_arguments")
+                self._message(chat_id, "Используйте /notifications без аргументов.")
+                return
+            self._audit_owner_command(action, actor_id, chat_id, message_id, "read")
+            self._message(chat_id, "Уведомления: найдите нужный инцидент или откройте настройки.", {
+                "inline_keyboard": [
+                    [{"text": "Поиск уведомлений", "url": NOTIFICATIONS_URL}],
+                    [{"text": "Настройки уведомлений", "url": NOTIFICATION_SETTINGS_URL}],
+                ],
+            })
+            return
         if len(arguments) != 1:
             self._audit_owner_command(action, actor_id, chat_id, message_id, "invalid_arguments")
             self._owner_reply(chat_id, action, "Используй команду без аргументов: /stop, /start, /status или /help.",
@@ -1143,7 +1174,7 @@ class TelegramInteractionPoller:
         allowed_actor = self._allowed(actor_id)
         command = text.split(maxsplit=1)[0] if text else ""
         normalized_command = command.split("@", 1)[0].lower()
-        if normalized_command in {"/stop", "/status", "/help"}:
+        if normalized_command in {"/stop", "/status", "/help", "/notifications"}:
             self._handle_owner_command(message, command)
             return
         if normalized_command == "/start":

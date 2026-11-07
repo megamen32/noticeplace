@@ -683,6 +683,106 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertEqual([{"type": "chat_member", "chat_id": -1001, "user_id": 42}],
                          TelegramInteractionPoller._command_scopes("-1001", {"42"}))
 
+    def test_notifications_command_opens_search_and_settings_without_owner_control(self):
+        control = _FakeHerderOwnerControl(forbidden=True)
+        poller, calls = self._owner_poller(
+            [self._owner_command(151, 251, 42, -1001, "/notifications@notice_bot")], control)
+        self.assertEqual(1, poller.poll_once())
+        replies = [payload for method, payload in calls if method == "sendMessage"]
+        self.assertEqual(1, len(replies))
+        self.assertEqual("-1001", replies[0]["chat_id"])
+        rows = json.loads(replies[0]["reply_markup"])["inline_keyboard"]
+        self.assertEqual([
+            [{"text": "Поиск уведомлений", "url": "https://notify.bezrabotnyi.com/admin/#/incidents"}],
+            [{"text": "Настройки уведомлений", "url": "https://notify.bezrabotnyi.com/admin/#/settings"}],
+        ], rows)
+        self.assertEqual([], control.calls)
+        self.assertTrue(control.forbidden)
+
+    def test_notifications_command_denies_nonowner_bot_and_outside_chat(self):
+        for sender_id, chat_id, is_bot, owners in (
+            (99, -1001, False, {"42"}), (42, -1002, False, {"42"}),
+            (42, -1001, True, {"42"}), (42, -1001, False, set()),
+        ):
+            with self.subTest(sender=sender_id, chat=chat_id, bot=is_bot, owners=owners):
+                control = _FakeHerderOwnerControl()
+                poller, calls = self._owner_poller([], control)
+                poller._owner_user_ids = owners
+                message = self._owner_command(152, 252, sender_id, chat_id, "/notifications")["message"]
+                message["from"]["is_bot"] = is_bot
+                poller._handle_message(message)
+                self.assertEqual([], calls)
+                self.assertEqual([], control.calls)
+        audit = self.center._connection.execute(
+            "SELECT payload_json FROM audit_events WHERE type='telegram.owner_command'"
+        ).fetchall()
+        self.assertEqual(["denied"] * 4, [json.loads(row[0])["outcome"] for row in audit])
+
+    def test_notifications_menu_registration_private_owner_only_and_readback(self):
+        expected = {"type": "web_app", "text": "Уведомления",
+                    "web_app": {"url": "https://notify.bezrabotnyi.com/admin/#/incidents"}}
+        for chats, owners, private in (({"42", "99", "-1001"}, {"42"}, True),
+                                        ({"42", "-1001"}, set(), False),
+                                        ({"99", "-1001"}, {"42"}, False)):
+            with self.subTest(chats=chats, owners=owners):
+                calls, commands, buttons = [], {}, {}
+
+                def api(method, payload):
+                    calls.append((method, dict(payload)))
+                    key = (payload.get("scope"), payload.get("language_code"))
+                    if method == "getMyCommands":
+                        return {"ok": True, "result": commands.get(key, [])}
+                    if method == "setMyCommands":
+                        commands[key] = json.loads(payload["commands"])
+                    elif method == "getChatMenuButton":
+                        return {"ok": True, "result": buttons.get(payload["chat_id"], {"type": "commands"})}
+                    elif method == "setChatMenuButton":
+                        buttons[payload["chat_id"]] = json.loads(payload["menu_button"])
+                    else:
+                        self.fail("Unexpected registration call: " + method)
+                    return {"ok": True, "result": True}
+
+                poller = TelegramInteractionPoller(
+                    self.center, "bot-token", {"42"}, TelegramActionCodec("x" * 32),
+                    api=api, inbox_chat_ids=chats, owner_user_ids=owners)
+                poller._manage_command_menu = True
+                poller._register_owner_commands()
+                button_calls = [(method, payload) for method, payload in calls if "ChatMenuButton" in method]
+                if private:
+                    self.assertEqual(["getChatMenuButton", "setChatMenuButton", "getChatMenuButton"],
+                                     [method for method, _ in button_calls])
+                    self.assertTrue(all(str(payload["chat_id"]) == "42" for _, payload in button_calls))
+                    self.assertEqual(expected, next(iter(buttons.values())))
+                else:
+                    self.assertEqual([], button_calls)
+                for method, payload in calls:
+                    if method == "setMyCommands":
+                        self.assertIn("notifications", [row["command"] for row in json.loads(payload["commands"])])
+                before = len(calls)
+                poller._register_owner_commands()
+                self.assertEqual(before, len(calls))
+                # A fresh worker reads a matching button without writing it again.
+                calls.clear()
+                poller._commands_registration_attempted = False
+                poller._register_owner_commands()
+                self.assertFalse(any(method == "setChatMenuButton" for method, _ in calls))
+
+    def test_notifications_menu_mismatched_readback_is_not_confirmed_or_retried(self):
+        calls = []
+        def api(method, payload):
+            calls.append(method)
+            return {"ok": True, "result": {"type": "commands"} if method == "getChatMenuButton" else []}
+        poller = TelegramInteractionPoller(
+            self.center, "bot-token", {"42"}, TelegramActionCodec("x" * 32),
+            api=api, inbox_chat_ids={"42"}, owner_user_ids={"42"})
+        poller._manage_command_menu = True
+        with self.assertLogs("notification_center.telegram_interactions", level="WARNING") as logs:
+            poller._register_owner_commands()
+        self.assertIn("RuntimeError", logs.output[0])
+        self.assertEqual(1, calls.count("setChatMenuButton"))
+        poller._register_owner_commands()
+        self.assertEqual(1, calls.count("setChatMenuButton"))
+
     def test_nonowner_start_keeps_existing_inbox_onboarding_path(self):
         received = []
         poller = TelegramInteractionPoller(
