@@ -42,6 +42,10 @@ def worker_iteration(worker: DeliveryWorker, channel_group: str, max_workers: in
         # owns completion replay and delivery claims separately. Keep the task
         # question clock/control CAS on this existing worker tick.
         worker.run_task_decision_tick()
+        try:
+            worker._center.publish_executor_outcome_digest()
+        except Exception as digest_error:  # the digest must never stall claims
+            print(f"executor digest tick failed: {digest_error}", flush=True)
     inflight.difference_update(future for future in tuple(inflight) if future.done())
     capacity = max_workers - len(inflight)
     if capacity > 0:

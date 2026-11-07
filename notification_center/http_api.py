@@ -164,8 +164,12 @@ def telegram_mode(incident: dict[str, Any]) -> str:
     The owner split the Telegram surface into three chats (order 23:10):
     «Решения» carries every card with buttons, «Уведомления» only
     emergency+critical incidents and their closures, «Логи» the routine rest
-    and is disabled by default.
+    and is disabled by default. The hourly executor digest (event_type
+    executor.digest) is an owner-facing outcome and lands in «Уведомления»
+    even though its severity is routine (order 23:55).
     """
+    if str(incident.get("event_type") or "") == "executor.digest":
+        return "notify"
     if str(incident.get("event_type") or "").startswith("health."):
         return "decisions"
     severity = str(incident["severity"])
