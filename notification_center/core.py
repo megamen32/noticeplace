@@ -7,6 +7,7 @@ import hashlib
 import math
 import os
 import re
+import socket
 import sqlite3
 import threading
 import time
@@ -92,6 +93,7 @@ class NotificationCenter:
     """
 
     def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]], default_quiet_hours: list[Mapping[str, Any]] | None = None, *, task_decision_verifier: Any | None = None, consumer_verifier_grants: list[Mapping[str, Any]] | None = None) -> None:
+        self._STORE_TOKEN = "\x00store-internal\x00"
         """Open and initialize durable state; raises sqlite errors on storage failures."""
         self._consumer_verifier_grants = self._load_consumer_verifier_grants(consumer_verifier_grants)
         if str(database_path).startswith("mesh:"):
@@ -608,6 +610,10 @@ class NotificationCenter:
                     scope['agent_jobs'] = [str(value) for value in grant['agent_jobs']]
                 if 'automatic_health_diagnosis' in grant:
                     scope['automatic_health_diagnosis'] = grant['automatic_health_diagnosis']
+                # Owner policy 23:55: detections stay internal; the grant also
+                # carries the owner-facing delivery suppression.
+                if grant.get('suppress_owner_delivery'):
+                    scope['suppress_owner_delivery'] = True
                 break
         return scope
 
@@ -2200,7 +2206,12 @@ class NotificationCenter:
         if not idempotency_key.strip():
             raise ValidationError("Idempotency-Key is required")
         self._validate_event(event)
-        scope = self._token(token, event)
+        if token == self._STORE_TOKEN:
+            # Store-internal publication (executor launch-failure guard,
+            # outcome digests): the store itself is the trusted principal.
+            scope = {"project": str(event.get("project") or ""), "max_severity": "emergency"}
+        else:
+            scope = self._token(token, event)
         if scope.get('incident_role') == 'executor' and str(event.get('event_type') or '') in {'health.recovered', 'health.phase_changed', 'health.verification_recorded'}:
             raise AuthorizationError('executor credentials cannot publish source health authority')
         requested_agent_job = str(event.get("agent_job") or "")
@@ -2306,11 +2317,17 @@ class NotificationCenter:
             review_quiet = (rule_autostart and not setting(self, 'telegram_all_notifications_enabled') and self.health_notification_review_required(incident_id)
                             and not (self.health_notification_decision(incident_id) or {}).get("notify_user"))
             notifications_muted = self.get_incident(incident_id)['notifications_muted']
-            delivery_id = None if notifications_muted or review_quiet else self._schedule_consumer_policy(incident_id, consumer_id, now)
-            if existing is not None and not notifications_muted and not review_quiet and self.original_telegram_card(incident_id) is not None:
+            # Owner policy 2026-11-06 23:55: detection facts stay internal.
+            # A scope marked suppress_owner_delivery keeps the incident and the
+            # executor launch but never schedules an owner-facing card.
+            owner_quiet = bool(scope.get('suppress_owner_delivery'))
+            delivery_id = None if notifications_muted or review_quiet or owner_quiet else self._schedule_consumer_policy(incident_id, consumer_id, now)
+            if existing is not None and not notifications_muted and not review_quiet and not owner_quiet and self.original_telegram_card(incident_id) is not None:
                 self.queue_incident_card_refresh(incident_id, now)
             if notifications_muted:
                 self._audit(incident_id, "notification_suppressed", "policy", {"reason": "operator_mute", "dedup_key": dedup_key})
+            elif owner_quiet:
+                self._audit(incident_id, "notification_suppressed", "policy", {"reason": "internal_detection_scope", "dedup_key": dedup_key})
             agent_step = "incident" if agent_job == HEALTH_DIAGNOSIS_AGENT_JOB else f"event:{event_id}"
             if agent_job and not rule_autostart:
                 self._audit(incident_id, "automatic_ai_suppressed", "policy", {"reason": "operator_rule"})
@@ -3227,6 +3244,87 @@ class NotificationCenter:
                         {"delivery_id": delivery_id, "error": str(followup_error)[:1000]},
                     )
             self._audit(str(row["incident_id"]), f"delivery_{outcome}", "worker", {"delivery_id": delivery_id, "error": safe_error})
+            # A failed executor launch escalates regardless of the incident's
+            # review state: the owner policy is about the executor, not the card.
+            launch_failure = row if (outcome == "failed" and str(row["channel"]).startswith("gptadmin.agent:")
+                                     and safe_error) else None
+        if launch_failure:
+            # Owner policy 23:55: a failed executor launch is the one
+            # detection outcome that must reach the owner (critical), outside
+            # the scheduling transaction to respect the store lock.
+            try:
+                self._schedule_executor_launch_failure(launch_failure, now)
+            except Exception as escalation_error:
+                self._audit(str(launch_failure["incident_id"]), "executor_escalation_failed", "worker",
+                            {"delivery_id": str(launch_failure["id"]), "error": str(escalation_error)[:1000]})
+
+    def _schedule_executor_launch_failure(self, source_row: Mapping[str, Any], now: float) -> None:
+        """Escalate one failed executor launch as a critical owner incident."""
+        source = self._connection.execute(
+            "SELECT project, recipient, title FROM incidents WHERE id = ?", (source_row["incident_id"],)).fetchone()
+        if source is None:
+            return
+        error_row = self._connection.execute(
+            "SELECT last_error FROM deliveries WHERE id = ?", (source_row["id"],)).fetchone()
+        last_error = error_row["last_error"] if error_row is not None else None
+        event = {
+            "schema": "notify.event.v1", "kind": "incident", "severity": "critical",
+            "project": str(source["project"]), "recipient": str(source["recipient"] or "me"),
+            "title": f"Исполнитель не смог запуститься: {str(source['title'] or '')[:120]}",
+            "body": f"Автозапуск исполнителя не удался: {str(last_error or 'причина неизвестна')[:400]}",
+            "dedup_key": f"executor-launch-failed/{source_row['incident_id']}",
+            "source_id": "executor-launch-guard", "host_id": socket.gethostname(),
+            "signal_type": "agent-spawn", "correlation_id": str(source_row["incident_id"]),
+            "event_type": "executor.launch_failed",
+        }
+        try:
+            self.create_event(self._STORE_TOKEN, f"executor-launch-failed/{source_row['incident_id']}", event)
+        except IdempotencyConflict:
+            pass
+
+    def publish_executor_outcome_digest(self, now: float | None = None) -> int | None:
+        """Owner policy 23:55: hourly «исполнитель справился» digest.
+
+        Collects dosor-family incidents that resolved with a delivered
+        executor session since the previous digest and publishes one owner
+        notification (event_type executor.digest → «Уведомления»). Returns
+        the published incident id, or None when nothing was due.
+        """
+        now = time.time() if now is None else float(now)
+        window = float(self.get_runtime_setting("executor_digest_window_seconds", "3600") or 3600)
+        raw = self.get_runtime_setting("executor_digest_last_at")
+        last = float(raw) if raw else now - window
+        if now - last < window:
+            return None
+        resolved = self._connection.execute(
+            "SELECT i.id, i.title FROM incidents i WHERE i.project = 'autotelegramviews' "
+            "AND i.state = 'resolved' AND i.updated_at > ? AND i.updated_at <= ? "
+            "AND EXISTS (SELECT 1 FROM events e WHERE e.incident_id = i.id "
+            "AND json_extract(e.payload_json, '$.source_id') = 'views-coverage-watchdog') "
+            "AND EXISTS (SELECT 1 FROM deliveries d WHERE d.incident_id = i.id "
+            "AND d.channel LIKE 'gptadmin.agent%' AND d.status = 'sent') "
+            "ORDER BY i.updated_at LIMIT 50",
+            (last, now)).fetchall()
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO runtime_settings(key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                ("executor_digest_last_at", str(now), now))
+        if not resolved:
+            return None
+        sample = "; ".join(str(row["title"] or "")[:60] for row in resolved[:5])
+        event = {
+            "schema": "notify.event.v1", "kind": "notification", "severity": "important",
+            "project": "autotelegramviews", "recipient": "me",
+            "title": f"Исполнитель справился: {len(resolved)} дозор-наблюдений закрыто за час",
+            "body": sample or "Дозор-наблюдения закрыты исполнителем.",
+            "dedup_key": f"executor-digest/{datetime.utcfromtimestamp(now).strftime('%Y-%m-%dT%H')}",
+            "source_id": "executor-digest", "host_id": socket.gethostname(),
+            "signal_type": "outcome-digest", "correlation_id": datetime.utcfromtimestamp(now).strftime("%Y-%m-%dT%H"),
+            "event_type": "executor.digest",
+        }
+        created = self.create_event(self._STORE_TOKEN, event["dedup_key"], event)
+        return created.get("incident_id")
 
     def record_health_delivery_migrated(self, source_delivery_id: str, receipt: Mapping[str, Any], actor: str = "health-workflow") -> None:
         """Persist proof that an existing Telegram Health message was edited in place."""
