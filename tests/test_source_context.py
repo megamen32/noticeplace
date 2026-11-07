@@ -42,6 +42,8 @@ class SourceContextTests(unittest.TestCase):
     def test_missing_and_stale_context_are_explicit(self):
         from notification_center.source_context import context_for_delivery
         self.assertEqual('incomplete',context_for_delivery(None)['context_status'])
+        self.assertEqual('incomplete',context_for_delivery(['legacy'])['context_status'])
+        self.assertEqual('incomplete',context_for_delivery({'unknown':'legacy'})['context_status'])
         context = {'schema':'notify.source-context.v1','service':'s','impact':'i','symptoms':['x'],
                    'observed_at':1,'freshness_seconds':60,'verifier_ref':'probe'}
         self.assertEqual('stale',context_for_delivery(context,now=100)['context_status'])

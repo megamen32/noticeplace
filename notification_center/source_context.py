@@ -51,8 +51,13 @@ def normalize_source_context(value):
 def context_for_delivery(value, *, now=None):
     # Computed status is not stored in the idempotent producer payload. On each
     # delivery the server reevaluates freshness; the source cannot self-certify.
-    raw = {key:item for key,item in (value or {}).items() if key not in {'context_status','missing_fields'}}
-    context = normalize_source_context(raw)
+    raw = {key:item for key,item in value.items() if key not in {'context_status','missing_fields'}} if isinstance(value,Mapping) else {}
+    try:
+        context = normalize_source_context(raw)
+    except ValueError:
+        # Historical v1 events predate validation of this optional field.
+        # Malformed legacy context cannot prevent the incident investigation.
+        context = {'schema':SCHEMA}
     missing = [key for key in REQUIRED if not context.get(key)]
     status = 'incomplete' if missing else 'complete'
     now = time.time() if now is None else now
