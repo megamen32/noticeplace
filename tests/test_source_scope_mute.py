@@ -21,7 +21,7 @@ def ban_event(center: NotificationCenter, jail: str, ip: str, idempotency: str) 
     key = f"fail2ban:fail2ban.server-100:{jail}:{ip}"
     return center.create_event("producer", idempotency, {
         "schema": "notify.event.v1", "project": "fail2ban.server-100", "recipient": "me",
-        "kind": "incident", "severity": "notice", "title": f"Защита сработала: IP {ip} заблокирован",
+        "kind": "notification", "severity": "notice", "title": f"Защита сработала: IP {ip} заблокирован",
         "body": "Сервер: перебор паролей, адрес заблокирован. Штатная защита.",
         "dedup_key": key,
     })
@@ -111,6 +111,38 @@ class SourceScopeMuteTest(unittest.TestCase):
         # Telegram button owns the broadened rule.
         second = ban_event(self.center, "sshd", "203.0.113.11", "ban-8")
         self.assertFalse(second["notifications_muted"])
+
+    def test_ipv6_source_mute_survives_new_address_and_restart(self) -> None:
+        event = ban_event(self.center, 'sshd', '2001:db8:1::7', 'ipv6-first')
+        muted = self.center.set_incident_notifications_muted(event['incident_id'], True, 'qa')
+        self.assertEqual('fail2ban:fail2ban.server-100:sshd:',muted['dedup_key'])
+        self.center._connection.close()
+        self.center = NotificationCenter(Path(self.tempdir.name)/'notify.sqlite3', {'producer':{'project':'fail2ban.server-100','max_severity':'critical'}})
+        repeated = ban_event(self.center,'sshd','2001:db8:ffff::8','ipv6-repeat')
+        self.assertTrue(repeated['notifications_muted'])
+        self.assertIsNone(repeated['initial_delivery_id'])
+        other = ban_event(self.center,'nginx','2001:db8:ffff::8','ipv6-other')
+        self.assertFalse(other['notifications_muted'])
+
+    def test_prefix_underscore_does_not_match_other_jail_on_claim(self) -> None:
+        event = ban_event(self.center, 'ssh_test', '203.0.113.5', 'underscore')
+        other = ban_event(self.center, 'sshXtest', '203.0.113.6', 'literal-other')
+        self.center.apply_telegram_action(event['incident_id'], 'mute', 'qa')
+        due = self.center.claim_due_deliveries(now_epoch=10**12,channel_group='message')
+        self.assertIn(other['incident_id'], [row['incident_id'] for row in due])
+
+    def test_migration_uses_preview_and_never_overrides_later_family_unmute(self) -> None:
+        from notification_center.notification_mute_policy import legacy_fail2ban_mutes, migrate_legacy_fail2ban_mutes
+        self.center.set_incident_notifications_muted(self.first['incident_id'],True,'legacy',scope='exact')
+        preview = legacy_fail2ban_mutes(self.center._connection)
+        self.assertEqual(1,len(preview))
+        with self.center._connection:
+            self.assertEqual(1,migrate_legacy_fail2ban_mutes(self.center._connection,preview))
+        self.assertTrue(ban_event(self.center,'sshd','2001:db8::9','migrated')['notifications_muted'])
+        self.center.set_incident_notifications_muted(self.first['incident_id'],False,'human')
+        self.assertEqual([],legacy_fail2ban_mutes(self.center._connection))
+        with self.assertRaises(ValueError): migrate_legacy_fail2ban_mutes(self.center._connection,preview)
+        self.assertFalse(ban_event(self.center,'sshd','2001:db8::a','unmuted')['notifications_muted'])
 
 
 if __name__ == "__main__":

@@ -682,6 +682,12 @@ class NotificationCenter:
             raise ValidationError(f"missing required event fields: {', '.join(missing)}")
         if event.get("schema", "notify.event.v1") != "notify.event.v1":
             raise ValidationError("unsupported event schema")
+        if 'source_context' in event:
+            from .source_context import normalize_source_context
+            try:
+                normalize_source_context(event['source_context'])
+            except ValueError as error:
+                raise ValidationError(str(error)) from error
         if "execution_identity" in event:
             NotificationCenter._validate_execution_identity(event["execution_identity"])
         if str(event["severity"]) not in SEVERITIES:
@@ -2206,6 +2212,9 @@ class NotificationCenter:
         if not idempotency_key.strip():
             raise ValidationError("Idempotency-Key is required")
         self._validate_event(event)
+        if 'source_context' in event:
+            from .source_context import normalize_source_context
+            event = {**event, 'source_context':normalize_source_context(event['source_context'])}
         if _internal_consumer_id and token != self._STORE_TOKEN:
             raise AuthorizationError("internal delivery route requires store authority")
         if token == self._STORE_TOKEN:
@@ -2943,6 +2952,22 @@ class NotificationCenter:
             row = self._connection.execute("SELECT holder FROM runtime_leases WHERE name=?", (str(name),)).fetchone()
             return row is not None and row["holder"] == holder
 
+    def run_history_retention_tick(self):
+        """One bounded maintenance batch on the existing agent worker clock."""
+        from .retention import RetentionWorker
+        import socket
+        with self._lock:
+            now = time.monotonic()
+            if now < getattr(self, '_history_retention_due', 0):
+                return None
+            self._history_retention_due = now + 60
+            holder = getattr(self, '_history_retention_holder', None)
+            if holder is None:
+                holder = self._history_retention_holder = socket.gethostname()+':'+uuid.uuid4().hex
+            if not self.claim_runtime_lease('history-retention',holder,ttl_seconds=90):
+                return None
+            return RetentionWorker(self._connection,batch_size=100).run_batch(dry_run=False)
+
     def claim_due_deliveries(self, now_epoch: float | None = None, limit: int = 20, lease_seconds: float = 60, channel_group: str | None = None, delivery_id: str | None = None) -> list[dict[str, Any]]:
         """Claim due work and reclaim an expired worker lease after a crash.
 
@@ -2964,7 +2989,7 @@ class NotificationCenter:
             db_now = float(self._connection.execute("SELECT strftime('%s','now')").fetchone()[0])
             stale_before = db_now - self._stale_alarm_seconds()
             rows = self._connection.execute(
-                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (? IS NULL OR d.id=?) AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.unmuted_at IS NULL AND (m.match_mode = 'prefix' AND (COALESCE(i.collapse_key,i.dedup_key) LIKE m.dedup_key || '%' ESCAPE '\\' OR i.dedup_key LIKE m.dedup_key || '%' ESCAPE '\\') OR m.match_mode != 'prefix' AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key))))) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
+                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (? IS NULL OR d.id=?) AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.unmuted_at IS NULL AND (m.match_mode = 'prefix' AND (substr(COALESCE(i.collapse_key,i.dedup_key),1,length(m.dedup_key)) = m.dedup_key OR substr(i.dedup_key,1,length(m.dedup_key)) = m.dedup_key) OR m.match_mode != 'prefix' AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key))))) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
                 (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, delivery_id, delivery_id, limit),
             ).fetchall()
             result: list[dict[str, Any]] = []
@@ -3251,7 +3276,7 @@ class NotificationCenter:
                 return
             if attempt is not None and int(row["attempt"] or 0) != int(attempt):
                 return
-            if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES and not _is_session_notice(row) and not (str(row["channel"]).startswith("gptadmin.agent:") and row["state"] == "acknowledged") and not (outcome == "sent" and str(row["channel"]).startswith("telegram.") and not str(row["channel"]).endswith(".call") and row["status"] == "sending"):
+            if outcome in ("sent", "failed", "retry") and str(row["state"]) not in DELIVERABLE_STATES and not _is_session_notice(row) and not (str(row["channel"]).startswith("gptadmin.agent:") and row["state"] == "acknowledged") and not (outcome in {"sent", "failed"} and row["status"] == "sending"):
                 outcome = "cancelled"
                 safe_error = safe_error or "incident is no longer active"
             if outcome == "retry":
@@ -3393,7 +3418,7 @@ class NotificationCenter:
             now = time.time()
             if state == "acknowledged":
                 self._connection.execute("UPDATE incidents SET state = ?, acknowledged_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
-                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND channel NOT LIKE 'gptadmin.agent:%' AND status IN ('queued', 'claimed', 'sending') AND NOT ((channel LIKE 'telegram.%' AND channel NOT LIKE '%.call') AND status='sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
+                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND channel NOT LIKE 'gptadmin.agent:%' AND status IN ('queued', 'claimed') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
             elif state == "resolved":
                 self._connection.execute("UPDATE incidents SET state = ?, resolved_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
                 pending_questions = self._connection.execute("SELECT request_id FROM human_requests WHERE incident_id=? AND state='pending' AND kind='user'", (incident_id,)).fetchall()
@@ -3404,7 +3429,7 @@ class NotificationCenter:
                 self._connection.execute("UPDATE human_request_completions SET state='cancelled',reason='Связанный инцидент закрыт',updated_at=? "
                                          "WHERE request_id IN (SELECT request_id FROM human_requests WHERE incident_id=?) AND state IN ('pending','retryable')",
                                          (now, incident_id))
-                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed', 'sending') AND NOT ((channel LIKE 'telegram.%' AND channel NOT LIKE '%.call') AND status='sending') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
+                self._connection.execute("UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? AND status IN ('queued', 'claimed') AND NOT " + _SESSION_NOTICE_SQL, (now, incident_id))
                 self._connection.execute(
                     "UPDATE deliveries SET status = 'cancelled', updated_at = ? WHERE incident_id = ? "
                     "AND status IN ('queued', 'claimed') AND json_type(target_json, '$.health_outcome') = 'object' "
@@ -4305,6 +4330,16 @@ class NotificationCenter:
         if self.get_incident(incident_id) is None:
             raise ValidationError("incident not found")
         result = receipt.get("agent_receipt") if isinstance(receipt.get("agent_receipt"), Mapping) else {}
+        classification = result.get('classification')
+        if isinstance(classification, Mapping) and classification.get('class') in {'log','repair','important','emergency'}:
+            # Classification is audit context, never a source-health verdict,
+            # native action grant or independent right to contact the operator.
+            with self._lock, self._connection:
+                previous = self._connection.execute("SELECT 1 FROM audit_events WHERE incident_id=? AND type='incident_classification' AND json_extract(payload_json,'$.delivery_id')=? LIMIT 1", (incident_id,delivery_id)).fetchone()
+                if previous is None:
+                    self._audit(incident_id,'incident_classification','classifier',
+                                {'delivery_id':delivery_id,**{key:self._health_text(classification.get(key),400)
+                                    for key in ('class','confidence','reason','status','model','elapsed_ms')}})
         pending_observer = (
             receipt.get("status") == "completed" and result.get("path") == "repair-first"
             and result.get("observer_only") is True and result.get("awaiting_human") is not True
@@ -5279,11 +5314,12 @@ class NotificationCenter:
 
     @staticmethod
     def _notification_mute_prefix(dedup_key: str) -> str:
-        """Strip the trailing varying segment of a dedup key for the mute scope."""
-        key = str(dedup_key)
-        if ":" not in key:
-            return key
-        return key[: key.rindex(":") + 1]
+        """Use an explicit known family; never guess which suffix is variable."""
+        from .notification_mute_policy import fail2ban_family
+        family = fail2ban_family(dedup_key)
+        if family:
+            return family
+        return str(dedup_key)
 
     def _apply_source_severity(self, event: Mapping[str, Any], project: str, recipient: str) -> Mapping[str, Any]:
         """Apply the operator's «изменить важность» rule for this source.
@@ -5353,15 +5389,15 @@ class NotificationCenter:
         escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return escaped + "%"
 
-    def set_incident_notifications_muted(self, incident_id: str, muted: bool, actor: str, scope: str = "exact") -> dict[str, Any]:
+    def set_incident_notifications_muted(self, incident_id: str, muted: bool, actor: str, scope: str = "source") -> dict[str, Any]:
         """Mute or restore one notification scope of this incident's source.
 
         scope="source" (Telegram button) widens a familyless dedup key to its
         stable prefix, so varying keys of the same source stay silenced.
-        scope="exact" (default, HTTP API, rule settings) keeps the documented
+        scope="exact" (explicit API request, rule settings) keeps the documented
         one-scope contract.
         """
-        if scope not in {"source", "exact"}:
+        if not isinstance(scope,str) or scope not in {"source", "exact"}:
             raise ValidationError("invalid notification mute scope")
         with self._lock, self._connection:
             incident = self._connection.execute(
@@ -5374,7 +5410,8 @@ class NotificationCenter:
             dedup = str(incident["dedup_key"])
             primary = collapse or dedup
             if scope == "source" and collapse is None:
-                mute_key, match_mode = self._notification_mute_prefix(dedup), "prefix"
+                mute_key = self._notification_mute_prefix(dedup)
+                match_mode = "prefix" if mute_key != dedup else "exact"
             else:
                 mute_key, match_mode = primary, "exact"
             was_muted = self._notification_scope_muted(project, recipient, primary) \
@@ -5408,7 +5445,7 @@ class NotificationCenter:
                 # its exact scopes plus every active prefix rule matching its keys.
                 self._connection.execute(
                     "UPDATE notification_mutes SET unmuted_at = ?, unmuted_by = ?, revision = revision + 1 "
-                    f"WHERE project = ? AND recipient = ? AND unmuted_at IS NULL AND (dedup_key IN (?, ?) OR (match_mode = 'prefix' AND ? LIKE dedup_key || '%' ESCAPE '\\'))",
+                    f"WHERE project = ? AND recipient = ? AND unmuted_at IS NULL AND (dedup_key IN (?, ?) OR (match_mode = 'prefix' AND substr(?,1,length(dedup_key)) = dedup_key))",
                     (now, actor, project, recipient, primary, dedup, primary),
                 )
                 if was_muted and str(incident["state"]) in DELIVERABLE_STATES:
@@ -5948,7 +5985,9 @@ class NotificationCenter:
                 payload["health_outcome"] = {"status": conclusion, "session_url": (payload["ai_session"] or {}).get("session_url", "")}
             original = self._health_original_event(str(incident["id"]))
             if isinstance(original, dict):
+                from .source_context import context_for_delivery
                 payload["health_context"] = {
+                    "source_context": context_for_delivery(original.get('source_context')),
                     "source_id": self._health_text(original.get("source_id") or original.get("producer") or "", 128),
                     "host_id": self._health_text(original.get("host_id") or original.get("plugin") or "", 128),
                     "signal_type": self._health_text(original.get("signal_type") or original.get("event_type") or "", 64),
@@ -6022,6 +6061,12 @@ class NotificationCenter:
             # The snapshot rides only in the health context of a health agent
             # delivery, which the adapter signs before it crosses the boundary.
             payload.setdefault("health_context", {})["incident_model"] = incident_model
+        if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
+            from .incident_session_policy import read_policy
+            payload.setdefault("health_context", {})["incident_session_policy"] = read_policy(self)
+            from .incident_skills import read_policy as read_skill_policy
+            payload["health_context"]["incident_skill_policy"] = read_skill_policy(self)
+            payload["health_context"]["classifier_enabled"] = self.get_runtime_setting('incident_classifier_enabled','1') == '1'
         return payload
 
     def mark_dispatcher_healthy(self) -> None:

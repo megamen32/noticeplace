@@ -1701,6 +1701,12 @@ class DeliveryWorkerTests(unittest.TestCase):
                                                  android_phone_quiet_start_hour=0, android_phone_quiet_end_hour=0).run_once())
         self.assertEqual("acknowledged", self.center.get_incident(created["incident_id"])["state"])
         self.assertEqual(1, len(calls))
+        receipt = self.center._connection.execute(
+            "SELECT status, result_json FROM deliveries WHERE incident_id=? AND channel='matrix.call'",
+            (created["incident_id"],),
+        ).fetchone()
+        self.assertEqual("sent", receipt["status"])
+        self.assertTrue(json.loads(receipt["result_json"])["answered"])
 
     def test_initial_critical_telegram_delivery_schedules_one_matrix_call(self) -> None:
         created = self.center.create_event("producer", "create", {**self.event, "severity": "critical"})
@@ -2096,7 +2102,9 @@ class DeliveryWorkerTests(unittest.TestCase):
         status = self.center._connection.execute(
             "SELECT status FROM deliveries WHERE incident_id = ? AND channel = 'matrix.call'", (created["incident_id"],)
         ).fetchone()["status"]
-        self.assertEqual("cancelled", status)
+        # A real answered call remains delivered even when the source resolved
+        # while it was in flight. ACK must not reopen the resolved incident.
+        self.assertEqual("sent", status)
 
     def test_matrix_sender_posts_only_safe_incident_fields_and_requires_answer(self) -> None:
         received: dict[str, object] = {}

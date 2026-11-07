@@ -79,6 +79,13 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any], delivery_key: str 
         }
         if isinstance(health_context.get('notification_review_required'), bool):
             bounded_health['notification_review_required'] = health_context['notification_review_required']
+        from .incident_session_policy import normalize_policy
+        bounded_health['incident_session_policy'] = normalize_policy(health_context.get('incident_session_policy'))
+        from .incident_skills import skill_policy
+        bounded_health['incident_skill_policy'] = skill_policy(health_context.get('incident_skill_policy'))
+        bounded_health['classifier_enabled'] = health_context.get('classifier_enabled') is True
+        from .source_context import context_for_delivery
+        bounded_health['source_context'] = context_for_delivery(health_context.get('source_context'))
         incident_model = str(health_context.get("incident_model") or "").strip()
         if incident_model:
             # The operator's selected route travels only inside the signed

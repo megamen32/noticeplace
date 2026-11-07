@@ -70,7 +70,9 @@ class GptAdminAgentJobTests(unittest.TestCase):
         due = self.center.claim_due_deliveries(now_epoch=10**12)
 
         self.assertTrue(created["agent_job_delivery_id"])
-        self.assertEqual(["gptadmin.agent:repair_100", "telegram.main"], sorted(item["channel"] for item in due))
+        self.assertEqual(["gptadmin.agent:repair_100"], sorted(item["channel"] for item in due))
+        self.assertFalse(any(item["channel"].startswith("telegram.") for item in due))
+        self.assertIsNone(created["initial_delivery_id"])
 
         repeated = self.center.create_event("allowed", "disk-event-1", self.event)
         self.assertTrue(repeated["idempotent"])
@@ -155,8 +157,11 @@ class GptAdminAgentJobTests(unittest.TestCase):
             {**base, "severity": "critical", "dedup_key": "health:incomplete", "correlation_id": ""},
         )
         self.assertIsNotNone(important["agent_job_delivery_id"])
-        self.assertIsNotNone(important["initial_delivery_id"])
+        self.assertIsNone(important["initial_delivery_id"])
         self.assertIsNone(incomplete["agent_job_delivery_id"])
+        due = center.claim_due_deliveries(now_epoch=10**12)
+        self.assertEqual(["gptadmin.agent:health-diagnosis"], [item["channel"] for item in due])
+        self.assertFalse(any(item["channel"].startswith("telegram.") for item in due))
 
     def test_crash_reopen_reclaims_same_delivery_key_and_same_hub_job(self) -> None:
         created = self.center.create_event("allowed", "crash-disk-event", self.event)
@@ -512,13 +517,13 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual(86_400_000, resolved["payload"]["elapsed_ms"])
         self.assertEqual(["trace-remediation-1", "hub-health-remediation-1", "probe:source-a"], resolved["payload"]["trace_refs"])
         resolved_delivery = center._connection.execute(
-            "SELECT status FROM deliveries WHERE delivery_key = ?",
+            "SELECT id FROM deliveries WHERE delivery_key = ?",
             (f"{created['incident_id']}:telegram.main:health.resolved",),
         ).fetchone()
-        self.assertIsNotNone(resolved_delivery)
-        self.assertEqual("queued", resolved_delivery["status"])
-        conclusion = next(d for d in center.claim_due_deliveries(now_epoch=10**12, channel_group="message") if d["delivery_key"].endswith(":health.resolved"))
-        self.assertEqual("resolved", center.delivery_payload(conclusion)["health_outcome"]["status"])
+        self.assertIsNone(resolved_delivery)
+        card = center.incident_card_payload(created["incident_id"])
+        self.assertEqual("resolved", card["health_outcome"]["status"])
+        self.assertFalse(center.claim_due_deliveries(now_epoch=10**12, channel_group="message"))
 
         mismatched = center.record_agent_job_result(
             created["incident_id"],
@@ -677,15 +682,15 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertFalse(result["resolved"])
         self.assertEqual("open", center.get_incident(created["incident_id"])["state"])
         self.assertIsNone(center.latest_health_event(created["incident_id"], "health.resolved"))
+        self.assertEqual("validate", result["progress"]["payload"]["step"])
+        self.assertEqual(["probe:degraded"], result["progress"]["payload"]["evidence_refs"])
+        self.assertIn("source remains degraded", result["reason"])
         outcome_delivery = center._connection.execute(
             "SELECT status, target_json FROM deliveries WHERE delivery_key = ?",
             (f"{created['incident_id']}:telegram.main:health.remediation_degraded:repair:progress-degraded",),
         ).fetchone()
-        self.assertIsNotNone(outcome_delivery)
-        self.assertEqual("queued", outcome_delivery["status"])
-        target = json.loads(outcome_delivery["target_json"])["health_outcome"]
-        self.assertEqual("repair", target["plan_id"])
-        self.assertEqual("degraded", target["observed_state"])
+        self.assertIsNone(outcome_delivery)
+        self.assertFalse(center.claim_due_deliveries(now_epoch=10**12, channel_group="message"))
 
     def test_completed_observation_with_unknown_state_is_accepted_but_stays_open(self) -> None:
         center = NotificationCenter(

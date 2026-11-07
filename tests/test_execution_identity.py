@@ -59,14 +59,15 @@ class ExecutionIdentityTests(unittest.TestCase):
         worker=DeliveryWorker(reopened,TelegramSender('fake','-100',action_codec=self.codec,center=reopened))
         with patch('notification_center.http_api.urllib.request.urlopen',side_effect=network):
             for delivery in worker.claim_due(limit=5,channel_group='message'):worker.deliver(delivery)
-            self.assertEqual(1,len(calls))
-            initial=calls[0][1];markup=json.loads(initial['reply_markup']);buttons=[b for row in markup['inline_keyboard'] for b in row]
-            self.assertIn('Исполнитель: OpenCode',initial['text']);self.assertIn(self.identity['model'],initial['text'])
-            self.assertIn(self.identity['cwd'],initial['text']);self.assertEqual('Сервис: Hermes',initial['text'].splitlines()[0])
-            self.assertNotIn('Уведомление · hermes',initial['text'])
-            self.assertNotIn('Инцидент принят',initial['text'])
-            self.assertNotIn('Проверка и исправление выполняются',initial['text'])
-            self.assertIn('Сессия сообщила о завершении работы',initial['text'])
+            self.assertEqual([],calls,'ordinary agent.done must not send an owner notification')
+            initial,initial_keyboard=render(reopened.incident_card_payload(created['incident_id']),self.codec)
+            buttons=[b for row in initial_keyboard['inline_keyboard'] for b in row]
+            self.assertIn('Исполнитель: OpenCode',initial);self.assertIn(self.identity['model'],initial)
+            self.assertIn(self.identity['cwd'],initial);self.assertEqual('Сервис: Hermes',initial.splitlines()[0])
+            self.assertNotIn('Уведомление · hermes',initial)
+            self.assertNotIn('Инцидент принят',initial)
+            self.assertNotIn('Проверка и исправление выполняются',initial)
+            self.assertIn('Сессия сообщила о завершении работы',initial)
             self.assertFalse(any(b.get('callback_data','').startswith('n:ai:') for b in buttons))
             self.assertTrue(any(b.get('url')==self.identity['session_url'] for b in buttons))
             self.assertFalse(any(b.get('text')=='✅ ИИ запущен' for b in buttons),'display metadata is not a launch receipt')
@@ -78,12 +79,11 @@ class ExecutionIdentityTests(unittest.TestCase):
             reopened.queue_incident_card_refresh(created['incident_id'],now=time.time()+16)
             with patch('notification_center.core.time.time',return_value=time.time()+17):
                 for delivery in worker.claim_due(limit=5,channel_group='message'):worker.deliver(delivery)
-        self.assertEqual(1,sum(method=='sendMessage' for method,_ in calls))
-        self.assertEqual(1,sum(method=='editMessageText' for method,_ in calls))
-        self.assertIn('Последнее проверенное состояние.',calls[-1][1]['text'])
-        self.assertTrue(all(data['message_id']=='42' for method,data in calls if method=='editMessageText'))
-        self.assertIn('Исполнитель: OpenCode',calls[-1][1]['text'])
-        self.assertTrue(any(b.get('url')==self.identity['session_url'] for row in json.loads(calls[-1][1]['reply_markup'])['inline_keyboard'] for b in row))
+            self.assertEqual([],calls,'quiet agent.done updates must not send or edit an owner card')
+            updated,updated_keyboard=render(reopened.incident_card_payload(created['incident_id']),self.codec)
+            self.assertIn('Последнее проверенное состояние.',updated)
+            self.assertIn('Исполнитель: OpenCode',updated)
+            self.assertTrue(any(b.get('url')==self.identity['session_url'] for row in updated_keyboard['inline_keyboard'] for b in row))
 
     def test_metadata_has_no_event_authority_and_rejects_invalid_identity(self):
         invalid=[None,[],{}, {**self.identity,'harness':'project-hermes'}, {**self.identity,'session_id':'bad\nID'},
