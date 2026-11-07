@@ -2779,6 +2779,18 @@ class NotificationCenter:
                 raise ValidationError("consumer policy has no enabled delivery stages")
         return initial_delivery_id
 
+    def _stale_alarm_seconds(self) -> float:
+        """How long an undelivered alarm card may wait before it is cancelled.
+
+        Retrying a days-old Telegram alarm starves fresh cards and trips rate
+        limits; the bound is operator-tunable via runtime settings.
+        """
+        try:
+            value = float(self.get_runtime_setting("telegram_stale_alarm_seconds", "86400"))
+        except (TypeError, ValueError):
+            value = 86400.0
+        return value if value > 0 else 86400.0
+
     def _quiet_hours_resume_at(self, consumer_id: str | None, channel: str, now_epoch: float) -> float | None:
         """Return the next allowed time for a per-consumer call delivery."""
         if not consumer_id or not channel.endswith(".call"):
@@ -2877,6 +2889,10 @@ class NotificationCenter:
         if channel_group not in channel_filters:
             raise ValidationError("unsupported delivery channel group")
         with self._lock, self._connection:
+            # Age in the database clock domain: python time may be mocked, the
+            # delivery rows are not.
+            db_now = float(self._connection.execute("SELECT strftime('%s','now')").fetchone()[0])
+            stale_before = db_now - self._stale_alarm_seconds()
             rows = self._connection.execute(
                 "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (? IS NULL OR d.id=?) AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.unmuted_at IS NULL AND (m.match_mode = 'prefix' AND (COALESCE(i.collapse_key,i.dedup_key) LIKE m.dedup_key || '%' ESCAPE '\\' OR i.dedup_key LIKE m.dedup_key || '%' ESCAPE '\\') OR m.match_mode != 'prefix' AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key))))) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
                 (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, delivery_id, delivery_id, limit),
@@ -2886,6 +2902,17 @@ class NotificationCenter:
                 quiet_resume = self._quiet_hours_resume_at(row["consumer_id"], str(row["channel"]), now)
                 if quiet_resume is not None and quiet_resume > now:
                     self._connection.execute("UPDATE deliveries SET due_at = ?, updated_at = ? WHERE id = ?", (quiet_resume, now, row["id"]))
+                    continue
+                if (str(row["channel"]) in {"telegram.main", "telegram.message"} or str(row["channel"]).startswith("telegram.consumer:")) \
+                        and float(row["created_at"]) < stale_before:
+                    # An alarm card older than the staleness bound carries stale
+                    # information; retrying it for days starves fresh cards and
+                    # trips Telegram rate limits (2026-11-07 queue stall).
+                    self._connection.execute(
+                        "UPDATE deliveries SET status = 'cancelled', last_error = 'Карточка устарела и не доставляется (старше суток)', updated_at = ? WHERE id = ?",
+                        (now, row["id"]))
+                    self._audit(str(row["incident_id"]), "delivery_denied", "policy",
+                                {"channel": row["channel"], "delivery_id": row["id"], "reason": "stale_alarm_card"})
                     continue
                 cursor = self._connection.execute("UPDATE deliveries SET status = 'claimed', claimed_at = ?, attempt = attempt + 1, updated_at = ? WHERE id = ? AND (status = 'queued' OR (status = 'claimed' AND claimed_at <= ?))", (now, now, row["id"], now - max(1, lease_seconds)))
                 if cursor.rowcount != 1:
