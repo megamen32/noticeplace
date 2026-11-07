@@ -22,7 +22,7 @@ cutover. SDK package and source verifier import must be installed before
 SDK import or source credential is absent. Never replay unknown sends.
 
 A loopback HTTP test uses the real NoticePlace API, source/executor scopes,
-SQLite fixture, installed SDK code and synthetic probes. It verifies one queued
+SQLite fixture, SDK source code and synthetic probes; an isolated wheel import is verified separately. It verifies one queued
 executor delivery, no owner-facing initial delivery, work-finished not closing,
 then fresh healthy source receipt closing. The executor completion is simulated;
 no real executor session, message or call was launched. Production integration,
@@ -58,3 +58,16 @@ install-pending: video-selfheal-producer and agent-herder. Notification-only,
 security notifications, QA and executor-only entries must not be promoted to
 health verifiers merely because they are in the registry. Each active adapter
 needs its owner, scope and live version verified before any migration.
+
+## S08 context seam for Lead
+
+The typed SDK currently sends the existing supported identity fields and
+`observed_at`; the existing event contract does not expose an agreed bounded
+source context object for impact, symptoms, last-good, diagnostics, permitted
+action, verifier reference and freshness. Agree a versioned allowlisted shape,
+apply server-side secret redaction and size limits, persist it, and pass an
+explicit `incomplete` state to the executor when required fields are absent.
+Do not treat producer-supplied diagnostics or callback locations as authority
+for commands, and do not claim the fields reach the executor merely because
+the v1 event JSON stores them. This requires the Lead-owned core/HTTP/executor
+seam; no competing context schema was inserted into the client.

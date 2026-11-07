@@ -561,7 +561,7 @@
       "source_exists": true,
       "source_marker_present": false,
       "installed_executor": "/usr/local/sbin/router-haproxy-watchdog",
-      "installed_readback": "watchdog b52942b0 and verifier e9a6be01 installed on server100; typed mode disabled",
+      "installed_readback": "watchdog b52942b0 and verifier 9afd7ed3 installed on server100; typed mode disabled",
       "source_check_method": "Fresh independent SSH service status plus HTTPS HEAD after three successful samples; exact episode identity and receipt readback",
       "migration_status": "installed_typed_disabled",
       "owner_leaf": "S04-2",
