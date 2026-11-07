@@ -80,13 +80,25 @@ class _FakeConsoleResponse:
 class TelegramInteractionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
-        self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"producer": {"project": "hermes", "max_severity": "critical"}})
+        self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {
+            "producer": {"project": "hermes", "max_severity": "critical"},
+            "emergency-producer": {"project": "hermes", "max_severity": "emergency"},
+        })
         self.created = self.center.create_event("producer", "create", {
             "schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident", "severity": "critical", "title": "Outage", "body": "details", "dedup_key": "telegram-controls",
         })
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def _emergency_incident(self, key: str) -> dict[str, object]:
+        created = self.center.create_event("emergency-producer", key, {
+            "schema": "notify.event.v1", "project": "hermes", "recipient": "me",
+            "kind": "incident", "severity": "emergency", "title": "Авария сервиса",
+            "body": "Требуется срочная проверка.", "dedup_key": key,
+        })
+        self.assertIsNotNone(created["initial_delivery_id"])
+        return created
 
     def test_signed_callback_acknowledges_once_and_rejects_a_tampered_action(self) -> None:
         codec = TelegramActionCodec("x" * 32)
@@ -157,6 +169,7 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertIsNone(rows[1]["last_error"])
 
     def test_manual_ai_marks_the_card_before_queueing_and_keeps_its_identity(self) -> None:
+        self.created = self._emergency_incident("manual-ai-card")
         codec = TelegramActionCodec("x" * 32)
         calls = []
         callback = {"id": "ai-card", "from": {"id": 42},
@@ -199,6 +212,7 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertLessEqual(len(edits[0]["text"].encode("utf-16-le")) // 2, 4096)
 
     def test_native_reply_is_attached_to_the_replied_incident_card(self) -> None:
+        self.created = self._emergency_incident("native-reply-card")
         self.center.complete_delivery(
             self.created["initial_delivery_id"],
             "sent",
@@ -230,9 +244,9 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertFalse(any(method == "sendMessage" for method, _ in calls), "incident replies stay on the original card")
 
     def _health_incident_with_selected_plan(self, dedup_key: str, key_prefix: str) -> dict[str, object]:
-        health = self.center.create_event("producer", f"create-{key_prefix}", {
+        health = self.center.create_event("emergency-producer", f"create-{key_prefix}", {
             "schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident",
-            "severity": "critical", "title": "Health outage", "body": "degraded", "dedup_key": dedup_key,
+            "severity": "emergency", "title": "Health outage", "body": "degraded", "dedup_key": dedup_key,
             "event_type": "health.degraded", "source_id": "source-a", "host_id": "host-a", "signal_type": "relay",
         })
         self.center.complete_delivery(
@@ -333,6 +347,16 @@ class TelegramInteractionTests(unittest.TestCase):
         self.assertFalse(any(method == "sendMessage" for method, _ in calls), "incident replies stay on the original card")
 
     def test_mute_button_suppresses_same_scope_and_old_card_restores_it(self) -> None:
+        self.assertIsNone(self.created["initial_delivery_id"])
+        self._assert_mute_roundtrip("critical")
+
+    def test_emergency_mute_restores_delivery_from_old_card(self) -> None:
+        self.created = self._emergency_incident("emergency-mute")
+        self._assert_mute_roundtrip("emergency")
+
+    def _assert_mute_roundtrip(self, severity: str) -> None:
+        token = "emergency-producer" if severity == "emergency" else "producer"
+        dedup_key = self.center.get_incident(self.created["incident_id"])["dedup_key"]
         codec = TelegramActionCodec("x" * 32)
         calls: list[tuple[str, dict[str, object]]] = []
         poller = TelegramInteractionPoller(
@@ -349,9 +373,10 @@ class TelegramInteractionTests(unittest.TestCase):
             "data": codec.encode("mute", self.created["incident_id"]), "message": card,
         })
         self.assertTrue(self.center.get_incident(self.created["incident_id"])["notifications_muted"])
-        muted = self.center.create_event("producer", "muted-repeat", {
+        self.assertTrue(self.center.incident_card_payload(self.created["incident_id"])["incident"]["notifications_muted"])
+        muted = self.center.create_event(token, "muted-repeat", {
             "schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident",
-            "severity": "critical", "title": "Still out", "body": "details", "dedup_key": "telegram-controls",
+            "severity": severity, "title": "Still out", "body": "details", "dedup_key": dedup_key,
         })
         self.assertTrue(muted["notifications_muted"])
         self.assertIsNone(muted["initial_delivery_id"])
@@ -367,15 +392,33 @@ class TelegramInteractionTests(unittest.TestCase):
             "SELECT status FROM deliveries WHERE incident_id = ? AND delivery_key LIKE ?",
             (self.created["incident_id"], "%:notifications-restored:%"),
         ).fetchone()
-        self.assertIsNotNone(restored_now)
-        self.assertEqual("queued", restored_now["status"])
+        if severity == "emergency":
+            self.assertIsNotNone(restored_now)
+            self.assertEqual("queued", restored_now["status"])
+        else:
+            self.assertIsNone(restored_now, "unmuting a quiet incident must not queue a notification")
+        payload = self.center.incident_card_payload(self.created["incident_id"])
+        self.assertFalse(payload["incident"]["notifications_muted"])
+        self.assertEqual(self.created["incident_id"], payload["incident"]["id"])
+        keyboard = telegram_inline_keyboard(codec, payload["incident"])
+        self.assertIn("Отключить такие уведомления", str(keyboard))
         self.center.resolve(self.created["incident_id"], "test")
-        restored = self.center.create_event("producer", "restored-event", {
+        restored = self.center.create_event(token, "restored-event", {
             "schema": "notify.event.v1", "project": "hermes", "recipient": "me", "kind": "incident",
-            "severity": "critical", "title": "Out again", "body": "details", "dedup_key": "telegram-controls",
+            "severity": severity, "title": "Out again", "body": "details", "dedup_key": dedup_key,
         })
         self.assertFalse(restored["notifications_muted"])
-        self.assertIsNotNone(restored["initial_delivery_id"])
+        self.assertNotEqual(self.created["incident_id"], restored["incident_id"])
+        if severity == "emergency":
+            self.assertIsNotNone(restored["initial_delivery_id"])
+        else:
+            self.assertIsNone(restored["initial_delivery_id"])
+            queued = self.center._connection.execute(
+                "SELECT COUNT(*) FROM deliveries WHERE incident_id IN (?, ?) AND channel LIKE 'telegram.%'",
+                (self.created["incident_id"], restored["incident_id"]),
+            ).fetchone()[0]
+            self.assertEqual(0, queued)
+        self.assertFalse(any(method == "sendMessage" for method, _ in calls))
 
     def test_allowed_regular_message_is_forwarded_to_universal_inbox_once(self) -> None:
         codec = TelegramActionCodec("x" * 32)
