@@ -1,10 +1,4 @@
-"""Owner delivery policy 2026-11-06 23:55.
-
-The owner receives only executor outcomes: the hourly «исполнитель
-справился» digest (executor.digest → «Уведомления») and the critical
-«исполнитель не смог запуститься» escalation. Detection facts stay
-internal — the incident and the executor launch happen, no owner card.
-"""
+"""Quiet repair policy: detection and success stay internal; route failure escalates."""
 from __future__ import annotations
 
 import json
@@ -71,7 +65,7 @@ class SuppressedDetectionTests(unittest.TestCase):
         self.assertEqual("notify", telegram_mode({"event_type": "executor.digest", "severity": "important"}))
         self.assertEqual("log", telegram_mode({"event_type": "incident", "severity": "important"}))
 
-    def test_launch_failure_escalates_as_critical_owner_incident(self) -> None:
+    def test_launch_failure_escalates_as_platform_emergency(self) -> None:
         with patch.dict("os.environ", ENV):
             created = self.center.create_event(self.intake, "probe-failed", _dosor_event())
         now = time.time()
@@ -83,14 +77,14 @@ class SuppressedDetectionTests(unittest.TestCase):
                 "SELECT * FROM deliveries WHERE id = ?", (created["agent_job_delivery_id"],)).fetchone()
             self.center.complete_delivery(row["id"], "failed", error="spawn refused: no worker capacity")
         escalation = self.center._connection.execute(
-            "SELECT id, severity, title, state FROM incidents WHERE dedup_key = ?",
-            (f"executor-launch-failed/{created['incident_id']}",)).fetchone()
+            "SELECT id, severity, title, state FROM incidents WHERE event_type = ?",
+            ("executor.launch_failed",)).fetchone()
         self.assertIsNotNone(escalation, "launch failure must reach the owner")
-        self.assertEqual("critical", escalation["severity"])
-        self.assertIn("не смог запуститься", escalation["title"])
+        self.assertEqual("emergency", escalation["severity"])
+        self.assertIn("не запускается автоматическое исправление", escalation["title"])
         self.assertEqual("notify", telegram_mode({"event_type": "executor.launch_failed", "severity": "critical"}))
 
-    def test_hourly_digest_collects_resolved_executor_work(self) -> None:
+    def test_hourly_digest_is_retired(self) -> None:
         with patch.dict("os.environ", ENV):
             created = self.center.create_event(self.intake, "probe-digest", _dosor_event(dedup_key="views-coverage/digest/1"))
         now = time.time()
@@ -100,11 +94,9 @@ class SuppressedDetectionTests(unittest.TestCase):
                 "UPDATE deliveries SET status = 'sent', updated_at = ? WHERE id = ?", (now - 120, created["agent_job_delivery_id"]))
             self.center._connection.execute("DELETE FROM runtime_settings WHERE key = 'executor_digest_last_at'")
         published = self.center.publish_executor_outcome_digest(now=now)
-        self.assertIsNotNone(published, "success digest published")
-        digest = self.center.get_incident(published)
-        self.assertEqual("executor.digest", digest["event_type"])
-        self.assertIn("справился", digest["title"])
-        # the window advanced: an immediate second run publishes nothing
+        self.assertIsNone(published)
+        self.assertEqual(0, self.center._connection.execute(
+            "SELECT COUNT(*) FROM incidents WHERE event_type='executor.digest'").fetchone()[0])
         self.assertIsNone(self.center.publish_executor_outcome_digest(now=now + 60))
 
 
