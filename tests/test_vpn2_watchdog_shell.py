@@ -280,6 +280,23 @@ esac
         self.assertEqual("1", self.state()["DOWN"])
         self.assertEqual(1, sum("api.telegram.org" in url for url in self.curl_urls()))
 
+    def test_http_401_uses_threshold_and_delivers_one_mock_outage(self) -> None:
+        """An auth failure follows normal hysteresis and deduplicated test delivery."""
+        for now in (1000, 1010):
+            result = self.run_cycle(now, FAKE_HEALTH_HTTP="401", FAKE_HEALTH_RC="1")
+            self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("0", self.state()["DOWN"])
+        self.assertEqual(0, sum("api.telegram.org" in url for url in self.curl_urls()))
+
+        result = self.run_cycle(1020, FAKE_HEALTH_HTTP="401", FAKE_HEALTH_RC="1")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("1", self.state()["DOWN"])
+        self.assertEqual("1", self.state()["ALERT_SENT"])
+        self.assertEqual(1, sum("api.telegram.org" in url for url in self.curl_urls()))
+        delivery = self.delivery_log.read_text(encoding="utf-8")
+        self.assertIn("Авария Notice Place:", delivery)
+        self.assertNotIn("NOTIFICATION CENTER", delivery)
+
     def test_storage_and_dispatcher_readiness_are_checked_independently(self) -> None:
         """A healthy identity cannot mask either missing readiness signal."""
         import json
