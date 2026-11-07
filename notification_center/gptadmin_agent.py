@@ -451,6 +451,22 @@ class GptAdminAgentJobAdapter:
             receipt["awaiting_human"] = True
             receipt["question_ref"] = _safe_health_ref(parsed_stdout.get("question_ref") or "", 128)
             receipt["question_reason"] = _safe_health_ref(parsed_stdout.get("question_reason") or "", 500)
+        classification = parsed_stdout.get('classification')
+        if isinstance(classification, dict):
+            confidence = classification.get('confidence')
+            if (classification.get('class') in ('log', 'repair', 'important', 'emergency')
+                    and type(confidence) in (int, float)
+                    and 0 <= confidence <= 1):
+                # Advisory metadata only; never copy admission or recovery flags.
+                receipt['classification'] = {
+                    'class': classification['class'], 'confidence': confidence,
+                    **{key: _safe_health_ref(classification[key], limit)
+                       for key, limit in (('reason', 400), ('status', 64), ('model', 128))
+                       if isinstance(classification.get(key), str)},
+                }
+                elapsed = classification.get('elapsed_ms')
+                if type(elapsed) is int and 0 <= elapsed <= 300000:
+                    receipt['classification']['elapsed_ms'] = elapsed
         for flag in ("observer_only", "awaiting_executor"):
             if parsed_stdout.get(flag) is True:
                 receipt[flag] = True

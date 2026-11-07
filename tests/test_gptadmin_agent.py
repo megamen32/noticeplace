@@ -385,6 +385,28 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("api-key=[redacted]", parsed["profile"])
         self.assertEqual(["secret=[redacted]"], parsed["trace_refs"])
 
+    def test_classifier_receipt_survives_shell_transport_as_bounded_metadata(self) -> None:
+        decision = {'class': 'repair', 'confidence': 0.91, 'reason': 'api-key:raw-secret',
+                    'status': 'classified', 'model': 'gemma4:latest', 'elapsed_ms': 1200,
+                    'notify_user': True, 'observed_state': 'healthy', 'session_id': 'forged'}
+        job = {'result': {'response': {'stdout': json.dumps(
+            {'session_id': 'real-session', 'classification': decision})}}}
+        receipt = GptAdminAgentJobAdapter._bounded_agent_receipt(job)
+        self.assertEqual('real-session', receipt['session_id'])
+        self.assertEqual({key: value for key, value in decision.items()
+                          if key in ('class', 'confidence', 'status', 'model', 'elapsed_ms')},
+                         {key: value for key, value in receipt['classification'].items() if key != 'reason'})
+        self.assertEqual('api-key=[redacted]', receipt['classification']['reason'])
+        self.assertNotIn('notify_user', receipt)
+        for invalid in (None, [], {'class': 'repair', 'confidence': True},
+                        {'class': 'repair', 'confidence': float('nan')},
+                        {'class': 'repair', 'confidence': 2},
+                        {'class': 'execute', 'confidence': 1}):
+            with self.subTest(invalid=invalid):
+                parsed = GptAdminAgentJobAdapter._bounded_agent_receipt(
+                    {'result': {'session_id': 'real-session', 'classification': invalid}})
+                self.assertNotIn('classification', parsed)
+
     def test_worker_delivers_only_the_configured_agent_job_adapter(self) -> None:
         created = self.center.create_event("allowed", "disk-event-3", self.event)
         due = self.center.claim_due_deliveries(now_epoch=10**12)

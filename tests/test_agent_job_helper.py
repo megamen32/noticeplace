@@ -128,6 +128,18 @@ class AgentJobHelperTests(unittest.TestCase):
                 agent_job_helper.require_herder_owner_running(profile, lambda *_a, **_k: _Response(payload))
         agent_job_helper.require_herder_owner_running(profile, lambda *_a, **_k: _Response(owner_open_payload()))
 
+    def test_owner_preflight_allows_observed_fleet_read_latency_without_retry(self) -> None:
+        calls = []
+        def runner(request, *, timeout):
+            calls.append(request.get_method())
+            # The real fleet read took 14.99s; a 10s client deadline rejects it.
+            if timeout < 15:
+                raise TimeoutError('fleet read still in progress')
+            return _Response(owner_open_payload())
+        agent_job_helper.require_herder_owner_running(
+            {'url': 'http://127.0.0.1:18787/api/sessions/new-or-resume'}, runner)
+        self.assertEqual(['GET'], calls)
+
     def test_project_launch_owner_stop_blocks_before_post(self) -> None:
         requests: list[object] = []
         def runner(request: object, **_kwargs: object) -> _Response:

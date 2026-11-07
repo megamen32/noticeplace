@@ -670,7 +670,9 @@ def require_herder_owner_running(profile: Mapping[str, str], runner: Any) -> Non
         method="GET",
     )
     try:
-        result = _read_json_request(request, runner, timeout=10)
+        # This endpoint reads the whole fleet; healthy reads have taken 15s.
+        # Allow that read to finish, but never retry admission or cache STOP.
+        result = _read_json_request(request, runner, timeout=30)
     except Exception as error:
         raise HerderOwnerStateBlocked("herder_owner_state_unknown", "owner state read failed") from error
 
