@@ -25,6 +25,7 @@ class Vpn2ShellWatchdogTests(unittest.TestCase):
         self.bin_dir.mkdir()
         self.curl_log = self.root / "curl.log"
         self.curl_arg_log = self.root / "curl-args.log"
+        self.delivery_log = self.root / "delivery.log"
         fake_curl = self.bin_dir / "curl"
         fake_curl.write_text(
             """#!/bin/sh
@@ -39,18 +40,20 @@ case "$url" in
   "$PRIMARY_HEALTH_URL")
     grep -F "header = \\"Authorization: Bearer $PRIMARY_HEALTH_TOKEN\\"" "$config" >/dev/null || exit 96
     output=$(sed -n 's/^output = "\\(.*\\)"$/\\1/p' "$config")
-    printf '%s' "${FAKE_HEALTH_BODY:-{\\"schema\\":\\"notify.health.v1\\",\\"service\\":\\"notification-center\\",\\"status\\":\\"ok\\",\\"storage_ready\\":true,\\"dispatcher_ready\\":true}}" >"$output"
+    printf '%s' "${FAKE_HEALTH_BODY:-{\\"schema\\":\\"notify.health.v1\\",\\"service\\":\\"notification-center\\",\\"status\\":\\"ok\\",\\"service_ready\\":true,\\"storage_ready\\":true,\\"dispatcher_ready\\":true}}" >"$output"
     printf '%s' "${FAKE_HEALTH_HTTP:-200}"
     exit "${FAKE_HEALTH_RC:-0}"
     ;;
   https://api.telegram.org/*)
     grep -F "data-urlencode = \\"chat_id=$TELEGRAM_CHAT_ID\\"" "$config" >/dev/null || exit 95
-    grep -F 'data-urlencode = "text=NOTIFICATION CENTER ' "$config" >/dev/null || exit 94
+    grep -F 'data-urlencode = "text=Авария Notice Place:' "$config" >/dev/null || grep -F 'data-urlencode = "text=Диагностика Notice Place:' "$config" >/dev/null || grep -F 'data-urlencode = "text=Notice Place восстановлен:' "$config" >/dev/null || grep -F 'data-urlencode = "text=Notice Place снова доступен:' "$config" >/dev/null || grep -F 'data-urlencode = "text=NOTIFICATION CENTER ' "$config" >/dev/null || exit 94
+    grep -F 'data-urlencode = "text=' "$config" >>"$FAKE_DELIVERY_LOG"
     exit "${FAKE_TELEGRAM_RC:-0}"
     ;;
   "$MATRIX_HOMESERVER"/*)
     grep -F "header = \\"Authorization: Bearer $MATRIX_ACCESS_TOKEN\\"" "$config" >/dev/null || exit 93
     grep -F '\\"msgtype\\":\\"m.text\\"' "$config" >/dev/null || exit 92
+    grep -F 'body\\":\\"' "$config" >>"$FAKE_DELIVERY_LOG"
     grep -F 'request = "PUT"' "$config" >/dev/null || exit 91
     exit "${FAKE_MATRIX_RC:-0}"
     ;;
@@ -86,6 +89,7 @@ esac
             "MATRIX_ACCESS_TOKEN": "test-matrix-token",
             "FAKE_CURL_LOG": str(self.curl_log),
             "FAKE_CURL_ARG_LOG": str(self.curl_arg_log),
+            "FAKE_DELIVERY_LOG": str(self.delivery_log),
             **overrides,
         }
         return subprocess.run(
@@ -129,6 +133,9 @@ esac
         self.assertEqual(0, sum("matrix.example.test" in url for url in urls))
         self.assertEqual("1", self.state()["DOWN"])
         self.assertEqual("1", self.state()["ALERT_SENT"])
+        delivery = self.delivery_log.read_text(encoding="utf-8")
+        self.assertIn("Авария Notice Place:", delivery)
+        self.assertNotIn("NOTIFICATION CENTER DOWN", delivery)
 
     def test_transport_failover_and_persisted_cooldown(self) -> None:
         """Fall through to Matrix, persist total failure, and retry only after cooldown."""
@@ -141,6 +148,9 @@ esac
         )
         self.assertEqual(0, first.returncode, first.stderr)
         self.assertEqual("DOWN", self.state()["PENDING_KIND"])
+        delivery = self.delivery_log.read_text(encoding="utf-8")
+        self.assertIn("Авария Notice Place:", delivery)
+        self.assertNotIn("NOTIFICATION CENTER", delivery)
 
         blocked = self.run_cycle(
             1059,
@@ -184,6 +194,10 @@ esac
         self.assertEqual("0", self.state()["DOWN"])
         self.assertEqual("", self.state()["PENDING_KIND"])
         self.assertGreaterEqual(sum("api.telegram.org" in url for url in self.curl_urls()), 3)
+        delivery = self.delivery_log.read_text(encoding="utf-8")
+        self.assertIn("Авария Notice Place:", delivery)
+        self.assertIn("Notice Place восстановлен:", delivery)
+        self.assertNotIn("NOTIFICATION CENTER", delivery)
 
     def test_state_is_private_and_never_contains_transport_secrets(self) -> None:
         """Keep credentials only in the environment and write state mode 0600."""
@@ -260,10 +274,57 @@ esac
         result = self.run_cycle(
             1000,
             FAIL_THRESHOLD="1",
-            FAKE_HEALTH_BODY='{"schema":"notify.health.v1","service":"other","status":"ok","storage_ready":true,"dispatcher_ready":true}',
+            FAKE_HEALTH_BODY='{"schema":"notify.health.v1","service":"other","status":"ok","service_ready":true,"storage_ready":true,"dispatcher_ready":true}',
         )
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("1", self.state()["DOWN"])
+        self.assertEqual(1, sum("api.telegram.org" in url for url in self.curl_urls()))
+
+    def test_storage_and_dispatcher_readiness_are_checked_independently(self) -> None:
+        """A healthy identity cannot mask either missing readiness signal."""
+        import json
+
+        for field in ("storage_ready", "dispatcher_ready"):
+            with self.subTest(field=field):
+                (self.root / "state").unlink(missing_ok=True)
+                self.curl_log.unlink(missing_ok=True)
+                self.curl_arg_log.unlink(missing_ok=True)
+                self.delivery_log.unlink(missing_ok=True)
+                body = {
+                    "schema": "notify.health.v1",
+                    "service": "notification-center",
+                    "status": "ok",
+                    "service_ready": True,
+                    "storage_ready": True,
+                    "dispatcher_ready": True,
+                }
+                body[field] = False
+                result = self.run_cycle(
+                    1000,
+                    FAKE_HEALTH_BODY=json.dumps(body),
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("1", self.state()["FAILURE_COUNT"])
+                self.assertEqual("0", self.state()["DOWN"])
+                self.assertEqual([], [url for url in self.curl_urls() if "notify.example.test" not in url and "api.telegram.org" not in url and "matrix.example.test" not in url])
+
+    def test_service_ready_degraded_status_is_reported_once_without_down(self) -> None:
+        """Historical uncertainty is diagnostic, not service downtime or repeat spam."""
+        body = '{"schema":"notify.health.v1","service":"notification-center","status":"degraded","service_ready":true,"storage_ready":true,"dispatcher_ready":true,"queued":0,"sending":9,"uncertain":1171,"reconciliation_required":null,"reconciliation_status":"not_evaluated"}'
+        for now in (1000, 1010, 1020):
+            result = self.run_cycle(now, FAKE_HEALTH_BODY=body)
+            self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("0", self.state()["DOWN"])
+        self.assertEqual("0", self.state()["FAILURE_COUNT"])
+        self.assertEqual("1", self.state()["DEGRADED_SENT"])
+        self.assertEqual(1, sum("api.telegram.org" in url for url in self.curl_urls()))
+        delivery = self.delivery_log.read_text(encoding="utf-8")
+        self.assertIn("Диагностика Notice Place:", delivery)
+        self.assertNotIn("Авария Notice Place:", delivery)
+        self.assertNotIn("NOTIFICATION CENTER", delivery)
+        recovered = self.run_cycle(1030)
+        self.assertEqual(0, recovered.returncode, recovered.stderr)
+        self.assertEqual("0", self.state()["DEGRADED_SENT"])
         self.assertEqual(1, sum("api.telegram.org" in url for url in self.curl_urls()))
 
     def test_check_config_rejects_missing_selected_channel_secret(self) -> None:
