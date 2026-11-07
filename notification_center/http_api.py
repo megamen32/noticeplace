@@ -1434,11 +1434,15 @@ class DeliveryWorker:
                         claimed_at=delivery.get('claimed_at'),attempt=delivery.get('attempt'),result=result)
                     return
                 if result["answered"]:
+                    self._center.complete_delivery(
+                        delivery["id"], "sent",
+                        claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"), result=result,
+                    )
                     self._center.acknowledge_if_active(str(delivery["incident_id"]), str(result["actor"]))
                 else:
                     self._center.complete_delivery(
                         delivery["id"], "failed", "Matrix call was not answered",
-                        claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                        claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"), result=result,
                     )
                     return
             elif delivery["channel"] == "android.telegram.call":
