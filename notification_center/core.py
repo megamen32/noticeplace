@@ -5294,6 +5294,10 @@ class NotificationCenter:
         from .incident_lifecycle import due_checks
         return due_checks(self, token, project, source_id, limit)
 
+    def source_checks_page(self, token: str, project: str, source_id: str, *, limit=20, cursor=None, wait_seconds=0):
+        from .incident_lifecycle import due_checks_page
+        return due_checks_page(self, token, project, source_id, limit=limit, cursor=cursor, wait_seconds=wait_seconds)
+
     def record_source_check(self, token: str, incident_id: str, key: str, body: Mapping[str, Any]) -> dict[str, Any]:
         from .incident_lifecycle import check
         return check(self, token, incident_id, key, body)

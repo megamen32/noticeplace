@@ -31,6 +31,25 @@ class PaginationTests(unittest.TestCase):
         with self.assertRaises((ValueError,ValidationError)): lifecycle.due_checks_page(self.center,'other','test','src',cursor=page['next_cursor'])
         with patch.object(lifecycle.time,'time',return_value=page['cursor_expires_at']+1):
             with self.assertRaises((ValueError,ValidationError)): lifecycle.due_checks_page(self.center,'source','test','src',cursor=page['next_cursor'])
+
+    def test_http_endpoint_passes_pagination_and_rejects_bad_limits(self):
+        import json, threading, urllib.request, urllib.parse, urllib.error
+        from http.server import ThreadingHTTPServer
+        from notification_center.http_api import build_handler
+        server=ThreadingHTTPServer(('127.0.0.1',0),build_handler(self.center,'fixture-health',producer_only=True))
+        worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
+        self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
+        def get(**extra):
+            query=urllib.parse.urlencode({'project':'test','source_id':'src',**extra})
+            req=urllib.request.Request(f'http://127.0.0.1:{server.server_port}/v1/verification-requests?'+query,headers={'Authorization':'Bearer source'})
+            with urllib.request.urlopen(req,timeout=5) as response:return json.load(response)
+        first=get(limit=20)
+        self.assertTrue(first['next_cursor'])
+        second=get(limit=20,cursor=first['next_cursor'])
+        self.assertEqual(1,len(second['requests']))
+        for value in ('0','101','1.5'):
+            with self.assertRaises(urllib.error.HTTPError) as caught:get(limit=value)
+            self.assertEqual(400,caught.exception.code)
     def test_wait_releases_center_lock(self):
         import threading
         self.center._connection.execute("UPDATE incident_lifecycle SET verification_state='healthy'")

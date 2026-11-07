@@ -2767,8 +2767,15 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
             if parsed_path.path == "/v1/verification-requests":
                 try:
                     query = urllib.parse.parse_qs(parsed_path.query)
-                    checks = center.due_source_checks(_bearer(self), str(query.get('project', [''])[0]), str(query.get('source_id', [''])[0]))
-                    self._reply(HTTPStatus.OK, {"requests": checks})
+                    try:
+                        limit = int(query.get('limit', ['20'])[0])
+                        wait_seconds = float(query.get('wait_seconds', ['0'])[0])
+                    except (ValueError, TypeError):
+                        raise ValidationError('invalid verification page limit or wait') from None
+                    page = center.source_checks_page(_bearer(self), str(query.get('project', [''])[0]),
+                        str(query.get('source_id', [''])[0]), limit=limit,
+                        cursor=query.get('cursor', [None])[0], wait_seconds=wait_seconds)
+                    self._reply(HTTPStatus.OK, page)
                 except AuthorizationError as error:
                     self._reply(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
                 except ValidationError as error:
