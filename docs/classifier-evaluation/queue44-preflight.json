@@ -1,0 +1,11 @@
+{
+  "at": "2026-11-08T16:03:26.295895+00:00",
+  "host": "server-44",
+  "gpu_csv": "NVIDIA GeForce RTX 3080 Ti, 12288 MiB, 6777 MiB, 5135 MiB",
+  "models": [
+    {
+      "name": "gemma4:latest",
+      "digest": "c6eb396dbd5992bbe3f5cdb947e8bbc0ee413d7c17e2beaae69f5d569cf982eb"
+    }
+  ]
+}

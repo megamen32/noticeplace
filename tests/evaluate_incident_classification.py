@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -92,7 +94,13 @@ def write_atomic(path: Path, payload: dict) -> None:
     temporary.replace(path)
 
 
-def evaluate(output_path: Path) -> int:
+def deterministic_baseline(event: dict) -> dict:
+    """Existing no-model safety policy: producer emergency, otherwise repair."""
+    result = normalize_decision(event, {})
+    return {"class": result["class"], "policy": "producer-emergency-else-repair"}
+
+
+def evaluate(output_path: Path, split: str = "all") -> int:
     if output_path.exists():
         raise SystemExit(f"Refusing to overwrite prior evaluation receipt: {output_path}")
     fixture = json.loads(FIXTURE.read_text())
@@ -107,14 +115,28 @@ def evaluate(output_path: Path) -> int:
         if case["expected"]["class"] not in CLASSES or type(case["expected"]["needs_human"]) is not bool:
             raise SystemExit(f"Invalid expected label: {case['id']}")
 
+    # Validate the full frozen corpus and floors before selecting the split.
     floors = guard_checks(cases)
+    if split not in {"all", "train", "holdout"}:
+        raise ValueError(f"Unknown split: {split}")
+    cases = [case for case in cases if split == "all" or case["split"] == split]
+    if not cases:
+        raise ValueError(f"Empty split: {split}")
+    source_paths = ["tests/evaluate_incident_classification.py",
+                    "tests/fixtures/incident-classification.json",
+                    "notification_center/incident_classifier.py",
+                    "notification_center/health_workflow.py",
+                    "notification_center/source_context.py"]
     receipt = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "split": split,
+        "source_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "source_sha256": {path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in source_paths},
         "started_at": datetime.now(timezone.utc).isoformat(),
         "model": MODEL,
         "expected_digest": DIGEST,
         "prompt_source": "notification_center.incident_classifier.PROMPT",
-        "prompt_sha256": __import__("hashlib").sha256(PROMPT.encode()).hexdigest(),
+        "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
         "decision_schema": {"required": ["class", "confidence", "reason"], "additional_properties": False},
         "parameters_source": "notification_center.incident_classifier.classify",
         "transport": "existing server-44 SSH -> loopback:11437; module digest check",
@@ -131,6 +153,10 @@ def evaluate(output_path: Path) -> int:
     stop_inference = False
     for case in cases:
         event = event_for(case)
+        baseline_started = time.perf_counter_ns()
+        baseline = deterministic_baseline(event)
+        baseline["elapsed_ns"] = time.perf_counter_ns() - baseline_started
+        baseline["class_match"] = baseline["class"] == case["expected"]["class"]
         transport_receipt: dict = {"attempted": False}
 
         def capture_default_transport(payload: dict) -> dict:
@@ -181,6 +207,7 @@ def evaluate(output_path: Path) -> int:
             "transport_receipt": transport_receipt,
             "class_match": normalized_class == case["expected"]["class"],
             "needs_human_model_score": None,
+            "deterministic_baseline": baseline,
         }
         receipt["cases"].append(row)
         receipt["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -194,6 +221,8 @@ def evaluate(output_path: Path) -> int:
         label: {
             "total": sum(r["expected"]["class"] == label for r in receipt["cases"]),
             "normalized_correct": sum(r["expected"]["class"] == label and r["normalized"]["class"] == label for r in receipt["cases"]),
+            "baseline_correct": sum(r["expected"]["class"] == label and r["deterministic_baseline"]["class"] == label for r in receipt["cases"]),
+            "raw_correct": sum(r["expected"]["class"] == label and (r.get("raw_decision") or {}).get("class") == label for r in receipt["cases"]),
             "raw_scored": sum(r["expected"]["class"] == label and r.get("raw_decision") is not None for r in receipt["cases"]),
         }
         for label in CLASSES
@@ -215,18 +244,27 @@ def evaluate(output_path: Path) -> int:
         "latency_max_ms": max(latencies) if latencies else None,
         "heldout_matches": sum(r["class_match"] for r in receipt["cases"] if r["split"] == "holdout"),
         "heldout_total": sum(r["split"] == "holdout" for r in receipt["cases"]),
+        "baseline_class_matches": sum(r["deterministic_baseline"]["class_match"] for r in receipt["cases"]),
+        "baseline_class_accuracy": sum(r["deterministic_baseline"]["class_match"] for r in receipt["cases"]) / len(cases),
+        "baseline_missed_emergency": sum(r["expected"]["class"] == "emergency" and r["deterministic_baseline"]["class"] != "emergency" for r in receipt["cases"]),
+        "baseline_latencies_ns": [r["deterministic_baseline"]["elapsed_ns"] for r in receipt["cases"]],
     }
+    receipt["source_unchanged_during_run"] = all(
+        hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest
+        for path, digest in receipt["source_sha256"].items()
+    )
     receipt["completed_at"] = datetime.now(timezone.utc).isoformat()
     write_atomic(output_path, receipt)
     print(json.dumps(receipt["summary"], ensure_ascii=False, sort_keys=True))
-    return 0 if not receipt["stopped_after_unknown"] and matched == len(cases) else 2
+    return 0 if receipt["source_unchanged_during_run"] and not receipt["stopped_after_unknown"] and matched == len(cases) else 2
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--split", choices=("all", "train", "holdout"), default="all")
     args = parser.parse_args()
-    return evaluate(args.output)
+    return evaluate(args.output, args.split)
 
 
 if __name__ == "__main__":

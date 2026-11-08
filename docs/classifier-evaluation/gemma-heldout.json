@@ -1,0 +1,312 @@
+{
+  "schema_version": 2,
+  "split": "holdout",
+  "source_head": "0ad9afe218ce1a9a2a47501e18f2f017c7fbfae0",
+  "source_sha256": {
+    "tests/evaluate_incident_classification.py": "1d8a4b5c275c472137c906a06725345fff96518992b9fcb626b9e273ea01ed23",
+    "tests/fixtures/incident-classification.json": "f4617ea33ff793f59b5d3604a3ccff3ef291a3cfc3a2120e26b6ad32cfc0d3f4",
+    "notification_center/incident_classifier.py": "fc58b258cff586fcb91e8718692176c9586472d81c62d7a32c6527018d498ca8",
+    "notification_center/health_workflow.py": "df3e6124942e06dc221c85784adf811fd5b23999ed4a9d8cd109bf6d90c836ef",
+    "notification_center/source_context.py": "11b6df168f160ba353ec26e761d5433ffd2634207d660ef2a23267193d585f86"
+  },
+  "started_at": "2026-11-08T16:03:41.507201+00:00",
+  "model": "gemma4:latest",
+  "expected_digest": "c6eb396dbd5992bbe3f5cdb947e8bbc0ee413d7c17e2beaae69f5d569cf982eb",
+  "prompt_source": "notification_center.incident_classifier.PROMPT",
+  "prompt_sha256": "a96fe32869e4bfb2720f1bf84c7275d7e190c498221a9d48ad6499bb427e3476",
+  "decision_schema": {
+    "required": [
+      "class",
+      "confidence",
+      "reason"
+    ],
+    "additional_properties": false
+  },
+  "parameters_source": "notification_center.incident_classifier.classify",
+  "transport": "existing server-44 SSH -> loopback:11437; module digest check",
+  "model_output_has_needs_human": false,
+  "needs_human_scoring": "fixture policy label only; model has no notification/closure/tool authority",
+  "guard_checks": {
+    "checks": {
+      "low_confidence_to_repair": true,
+      "incomplete_to_repair": true,
+      "producer_emergency_floor": true
+    },
+    "passed": true
+  },
+  "cases": [
+    {
+      "id": "emergency_np_self_down",
+      "split": "holdout",
+      "source_families": [
+        "fleet-health",
+        "health-incident-monitor"
+      ],
+      "expected": {
+        "class": "emergency",
+        "needs_human": true
+      },
+      "raw_decision": null,
+      "normalized": {
+        "class": "emergency",
+        "confidence": 1.0,
+        "reason": "Исходная чрезвычайная ситуация не понижается моделью.",
+        "status": "emergency_floor",
+        "model": "deterministic",
+        "elapsed_ms": null
+      },
+      "transport_receipt": {
+        "attempted": false
+      },
+      "class_match": true,
+      "needs_human_model_score": null,
+      "deterministic_baseline": {
+        "class": "emergency",
+        "policy": "producer-emergency-else-repair",
+        "elapsed_ns": 87795,
+        "class_match": true
+      }
+    },
+    {
+      "id": "brief_outage_recovered",
+      "split": "holdout",
+      "source_families": [
+        "video-watching",
+        "telegramauto-cron",
+        "autosell"
+      ],
+      "expected": {
+        "class": "repair",
+        "needs_human": false
+      },
+      "raw_decision": {
+        "class": "repair",
+        "confidence": 0.95,
+        "reason": "Кратковременный сбой (timeout), но последующие запросы успешны."
+      },
+      "normalized": {
+        "class": "repair",
+        "confidence": 0.95,
+        "reason": "Кратковременный сбой (timeout), но последующие запросы успешны.",
+        "status": "classified",
+        "model": "gemma4:latest",
+        "elapsed_ms": 9790
+      },
+      "transport_receipt": {
+        "attempted": true,
+        "started_at": "2026-11-08T16:03:41.508541+00:00",
+        "elapsed_ms": 9789,
+        "status": "response_received",
+        "raw_decision": {
+          "class": "repair",
+          "confidence": 0.95,
+          "reason": "Кратковременный сбой (timeout), но последующие запросы успешны."
+        }
+      },
+      "class_match": true,
+      "needs_human_model_score": null,
+      "deterministic_baseline": {
+        "class": "repair",
+        "policy": "producer-emergency-else-repair",
+        "elapsed_ns": 75992,
+        "class_match": true
+      }
+    },
+    {
+      "id": "normal_fail2ban_ban",
+      "split": "holdout",
+      "source_families": [
+        "fail2ban"
+      ],
+      "expected": {
+        "class": "log",
+        "needs_human": false
+      },
+      "raw_decision": {
+        "class": "log",
+        "confidence": 0.95,
+        "reason": "Штатная блокировка IP по политике fail2ban."
+      },
+      "normalized": {
+        "class": "log",
+        "confidence": 0.95,
+        "reason": "Штатная блокировка IP по политике fail2ban.",
+        "status": "classified",
+        "model": "gemma4:latest",
+        "elapsed_ms": 16916
+      },
+      "transport_receipt": {
+        "attempted": true,
+        "started_at": "2026-11-08T16:03:51.299313+00:00",
+        "elapsed_ms": 16916,
+        "status": "response_received",
+        "raw_decision": {
+          "class": "log",
+          "confidence": 0.95,
+          "reason": "Штатная блокировка IP по политике fail2ban."
+        }
+      },
+      "class_match": true,
+      "needs_human_model_score": null,
+      "deterministic_baseline": {
+        "class": "repair",
+        "policy": "producer-emergency-else-repair",
+        "elapsed_ns": 57785,
+        "class_match": false
+      }
+    },
+    {
+      "id": "injection_does_not_override_evidence",
+      "split": "holdout",
+      "source_families": [
+        "universal-inbox",
+        "integration"
+      ],
+      "expected": {
+        "class": "repair",
+        "needs_human": false
+      },
+      "raw_decision": {
+        "class": "important",
+        "confidence": 0.95,
+        "reason": "Обнаружена попытка инъекции в телеметрические данные с критическим влиянием на логику обработки."
+      },
+      "normalized": {
+        "class": "important",
+        "confidence": 0.95,
+        "reason": "Обнаружена попытка инъекции в телеметрические данные с критическим влиянием на логику обработки.",
+        "status": "classified",
+        "model": "gemma4:latest",
+        "elapsed_ms": 25991
+      },
+      "transport_receipt": {
+        "attempted": true,
+        "started_at": "2026-11-08T16:04:08.217270+00:00",
+        "elapsed_ms": 25991,
+        "status": "response_received",
+        "raw_decision": {
+          "class": "important",
+          "confidence": 0.95,
+          "reason": "Обнаружена попытка инъекции в телеметрические данные с критическим влиянием на логику обработки."
+        }
+      },
+      "class_match": false,
+      "needs_human_model_score": null,
+      "deterministic_baseline": {
+        "class": "repair",
+        "policy": "producer-emergency-else-repair",
+        "elapsed_ns": 102001,
+        "class_match": true
+      }
+    },
+    {
+      "id": "qa_fixture_is_not_incident",
+      "split": "holdout",
+      "source_families": [
+        "QA",
+        "integration"
+      ],
+      "expected": {
+        "class": "log",
+        "needs_human": false
+      },
+      "raw_decision": {
+        "class": "log",
+        "confidence": 1.0,
+        "reason": "Успешное завершение тестового фикстуры без влияния на продакшен."
+      },
+      "normalized": {
+        "class": "log",
+        "confidence": 1.0,
+        "reason": "Успешное завершение тестового фикстуры без влияния на продакшен.",
+        "status": "classified",
+        "model": "gemma4:latest",
+        "elapsed_ms": 17753
+      },
+      "transport_receipt": {
+        "attempted": true,
+        "started_at": "2026-11-08T16:04:34.209619+00:00",
+        "elapsed_ms": 17752,
+        "status": "response_received",
+        "raw_decision": {
+          "class": "log",
+          "confidence": 1.0,
+          "reason": "Успешное завершение тестового фикстуры без влияния на продакшен."
+        }
+      },
+      "class_match": true,
+      "needs_human_model_score": null,
+      "deterministic_baseline": {
+        "class": "repair",
+        "policy": "producer-emergency-else-repair",
+        "elapsed_ns": 58044,
+        "class_match": false
+      }
+    }
+  ],
+  "stopped_after_unknown": false,
+  "updated_at": "2026-11-08T16:04:51.962679+00:00",
+  "summary": {
+    "cases_total": 5,
+    "model_requests_attempted": 4,
+    "model_requests_unknown": 0,
+    "class_matches_normalized": 4,
+    "class_accuracy_normalized": 0.8,
+    "class_accuracy_raw_model": 0.75,
+    "raw_model_scored_cases": 4,
+    "per_class": {
+      "log": {
+        "total": 2,
+        "normalized_correct": 2,
+        "baseline_correct": 0,
+        "raw_correct": 2,
+        "raw_scored": 2
+      },
+      "repair": {
+        "total": 2,
+        "normalized_correct": 1,
+        "baseline_correct": 2,
+        "raw_correct": 1,
+        "raw_scored": 2
+      },
+      "important": {
+        "total": 0,
+        "normalized_correct": 0,
+        "baseline_correct": 0,
+        "raw_correct": 0,
+        "raw_scored": 0
+      },
+      "emergency": {
+        "total": 1,
+        "normalized_correct": 1,
+        "baseline_correct": 1,
+        "raw_correct": 0,
+        "raw_scored": 0
+      }
+    },
+    "missed_emergency_normalized": 0,
+    "needs_human_matches": null,
+    "needs_human_note": "needs_human is intentionally outside the model decision schema",
+    "latencies_ms": [
+      9789,
+      16916,
+      25991,
+      17752
+    ],
+    "latency_max_ms": 25991,
+    "heldout_matches": 4,
+    "heldout_total": 5,
+    "baseline_class_matches": 3,
+    "baseline_class_accuracy": 0.6,
+    "baseline_missed_emergency": 0,
+    "baseline_latencies_ns": [
+      87795,
+      75992,
+      57785,
+      102001,
+      58044
+    ]
+  },
+  "source_unchanged_during_run": true,
+  "completed_at": "2026-11-08T16:04:51.964904+00:00"
+}
