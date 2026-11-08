@@ -356,7 +356,7 @@ def view(center, incident_id):
               JOIN incident_lifecycle l ON l.incident_id=i.id WHERE i.id=?''', (authority['incident_id'],)).fetchone()
             # A healthy sibling may expose the still-open source authority, but
             # closed origins and a newer attempt never re-authorize old work.
-            if origin and origin['state'] != 'resolved' and origin['completion_id'] == completion_id:
+            if origin and origin['state'] not in ('resolved', 'discarded') and origin['completion_id'] == completion_id:
                 continuation = completion['continuation_json']
     receipt = result.pop('last_check_receipt_json')
     if receipt:
@@ -435,8 +435,8 @@ def finish(center, token, incident_id, key, body):
             if not key_row:
                 center._connection.execute('INSERT INTO incident_finish_keys VALUES (?,?,?,?)',(key,incident_id,body['attempt_id'],encoded))
             return json.loads(previous['result_json'])
-        if center.get_incident(incident_id)['state']=='resolved':
-            raise ValidationError('incident is already resolved')
+        if center.get_incident(incident_id)['state'] in ('resolved', 'discarded'):
+            raise ValidationError('incident is terminal')
         bound = center.latest_health_agent_session(incident_id)
         if bound and (bound.get('session_id') != body['session_id'] or bound.get('harness') != body['harness']):
             raise ValidationError('completion must match the incident native session')
@@ -450,7 +450,7 @@ def finish(center, token, incident_id, key, body):
         # session must not acquire a fabricated executor attempt. Source authority
         # is never copied; every admitted episode keeps its original principal.
         peers = center._connection.execute('''SELECT l.* FROM incident_lifecycle l
-          JOIN incidents i ON i.id=l.incident_id WHERE l.group_key=? AND i.state!='resolved' ''', (row['group_key'],)).fetchall()
+          JOIN incidents i ON i.id=l.incident_id WHERE l.group_key=? AND i.state NOT IN ('resolved','discarded') ''', (row['group_key'],)).fetchall()
         eligible = [row]
         for peer in peers:
             if peer['incident_id'] == incident_id:
@@ -546,7 +546,7 @@ def due_checks_page(center, token, project, source_id, limit=20, cursor=None, wa
                 params.extend(verification_consumer_ids)
             sql = ("SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id "
                    "WHERE i.project=? AND l.source_id=? AND (" + source_identity + ") "
-                   "AND i.state!='resolved' AND l.verification_state IN ('due','unknown','degraded') "
+                   "AND i.state NOT IN ('resolved','discarded') AND l.verification_state IN ('due','unknown','degraded') "
                    "AND (l.executor_principal IS NULL OR l.executor_principal!=?) "
                    "AND l.verification_due<=?")
             params.extend([authenticated, time.time()])
@@ -600,6 +600,8 @@ def check(center, token, incident_id, key, body):
                 if previous['request_id']!=body.get('request_id') or previous['payload_json']!=encoded:
                     raise IdempotencyConflict('check receipt key already bound')
                 return json.loads(previous['result_json'])
+            if center.get_incident(incident_id)['state'] == 'discarded':
+                raise ValidationError('incident is terminal')
             if row['request_id']!=body.get('request_id') or row['generation']!=body.get('generation'):
                 raise ValidationError('stale verification request or generation')
             if row['verification_state'] not in ('due','unknown','degraded'):

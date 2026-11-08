@@ -513,10 +513,12 @@ class NotificationCenter:
                     self._connection.execute(f"ALTER TABLE consumer_policy_stages ADD COLUMN {column} {definition}")
             self._connection.execute("DROP INDEX IF EXISTS incidents_open_dedup")
             self._connection.execute("DROP INDEX IF EXISTS incidents_open_dedup_scope")
+            self._connection.execute("CREATE TABLE IF NOT EXISTS incident_discard_tombstones (incident_id TEXT PRIMARY KEY, project TEXT NOT NULL, recipient TEXT NOT NULL, dedup_key TEXT NOT NULL, correlation_id TEXT NOT NULL, revision TEXT NOT NULL, actor TEXT NOT NULL, created_at REAL NOT NULL)")
+            self._connection.execute("CREATE INDEX IF NOT EXISTS incident_discard_episode ON incident_discard_tombstones(project,recipient,dedup_key,correlation_id)")
             self._connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS incidents_open_dedup_scope "
                 "ON incidents(project, recipient, IFNULL(consumer_id, ''), dedup_key, IFNULL(correlation_id, '')) "
-                "WHERE state != 'resolved'"
+                "WHERE state NOT IN ('resolved','discarded')"
             )
             self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS events_incident_type_created "
@@ -2292,6 +2294,10 @@ class NotificationCenter:
                 previous_incident = self.get_incident(previous["incident_id"])
                 return {"event_id": previous["event_id"], "incident_id": previous["incident_id"], "state": previous_incident["state"], "deduplicated": False, "idempotent": True, "initial_delivery_id": initial["id"] if initial else None, "agent_job_delivery_id": agent_delivery["id"] if agent_delivery else None, "notifications_muted": bool(previous_incident.get("notifications_muted"))}
             project, recipient, dedup_key = str(event["project"]), str(event["recipient"]), str(event["dedup_key"])
+            if correlation_id and self._connection.execute(
+                    'SELECT 1 FROM incident_discard_tombstones WHERE project=? AND recipient=? AND dedup_key=? AND correlation_id=? LIMIT 1',
+                    (project, recipient, dedup_key, correlation_id)).fetchone():
+                raise ValidationError('historical episode was discarded')
             parent = None
             if parent_incident_id:
                 parent = self._connection.execute("SELECT id, project, recipient FROM incidents WHERE id = ?", (parent_incident_id,)).fetchone()
@@ -2311,13 +2317,13 @@ class NotificationCenter:
                 existing = self._connection.execute(
                     "SELECT id FROM incidents WHERE project = ? AND recipient = ? "
                     "AND IFNULL(consumer_id, '') = IFNULL(?, '') AND dedup_key = ? "
-                    "AND correlation_id = ? AND state != 'resolved'",
+                    "AND correlation_id = ? AND state NOT IN ('resolved','discarded')",
                     (project, recipient, consumer_id, dedup_key, correlation_id),
                 ).fetchone()
             else:
                 existing = self._connection.execute(
                     "SELECT id FROM incidents WHERE project = ? AND recipient = ? "
-                    "AND IFNULL(consumer_id, '') = IFNULL(?, '') AND dedup_key = ? AND state != 'resolved'",
+                    "AND IFNULL(consumer_id, '') = IFNULL(?, '') AND dedup_key = ? AND state NOT IN ('resolved','discarded')",
                     (project, recipient, consumer_id, dedup_key),
                 ).fetchone()
             deduplicated = existing is not None
@@ -2394,7 +2400,7 @@ class NotificationCenter:
             family = 'telegram-family:' + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
             previous = self._connection.execute(
                 "SELECT COALESCE(telegram_card_owner_id,id) AS owner FROM incidents "
-                "WHERE project=? AND recipient=? AND collapse_key=? AND id!=? AND (state!='resolved' OR created_at>=?) "
+                "WHERE project=? AND recipient=? AND collapse_key=? AND id!=? AND state!='discarded' AND (state!='resolved' OR created_at>=?) "
                 "ORDER BY created_at,rowid LIMIT 1",
                 (incident['project'], incident['recipient'], family, incident_id, now-setting(self, 'telegram_group_window_seconds')),
             ).fetchone()
@@ -2524,20 +2530,20 @@ class NotificationCenter:
             if event_type.startswith("health.") and correlation_id is not None:
                 row = self._connection.execute(
                     "SELECT id, severity FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? "
-                    "AND correlation_id = ? AND state != 'resolved'",
+                    "AND correlation_id = ? AND state NOT IN ('resolved','discarded')",
                     (project, recipient, dedup_key, correlation_id),
                 ).fetchone()
                 if row is None:
                     conflicting = self._connection.execute(
                         "SELECT id FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? "
-                        "AND state != 'resolved' LIMIT 1",
+                        "AND state NOT IN ('resolved','discarded') LIMIT 1",
                         (project, recipient, dedup_key),
                     ).fetchone()
                     if conflicting is not None:
                         raise ValidationError("health recovery correlation_id does not match an active episode")
             else:
                 row = self._connection.execute(
-                    "SELECT id, severity FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? AND state != 'resolved'",
+                    "SELECT id, severity FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? AND state NOT IN ('resolved','discarded')",
                     (project, recipient, dedup_key),
                 ).fetchone()
             event_id = f"evt_{uuid.uuid4().hex}"
@@ -2895,6 +2901,9 @@ class NotificationCenter:
 
     def _schedule_delivery(self, incident_id: str, channel: str, step: str, due_epoch: float, target: Mapping[str, Any] | None = None, policy_step_id: str | None = None, repeat_number: int | None = None) -> str | None:
         """Create a stable scheduled delivery and return its identity."""
+        state = self._connection.execute('SELECT state FROM incidents WHERE id=?', (incident_id,)).fetchone()
+        if state and state['state'] == 'discarded':
+            return None
         denial = self._delivery_denial_reason(incident_id, channel, target)
         if denial is not None:
             self._audit(incident_id, "delivery_denied", "policy", {
@@ -3087,7 +3096,7 @@ class NotificationCenter:
             db_now = float(self._connection.execute("SELECT strftime('%s','now')").fetchone()[0])
             stale_before = db_now - self._stale_alarm_seconds()
             rows = self._connection.execute(
-                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (? IS NULL OR d.id=?) AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.unmuted_at IS NULL AND (m.match_mode = 'prefix' AND (substr(COALESCE(i.collapse_key,i.dedup_key),1,length(m.dedup_key)) = m.dedup_key OR substr(i.dedup_key,1,length(m.dedup_key)) = m.dedup_key) OR m.match_mode != 'prefix' AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key))))) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
+                "SELECT d.*, i.consumer_id FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE i.state != 'discarded' AND ((d.status = 'queued' AND d.due_at <= ?) OR (d.status = 'claimed' AND d.claimed_at <= ?)) AND (i.state IN (?, ?) OR (d.channel LIKE 'gptadmin.agent:%' AND i.state='acknowledged') OR " + _SESSION_NOTICE_SQL + ") AND (i.snoozed_until IS NULL OR i.snoozed_until <= ?) AND " + channel_filters[channel_group] + " AND (? IS NULL OR d.id=?) AND (d.channel LIKE 'gptadmin.agent:%' OR NOT EXISTS (SELECT 1 FROM notification_mutes m WHERE m.project = i.project AND m.recipient = i.recipient AND m.unmuted_at IS NULL AND (m.match_mode = 'prefix' AND (substr(COALESCE(i.collapse_key,i.dedup_key),1,length(m.dedup_key)) = m.dedup_key OR substr(i.dedup_key,1,length(m.dedup_key)) = m.dedup_key) OR m.match_mode != 'prefix' AND m.dedup_key IN (i.dedup_key,COALESCE(i.collapse_key,i.dedup_key))))) ORDER BY CASE WHEN json_extract(d.target_json,'$.health_outcome.status') IN ('recovered','resolved','phase_changed') THEN -2 WHEN i.severity='emergency' OR d.channel LIKE '%.call' THEN -1 WHEN d.channel IN ('telegram.main', 'telegram.message', 'telegram.edit') OR d.channel LIKE 'telegram.consumer:%' OR d.channel LIKE '%.message' THEN 0 WHEN d.channel LIKE 'gptadmin.agent:%' THEN 1 ELSE 2 END, d.due_at LIMIT ?",
                 (now, now - max(1, lease_seconds), *DELIVERABLE_STATES, now, delivery_id, delivery_id, limit),
             ).fetchall()
             result: list[dict[str, Any]] = []
@@ -3539,6 +3548,8 @@ class NotificationCenter:
             incident = self.get_incident(incident_id)
             if incident is None:
                 raise ValidationError("incident not found")
+            if incident['state'] == 'discarded':
+                raise ValidationError("discarded incident is terminal")
             now = time.time()
             if state == "acknowledged":
                 self._connection.execute("UPDATE incidents SET state = ?, acknowledged_at = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?", (state, now, now, incident_id))
@@ -4880,6 +4891,9 @@ class NotificationCenter:
                     raise IdempotencyConflict("Idempotency-Key was already used with different event content")
                 previous_payload = self._health_payload(json.loads(str(previous["payload_json"])) if str(previous["payload_json"]) else {})
                 return {"event_id": previous["event_id"], "incident_id": incident_id, "idempotent": True, "useful": bool(previous_payload.get("useful")) if isinstance(previous_payload, dict) else False, "payload": previous_payload}
+            state = self._connection.execute('SELECT state FROM incidents WHERE id=?', (incident_id,)).fetchone()
+            if state and state['state'] == 'discarded':
+                raise ValidationError('discarded incident is terminal')
             event_id = f"evt_{uuid.uuid4().hex}"
             event_type_value = event_type[:128]
             self._connection.execute(
@@ -5327,10 +5341,10 @@ class NotificationCenter:
             where = "project = ? AND " + where
             params.insert(0, str(project))
         if include_resolved:
-            where += " AND (state != 'resolved' OR resolved_at >= ?)"
+            where += " AND state != 'discarded' AND (state != 'resolved' OR resolved_at >= ?)"
             params.append(time.time() - 86400)
         else:
-            where += " AND state != 'resolved'"
+            where += " AND state NOT IN ('resolved','discarded')"
         terms = [term for term in str(query or "").casefold().split() if term][:8]
         for term in terms:
             where += " AND (lower(COALESCE(title,'')) LIKE ? OR lower(COALESCE(body,'')) LIKE ? OR lower(project) LIKE ?)"
@@ -6482,6 +6496,9 @@ class NotificationCenter:
                 if previous["payload_json"] != payload_json:
                     raise IdempotencyConflict("Idempotency-Key was already used with different health update content")
                 return {"event_id": previous["event_id"], "incident_id": incident_id, "idempotent": True, **bounded_payload}
+            state = self._connection.execute('SELECT state FROM incidents WHERE id=?', (incident_id,)).fetchone()
+            if state and state['state'] == 'discarded':
+                raise ValidationError('discarded incident is terminal')
             event_id = f"evt_{uuid.uuid4().hex}"
             self._connection.execute(
                 "INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, proxy_ip, forwarded_for) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

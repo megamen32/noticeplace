@@ -46,7 +46,7 @@ class IncidentProgressReader:
         now = time.time()
         with self.center._lock:
             rows = self.center._connection.execute(
-                "SELECT id FROM incidents WHERE state!='resolved' AND (native_polled_at IS NULL OR native_polled_at<=?) "
+                "SELECT id FROM incidents WHERE state NOT IN ('resolved','discarded') AND (native_polled_at IS NULL OR native_polled_at<=?) "
                 "AND EXISTS (SELECT 1 FROM events e WHERE e.incident_id=incidents.id AND e.event_type IN "
                 "('health.diagnosis_session_started','health.orchestrator_session_started','health.remediation_session_started')) "
                 "ORDER BY COALESCE(native_polled_at,0) LIMIT ?", (now-15, max(1, min(2, limit))),
