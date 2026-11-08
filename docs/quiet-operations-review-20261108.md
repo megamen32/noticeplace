@@ -143,3 +143,9 @@ RustV1-маршрута. Старый Herder resume_after не назначае�
 владельца. Подготовленный read-only collector сохранён; старое окно на версии
 0.1.8 не считается проверкой нового релиза. Тестовых звонков и уведомлений
 реальным людям в этой приёмке — ноль.
+
+## Итоговая сверка coverage на 17:30 UTC
+
+Coverage остаётся неполным; source, install, natural readback и независимое closure учитываются раздельно. GPTAdmin native caller прошёл штатный natural readback в 17:17 UTC. External-site monitor `9a4144569af90829ee7e92b45c8944a8d19d5f3f` естественно закрыл два существующих source-инцидента с точными request/key receipts; это подтверждает M09-2, не полноту флота. Video UNKNOWN fence `3b2ea16297207cf0a9c84d56cb3219413bac5a4e` опубликован в `origin/dev`, 4 RED → 31 GREEN; natural acceptance установленного caller ещё pending. OmniRoute URL исправление установлено, но HTTP 400/source identity conflict на 100/88 оставляет closure pending. Galileo M02 и video bot M04 также pending.
+
+По решению владельца S05-5, F01-1, F02-1/2/3 отложены с причиной `OWNER_DEFERRED_RUSTV1_ROUTE`. Старый Herder остаётся masked/inactive; запуск, ensure, unmask и вызовы Herder MCP запрещены. Полный autorepair и 24-часовое наблюдение отложены. Предложения по leaf acceptance сохранены в `leaf-decisions.json`; canonical plan не менялся. Сверка не запускала fleet-сбор, широкие тесты, runtime-действия или обращения к людям.
