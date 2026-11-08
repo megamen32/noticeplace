@@ -171,13 +171,19 @@ def group_key(group):
     return json.dumps([group[k] for k in ('project','consumer_id','host_id','problem_type')],separators=(',',':'))
 
 
-def bind_source(center, token, row):
+def bind_source(center, token, row, *, allow_legacy_consumer_verifier=False):
     from .core import AuthorizationError
     identity = principal(center, token)
     if row['source_principal'] == 'historical-unbound':
         verifier(center, token, row['incident_id'])
         center._connection.execute("UPDATE incident_lifecycle SET source_principal=? WHERE incident_id=? AND source_principal='historical-unbound'",(identity,row['incident_id']))
     elif row['source_principal'] != identity:
+        # A source-check grant may verify a legacy credential-owned incident
+        # only for an explicitly listed consumer and exact source id. Preserve
+        # its original principal; this is verification, not source re-binding.
+        if allow_legacy_consumer_verifier and str(row['source_principal']).startswith('credential:'):
+            verifier(center, token, row['incident_id'])
+            return
         raise AuthorizationError('source update requires the bound source principal')
 
 
@@ -255,7 +261,23 @@ def verifier(center, token, incident_id):
     exact = isinstance(sources, (list, tuple)) and source in sources
     owned = row['source_principal'] == authenticated
     dynamic = scope.get('incident_role') == 'verifier' and scope.get('verification_owned_sources') is True
-    allowed = (owned and (exact or dynamic)) or (row['source_principal'] == 'historical-unbound' and exact)
+    incident = center._connection.execute(
+        'SELECT consumer_id FROM incidents WHERE id=?', (incident_id,),
+    ).fetchone()
+    consumer_ids = scope.get('verification_consumer_ids', [])
+    legacy_consumer_grant = bool(
+        exact and scope.get('incident_role') == 'verifier'
+        and str(row['source_principal']).startswith('credential:')
+        and isinstance(consumer_ids, (list, tuple))
+        and incident is not None and incident['consumer_id'] in consumer_ids
+    )
+    # An explicit server-owned verifier grant for one consumer/source also
+    # covers pre-migration credential principals for that same consumer. Keep
+    # it limited to credential:<sha256>; never inherit another principal or
+    # let an executor verify its own work.
+    allowed = ((owned and (exact or dynamic))
+               or (row['source_principal'] == 'historical-unbound' and exact)
+               or legacy_consumer_grant)
     if (not scope.get('principal_id') or not allowed
             or scope.get('incident_role') == 'executor'
             or (row['executor_principal'] and authenticated == row['executor_principal'])):
@@ -357,6 +379,12 @@ def due_checks_page(center, token, project, source_id, limit=20, cursor=None, wa
     if not scope.get('principal_id') or not (exact or dynamic) or scope.get('incident_role')=='executor':
         raise AuthorizationError('source verification scope is required')
     authenticated = principal(center, token)
+    verification_consumer_ids = scope.get('verification_consumer_ids', [])
+    if (scope.get('incident_role') != 'verifier' or not exact
+            or not isinstance(verification_consumer_ids, (list, tuple))):
+        verification_consumer_ids = []
+    verification_consumer_ids = [value for value in verification_consumer_ids
+                                 if isinstance(value, str) and value]
     key = hashlib.sha256(('noticeplace-cursor-v1:' + token).encode()).digest()
     deadline = time.monotonic() + wait_seconds
     position = None
@@ -380,8 +408,17 @@ def due_checks_page(center, token, project, source_id, limit=20, cursor=None, wa
             raise ValidationError('invalid or expired verification cursor') from None
     while True:
         with center._lock:
-            sql = "SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id WHERE i.project=? AND l.source_id=? AND (l.source_principal=? OR (l.source_principal='historical-unbound' AND ?)) AND i.state!='resolved' AND l.verification_state IN ('due','unknown','degraded') AND l.verification_due<=?"
-            params = [project, source_id, authenticated, int(exact), time.time()]
+            source_identity = "l.source_principal=? OR (l.source_principal='historical-unbound' AND ?)"
+            params = [project, source_id, authenticated, int(exact)]
+            if verification_consumer_ids:
+                placeholders = ','.join('?' for _ in verification_consumer_ids)
+                source_identity += f" OR (l.source_principal LIKE 'credential:%' AND i.consumer_id IN ({placeholders}))"
+                params.extend(verification_consumer_ids)
+            sql = ("SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id "
+                   "WHERE i.project=? AND l.source_id=? AND (" + source_identity + ") "
+                   "AND i.state!='resolved' AND l.verification_state IN ('due','unknown','degraded') "
+                   "AND l.verification_due<=?")
+            params.append(time.time())
             if position:
                 sql += ' AND (l.verification_due>? OR (l.verification_due=? AND l.incident_id>?))'
                 params.extend([position[0], position[0], position[1]])
@@ -419,7 +456,7 @@ def check(center, token, incident_id, key, body):
     encoded=json.dumps(payload,sort_keys=True)
     with center._lock, center._connection:
         row=verifier(center,token,incident_id)
-        bind_source(center,token,row)
+        bind_source(center,token,row,allow_legacy_consumer_verifier=True)
         previous=center._connection.execute('SELECT * FROM incident_check_receipts WHERE idempotency_key=?',(key,)).fetchone()
         if previous:
             if previous['request_id']!=body.get('request_id') or previous['payload_json']!=encoded:

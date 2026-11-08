@@ -570,6 +570,73 @@ class LifecycleTests(unittest.TestCase):
         self.center._connection.commit()
         with self.assertRaises(AuthorizationError): self.center._token_scope(token)
 
+    def test_consumer_verifier_can_read_legacy_credential_owned_due_request(self):
+        """Exact consumer grants must cover pre-migration source credentials.
+
+        Live evidence: two old watchdog work_finished rows use
+        source_principal=credential:<sha256> while the current verifier grant
+        explicitly names their consumer_id. The old source_checks_page filters
+        these due receipts out, leaving the source group pinned to a completed
+        session and every subsequent launch rejected before admission.
+        """
+        import hashlib
+        consumer = self.consumer('autotelegramviews')
+        intake = consumer['intake_token']
+        event = {
+            **self.event,
+            'project': 'autotelegramviews',
+            'recipient': 'me',
+            'dedup_key': 'views-coverage/megasecre/legacy-source-proof',
+            'source_id': 'views-coverage-watchdog',
+            'signal_type': 'views-coverage',
+        }
+        incident = self.center.create_event(intake, 'legacy-source-event', event)['incident_id']
+        legacy_principal = 'credential:' + hashlib.sha256(intake.encode()).hexdigest()
+        self.assertEqual(legacy_principal, self.center._connection.execute(
+            'SELECT source_principal FROM incident_lifecycle WHERE incident_id=?', (incident,),
+        ).fetchone()[0])
+        self.center._tokens['legacy-consumer-verifier'] = {
+            'project': 'autotelegramviews', 'max_severity': 'critical',
+            'incident_role': 'verifier', 'principal_id': 'source:views-coverage-watchdog',
+            'verification_sources': ['views-coverage-watchdog'],
+            'verification_consumer_ids': [consumer['id']],
+        }
+        self.center._tokens['executor-autotelegramviews'] = {
+            'project': 'autotelegramviews', 'max_severity': 'critical',
+            'incident_role': 'executor', 'principal_id': 'executor:autotelegramviews',
+        }
+        finish = self.center.record_work_finished(
+            'executor-autotelegramviews', incident, 'legacy-consumer-finish',
+            dict(attempt_id='legacy-attempt', session_id='native-session', harness='opencode',
+                 evidence_refs=['selftest: exact consumer-owned legacy source']),
+        )
+        foreign_consumer = self.consumer('autotelegramviews')
+        foreign_event = {**event, 'dedup_key': 'views-coverage/foreign-consumer/legacy-source-proof'}
+        foreign_incident = self.center.create_event(
+            foreign_consumer['intake_token'], 'foreign-legacy-source-event', foreign_event,
+        )['incident_id']
+        self.center.record_work_finished(
+            'executor-autotelegramviews', foreign_incident, 'foreign-consumer-finish',
+            dict(attempt_id='foreign-attempt', session_id='native-session-2', harness='opencode',
+                 evidence_refs=['selftest: different consumer must remain outside grant']),
+        )
+
+        due = self.center.due_source_checks(
+            'legacy-consumer-verifier', 'autotelegramviews', 'views-coverage-watchdog',
+        )
+        self.assertEqual([finish['request_id']], [request['request_id'] for request in due])
+        checked = self.center.record_source_check(
+            'legacy-consumer-verifier', incident, 'legacy-consumer-healthy',
+            dict(request_id=finish['request_id'], generation=finish['generation'],
+                 observed_state='healthy', evidence_refs=['same consumer + exact source grant']),
+        )
+        self.assertEqual('healthy', checked['observed_state'])
+        self.assertEqual('resolved', self.center.get_incident(incident)['state'])
+        with self.assertRaises(AuthorizationError):
+            self.center.due_source_checks(
+                'executor-autotelegramviews', 'autotelegramviews', 'views-coverage-watchdog',
+            )
+
     def test_foreign_or_executor_or_ambiguous_consumer_grants_are_ignored(self):
         consumer=self.consumer()
         token=consumer['intake_token']
