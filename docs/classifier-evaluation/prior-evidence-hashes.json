@@ -1,0 +1,9 @@
+{
+  "research/kev-sources.json": "22fb78b254fd0eee448c7aca162fccd7fbdbd97aca6f3142cbd09da7dae0796b",
+  "research/kev-readme.md": "0b68530a29d58de5792574ba8cb4afd735d6c98c96de99f30d2de53cf84fbfd4",
+  "research/kev-4b-card.md": "e423ce0e3caf0a1e6ff996a58522946a97711e0439c5fea332a8861b02498435",
+  "research/gemma-synthetic-summary.json": "3e3fb834dcba0fdff82454bacf69ea93c5789388a68d2353483f4516d7f12b2c",
+  "evidence/gemma-classification-eval.json": "a4a1b8a0b99c7877d3ba50e57c270d816102ab500af53fdfe62da8e88d4b62d0",
+  "evidence/r20-review/20261108-defects-1-5/green.txt": "b1833a72ec195a988df30a61f5e72ea3f7c039944df78c7d0447565c7c3f2c37",
+  "evidence/r20-review/20261108-defects-1-5/manifest.json": "404002e727facb56ddb89bea6a58ef869d6b30829fcc80f5f4dbb43b4a711d68"
+}

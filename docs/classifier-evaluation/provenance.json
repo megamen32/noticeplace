@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "evaluation_exit_code": 2,
+  "runtime_changes": false,
+  "live_incidents_created": 0,
+  "notifications_sent": 0,
+  "model_requests_this_run": 4,
+  "earlier_receipt": {
+    "path": "evidence/gemma-classification-eval.json",
+    "started_at": "2026-11-07T20:56:58.820705+00:00",
+    "original_summary": {
+      "cases_total": 16,
+      "model_requests_attempted": 12,
+      "model_requests_unknown": 0,
+      "class_matches_normalized": 12,
+      "class_accuracy_normalized": 0.75,
+      "class_accuracy_raw_model": 0.6666666666666666,
+      "raw_model_scored_cases": 12,
+      "per_class": {
+        "log": {
+          "total": 6,
+          "normalized_correct": 5,
+          "raw_scored": 6
+        },
+        "repair": {
+          "total": 6,
+          "normalized_correct": 3,
+          "raw_scored": 4
+        },
+        "important": {
+          "total": 2,
+          "normalized_correct": 2,
+          "raw_scored": 2
+        },
+        "emergency": {
+          "total": 2,
+          "normalized_correct": 2,
+          "raw_scored": 0
+        }
+      },
+      "missed_emergency_normalized": 0,
+      "needs_human_matches": null,
+      "needs_human_note": "needs_human is intentionally outside the model decision schema",
+      "latencies_ms": [
+        10123,
+        16728,
+        16655,
+        25318,
+        16588,
+        16610,
+        18221,
+        18334,
+        21413,
+        19284,
+        2182,
+        2219
+      ],
+      "latency_max_ms": 25318,
+      "heldout_matches": 3,
+      "heldout_total": 5
+    },
+    "post_run_annotation_audit": {
+      "case_id": "brief_outage_recovered",
+      "receipt_expected_before_run": "log",
+      "fixture_expected_after_audit": "repair",
+      "reason": "Module PROMPT explicitly places short outages in repair; the previously read Gemma synthetic summary also labels brief_timeout as repair. The corrected case remains holdout.",
+      "model_requests_repeated": false,
+      "original_run_metrics_preserved": true,
+      "posthoc_label_analysis": {
+        "normalized_class_matches": 13,
+        "cases_total": 16,
+        "normalized_accuracy": 0.8125,
+        "raw_model_class_matches": 9,
+        "raw_model_cases": 12,
+        "raw_model_accuracy": 0.75
+      }
+    }
+  },
+  "official_kev_sources": [
+    {
+      "name": "kev-readme",
+      "url": "https://raw.githubusercontent.com/jaredpalmer/kev/main/README.md",
+      "sha256": "0b68530a29d58de5792574ba8cb4afd735d6c98c96de99f30d2de53cf84fbfd4",
+      "retrieved_at": "2026-11-07T17:56:56.676826+00:00"
+    },
+    {
+      "name": "kev-4b-card",
+      "url": "https://huggingface.co/jaredpalmer/kev-4b/raw/main/README.md",
+      "sha256": "e423ce0e3caf0a1e6ff996a58522946a97711e0439c5fea332a8861b02498435",
+      "retrieved_at": "2026-11-07T17:56:57.015348+00:00"
+    }
+  ],
+  "artifacts_sha256": {
+    "gemma-heldout.json": "b59a114c91956d1a9df24b95ee723a315f7395a77654e86a292ef60b5a7890c6",
+    "evaluator-offline-green.txt": "f97776321b6d5f1db3efd766ff27e384b1098780b3a47b31413c7c947e35e6e5",
+    "prior-evidence-hashes.json": "44da9148557f8f5e6af6c859819487f2cd31f031f19a87278fae2fbed36bb93c",
+    "queue44-preflight.json": "dadb0149d4d0c35e1d01fb786f08340d70dc631bede100e89eb225b5cd2f3f22"
+  }
+}
