@@ -106,7 +106,9 @@ def main() -> None:
         fixture = NotificationCenter(root / "frozen.sqlite3",
                    {"mesh-integration": {"project": "mesh-canary", "max_severity": "critical"}}, default_quiet_hours=[])
         imported = fixture.create_event("mesh-integration", "sqlite-preserved", {
-            "schema": "notify.event.v1", "kind": "incident", "severity": "notice",
+            # Explicit notification fixture: routine incidents now correctly
+            # create no human delivery under the quiet policy. No sender runs.
+            "schema": "notify.event.v1", "kind": "notification", "severity": "critical",
             "project": "mesh-canary", "recipient": "me", "title": "Preserved before migration",
             "body": "Real SQLite source retains the unknown send", "dedup_key": "sqlite-preserved"})
         source_claim = fixture.claim_due_deliveries(limit=1, channel_group="message")[0]
@@ -171,7 +173,7 @@ def main() -> None:
             servers.append(server)
 
         def intake(index, key, body="Quorum-backed real HTTP test"):
-            event = {"schema": "notify.event.v1", "kind": "incident", "severity": "notice",
+            event = {"schema": "notify.event.v1", "kind": "notification", "severity": "critical",
                      "project": "mesh-canary", "recipient": "me", "title": "Mesh integration",
                      "body": body, "dedup_key": key}
             request = urllib.request.Request(f"http://127.0.0.1:{servers[index].server_port}/v1/events",
