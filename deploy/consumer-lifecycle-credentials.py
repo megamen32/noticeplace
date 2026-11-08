@@ -26,12 +26,19 @@ def read_env(text):
     raise ValueError('missing scope map')
 
 
+def environment_json(value):
+    # EnvironmentFile unquoted values consume backslashes, including JSON's
+    # Unicode escapes. Single quotes preserve JSON bytes; encode any apostrophe
+    # in JSON so it cannot terminate the outer systemd quote.
+    return "'" + json.dumps(value, separators=(',', ':')).replace("'", '\\u0027') + "'"
+
+
 def replace_env(text, scopes):
     lines = text.splitlines(keepends=True)
     matches = [i for i, line in enumerate(lines) if line.startswith('NOTIFY_CENTER_TOKENS_JSON=')]
     if len(matches) != 1:
         raise ValueError('ambiguous scope map')
-    lines[matches[0]] = 'NOTIFY_CENTER_TOKENS_JSON=' + json.dumps(scopes, separators=(',', ':')) + '\n'
+    lines[matches[0]] = 'NOTIFY_CENTER_TOKENS_JSON=' + environment_json(scopes) + '\n'
     return ''.join(lines)
 
 
@@ -54,7 +61,7 @@ def replace_consumer_grants(text, grants):
     matches = [i for i, line in enumerate(lines) if line.startswith(CONSUMER_GRANTS_ENV + '=')]
     if len(matches) > 1:
         raise ValueError('ambiguous consumer grant map')
-    encoded = CONSUMER_GRANTS_ENV + '=' + json.dumps(grants, separators=(',', ':')) + '\n'
+    encoded = CONSUMER_GRANTS_ENV + '=' + environment_json(grants) + '\n'
     if matches:
         lines[matches[0]] = encoded
     else:

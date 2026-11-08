@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -16,6 +17,22 @@ spec.loader.exec_module(credentials)
 
 
 class CredentialTests(unittest.TestCase):
+    def test_environment_assignments_preserve_unicode_and_escapes(self):
+        scopes = {'fixture': {'project': "Олег и Никита's \\ route\nnext", 'max_severity': 'notice'}}
+        grants = [{'consumer_id': 'fixture', 'project': "Олег's", 'verification_sources': ['source\\path']}]
+        text = credentials.replace_env('OTHER=preserved\nNOTIFY_CENTER_TOKENS_JSON={}\n', scopes)
+        text = credentials.replace_consumer_grants(text, grants)
+        self.assertEqual(scopes, credentials.read_env(text))
+        self.assertEqual(grants, credentials.read_consumer_grants(text))
+        self.assertTrue(text.startswith('OTHER=preserved\n'))
+        for key, expected in [('NOTIFY_CENTER_TOKENS_JSON', scopes), (credentials.CONSUMER_GRANTS_ENV, grants)]:
+            assignment = next(line for line in text.splitlines() if line.startswith(key+'='))
+            # Single-quoted values are a common literal subset of shell and
+            # systemd EnvironmentFile syntax. Unquoted JSON loses backslashes.
+            value = assignment.split('=', 1)[1]
+            self.assertTrue(value.startswith("'") and value.endswith("'"))
+            self.assertEqual(expected, json.loads(shlex.split(assignment)[0].split('=', 1)[1]))
+
     def test_separate_verifier_addition_preserves_migrated_credentials_and_cas(self):
         scopes, callback, plan = self.fixture()
         migrated, cb, _ = credentials.prepare(scopes, callback, plan, lambda: 'executor')
