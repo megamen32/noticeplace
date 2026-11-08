@@ -564,7 +564,8 @@ class NotificationCenter:
                 raise ValidationError('consumer verifier grants must be a JSON list') from None
         if not isinstance(value, list) or len(value) > 1024:
             raise ValidationError('consumer verifier grants must be a bounded list')
-        allowed = {'consumer_id', 'project', 'incident_role', 'verification_owned_sources', 'verification_sources'}
+        policy_fields = {'agent_jobs', 'automatic_health_diagnosis', 'suppress_owner_delivery'}
+        allowed = {'consumer_id', 'project', 'incident_role', 'verification_owned_sources', 'verification_sources'} | policy_fields
         result = []
         def bounded(item):
             return isinstance(item, str) and bool(item.strip()) and len(item) <= 128 and not any(ord(c) < 32 or ord(c) == 127 for c in item)
@@ -573,11 +574,19 @@ class NotificationCenter:
                     or not bounded(grant.get('consumer_id')) or not bounded(grant.get('project'))
                     or grant.get('incident_role') not in ('verifier', 'executor')):
                 raise ValidationError('invalid consumer verifier grant identity or role')
-            if 'verification_owned_sources' in grant and not isinstance(grant['verification_owned_sources'], bool):
-                raise ValidationError('consumer owned-source permission must be boolean')
+            for field in ('verification_owned_sources', 'automatic_health_diagnosis', 'suppress_owner_delivery'):
+                if field in grant and not isinstance(grant[field], bool):
+                    raise ValidationError('consumer policy flags must be boolean')
             sources = grant.get('verification_sources', [])
             if not isinstance(sources, list) or len(sources) > 1024 or not all(bounded(item) for item in sources):
                 raise ValidationError('consumer verification sources must be a bounded string list')
+            if 'agent_jobs' in grant and (not isinstance(grant['agent_jobs'], list)
+                    or grant['agent_jobs'] not in ([], [HEALTH_DIAGNOSIS_AGENT_JOB])):
+                raise ValidationError('consumer policy permits only health-diagnosis')
+            if policy_fields.intersection(grant) and (grant['incident_role'] != 'verifier'
+                    or not sources or len(sources) != len(set(sources))
+                    or any('*' in item for item in [grant['consumer_id'], grant['project'], *sources])):
+                raise ValidationError('consumer diagnosis policy requires an exact independent verifier grant')
             result.append({**grant, 'verification_sources': list(sources)})
         return result
 
@@ -593,7 +602,7 @@ class NotificationCenter:
                 raise AuthorizationError("invalid bearer token")
             scope = {"project": row["project"], "max_severity": row["max_severity"], "consumer_id": row["id"]}
             # Consumer intake tokens remain DB-authenticated on every call.
-            # A server-owned exact-ID grant adds verification authority only;
+            # A server-owned exact-ID grant adds bounded verification/AI policy;
             # it never copies a bearer or overrides the stored project/ceiling.
             grants = [grant for grant in self._tokens.values()
                       if grant.get('incident_role') == 'verifier'
@@ -609,11 +618,11 @@ class NotificationCenter:
                 for field in ('verification_owned_sources', 'verification_sources'):
                     if field in grant:
                         scope[field] = grant[field]
-            # A server-owned grant that names this consumer may also carry the
-            # deterministic diagnosis policy: the ATV container pins the dosor
-            # to its intake token, so the executor launch policy has to travel
-            # with the grant or the executor never spawns (2026-11-06 dosor).
-            for grant in grants:
+                # Policy is authoritative only for the same unique grant as
+                # verification. Ambiguous grants must not retain launch rights.
+                if grant.get('consumer_id') and any(field in grant for field in
+                        ('agent_jobs', 'automatic_health_diagnosis', 'suppress_owner_delivery')):
+                    scope['_consumer_agent_sources'] = list(grant['verification_sources'])
                 if isinstance(grant.get('agent_jobs'), (list, tuple)) and grant.get('agent_jobs'):
                     scope['agent_jobs'] = [str(value) for value in grant['agent_jobs']]
                 if 'automatic_health_diagnosis' in grant:
@@ -622,7 +631,6 @@ class NotificationCenter:
                 # carries the owner-facing delivery suppression.
                 if grant.get('suppress_owner_delivery'):
                     scope['suppress_owner_delivery'] = True
-                break
         return scope
 
     def _scope(self, token: str, project: str) -> Mapping[str, Any]:
@@ -754,6 +762,9 @@ class NotificationCenter:
     @staticmethod
     def _effective_agent_job(event: Mapping[str, Any], scope: Mapping[str, Any]) -> str:
         """Resolve producer intent plus the central deterministic diagnosis policy."""
+        if ('_consumer_agent_sources' in scope
+                and event.get('source_id') not in scope['_consumer_agent_sources']):
+            return ''
         explicit = str(event.get("agent_job") or "")
         if explicit:
             # A producer cannot bypass the project-level automatic-diagnosis

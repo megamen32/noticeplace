@@ -78,22 +78,33 @@ def prepare_consumer_grants(plan):
         raise ValueError('bounded consumer grant list required')
     output = []
     selected = set()
-    fields = {'consumer_id', 'project', 'incident_role', 'verification_owned_sources', 'verification_sources'}
+    policy_fields = {'agent_jobs', 'automatic_health_diagnosis', 'suppress_owner_delivery'}
+    fields = {'consumer_id', 'project', 'incident_role', 'verification_owned_sources', 'verification_sources'} | policy_fields
+    def bounded(item):
+        return isinstance(item, str) and bool(item.strip()) and len(item) <= 128 and not any(ord(c) < 32 or ord(c) == 127 for c in item)
     for grant in grants:
         if not isinstance(grant, dict) or set(grant) - fields:
             raise ValueError('unsupported consumer grant fields')
         consumer, project = grant.get('consumer_id'), grant.get('project')
-        if (not isinstance(consumer, str) or not consumer or len(consumer) > 128 or '*' in consumer
-                or not isinstance(project, str) or not project or len(project) > 128 or '*' in project
+        if (not bounded(consumer) or '*' in consumer
+                or not bounded(project) or '*' in project
                 or registrations.get(consumer) != project or consumer in selected
                 or grant.get('incident_role') != 'verifier'):
             raise ValueError('explicit reviewed same-project independent verifier required')
         sources = grant.get('verification_sources', [])
         owned = grant.get('verification_owned_sources', False)
         if (not isinstance(owned, bool) or not isinstance(sources, list) or len(sources) > 1024
-                or any(not isinstance(source, str) or not source or len(source) > 128 or '*' in source for source in sources)
+                or any(not bounded(source) or '*' in source for source in sources)
                 or len(sources) != len(set(sources)) or not (owned or sources)):
             raise ValueError('exact source grants or authenticated owned source policy required')
+        for field in ('automatic_health_diagnosis', 'suppress_owner_delivery'):
+            if field in grant and not isinstance(grant[field], bool):
+                raise ValueError('consumer policy flags must be boolean')
+        if 'agent_jobs' in grant and (not isinstance(grant['agent_jobs'], list)
+                or grant['agent_jobs'] not in ([], ['health-diagnosis'])):
+            raise ValueError('consumer policy permits only health-diagnosis')
+        if policy_fields.intersection(grant) and not sources:
+            raise ValueError('consumer diagnosis policy requires an exact independent verifier grant')
         selected.add(consumer)
         output.append(dict(grant))
     legacy = [consumer for grant in plan.get('projects', {}).values() for consumer in grant.get('verification_consumer_ids', [])]
