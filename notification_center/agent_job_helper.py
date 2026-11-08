@@ -963,7 +963,7 @@ def read_herder_human_request(request_id: str, runner: Any = urllib.request.urlo
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
-        "params": {"name": "human_request_get", "arguments": {"requestId": safe_request_id}},
+        "params": {"name": "human_request", "arguments": {"action": "get", "requestId": safe_request_id}},
     }
     request = urllib.request.Request(
         f"{base}/mcp",

@@ -82,7 +82,7 @@ class CompletionRouteTests(unittest.TestCase):
     def test_registry_readback_uses_only_existing_readonly_owner_loopback_mcp(self) -> None:
         request_id = "1b45fd65-6013-4925-a781-afd5367d7b1f"
         record = {"requestId": request_id, "status": "resumed", "target": {"agent": "opencode"}}
-        body = {"result": {"structuredContent": {"request": record}}, "jsonrpc": "2.0", "id": 1}
+        body = {"result": {"structuredContent": {"request": record, "resumeReceipt": None}}, "jsonrpc": "2.0", "id": 1}
         calls = []
 
         class Response:
@@ -99,6 +99,11 @@ class CompletionRouteTests(unittest.TestCase):
 
         def runner(request, timeout):
             calls.append((request, timeout))
+            # The installed Herder advertises the consolidated tool only.
+            if json.loads(request.data)["params"] != {
+                "name": "human_request", "arguments": {"action": "get", "requestId": request_id}
+            }:
+                return io.BytesIO(b'data: {"id":1,"result":{"isError":true}}\n\n')
             return Response()
 
         with patch("notification_center.agent_job_helper._herder_http_token", return_value="fixture-herder-token"), \
@@ -106,14 +111,37 @@ class CompletionRouteTests(unittest.TestCase):
             "url": "http://127.0.0.1:18787/api/sessions/new-or-resume",
         }):
             self.assertEqual(record, read_herder_human_request(request_id, runner))
+        self.assertEqual(1, len(calls))
         request, timeout = calls[0]
         self.assertEqual("http://127.0.0.1:18787/mcp", request.full_url)
         self.assertEqual("POST", request.get_method())
         self.assertEqual("Bearer fixture-herder-token", request.get_header("Authorization"))
         self.assertEqual(5, timeout)
         payload = json.loads(request.data)
-        self.assertEqual("human_request_get", payload["params"]["name"])
-        self.assertEqual({"requestId": request_id}, payload["params"]["arguments"])
+        self.assertEqual("human_request", payload["params"]["name"])
+        self.assertEqual({"action": "get", "requestId": request_id}, payload["params"]["arguments"])
+
+    def test_registry_query_error_or_wrong_identity_never_falls_back_or_resumes(self) -> None:
+        request_id = "1b45fd65-6013-4925-a781-afd5367d7b1f"
+        for result in (
+            {"isError": True},
+            {"structuredContent": {"request": {"requestId": "other-request", "status": "resumed"}}},
+        ):
+            with self.subTest(result=result):
+                calls = []
+
+                def runner(request, timeout):
+                    calls.append(json.loads(request.data))
+                    return io.BytesIO(('data: ' + json.dumps({"id": 1, "result": result}) + '\n\n').encode())
+
+                with patch("notification_center.agent_job_helper._herder_http_token", return_value=""), \
+                        patch("notification_center.agent_job_helper._herder_loopback_profile", return_value={
+                            "url": "http://127.0.0.1:18787/api/sessions/new-or-resume"}):
+                    with self.assertRaises(RuntimeError):
+                        read_herder_human_request(request_id, runner)
+                self.assertEqual(1, len(calls))
+                self.assertEqual({"name": "human_request", "arguments": {
+                    "action": "get", "requestId": request_id}}, calls[0]["params"])
 
     def test_task_answer_is_bounded_in_the_completion_body_and_is_optional(self) -> None:
         request_id = "1b45fd65-6013-4925-a781-afd5367d7b1f"
