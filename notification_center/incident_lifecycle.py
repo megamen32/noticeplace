@@ -181,7 +181,7 @@ def bind_source(center, token, row, *, allow_legacy_consumer_verifier=False):
         # A source-check grant may verify a legacy credential-owned incident
         # only for an explicitly listed consumer and exact source id. Preserve
         # its original principal; this is verification, not source re-binding.
-        if allow_legacy_consumer_verifier and str(row['source_principal']).startswith('credential:'):
+        if allow_legacy_consumer_verifier:
             verifier(center, token, row['incident_id'])
             return
         raise AuthorizationError('source update requires the bound source principal')
@@ -265,19 +265,19 @@ def verifier(center, token, incident_id):
         'SELECT consumer_id FROM incidents WHERE id=?', (incident_id,),
     ).fetchone()
     consumer_ids = scope.get('verification_consumer_ids', [])
-    legacy_consumer_grant = bool(
+    consumer_granted = bool(
         exact and scope.get('incident_role') == 'verifier'
-        and str(row['source_principal']).startswith('credential:')
         and isinstance(consumer_ids, (list, tuple))
         and incident is not None and incident['consumer_id'] in consumer_ids
     )
-    # An explicit server-owned verifier grant for one consumer/source also
-    # covers pre-migration credential principals for that same consumer. Keep
-    # it limited to credential:<sha256>; never inherit another principal or
-    # let an executor verify its own work.
+    # An explicit server-owned verifier grant for one consumer/source covers
+    # every producer identity of that same consumer: the current
+    # consumer:<id> principal and pre-migration credential:<sha256> rows. The
+    # incident's own consumer binding is authoritative; this never inherits
+    # another consumer or lets an executor verify its own work.
     allowed = ((owned and (exact or dynamic))
                or (row['source_principal'] == 'historical-unbound' and exact)
-               or legacy_consumer_grant)
+               or consumer_granted)
     if (not scope.get('principal_id') or not allowed
             or scope.get('incident_role') == 'executor'
             or (row['executor_principal'] and authenticated == row['executor_principal'])):
@@ -412,7 +412,9 @@ def due_checks_page(center, token, project, source_id, limit=20, cursor=None, wa
             params = [project, source_id, authenticated, int(exact)]
             if verification_consumer_ids:
                 placeholders = ','.join('?' for _ in verification_consumer_ids)
-                source_identity += f" OR (l.source_principal LIKE 'credential:%' AND i.consumer_id IN ({placeholders}))"
+                source_identity += (f" OR (l.source_principal LIKE 'credential:%' "
+                                    f"OR l.source_principal LIKE 'consumer:%') "
+                                    f"AND i.consumer_id IN ({placeholders})")
                 params.extend(verification_consumer_ids)
             sql = ("SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id "
                    "WHERE i.project=? AND l.source_id=? AND (" + source_identity + ") "

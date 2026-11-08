@@ -621,10 +621,36 @@ class LifecycleTests(unittest.TestCase):
                  evidence_refs=['selftest: different consumer must remain outside grant']),
         )
 
+        # A consumer-principal incident (posted by the consumer's own intake
+        # token, source_principal=consumer:<id>) is covered by the same
+        # explicit consumer grant: the live ATV canary hit exactly this form.
+        consumer_event = {**event, 'dedup_key': 'views-coverage/megasecre/consumer-principal-proof'}
+        consumer_incident = self.center.create_event(
+            intake, 'consumer-principal-event', consumer_event,
+        )['incident_id']
+        self.assertEqual('consumer:' + consumer['id'], self.center._connection.execute(
+            'SELECT source_principal FROM incident_lifecycle WHERE incident_id=?', (consumer_incident,),
+        ).fetchone()[0])
+        consumer_finish = self.center.record_work_finished(
+            'executor-autotelegramviews', consumer_incident, 'consumer-principal-finish',
+            dict(attempt_id='consumer-attempt', session_id='native-session-3', harness='opencode',
+                 evidence_refs=['selftest: consumer principal covered by explicit grant']),
+        )
+
         due = self.center.due_source_checks(
             'legacy-consumer-verifier', 'autotelegramviews', 'views-coverage-watchdog',
         )
-        self.assertEqual([finish['request_id']], [request['request_id'] for request in due])
+        self.assertEqual(
+            sorted([finish['request_id'], consumer_finish['request_id']]),
+            sorted(request['request_id'] for request in due),
+        )
+        checked = self.center.record_source_check(
+            'legacy-consumer-verifier', consumer_incident, 'consumer-principal-healthy',
+            dict(request_id=consumer_finish['request_id'], generation=consumer_finish['generation'],
+                 observed_state='healthy', evidence_refs=['same consumer, consumer principal']),
+        )
+        self.assertEqual('healthy', checked['observed_state'])
+        self.assertEqual('resolved', self.center.get_incident(consumer_incident)['state'])
         checked = self.center.record_source_check(
             'legacy-consumer-verifier', incident, 'legacy-consumer-healthy',
             dict(request_id=finish['request_id'], generation=finish['generation'],
