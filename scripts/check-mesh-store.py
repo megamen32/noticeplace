@@ -113,6 +113,19 @@ def main() -> None:
             "body": "Real SQLite source retains the unknown send", "dedup_key": "sqlite-preserved"})
         source_claim = fixture.claim_due_deliveries(limit=1, channel_group="message")[0]
         assert fixture.reserve_delivery_send(source_claim["id"], source_claim["claimed_at"], source_claim["attempt"])
+        fixture.create_human_request("mesh-integration", {
+            "schema": "ask_human.request.v1", "request_id": "mesh-stop-fixture",
+            "project": "mesh-canary", "recipient": "isolated-fixture",
+            "mode": "question", "message": "Local storage fixture; never delivered",
+            "allowed_actors": ["isolated-fixture"],
+        })
+        with fixture._connection:
+            fixture._connection.execute(
+                "UPDATE human_requests SET task_control_state='acknowledged', "
+                "task_control_kind='hold', task_control_id='isolated-stop', "
+                "native_session_id='isolated-native-binding' WHERE request_id='mesh-stop-fixture'")
+        stopped_question = dict(fixture._connection.execute(
+            "SELECT * FROM human_requests WHERE request_id='mesh-stop-fixture'").fetchone())
         fixture._connection.close()
         migration = [sys.executable, str(Path(__file__).with_name("migrate-mesh-store.py")),
                      "--source", str(root / "frozen.sqlite3"), "--socket", str(socket_root / "sql-0.sock"),
@@ -253,6 +266,10 @@ def main() -> None:
         assert centers[another].get_incident(second["incident_id"]) is not None
         old = centers[another]._connection.execute("SELECT status FROM deliveries WHERE id=?", (row["id"],)).fetchone()
         assert old["status"] == "sending", "uncertain external reservation was lost"
+        restored_question = dict(centers[another]._connection.execute(
+            "SELECT * FROM human_requests WHERE request_id='mesh-stop-fixture'").fetchone())
+        assert restored_question == stopped_question, "STOP or native question binding changed after failover"
+        assert not centers[another].due_human_completions(limit=20), "failover fabricated a question completion"
         due = centers[another].claim_due_deliveries(time.time() + 120, limit=20, channel_group="message")
         assert row["id"] not in {item["id"] for item in due}, "sending action was replayed after node crash"
         receipt = {"status": "passed", "category": "focused_integration", "seconds": round(time.monotonic()-started, 3),
@@ -260,6 +277,7 @@ def main() -> None:
                    "transaction_rollback": True, "exclusive_claim": True, "leader_crash": True,
                    "real_sqlite_migration_and_resume": True,
                    "unknown_send_not_replayed": True, "external_notification_or_phone_proof": False}
+        receipt["stop_and_native_question_binding_preserved"] = True
         (root / "result.json").write_text(json.dumps(receipt, indent=2) + "\n")
         print(json.dumps(receipt))
     finally:
