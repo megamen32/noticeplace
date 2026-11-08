@@ -16,6 +16,62 @@ spec.loader.exec_module(credentials)
 
 
 class CredentialTests(unittest.TestCase):
+    def test_separate_verifier_addition_preserves_migrated_credentials_and_cas(self):
+        scopes, callback, plan = self.fixture()
+        migrated, cb, _ = credentials.prepare(scopes, callback, plan, lambda: 'executor')
+        verifier = {'project': 'project', 'principal_id': 'source', 'incident_role': 'verifier',
+                    'max_severity': 'notice', 'verification_sources': ['exact:source']}
+        fragment = {'schema': 'noticeplace.verifier-scope-fragment.v1', 'scopes': {'v' * 48: verifier}}
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            env, callback_path, fragment_path = base/'env', base/'callback', base/'fragment'
+            env.write_text('OTHER=preserved\nNOTIFY_CENTER_TOKENS_JSON='+json.dumps(migrated)+'\n')
+            callback_path.write_text(json.dumps(cb)); fragment_path.write_text(json.dumps(fragment))
+            for path in (env, callback_path, fragment_path): path.chmod(0o600)
+            original_callback = callback_path.read_bytes()
+            command = [sys.executable, str(ROOT/'deploy/consumer-lifecycle-credentials.py'),
+                       '--env', str(env), '--callback', str(callback_path)]
+            prepared = subprocess.run(command+['--verifier-fragment', str(fragment_path),
+                '--prepare-dir', str(base/'candidate')], capture_output=True, text=True)
+            self.assertEqual(0, prepared.returncode, prepared.stderr)
+            self.assertNotIn('v'*48, prepared.stdout)
+            subprocess.run(command+['--scope-only', '--apply-prepared', str(base/'candidate'),
+                '--backup-dir', str(base/'backup')], check=True, capture_output=True)
+            added = credentials.read_env(env.read_text())
+            self.assertEqual(verifier, added.pop('v'*48))
+            self.assertEqual(migrated, added)
+            self.assertEqual(original_callback, callback_path.read_bytes())
+            # A second apply cannot mistake the installed map for the original.
+            again = subprocess.run(command+['--scope-only', '--check-prepared', str(base/'candidate')], capture_output=True)
+            self.assertNotEqual(0, again.returncode)
+        for patch in ({'agent_jobs': ['health-diagnosis']}, {'incident_role': 'executor'},
+                      {'verification_sources': ['foreign']}, {'principal_id': 'executor'},
+                      {'project': 'foreign'}, {'max_severity': 'emergency'}):
+            with self.subTest(patch=patch), self.assertRaises(ValueError):
+                credentials.add_verifier_scope(migrated, {**fragment, 'scopes': {'v'*48: {**verifier, **patch}}})
+
+    def test_separate_verifier_can_narrow_existing_owned_source_authority(self):
+        scopes = {'existing-verifier': {
+            'project': 'health-monitor', 'principal_id': 'source:health-monitor',
+            'incident_role': 'verifier', 'max_severity': 'emergency',
+            'verification_sources': [], 'verification_owned_sources': True,
+            'agent_jobs': ['health-diagnosis'], 'automatic_health_diagnosis': True,
+        }}
+        verifier = {'project': 'health-monitor', 'principal_id': 'source:health-monitor',
+                    'incident_role': 'verifier', 'max_severity': 'notice',
+                    'verification_sources': ['router-haproxy-watchdog']}
+        fragment = {'schema': 'noticeplace.verifier-scope-fragment.v1',
+                    'scopes': {'v'*48: verifier}}
+
+        added, summary = credentials.add_verifier_scope(scopes, fragment)
+
+        self.assertEqual(verifier, added['v'*48])
+        self.assertEqual(scopes['existing-verifier'], added['existing-verifier'])
+        self.assertNotIn('agent_jobs', added['v'*48])
+        self.assertNotIn('automatic_health_diagnosis', added['v'*48])
+        self.assertEqual([{'project': 'health-monitor', 'source_principal': 'source:health-monitor',
+                           'sources': 1, 'separate_verifier': True}], summary)
+
     def fixture(self):
         scopes = {'original': {'project': 'project', 'consumer_id': 'consumer',
                               'max_severity': 'emergency', 'automatic_health_diagnosis': False,

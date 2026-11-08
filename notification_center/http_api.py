@@ -1124,6 +1124,42 @@ class DeliveryWorker:
             return True
         return value.lower() in {"1", "true", "yes", "on"}
 
+    def _isolated_matrix_qa_without_quiet_hours(self, payload: Mapping[str, Any]) -> bool:
+        """Honor the operator's exact S13 bot route, never producer QA flags.
+
+        This versioned grant is deliberately limited to the existing consumer
+        and two test bots. Empty consumer quiet_hours means no windows; None
+        inherits defaults at creation. It is not a general night-call opt-out.
+        Recheck current policy as well as the claimed delivery so a changed
+        route or added fallback cannot use an older grant/snapshot.
+        """
+        incident, delivery = payload["incident"], payload["delivery"]
+        consumer_id = "consumer_7ad31d4110d744259bde4ee7580890e4"
+        project = "noticeplace-qa-stop-20261023b"
+        if (delivery["channel"] != "matrix.call" or incident.get("consumer_id") != consumer_id
+                or incident.get("project") != project):
+            return False
+        consumer = self._center.get_consumer(consumer_id)
+        if (not consumer or consumer["project"] != project or consumer["profile_type"] != "custom"
+                or consumer["quiet_hours"] != [] or len(consumer["policy"]) != 1):
+            return False
+        destination = {
+            "account_ref": "matrix:ab023a689e926bf99d924e933ebd",
+            "room_id": "!vmxuOOunnmTUeuEdvi:chat.bezrabotnyi.com",
+            "target": "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com",
+            "participants": ["@lhc_voice_tester_a_20261021:chat.bezrabotnyi.com",
+                             "@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com"],
+        }
+        stage = consumer["policy"][0]
+        stage_metadata = {"stage", "kind", "enabled", "id", "step_id", "platform", "action",
+                          "retry_interval_seconds", "max_repeats"}
+        route = {key: value for key, value in stage.items() if key not in stage_metadata}
+        return (stage["kind"] == "matrix.call" and stage["enabled"] is True
+                and stage.get("max_repeats") == 1
+                and delivery.get("policy_step_id") == stage.get("step_id")
+                and route == destination and payload.get("target") == destination
+                and scoped_destination(payload) == destination)
+
     def _phone_delay_seconds(self, severity: str) -> float:
         if severity == "critical":
             return self._runtime_float("android_phone_call_escalation_seconds", self._android_phone_call_escalation_seconds)
@@ -1249,7 +1285,7 @@ class DeliveryWorker:
                 datetime.now(ZoneInfo(self._android_phone_quiet_timezone)),
                 self._runtime_float("android_phone_quiet_start_hour", self._android_phone_quiet_start_hour),
                 self._runtime_float("android_phone_quiet_end_hour", self._android_phone_quiet_end_hour),
-            ):
+            ) and not self._isolated_matrix_qa_without_quiet_hours(payload):
                 self._center.complete_delivery(
                     delivery["id"], "cancelled", "Автоматический звонок отменён: тихие часы",
                     claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),

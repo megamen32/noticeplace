@@ -258,6 +258,40 @@ def prepare(scopes, callback, plan, new_token=lambda: secrets.token_urlsafe(48))
     return output, updated_callback, summary
 
 
+def add_verifier_scope(scopes, fragment):
+    """Add one separate bearer for already authorized source verification only."""
+    if not isinstance(fragment, dict) or fragment.get('schema') != 'noticeplace.verifier-scope-fragment.v1':
+        raise ValueError('typed verifier fragment required')
+    additions = fragment.get('scopes')
+    if not isinstance(additions, dict) or len(additions) != 1:
+        raise ValueError('exactly one verifier credential required')
+    token, scope = next(iter(additions.items()))
+    if not isinstance(token, str) or not 32 <= len(token) <= 256 or token in scopes:
+        raise ValueError('new separate verifier credential required')
+    fields = {'project', 'principal_id', 'incident_role', 'max_severity', 'verification_sources'}
+    if (not isinstance(scope, dict) or set(scope) != fields
+            or scope.get('incident_role') != 'verifier' or scope.get('max_severity') != 'notice'):
+        raise ValueError('verification-only scope required')
+    sources = scope.get('verification_sources')
+    if (not isinstance(sources, list) or not 1 <= len(sources) <= 128
+            or any(not isinstance(s, str) or not s.strip() or len(s) > 256 or '*' in s for s in sources)
+            or len(sources) != len(set(sources))):
+        raise ValueError('exact source identities required')
+    for key in ('project', 'principal_id'):
+        if not isinstance(scope.get(key), str) or not scope[key].strip() or '*' in scope[key]:
+            raise ValueError('exact project and existing source principal required')
+    authorized = [prior for prior in scopes.values()
+                  if prior.get('project') == scope['project']
+                  and prior.get('principal_id') == scope['principal_id']
+                  and prior.get('incident_role') == 'verifier'
+                  and (prior.get('verification_owned_sources') is True
+                       or set(sources).issubset(prior.get('verification_sources', [])))]
+    if not authorized:
+        raise ValueError('fragment cannot widen existing source verification authority')
+    return {**scopes, token: dict(scope)}, [dict(project=scope['project'],
+        source_principal=scope['principal_id'], sources=len(sources), separate_verifier=True)]
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -328,6 +362,7 @@ def main():
     parser.add_argument('--env', type=Path, default=Path('/etc/notification-center.env'))
     parser.add_argument('--callback', type=Path, default=Path('/home/roomhacker/.config/gptadmin/health-callback.json'))
     parser.add_argument('--plan', type=Path)
+    parser.add_argument('--verifier-fragment', type=Path, help='add one separate verifier for existing exact source authority')
     parser.add_argument('--prepare-dir', type=Path)
     parser.add_argument('--allow-missing-base-project', action='append', default=[])
     parser.add_argument('--resolve-reviewed-source-refs', action='store_true')
@@ -355,7 +390,7 @@ def main():
     existing = read_env(old[0].decode())
     existing_consumer_grants = read_consumer_grants(old[0].decode())
     if args.apply_prepared or args.check_prepared:
-        if args.plan or args.prepare_dir or args.allow_missing_base_project or args.resolve_reviewed_source_refs or (args.apply_prepared and args.check_prepared):
+        if args.plan or args.verifier_fragment or args.prepare_dir or args.allow_missing_base_project or args.resolve_reviewed_source_refs or (args.apply_prepared and args.check_prepared):
             raise ValueError('apply consumes one prepared candidate, never generates credentials')
         candidate_path = (args.apply_prepared or args.check_prepared) / 'candidate.json'
         protected(candidate_path)
@@ -382,18 +417,30 @@ def main():
             return
         print(json.dumps({'mode': 'apply-prepared', 'projects': summary, 'services_restarted': False}))
     else:
-        if not args.plan or args.scope_only:
+        if args.verifier_fragment:
+            if args.plan or args.allow_missing_base_project or args.resolve_reviewed_source_refs or args.scope_only:
+                raise ValueError('verifier addition requires its own reviewed preparation')
+            protected(args.verifier_fragment)
+            scopes, summary = add_verifier_scope(existing, json.loads(args.verifier_fragment.read_text()))
+            callback = json.loads(old[1])
+            if not isinstance(callback.get('tokens'), dict):
+                raise ValueError('existing split callback map required')
+            consumer_grants = existing_consumer_grants
+            accepted_bases = [scope_hash(existing)]
+        elif not args.plan or args.scope_only:
             raise ValueError('preparation needs explicit plan and callback')
-        accepted_bases = permitted_baselines(existing, args.allow_missing_base_project)
-        plan = json.loads(args.plan.read_text())
-        if args.resolve_reviewed_source_refs:
+        else:
+            accepted_bases = permitted_baselines(existing, args.allow_missing_base_project)
+            plan = json.loads(args.plan.read_text())
+        if not args.verifier_fragment and args.resolve_reviewed_source_refs:
             database_lines = [line.split('=', 1)[1].strip().strip("'\"") for line in old[0].decode().splitlines() if line.startswith('NOTIFY_CENTER_DB=')]
             if len(database_lines) > 1:
                 raise ValueError('ambiguous canonical state reference')
             database = database_lines[0] if database_lines else '/var/lib/notification-center/notify-center.sqlite3'
             plan = resolve_reviewed_source_refs(plan, database)
-        scopes, callback, summary = prepare(existing, json.loads(old[1]), plan)
-        consumer_grants = merge_consumer_grants(existing_consumer_grants, prepare_consumer_grants(plan))
+        if not args.verifier_fragment:
+            scopes, callback, summary = prepare(existing, json.loads(old[1]), plan)
+            consumer_grants = merge_consumer_grants(existing_consumer_grants, prepare_consumer_grants(plan))
         validate_consumer_grant_join(scopes, consumer_grants)
         if args.prepare_dir:
             args.prepare_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
