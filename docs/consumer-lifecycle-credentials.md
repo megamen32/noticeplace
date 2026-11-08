@@ -131,6 +131,25 @@ Existing unrelated supplemental policy is preserved; a differing grant for an
 already registered consumer requires explicit reconciliation. No other registered
 consumer, QA actor or voice account is automatically enrolled.
 
+Since 0.1.12, an exact supplemental verifier grant may also contain
+`agent_jobs: ["health-diagnosis"]`, `automatic_health_diagnosis: true` and
+`suppress_owner_delivery: true`. The latter two fields accept JSON booleans
+only; the job list accepts only the single diagnosis job or an empty list.
+These policy fields require explicit, unique, non-wildcard source IDs and an
+exact consumer/project. Automatic diagnosis is restricted to those source IDs,
+including events that explicitly request an agent job. An executor grant cannot
+carry this policy. Ambiguous grants confer neither verifier nor diagnosis rights.
+Existing verifier-only grants keep their behavior; explicit false disables
+automatic diagnosis. The consumer DB still controls token revocation and the
+severity ceiling. This is server configuration, never producer-supplied policy.
+
+When adding automatic diagnosis, independently provision its project-scoped
+executor callback through the existing protected release helper. A verifier
+grant alone does not establish an executable repair route. Install a compatible
+backend before activating these fields, preserve other projects' callback
+entries, and verify the process-effective source policy and distinct executor
+identity after the controlled restart. Never publish bearer values in a plan.
+
 Candidates include both `base_grants_hash` and `candidate_grants_hash`. Check/apply
 requires the local supplemental policy to match its prepared base as well as an
 allowed credential-map base; arbitrary local policy differences remain fenced.
