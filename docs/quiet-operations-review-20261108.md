@@ -1,10 +1,6 @@
-# Notice Place: ревью и проверенная поставка 8 ноября 2026
+# Notice Place: итоговая сверка 8 ноября 2026
 
-Промежуточный отчёт на 8 ноября, 17:08 UTC. NoticePlace 0.1.12 установлен.
-Общая приёмка и сутки наблюдения ещё не завершены. По отдельному решению владельца
-старый Herder выведен из эксплуатации при переходе на RustV1; восстановление
-автоматического ремонта и пробуждений отложено. Приведённые ниже native-проверки
-выполнены до переключения и не доказывают работу нового RustV1-маршрута.
+Финальная ограниченная сверка обновлена после выпуска NoticePlace 0.1.13. Ниже ранние пункты сохранены как история; актуальный статус и границы приведены в последнем разделе и `final-proposed-leaf-updates.json`. Полный RustV1 autorepair и 24-часовая приёмка не заявляются.
 
 ## Вывод о ранней работе
 
@@ -144,8 +140,16 @@ RustV1-маршрута. Старый Herder resume_after не назначае�
 0.1.8 не считается проверкой нового релиза. Тестовых звонков и уведомлений
 реальным людям в этой приёмке — ноль.
 
-## Итоговая сверка coverage на 17:30 UTC
+## Финальная сверка coverage и оставшиеся границы
 
-Coverage остаётся неполным; source, install, natural readback и независимое closure учитываются раздельно. GPTAdmin native caller прошёл штатный natural readback в 17:17 UTC. External-site monitor `9a4144569af90829ee7e92b45c8944a8d19d5f3f` естественно закрыл два существующих source-инцидента с точными request/key receipts; это подтверждает M09-2, не полноту флота. Video UNKNOWN fence `3b2ea16297207cf0a9c84d56cb3219413bac5a4e` опубликован в `origin/dev`, 4 RED → 31 GREEN; natural acceptance установленного caller ещё pending. OmniRoute URL исправление установлено, но HTTP 400/source identity conflict на 100/88 оставляет closure pending. Galileo M02 и video bot M04 также pending.
+- NoticePlace 0.1.13 (`42555d8df23723f028a0a2827b9ca842359fa602`) установлен на 100/44/88. Published discard contract `db4f4f8`: два исторических OmniRoute инцидента переведены в discarded с tombstones и без healthy assertion; третий был уже закрыт producer и не повторялся. Естественные OmniRoute timer runs на всех трёх узлах завершились exit 0, phase `ok`, HTTP 200. Источник: `../20261108-historicaldiscard-release/RESULT.md`.
+- ATV в своей штатной конфигурации на 100 получил HTTP 200 для producer и verifier credentials по обоим source IDs (`atv-views-guards`, `views-coverage-watchdog`). Это подтверждает configured route; локальный verifier на 44/88 не обещан, и caller failover не заявляется. Источник: `../20261108-atv-pagination/terra-auth-exact-wrapper.json`.
+- M05-1 относится к `TelegramAuto/scripts/cron_noticeplace.py`, не к ATV views watchdog. Точный offline suite прошёл: 16 passed; stdout SHA256 `0df08e3e7e09308e066745ae6ea0211d413e96ff31d4f6ddec178ce24adf8022`. Текущий source SHA совпал с сохранённым installed caller inventory: `1441ac427fa6896d4c9c21444ca6ebddf8f8b844c406bf3f1a2de270a30e5890`. Результат: `../20261108-consumer-coverage-final/M05-1-cron-noticeplace-test.stdout`.
+- M10-2 покрыт отдельным offline fixture actual `socproof_topup_watch.py::_check_source` + installed `SourceVerifier`: свежий pull предшествует callback, balance `None` и detector exception дают `unknown`; 1 passed, commit `04fad92eb2674d333974268192f7345c587e8ea6`. Покупок, top-up, cron и live API не было.
+- M04 source predicate и foreign-submitting fence опубликованы `98576d2f`; focused suites 30 и 28 GREEN. Исторические bot errors отброшены по решению владельца. Natural individual callback не наблюдался, поэтому migration acceptance допускает именованное исключение; full autorepair не заявляется.
 
-По решению владельца S05-5, F01-1, F02-1/2/3 отложены с причиной `OWNER_DEFERRED_RUSTV1_ROUTE`. Старый Herder остаётся masked/inactive; запуск, ensure, unmask и вызовы Herder MCP запрещены. Полный autorepair и 24-часовое наблюдение отложены. Предложения по leaf acceptance сохранены в `leaf-decisions.json`; canonical plan не менялся. Сверка не запускала fleet-сбор, широкие тесты, runtime-действия или обращения к людям.
+### Coverage scope
+
+`coverage_declared_sources_complete=true` для 27 опубликованных registry rows и 10 известных дополнительных источников: в сохранённых строках есть installed receipt, явное role/applicability exception, retired или QA-only status. В известном inventory нет конкретного включённого producer на HAOS/Mac/VUSA, которому показано отсутствие verifier или installation. Поэтому `S17-3` не блокируется абстрактной невозможностью доказать отсутствие любых неизвестных производителей. `global_census_claimed=false`: глобальная полнота всех возможных источников не заявляется.
+
+Обычные source contracts и циклы без due checks принимаются по их собственным критериям с явным `no live closure` exception; искусственные инциденты не создавались. Исторические восстановление и Matrix ledger имеют статус `OWNER_DISCARDED_HISTORICAL_SCOPE`, не объявляются исправленными. Cloud/alias product boundary остаётся отдельной деградацией; старый Herder остаётся withdrawn при переходе RustV1. Полный autorepair и 24-часовое наблюдение отложены. Leaf предложения только для оставшихся незавершённых задач находятся в `../20261108-consumer-coverage-final/final-proposed-leaf-updates.json`; canonical plan не менялся.
