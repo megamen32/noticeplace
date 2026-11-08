@@ -513,8 +513,15 @@ class NotificationCenter:
                     self._connection.execute(f"ALTER TABLE consumer_policy_stages ADD COLUMN {column} {definition}")
             self._connection.execute("DROP INDEX IF EXISTS incidents_open_dedup")
             self._connection.execute("DROP INDEX IF EXISTS incidents_open_dedup_scope")
-            self._connection.execute("CREATE TABLE IF NOT EXISTS incident_discard_tombstones (incident_id TEXT PRIMARY KEY, project TEXT NOT NULL, recipient TEXT NOT NULL, dedup_key TEXT NOT NULL, correlation_id TEXT NOT NULL, revision TEXT NOT NULL, actor TEXT NOT NULL, created_at REAL NOT NULL)")
-            self._connection.execute("CREATE INDEX IF NOT EXISTS incident_discard_episode ON incident_discard_tombstones(project,recipient,dedup_key,correlation_id)")
+            self._connection.execute("CREATE TABLE IF NOT EXISTS incident_discard_tombstones (incident_id TEXT PRIMARY KEY, project TEXT NOT NULL, recipient TEXT NOT NULL, consumer_id TEXT, dedup_key TEXT NOT NULL, correlation_id TEXT NOT NULL, revision TEXT NOT NULL, actor TEXT NOT NULL, created_at REAL NOT NULL)")
+            discard_columns = {str(row['name']) for row in self._connection.execute('PRAGMA table_info(incident_discard_tombstones)')}
+            if 'consumer_id' not in discard_columns:
+                if self._connection.execute('SELECT 1 FROM incident_discard_tombstones t LEFT JOIN incidents i ON i.id=t.incident_id WHERE i.id IS NULL LIMIT 1').fetchone():
+                    raise RuntimeError('orphan discard tombstone cannot be migrated safely')
+                self._connection.execute('ALTER TABLE incident_discard_tombstones ADD COLUMN consumer_id TEXT')
+                self._connection.execute('UPDATE incident_discard_tombstones SET consumer_id=(SELECT consumer_id FROM incidents WHERE id=incident_discard_tombstones.incident_id)')
+            self._connection.execute('DROP INDEX IF EXISTS incident_discard_episode')
+            self._connection.execute("CREATE INDEX incident_discard_episode ON incident_discard_tombstones(project,recipient,consumer_id,dedup_key,correlation_id)")
             self._connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS incidents_open_dedup_scope "
                 "ON incidents(project, recipient, IFNULL(consumer_id, ''), dedup_key, IFNULL(correlation_id, '')) "
@@ -2295,8 +2302,8 @@ class NotificationCenter:
                 return {"event_id": previous["event_id"], "incident_id": previous["incident_id"], "state": previous_incident["state"], "deduplicated": False, "idempotent": True, "initial_delivery_id": initial["id"] if initial else None, "agent_job_delivery_id": agent_delivery["id"] if agent_delivery else None, "notifications_muted": bool(previous_incident.get("notifications_muted"))}
             project, recipient, dedup_key = str(event["project"]), str(event["recipient"]), str(event["dedup_key"])
             if correlation_id and self._connection.execute(
-                    'SELECT 1 FROM incident_discard_tombstones WHERE project=? AND recipient=? AND dedup_key=? AND correlation_id=? LIMIT 1',
-                    (project, recipient, dedup_key, correlation_id)).fetchone():
+                    "SELECT 1 FROM incident_discard_tombstones WHERE project=? AND recipient=? AND IFNULL(consumer_id,'')=IFNULL(?,'') AND dedup_key=? AND correlation_id=? LIMIT 1",
+                    (project, recipient, consumer_id, dedup_key, correlation_id)).fetchone():
                 raise ValidationError('historical episode was discarded')
             parent = None
             if parent_incident_id:

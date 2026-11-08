@@ -19,11 +19,17 @@ def preview(connection, incident_id):
         raise ValueError('incident not found')
     item = dict(row)
     item['deliveries'] = [dict(r) for r in connection.execute(
-        'SELECT id,status,channel,updated_at FROM deliveries WHERE incident_id=? ORDER BY id', (incident_id,)).fetchall()]
+        'SELECT id,status,channel,attempt,result_json,last_error,updated_at FROM deliveries WHERE incident_id=? ORDER BY id', (incident_id,)).fetchall()]
+    for delivery in item['deliveries']:
+        for field in ('result_json', 'last_error'):
+            value = delivery.pop(field)
+            delivery[field + '_sha256'] = hashlib.sha256(value.encode()).hexdigest() if value else None
     item['questions'] = [dict(r) for r in connection.execute(
         'SELECT request_id,state FROM human_requests WHERE incident_id=? ORDER BY request_id', (incident_id,)).fetchall()]
     item['started_sessions'] = [dict(r) for r in connection.execute(
-        "SELECT event_id,event_type FROM events WHERE incident_id=? AND event_type IN ('health.diagnosis_session_started','health.orchestrator_session_started') ORDER BY event_id", (incident_id,)).fetchall()]
+        "SELECT event_id,event_type,payload_json FROM events WHERE incident_id=? AND event_type IN ('health.diagnosis_session_started','health.orchestrator_session_started','health.remediation_session_started') ORDER BY event_id", (incident_id,)).fetchall()]
+    for session in item['started_sessions']:
+        session['payload_sha256'] = hashlib.sha256(session.pop('payload_json').encode()).hexdigest()
     raw = json.dumps(item, sort_keys=True, separators=(',', ':')).encode()
     return {**item, 'revision': hashlib.sha256(raw).hexdigest()}
 
@@ -35,6 +41,11 @@ def decide(item, expected_revision):
         raise ValueError('incident is not an open typed historical episode')
     if any(d['status'] in ('claimed', 'sending', 'uncertain', 'unknown') for d in item['deliveries']):
         raise ValueError('delivery outcome requires reconciliation')
+    if any(d.get('channel', '').startswith('gptadmin.agent:') and
+           (d['status'] == 'sent' or d.get('result_json_sha256') or
+            (d.get('attempt', 0) > 0 and d['status'] in ('queued', 'retry')))
+           for d in item['deliveries']):
+        raise ValueError('accepted executor delivery requires reconciliation')
     if any(q['state'] not in ('cancelled', 'resolved', 'expired') for q in item['questions']):
         raise ValueError('active human request requires reconciliation')
     if item['attempt_id'] or item['session_id'] or item['started_sessions']:
@@ -51,9 +62,9 @@ def discard(connection, incident_id, expected_revision, actor):
         item = decide(preview(connection, incident_id), expected_revision)
         now = time.time()
         connection.execute('INSERT INTO incident_discard_tombstones '
-            '(incident_id,project,recipient,dedup_key,correlation_id,revision,actor,created_at) '
-            'VALUES (?,?,?,?,?,?,?,?)',
-            (incident_id,item['project'],item['recipient'],item['dedup_key'],item['correlation_id'],expected_revision,actor,now))
+            '(incident_id,project,recipient,consumer_id,dedup_key,correlation_id,revision,actor,created_at) '
+            'VALUES (?,?,?,?,?,?,?,?,?)',
+            (incident_id,item['project'],item['recipient'],item['consumer_id'],item['dedup_key'],item['correlation_id'],expected_revision,actor,now))
         connection.execute("UPDATE incidents SET state='discarded',updated_at=? WHERE id=? AND state='open'", (now,incident_id))
         connection.execute("UPDATE deliveries SET status='cancelled',updated_at=? WHERE incident_id=? AND status IN ('queued','retry')", (now,incident_id))
         connection.execute('INSERT INTO audit_events VALUES (?,?,?,?,?,?)',
