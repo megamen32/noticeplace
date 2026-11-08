@@ -1,0 +1,48 @@
+test_actual_loader_registers_shared_http_and_literal_header_reference (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_historical_011_reproduces_official_loader_rejection (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_http_package_loads_from_path_with_spaces (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_missing_env_is_rejected_before_transport (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_native_projections_preserve_shared_http_auth_and_skill (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_official_connect_renders_fake_env_at_real_http_transport (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... FAIL
+test_package_validator (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+
+======================================================================
+FAIL: test_official_connect_renders_fake_env_at_real_http_transport (test_noticeplace_plugin_hermes.HermesPortablePluginTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/roomhacker/agents-projects/.worktrees/noticeplace-quiet-implementation-20261107/tests/test_noticeplace_plugin_hermes.py", line 154, in test_official_connect_renders_fake_env_at_real_http_transport
+    proof = self.transport_proof('present')
+  File "/home/roomhacker/agents-projects/.worktrees/noticeplace-quiet-implementation-20261107/tests/test_noticeplace_plugin_hermes.py", line 150, in transport_proof
+    self.assertEqual(0, result.returncode, result.stderr)
+AssertionError: 0 != 1 : MCP server 'noticeplace-fixture' failed initial connection after 3 attempts, parking until a reconnect is requested (state: connecting → parked): ImportError: MCP server 'noticeplace-fixture' requires HTTP transport but mcp.client.streamable_http is not available. Upgrade the mcp package to get HTTP support.
+Traceback (most recent call last):
+  File "<string>", line 72, in <module>
+  File "/home/roomhacker/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/home/roomhacker/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/roomhacker/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "<string>", line 62, in run
+  File "/home/roomhacker/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/tasks.py", line 489, in wait_for
+    return fut.result()
+           ^^^^^^^^^^^^
+  File "/home/roomhacker/.hermes/hermes-agent/tools/mcp_tool_discovery.py", line 162, in _connect_server
+    await server.start(config)
+  File "/home/roomhacker/.hermes/hermes-agent/tools/mcp_tool_server_run.py", line 538, in start
+    raise self._error
+  File "/home/roomhacker/.hermes/hermes-agent/tools/mcp_tool_server_run.py", line 357, in run
+    if not await self._on_clean_return(await run_transport(config), budget):
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/roomhacker/.hermes/hermes-agent/tools/mcp_tool_transport.py", line 589, in _run_http
+    raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
+ImportError: MCP server 'noticeplace-fixture' requires HTTP transport but mcp.client.streamable_http is not available. Upgrade the mcp package to get HTTP support.
+
+
+----------------------------------------------------------------------
+Ran 7 tests in 7.712s
+
+FAILED (failures=1)

@@ -206,6 +206,7 @@ class TaskDecisionApiTests(unittest.TestCase):
         self.assertEqual(2, len(_FakeExManagerTransport.instances))
         self.assertEqual(2, sum(len(transport.submit_calls) for transport in _FakeExManagerTransport.instances))
 
+    @mock.patch("notification_center.task_decisions.time.time", new=lambda: 1000.0)
     def test_board_answer_cas_uses_only_proposal_ref_and_herder_reads_same_row(self) -> None:
         herder_request_id = "d920a01e-a5f3-4dce-a640-b65b8e312433"
         _Authority.board_answer = None

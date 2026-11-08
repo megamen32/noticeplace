@@ -2,7 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from notification_center.core import NotificationCenter
+from notification_center.core import NotificationCenter, ValidationError
 from notification_center.mesh_store import Connection as MeshConnection
 
 class RuleReviewContracts(unittest.TestCase):
@@ -74,6 +74,10 @@ class RuleReviewContracts(unittest.TestCase):
                 "INSERT INTO notification_mutes(project,recipient,dedup_key,muted_at,muted_by,unmuted_at,unmuted_by)"
                 " VALUES (?,?,?,?,?,NULL,NULL)", ("fixture","test-only","cpu:one",1,"fixture:legacy"))
         self.assertFalse(self.center.notification_rule_settings(incident_id)["notifications_enabled"])
+        with self.assertRaisesRegex(ValidationError, "reload"):
+            self.center.set_notification_rule_option(
+                incident_id, "notifications", True, rule["revision"], "fixture:operator")
+        rule = self.center.notification_rule_settings(incident_id)
         after = self.center.set_notification_rule_option(
             incident_id, "notifications", True, rule["revision"], "fixture:operator")
         self.assertTrue(after["notifications_enabled"])

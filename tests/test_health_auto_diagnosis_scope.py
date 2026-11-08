@@ -35,17 +35,17 @@ class AutomaticDiagnosisScopeTests(unittest.TestCase):
                 'host_id': 'server-100', 'signal_type': 'control-rpc-timeout',
                 'correlation_id': 'fixture-correlation'}
 
-    def test_external_diagnosis_does_not_launch_duplicate_or_suppress_notification(self):
+    def test_external_diagnosis_does_not_launch_duplicate_and_stays_quiet(self):
         center = self.center(False)
         created = HealthWorkflow(center).intake_signal('fixture-token', 'fixture-create', self.signal())
         self.assertIsNone(created['agent_job_delivery_id'])
-        self.assertIsNotNone(created['initial_delivery_id'])
+        self.assertIsNone(created['initial_delivery_id'])
         self.assertFalse(center.health_notification_review_required(created['incident_id']))
 
     def test_default_existing_producers_keep_automatic_diagnosis_and_review(self):
         center = self.center()
-        # Review quieting is opt-in; the product default keeps all Telegram
-        # notifications visible. Exercise the review policy explicitly here.
+        # Exercise legacy review bookkeeping; ordinary delivery stays quiet
+        # independently of whether automatic diagnosis is enabled.
         center.set_runtime_setting('telegram_all_notifications_enabled', '0')
         created = HealthWorkflow(center).intake_signal('fixture-token', 'fixture-create', self.signal())
         self.assertIsNotNone(created['agent_job_delivery_id'])
@@ -58,7 +58,7 @@ class AutomaticDiagnosisScopeTests(unittest.TestCase):
         event['agent_job'] = 'health-diagnosis'
         created = center.create_event('fixture-token', 'fixture-explicit-inbound', event)
         self.assertIsNone(created['agent_job_delivery_id'])
-        self.assertIsNotNone(created['initial_delivery_id'])
+        self.assertIsNone(created['initial_delivery_id'])
 
     def test_explicit_unscoped_job_stays_forbidden(self):
         center = self.center(False, allowed=False)

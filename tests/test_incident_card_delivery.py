@@ -167,7 +167,7 @@ class IncidentCardDeliveryTests(unittest.TestCase):
                 for _,_,member in members:
                     payload=self.center.incident_card_payload(member['incident_id'])
                     text,_=render(payload,self.worker._telegram._action_codec)
-                    self.assertIn('Часть сервисов восстановилась',text)
+                    self.assertIn('В группе остаётся открытых инцидентов: 1',text)
                     self.assertIn('открытых инцидентов: 1',text)
                     self.assertNotIn('действий от вас не требуется',text)
                     self.assertIn('— проверяется',text)
@@ -235,7 +235,7 @@ class IncidentCardDeliveryTests(unittest.TestCase):
         self.assertEqual(1,self.center.original_telegram_card(self.incident_id)['message_id'])
         for delivery in self.worker.claim_due(channel_group='message'): self.worker.deliver(delivery)
         self.assertEqual(1,sum(m=='sendMessage' for m,_ in self.calls))
-        self.assertIn('Состояние восстановилось',self.calls[-1][1]['text'])
+        self.assertIn('Мониторинг подтвердил восстановление',self.calls[-1][1]['text'])
 
     def test_late_legacy_plans_cannot_replace_independently_closed_card(self):
         self.worker.deliver(self.claim(self.status_id))

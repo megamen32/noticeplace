@@ -1,0 +1,9 @@
+{
+  "$comment": "Codex/ZCode native MCP projection: the same shared Streamable HTTP endpoint, bearer from the environment, no secret in the package.",
+  "mcpServers": {
+    "noticeplace": {
+      "url": "https://notify.bezrabotnyi.com/mcp",
+      "bearer_token_env_var": "NOTIFY_MCP_TOKEN"
+    }
+  }
+}

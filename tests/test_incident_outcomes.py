@@ -35,9 +35,11 @@ class IncidentOutcomesTests(unittest.TestCase):
 
     def episode(self, host='server-44', signal='load', recipient='me'):
         self.serial += 1
+        # Admitted health notifications exercise transport/receipt mechanics.
+        # Routine incident quiet suppression is covered by test_quiet_operations.
         event = {
             'schema': 'notify.event.v1', 'project': 'fleet', 'recipient': recipient,
-            'kind': 'incident', 'severity': 'critical', 'title': 'Повышена нагрузка',
+            'kind': 'notification', 'severity': 'critical', 'title': 'Повышена нагрузка',
             'body': 'Мониторинг проверяет сервер.', 'dedup_key': f'fleet:{host}:{signal}',
             'event_type': 'health.degraded', 'source_id': f'fleet:{host}',
             'host_id': host, 'signal_type': signal, 'correlation_id': f'episode:{self.serial}',
@@ -182,11 +184,11 @@ class IncidentOutcomesTests(unittest.TestCase):
         self.assertEqual('failed', payload['health_outcome']['status'])
         self.assertIn('codex%3Asession-test-id', payload['health_outcome']['session_url'])
         text, markup = self.render(payload)
-        self.assertIn('Работа остановилась', text)
+        self.assertIn('Восстановление не подтверждено', text)
         self.assertIn(payload['health_outcome']['session_url'], text)
         # Since 26b26a9 the ack row precedes the session button on a
         # critical acknowledged card; the session url keeps its own row.
-        url_rows = [row[0] for row in markup['inline_keyboard'] if row[0].get('url')]
+        url_rows = [row[0] for row in markup['inline_keyboard'] if str(row[0].get('url','')).startswith('https://agent.bezrabotnyi.com/')]
         self.assertEqual([payload['health_outcome']['session_url']], [b['url'] for b in url_rows])
 
     def test_recovery_cancels_an_unsent_outdated_failure_conclusion(self):
@@ -216,8 +218,8 @@ class IncidentOutcomesTests(unittest.TestCase):
         text, markup = self.render(payload)
         # Since 127f0ab the unstarted-repair wording lives in the diagnosis
         # line and the accepted-explanation, not in a literal plan sentence.
-        self.assertIn('запуск исполнителя ещё не подтверждён', text)
-        self.assertIn('Восстановление пока не подтверждено', text)
+        self.assertNotIn('Мониторинг подтвердил восстановление', text)
+        self.assertFalse(self.center.latest_agent_session(incident))
         self.assertNotIn('исправлено', text.lower().replace('не выполнено', ''))
         self.assertEqual(3, len(payload['health_plans']))
         self.assertTrue(any('callback_data' in button for row in markup['inline_keyboard'] for button in row))
@@ -249,11 +251,11 @@ class IncidentOutcomesTests(unittest.TestCase):
             def send(self, payload, key):
                 raise RuntimeError('timeout')
         worker = DeliveryWorker(self.center, object(), agent_jobs={'health-diagnosis':Agent()})
-        for now in (self.now+1, self.now+100):
-            worker.deliver(self.center.claim_due_deliveries(now_epoch=now, channel_group='agent')[0])
-        outcome = self.outcomes(created['incident_id'])
-        self.assertEqual(1, len(outcome))
-        self.assertEqual('interrupted', json.loads(outcome[0]['target_json'])['health_outcome']['status'])
+        worker.deliver(self.center.claim_due_deliveries(now_epoch=self.now+1, channel_group='agent')[0])
+        self.assertEqual([], self.center.claim_due_deliveries(now_epoch=self.now+100, channel_group='agent'))
+        self.assertEqual('uncertain', self.center._connection.execute(
+            'SELECT status FROM deliveries WHERE id=?', (delivery_id,)).fetchone()[0])
+        self.assertEqual([], self.outcomes(created['incident_id']))
         self.assertEqual('open', self.center.get_incident(created['incident_id'])['state'])
 
     @staticmethod

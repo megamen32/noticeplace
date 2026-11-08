@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import socket
 import time
 from datetime import datetime
 import urllib.error
@@ -27,6 +28,33 @@ _HEALTH_EXECUTION_PROFILE = HEALTH_EXECUTION_PROFILE
 
 class GptAdminAdmissionUnavailable(RuntimeError):
     """The Hub did not durably accept the job, so a fallback is still safe."""
+
+
+class GptAdminAdmissionUncertain(RuntimeError):
+    """Submission may have been accepted; reconcile without retry or fallback."""
+
+
+def admission_definitely_rejected(error: BaseException, receipt: Any = None) -> bool:
+    """Classify evidence, never exception text, as safe pre-admission failure."""
+    cause = error.__cause__ or error
+    if isinstance(cause, urllib.error.HTTPError):
+        if cause.code in (400, 401, 403, 404, 405, 413, 415, 422, 429):
+            return True
+        # Hub drain explicitly proves no execution. A generic proxy 503 does not.
+        return (cause.code == 503 and isinstance(receipt, Mapping)
+                and receipt.get('executed') is False and receipt.get('retryable') is True)
+    if isinstance(cause, urllib.error.URLError):
+        return isinstance(cause.reason, (ConnectionRefusedError, socket.gaierror))
+    return False
+
+
+def admission_job_id(receipt: Mapping[str, Any]) -> str | None:
+    """A success-shaped response is usable only with a typed durable identity."""
+    job_id = receipt.get('job_id')
+    if (isinstance(job_id, str) and job_id.strip()
+            and receipt.get('status') in ('accepted', 'running', 'completed', 'failed')):
+        return job_id.strip()
+    return None
 
 
 def _agent_job_event(job_id: str, payload: Mapping[str, Any], delivery_key: str = "") -> dict[str, Any]:
@@ -503,10 +531,21 @@ class GptAdminAgentJobAdapter:
         try:
             accepted = self._open(self._signed_request(self._url, "POST", body, idempotency_key), min(20, self._timeout_seconds))
         except RuntimeError as error:
-            raise GptAdminAdmissionUnavailable(str(error)) from error
-        hub_job_id = str(accepted.get("job_id") or "").strip()
-        if not hub_job_id or str(accepted.get("status") or "") not in ("accepted", "running", "completed", "failed"):
-            raise GptAdminAdmissionUnavailable("GPTAdmin agent job did not return a durable job identity")
+            rejected = None
+            cause = error.__cause__
+            if isinstance(cause, urllib.error.HTTPError) and cause.code == 503:
+                try:
+                    raw = cause.read(_RESPONSE_LIMIT + 1)
+                    if len(raw) <= _RESPONSE_LIMIT:
+                        rejected = json.loads(raw)
+                except (ValueError, OSError, TypeError):
+                    pass  # An unreadable rejection is not proof of non-admission.
+            if admission_definitely_rejected(error, rejected):
+                raise GptAdminAdmissionUnavailable(str(error)) from error
+            raise GptAdminAdmissionUncertain(str(error)) from error
+        hub_job_id = admission_job_id(accepted)
+        if hub_job_id is None:
+            raise GptAdminAdmissionUncertain("GPTAdmin agent job did not return a durable job identity")
 
         parsed = urllib.parse.urlsplit(self._url)
         job_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, f"/webhook-jobs/{urllib.parse.quote(hub_job_id, safe='')}", "", ""))

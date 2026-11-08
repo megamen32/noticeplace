@@ -1,0 +1,14 @@
+test_actual_loader_registers_shared_http_and_literal_header_reference (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_existing_native_http_entry_wins_without_duplicate_registration (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_historical_011_reproduces_official_loader_rejection (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_historical_bearer_field_is_rejected_even_without_comment (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_http_package_loads_from_path_with_spaces (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_missing_env_is_rejected_before_transport (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_native_projections_preserve_shared_http_auth_and_skill (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_official_connect_renders_fake_env_at_real_http_transport (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_package_validator (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 4.352s
+
+OK

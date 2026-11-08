@@ -1,7 +1,7 @@
 """Three-chat routing and the «изменить важность» control (owner order 23:10).
 
-«Решения» carries every card with buttons, «Уведомления» only emergency+critical
-incidents and their closures, «Логи» the routine rest and ships disabled.
+«Решения» carries pending questions; unsolicited incident cards require an
+emergency. Critical business notices keep their routing; «Логи» ships disabled.
 The per-source severity override re-weights future events of one source.
 """
 from __future__ import annotations
@@ -199,10 +199,10 @@ class ThreeChatDeliveryTests(unittest.TestCase):
                 (clock.time(), delivery_id))
             return dict(self.center._connection.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone())
 
-    def test_critical_card_lands_in_the_notify_chat(self) -> None:
+    def test_emergency_card_lands_in_the_notify_chat(self) -> None:
         created = self.center.create_event("producer", "crit", {
             "schema": "notify.event.v1", "project": "fleet-health", "recipient": "me",
-            "kind": "incident", "severity": "critical", "title": "Падение", "dedup_key": "load:100",
+            "kind": "incident", "severity": "emergency", "title": "Падение", "dedup_key": "load:100",
         })
         self.assertIsNotNone(created["initial_delivery_id"])
         self.worker.deliver(self._claim(created["initial_delivery_id"]))
@@ -262,7 +262,7 @@ class StaleAlarmBoundTests(unittest.TestCase):
         )
         self.addCleanup(self.center._connection.close)
 
-    def _event(self, key: str, severity: str = "critical") -> dict[str, object]:
+    def _event(self, key: str, severity: str = "emergency") -> dict[str, object]:
         with patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify"]'}):
             return self.center.create_event("producer", key, {
                 "schema": "notify.event.v1", "project": "fleet-health", "recipient": "me",

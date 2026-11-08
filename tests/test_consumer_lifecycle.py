@@ -147,8 +147,7 @@ class SourceVerifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.tmp') as directory:
             client = SourceVerifier('http://test', 'secret', 'health', 'host:100', 'other', directory,
                                     transport=lambda *args: {'requests': [self.request()]})
-            with self.assertRaises(ValueError):
-                client.tick(lambda _: self.fail('wrong host'))
+            self.assertEqual([], client.tick(lambda _: self.fail('wrong host')))
 
     def test_unknown_admission_reconciles_exact_server_receipt_without_replay(self):
         from notification_center.core import NotificationCenter

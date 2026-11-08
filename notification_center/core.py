@@ -76,6 +76,10 @@ class ValidationError(NotificationCenterError):
     """Raised when an event or state-transition request violates the contract."""
 
 
+class IncidentModelConfigurationError(ValidationError):
+    """An immutable delivery route is invalid before external admission."""
+
+
 class IdempotencyConflict(ValidationError):
     """Raised when a producer reuses a request key for different event content."""
 
@@ -441,6 +445,8 @@ class NotificationCenter:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN telegram_progress_confirmed_at REAL")
             if "incident_id" not in human_request_columns:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN incident_id TEXT")
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS human_requests_incident ON human_requests(incident_id)")
             if "kind" not in human_request_columns:
                 self._connection.execute("ALTER TABLE human_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'")
             for column in ("native_harness", "native_session_id", "native_cwd"):
@@ -2421,16 +2427,47 @@ class NotificationCenter:
                     return None
             owner = self.get_incident(self.telegram_card_owner(incident_id)) or {}
             due = max(now, float(owner.get('telegram_card_updated_at') or 0) + setting(self, 'telegram_card_edit_interval_seconds'))
+            incident = self.get_incident(incident_id) or {}
+            resolved = incident.get('state') == 'resolved'
+            status = 'resolved' if resolved else 'progress'
+            card = self.original_telegram_card(incident_id)
+            if resolved:
+                # A closed card can be updated/deleted, never created again.
+                if card is None:
+                    return None
+                # A late refresh must not replay an unconfirmed deletion/edit
+                # of this shared card under a fresh delivery key.
+                pending = self._connection.execute(
+                    "SELECT 1 FROM deliveries WHERE incident_id IN "
+                    "(SELECT id FROM incidents WHERE id=? OR telegram_card_owner_id=?) "
+                    "AND channel='telegram.main' AND status IN ('claimed','sending','uncertain') "
+                    "AND CAST(json_extract(target_json,'$.incident_card.chat_id') AS TEXT)=? "
+                    "AND CAST(json_extract(target_json,'$.incident_card.message_id') AS TEXT)=? LIMIT 1",
+                    (owner.get('id', incident_id), owner.get('id', incident_id),
+                     str(card['chat_id']), str(card['message_id'])),
+                ).fetchone()
+                if pending:
+                    return None
+                phase = self._connection.execute(
+                    'SELECT payload_json FROM resolution_events WHERE incident_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1',
+                    (incident_id,),
+                ).fetchone()
+                if phase and json.loads(phase['payload_json']).get('event_type') == 'health.phase_changed':
+                    status = 'phase_changed'
+            else:
+                card = card or self.manual_ai_card(incident_id)
+            refresh_target = {'health_outcome': {'status': status}, 'card_refresh': True}
+            if card:
+                refresh_target['incident_card'] = card
             if step:
-                return self._schedule_delivery(incident_id, 'telegram.main', step, due,
-                                               {'health_outcome': {'status': 'progress'}, 'card_refresh': True})
+                return self._schedule_delivery(incident_id, 'telegram.main', step, due, refresh_target)
             # Only an unadmitted refresh may be reused. Never reset sending/unknown.
             row = self._connection.execute("SELECT id FROM deliveries WHERE incident_id=? AND channel='telegram.main' "
                                            "AND json_extract(target_json,'$.card_refresh')=1 AND status='queued' ORDER BY created_at DESC LIMIT 1", (incident_id,)).fetchone()
             if row:
                 return str(row['id'])
             return self._schedule_delivery(incident_id, 'telegram.main', 'card-refresh:' + uuid.uuid4().hex, due,
-                                           {'health_outcome': {'status': 'progress'}, 'card_refresh': True})
+                                           refresh_target)
 
     def _builtin_profile_for_event(self, event: Mapping[str, Any]) -> str:
         """Resolve a legacy event to the ordinary built-in mode profile."""
@@ -2557,12 +2594,12 @@ class NotificationCenter:
         from .incident_model_policy import incident_model_error, is_incident_model
         blocked = str(target.get("incident_model_error") or "").strip()
         if blocked:
-            raise ValidationError(f"Модель анализа инцидентов не настроена: {blocked}")
+            raise IncidentModelConfigurationError(f"Модель анализа инцидентов не настроена: {blocked}")
         route = str(target.get("incident_model") or "").strip()
         if not route:
             return ""
         if not is_incident_model(route):
-            raise ValidationError(
+            raise IncidentModelConfigurationError(
                 "Маршрут модели анализа инцидентов в доставке недопустим: "
                 f"{incident_model_error(route)}"
             )
@@ -2730,6 +2767,39 @@ class NotificationCenter:
             (incident_id, time.time()),
         ).fetchone() is not None
 
+    def _manual_card_update_allowed(self, incident_id: str, channel: str, target: Mapping[str, Any] | None) -> bool:
+        """Admit only an explicit manual update of a server-recorded card."""
+        if (channel not in {'telegram.main', 'telegram.edit'} or not isinstance(target, Mapping)
+                or not self.manual_ai_requested(incident_id)):
+            return False
+        card = self.original_telegram_card(incident_id) or self.manual_ai_card(incident_id)
+        if not card:
+            return False
+        if channel == 'telegram.edit':
+            supplied = target
+        else:
+            if not any(isinstance(target.get(key), Mapping) for key in ('health_session', 'health_outcome')):
+                return False
+            # The sender only uses ai_card for a session update. An outcome
+            # without incident_card could otherwise fall through to a new send.
+            supplied = target.get('incident_card')
+            if supplied is None and isinstance(target.get('health_session'), Mapping) and target['health_session']:
+                supplied = target.get('ai_card')
+        return (isinstance(supplied, Mapping)
+                and all(str(supplied.get(key)) == str(card.get(key)) for key in ('chat_id', 'message_id')))
+
+    def _resolved_card_update_allowed(self, incident_id: str, channel: str, target: Mapping[str, Any] | None) -> bool:
+        """A recovery/cleanup update can only address the confirmed original."""
+        if channel != 'telegram.main' or not isinstance(target, Mapping):
+            return False
+        outcome = target.get('health_outcome')
+        if not isinstance(outcome, Mapping) or outcome.get('status') not in {'resolved', 'recovered', 'phase_changed'}:
+            return False
+        card = self.original_telegram_card(incident_id)
+        supplied = target.get('incident_card')
+        return (bool(card) and isinstance(supplied, Mapping)
+                and all(str(supplied.get(key)) == str(card.get(key)) for key in ('chat_id', 'message_id')))
+
     def _quiet_delivery_reason(self, incident_id: str, channel: str, target: Mapping[str, Any] | None) -> str | None:
         # Apply the same contract to every transport and to pre-upgrade queues.
         # Agent work is internal; ordinary business notifications keep their policy.
@@ -2745,11 +2815,9 @@ class NotificationCenter:
         internal_notice = str(incident['event_type'] or '') in {'executor.digest', 'agent.done'}
         if incident['kind'] != 'incident' and not internal_notice:
             return None
-        outcome = (target or {}).get('health_outcome')
-        if (channel == 'telegram.main' and isinstance(outcome, Mapping)
-                and outcome.get('status') in {'resolved', 'recovered', 'phase_changed'}
-                and self.original_telegram_card(incident_id) is not None):
-            # A previously visible problem may update its existing card on recovery.
+        if self._manual_card_update_allowed(incident_id, channel, target):
+            return None
+        if self._resolved_card_update_allowed(incident_id, channel, target):
             return None
         return 'quiet_incident_work'
 
@@ -2763,11 +2831,19 @@ class NotificationCenter:
         if self.matrix_route_scope_denied(incident_id, channel, target):
             return "matrix_route_scope"
         if channel == "telegram.main":
-            from .http_api import telegram_mode, telegram_active_modes_from_environment
+            from .http_api import telegram_mode, telegram_mode_for_payload, telegram_active_modes_from_environment
             incident = self._row(self._connection.execute(
                 "SELECT severity, event_type FROM incidents WHERE id = ?", (incident_id,)
             ).fetchone())
-            mode = 'decisions' if self._pending_operator_question(incident_id) else telegram_mode(dict(incident)) if incident else None
+            if self._pending_operator_question(incident_id):
+                mode = 'decisions'
+            elif incident and (self._manual_card_update_allowed(incident_id, channel, target)
+                               or self._resolved_card_update_allowed(incident_id, channel, target)):
+                mode = telegram_mode_for_payload({'incident': dict(incident), 'target': target,
+                    'health_session': (target or {}).get('health_session'),
+                    'health_outcome': (target or {}).get('health_outcome')})
+            else:
+                mode = telegram_mode(dict(incident)) if incident else None
             if incident is not None and mode not in telegram_active_modes_from_environment():
                 # The «Логи» chat ships disabled by owner order (23:10): routine
                 # noise is never queued, only decisions and notifications are.
@@ -2856,10 +2932,10 @@ class NotificationCenter:
             else:
                 continue
             delivery_id = self._schedule_delivery(incident_id, channel, step, due_at, target)
+            # A configured stage may be denied by quiet/route policy. Keep the
+            # incident and its denial audit even when every delivery is denied.
             if initial_delivery_id is None:
                 initial_delivery_id = delivery_id
-            if initial_delivery_id is None:
-                raise ValidationError("consumer policy has no enabled delivery stages")
         return initial_delivery_id
 
     def _stale_alarm_seconds(self) -> float:
@@ -2970,9 +3046,13 @@ class NotificationCenter:
                 holder = self._history_retention_holder = socket.gethostname()+':'+uuid.uuid4().hex
             if not self.claim_runtime_lease('history-retention',holder,ttl_seconds=90):
                 return None
+            from .incident_lifecycle import expire_verification_requests
+            expire_verification_requests(self, limit=20)
             worker = RetentionWorker(self._connection,batch_size=100)
             from .history_compaction import compact_event_details
             compact_event_details(self._connection,cutoff=time.time()-worker._effective_days()*86400,batch_size=100)
+            from .maintenance_expiry import maintain_expiry
+            maintain_expiry(self._connection, dry_run=False, batch_size=100)
             return worker.run_batch(dry_run=False)
 
     def claim_due_deliveries(self, now_epoch: float | None = None, limit: int = 20, lease_seconds: float = 60, channel_group: str | None = None, delivery_id: str | None = None) -> list[dict[str, Any]]:
@@ -3085,8 +3165,9 @@ class NotificationCenter:
                     (owner_id, owner_id, delivery_id),
                 ).fetchone()
                 if competing_send:
-                    self._connection.execute("UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,updated_at=? WHERE id=?",
-                                             (now+1 if recovery else max(next_edit, now+15), now, delivery_id))
+                    from .delivery_retry import CARD_RECEIPT_PENDING, dependency_retry_delay
+                    self._connection.execute("UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,last_error=?,updated_at=? WHERE id=?",
+                                             (max(next_edit, now + dependency_retry_delay(attempt)), CARD_RECEIPT_PENDING, now, delivery_id))
                     return False
                 if (str(row["channel"]) != "telegram.edit" and self.original_telegram_card(str(row['incident_id'])) is not None
                         and now < next_edit and not recovery):
@@ -3103,9 +3184,10 @@ class NotificationCenter:
                         (owner_id, owner_id, delivery_id),
                     ).fetchone()
                     if obstruction:
+                        from .delivery_retry import CARD_RECEIPT_PENDING, dependency_retry_delay
                         self._connection.execute(
                             "UPDATE deliveries SET status='queued',due_at=?,claimed_at=NULL,last_error=?,updated_at=? WHERE id=?",
-                            (now + 15, "Ожидается подтверждение создания исходной карточки", now, delivery_id),
+                            (now + dependency_retry_delay(attempt), CARD_RECEIPT_PENDING, now, delivery_id),
                         )
                         return False
             if row is not None and str(row["channel"]).endswith(".call"):
@@ -3248,6 +3330,29 @@ class NotificationCenter:
                 json.loads(str(neighbour["target_json"] or "{}")),
             )
 
+    def _wake_card_dependants(self, row: Mapping[str, Any], outcome: str,
+                              result: Mapping[str, Any] | None, now: float) -> None:
+        """Wake observers after a receipt or definitive removal of an obstruction.
+
+        Caller has recorded the outcome under the delivery claim fence. Only
+        queued dependants are touched; UNKNOWN originals are never replayed.
+        Reservation still checks for any other sending/uncertain obstruction.
+        """
+        channel = str(row['channel'])
+        if not channel.startswith('telegram.') or channel.endswith('.call'):
+            return
+        receipt = (outcome == 'sent' and isinstance(result, Mapping)
+                   and result.get('message_id') and not result.get('card_deleted'))
+        if outcome not in {'failed', 'cancelled', 'superseded'} and not receipt:
+            return
+        from .delivery_retry import CARD_RECEIPT_PENDING
+        owner_id = self.telegram_card_owner(str(row['incident_id']))
+        self._connection.execute(
+            "UPDATE deliveries SET due_at=?,updated_at=? WHERE status='queued' AND last_error=? "
+            "AND channel LIKE 'telegram.%' AND channel NOT LIKE '%.call' "
+            "AND incident_id IN (SELECT id FROM incidents WHERE id=? OR telegram_card_owner_id=?)",
+            (now, now, CARD_RECEIPT_PENDING, owner_id, owner_id))
+
     def complete_delivery(self, delivery_id: str, outcome: str, error: str | None = None, retry_after_seconds: float = 30, claimed_at: float | None = None, attempt: int | None = None, result: Mapping[str, Any] | None = None, schedule_failure_neighbours: bool = True) -> None:
         """Mark one claim sent, cancelled, or safely queued for a future retry."""
         if outcome not in ("sent", "failed", "cancelled", "retry", "uncertain", "superseded"):
@@ -3290,6 +3395,7 @@ class NotificationCenter:
                 self._connection.execute("UPDATE deliveries SET status = 'queued', due_at = ?, last_error = ?, updated_at = ? WHERE id = ?", (now + max(1, retry_after_seconds), safe_error, now, delivery_id))
             else:
                 self._connection.execute("UPDATE deliveries SET status = ?, last_error = ?, result_json = COALESCE(?, result_json), updated_at = ? WHERE id = ?", (outcome, safe_error, result_json, now, delivery_id))
+            self._wake_card_dependants(row, outcome, result, now)
             if outcome == 'sent' and isinstance(result, Mapping) and result.get('card_deleted'):
                 self._audit(str(row['incident_id']), 'telegram_card_deleted', 'worker',
                             {'chat_id': result['chat_id'], 'message_id': result['message_id'], 'delivery_id': delivery_id})
@@ -5400,12 +5506,20 @@ class NotificationCenter:
         escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return escaped + "%"
 
+    def _notification_mute_rule(self, incident: Mapping[str, Any], scope: str = "source") -> tuple[str, str]:
+        """One notification scope for display, CAS and mutation; AI keeps its own key."""
+        collapse, dedup = incident["collapse_key"], str(incident["dedup_key"])
+        if scope == "source" and not collapse:
+            key = self._notification_mute_prefix(dedup)
+            return key, "prefix" if key != dedup else "exact"
+        return str(collapse or dedup), "exact"
+
     def set_incident_notifications_muted(self, incident_id: str, muted: bool, actor: str, scope: str = "source") -> dict[str, Any]:
         """Mute or restore one notification scope of this incident's source.
 
         scope="source" (Telegram button) widens a familyless dedup key to its
         stable prefix, so varying keys of the same source stay silenced.
-        scope="exact" (explicit API request, rule settings) keeps the documented
+        scope="exact" (explicit API request) keeps the documented
         one-scope contract.
         """
         if not isinstance(scope,str) or scope not in {"source", "exact"}:
@@ -5420,14 +5534,12 @@ class NotificationCenter:
             collapse = str(incident["collapse_key"]) if incident["collapse_key"] else None
             dedup = str(incident["dedup_key"])
             primary = collapse or dedup
-            if scope == "source" and collapse is None:
-                mute_key = self._notification_mute_prefix(dedup)
-                match_mode = "prefix" if mute_key != dedup else "exact"
-            else:
-                mute_key, match_mode = primary, "exact"
+            mute_key, match_mode = self._notification_mute_rule(incident, scope)
             was_muted = self._notification_scope_muted(project, recipient, primary) \
                 or self._notification_scope_muted(project, recipient, dedup) \
                 or self._notification_prefix_muted(project, recipient, primary, dedup)
+            was_rule_muted = self._notification_scope_muted(project, recipient, mute_key) or (
+                not muted and match_mode == "exact" and self._notification_scope_muted(project, recipient, dedup))
             now = time.time()
             if muted:
                 self._connection.execute(
@@ -5452,14 +5564,17 @@ class NotificationCenter:
                     (now, project, recipient, *covered_params),
                 )
             else:
-                # Re-enable clears exactly the rules that cover this incident:
-                # its exact scopes plus every active prefix rule matching its keys.
+                # Migration retires only exact rows from its CAS preview. Any
+                # remaining exact IP mute is independent; a family toggle must
+                # not undo it, including when clicked on that IP's own card.
+                restore_keys = (mute_key, mute_key) if match_mode == "prefix" else (primary, dedup)
                 self._connection.execute(
                     "UPDATE notification_mutes SET unmuted_at = ?, unmuted_by = ?, revision = revision + 1 "
-                    f"WHERE project = ? AND recipient = ? AND unmuted_at IS NULL AND (dedup_key IN (?, ?) OR (match_mode = 'prefix' AND substr(?,1,length(dedup_key)) = dedup_key))",
-                    (now, actor, project, recipient, primary, dedup, primary),
+                    "WHERE project = ? AND recipient = ? AND unmuted_at IS NULL AND dedup_key IN (?, ?)",
+                    (now, actor, project, recipient, *restore_keys),
                 )
-                if was_muted and str(incident["state"]) in DELIVERABLE_STATES:
+                if (was_muted and not self.get_incident(incident_id)["notifications_muted"]
+                        and str(incident["state"]) in DELIVERABLE_STATES):
                     previous = self._connection.execute(
                         "SELECT channel, target_json FROM deliveries WHERE incident_id = ? AND (channel LIKE 'telegram.%' AND channel NOT LIKE '%.call') "
                         "ORDER BY created_at DESC, id DESC LIMIT 1",
@@ -5475,12 +5590,12 @@ class NotificationCenter:
                 incident_id,
                 "notifications_muted" if muted else "notifications_unmuted",
                 actor,
-                {"project": project, "scope": match_mode if muted else "covering", "dedup_key": mute_key, "idempotent": was_muted == muted},
+                {"project": project, "scope": match_mode, "dedup_key": mute_key, "idempotent": was_rule_muted == muted},
             )
             return {
                 "incident_id": incident_id,
-                "notifications_muted": muted,
-                "idempotent": was_muted == muted,
+                "notifications_muted": bool(self.get_incident(incident_id)["notifications_muted"]),
+                "idempotent": was_rule_muted == muted,
                 "project": project,
                 "scope": match_mode,
                 "dedup_key": mute_key,
@@ -5543,19 +5658,27 @@ class NotificationCenter:
         """Read one existing mute scope and its independent AI-autostart flag."""
         with self._lock:
             scope = self._incident_rule_scope(incident_id)
-            row = self._connection.execute(
-                "SELECT auto_ai_by_source, revision FROM notification_mutes "
-                "WHERE project=? AND recipient=? AND dedup_key=?", scope,
-            ).fetchone()
             incident = self.get_incident(incident_id)
+            mute_key, match_mode = self._notification_mute_rule(incident)
+            # The form contains two controls: the notification family and the
+            # original per-source AI choice. Count every relevant row once.
+            # +1 distinguishes an absent row from its first revision (zero).
+            keys = sorted({scope[2], mute_key, str(incident["dedup_key"])})
+            rows = self._connection.execute(
+                "SELECT revision FROM notification_mutes WHERE project=? AND recipient=? "
+                "AND dedup_key IN (" + ",".join("?" for _ in keys) + ")",
+                (scope[0], scope[1], *keys),
+            ).fetchall()
+            rule_muted = (self._notification_scope_muted(scope[0], scope[1], mute_key)
+                          if match_mode == "prefix" else bool(incident["notifications_muted"]))
             source_id, reason, _ = self._ai_source_identity(incident_id)
             return {
                 "incident_id": incident_id, "project": scope[0], "recipient": scope[1],
-                "dedup_key": scope[2], "ai_dedup_key": reason,
+                "dedup_key": mute_key, "match_mode": match_mode, "ai_dedup_key": reason,
                 "source_id": source_id[:256],
-                "notifications_enabled": not bool(incident["notifications_muted"]),
+                "notifications_enabled": not rule_muted,
                 "auto_ai_enabled": self._notification_rule_auto_ai_enabled(incident_id),
-                "revision": int(row["revision"]) if row else 0,
+                "revision": sum(int(row["revision"]) + 1 for row in rows),
             }
 
     def set_notification_rule_option(
@@ -5583,7 +5706,7 @@ class NotificationCenter:
                 if current["notifications_enabled"] != enabled:
                     self.set_incident_notifications_muted(incident_id, not enabled, actor)
             elif current["auto_ai_enabled"] != enabled:
-                scope = (current["project"], current["recipient"], current["dedup_key"])
+                scope = self._incident_rule_scope(incident_id)
                 source, reason, source_key = self._ai_source_identity(incident_id)
                 now = time.time()
                 row = self._connection.execute(
@@ -5597,7 +5720,7 @@ class NotificationCenter:
                 self._connection.execute(
                     "INSERT INTO notification_mutes "
                     "(project, recipient, dedup_key, muted_at, muted_by, unmuted_at, unmuted_by, auto_ai_by_source, revision) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0) "
                     "ON CONFLICT(project, recipient, dedup_key) DO UPDATE SET "
                     "auto_ai_by_source=excluded.auto_ai_by_source, revision=notification_mutes.revision+1",
                     (*scope, now, actor, now, actor, json.dumps(options, sort_keys=True)),
@@ -6068,11 +6191,11 @@ class NotificationCenter:
                 }
                 if isinstance(payload.get("health_context"), dict):
                     payload["health_context"]["selection"] = payload["health_selection"]
-        if incident_model and str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
+        if incident_model and str(delivery_map.get("channel") or "") in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
             # The snapshot rides only in the health context of a health agent
             # delivery, which the adapter signs before it crosses the boundary.
             payload.setdefault("health_context", {})["incident_model"] = incident_model
-        if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
+        if str(delivery_map.get("channel") or "") in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
             from .incident_session_policy import read_policy
             payload.setdefault("health_context", {})["incident_session_policy"] = read_policy(self)
             from .incident_skills import read_policy as read_skill_policy

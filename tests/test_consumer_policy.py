@@ -28,17 +28,50 @@ class ConsumerPolicyTests(unittest.TestCase):
 
     @staticmethod
     def event(**overrides: object) -> dict[str, object]:
+        """An allowed business notification, not an internal detection incident."""
         event: dict[str, object] = {
             "schema": "notify.event.v1",
             "project": "hermes",
             "recipient": "operator",
-            "kind": "incident",
+            "kind": "notification",
             "severity": "critical",
-            "title": "Gateway unavailable",
-            "dedup_key": "gateway:consumer",
+            "event_type": "invoice.overdue",
+            "title": "Срок оплаты счёта истёк",
+            "dedup_key": "invoice:consumer",
         }
         event.update(overrides)
         return event
+
+    def test_quiet_incident_keeps_legacy_policy_event_without_deliveries(self) -> None:
+        consumer = self.center.create_consumer(
+            project="hermes", name="Internal detection",
+            policy=[
+                {"kind": "telegram", "chat_id": -100123},
+                {"kind": "matrix", "delay_seconds": 120},
+                {"kind": "phone", "delay_seconds": 600},
+            ],
+        )
+        event = self.event(kind="incident", severity="critical", event_type="monitor.failure",
+                           title="Gateway unavailable", dedup_key="gateway:quiet")
+        created = self.center.create_event(consumer["intake_token"], "quiet-policy", event)
+        self.assertIsNone(created["initial_delivery_id"])
+        self.assertIsNone(created["agent_job_delivery_id"])
+        incident = self.center.get_incident(created["incident_id"])
+        self.assertEqual(("incident", "critical", "open"),
+                         (incident["kind"], incident["severity"], incident["state"]))
+        self.assertEqual(consumer["id"], incident["consumer_id"])
+        denied = self.center._connection.execute(
+            "SELECT json_extract(payload_json,'$.reason') FROM audit_events "
+            "WHERE incident_id=? AND type='delivery_denied'", (created["incident_id"],),
+        ).fetchall()
+        self.assertEqual(["quiet_incident_work"]*3, [row[0] for row in denied])
+        replay = self.center.create_event(consumer["intake_token"], "quiet-policy", event)
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual(created["incident_id"], replay["incident_id"])
+        self.assertIsNone(replay["initial_delivery_id"])
+        self.assertEqual(1, self.center._connection.execute("SELECT count(*) FROM events").fetchone()[0])
+        self.assertEqual(0, self.center._connection.execute("SELECT count(*) FROM deliveries").fetchone()[0])
+        self.assertEqual([], self.center.claim_due_deliveries(now_epoch=time.time()+7200))
 
     def test_consumer_token_schedules_operator_policy_and_ack_cancels_phone(self) -> None:
         created_consumer = self.center.create_consumer(
@@ -627,6 +660,7 @@ class ConsumerPolicyTests(unittest.TestCase):
         consumer = self.center.create_consumer(
             project="hermes",
             name="Scoped call",
+            max_severity="emergency",
             policy=[
                 {
                     "id": "step-1",
@@ -653,8 +687,8 @@ class ConsumerPolicyTests(unittest.TestCase):
                 "project": "hermes",
                 "recipient": "operator",
                 "kind": "incident",
-                "severity": "critical",
-                "title": "Gateway unavailable",
+                "severity": "emergency",
+                "title": "Аварийное оповещение недоступно",
                 "body": "probing",
                 "dedup_key": "scoped-call",
                 # a producer may try to name its own destination

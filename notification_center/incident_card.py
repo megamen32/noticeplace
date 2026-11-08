@@ -62,7 +62,7 @@ def controls(codec: Any, incident: Mapping[str, Any], session: Any = None, *, ex
     url = session_url(session)
     if url:
         rows.append([{'text': '✅ ИИ запущен', 'url': url}])
-    elif incident.get('kind', 'incident') == 'incident':
+    elif incident.get('kind', 'incident') == 'incident' and incident.get('state') != 'resolved':
         rows.append([{'text': 'Исправить через ИИ', 'callback_data': codec.encode('ai', incident_id)}])
     muted = bool(incident.get('notifications_muted'))
     rows.append([{'text': 'Включить такие уведомления' if muted else 'Отключить такие уведомления',

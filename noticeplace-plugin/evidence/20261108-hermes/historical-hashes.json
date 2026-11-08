@@ -1,0 +1,20 @@
+{
+  "noticeplace-plugin/packages/noticeplace/0.1.0/.codex-plugin/plugin.json": "e2d38a3f55578ea89692d20a1c441150ce56c0cbd9bc36128f71dcf97b127569",
+  "noticeplace-plugin/packages/noticeplace/0.1.0/.zcode-plugin/plugin.json": "e2d38a3f55578ea89692d20a1c441150ce56c0cbd9bc36128f71dcf97b127569",
+  "noticeplace-plugin/packages/noticeplace/0.1.0/fast-agent.yaml": "682ac1612f233f8903504eeb836c7674e9444f140ee5a0f999567e3a4b76df56",
+  "noticeplace-plugin/packages/noticeplace/0.1.0/mcp.codex.json": "7620035767f628704baeb05725d91048f7fd4cee4227a70ab23d635573964fe0",
+  "noticeplace-plugin/packages/noticeplace/0.1.0/mcp.json": "e7a3db7cffe45f022bd3bf1be3f723f1fed9f0fb54da18785b275aa1d388c2ad",
+  "noticeplace-plugin/packages/noticeplace/0.1.0/opencode.json": "dfd93afec354090f1e8bc6eb5a82021c7bf08df7a9a2e019404f1a2a322f5f78",
+  "noticeplace-plugin/packages/noticeplace/0.1.0/plugin.json": "b674b2f44c168915e65f032eb21663bffadef4e7868c81c9c05cee2210e33187",
+  "noticeplace-plugin/packages/noticeplace/0.1.0/scripts/validate_plugin.py": "f1c808e9128c66166c5f8eb160dbe1ef3abebb89fffbb480ef8dd0e95bb64238",
+  "noticeplace-plugin/packages/noticeplace/0.1.0/skills/noticeplace/SKILL.md": "6653e06fcdba20f6bbb1f05150788403ab5e08e446ef2a15a05dd093f3d8f38b",
+  "noticeplace-plugin/packages/noticeplace/0.1.1/.codex-plugin/plugin.json": "65d6e6ef981956865c3f7b5b92e05eaa435f7e49f3e90f61398750b301b87c12",
+  "noticeplace-plugin/packages/noticeplace/0.1.1/.zcode-plugin/plugin.json": "65d6e6ef981956865c3f7b5b92e05eaa435f7e49f3e90f61398750b301b87c12",
+  "noticeplace-plugin/packages/noticeplace/0.1.1/fast-agent.yaml": "682ac1612f233f8903504eeb836c7674e9444f140ee5a0f999567e3a4b76df56",
+  "noticeplace-plugin/packages/noticeplace/0.1.1/mcp.codex.json": "7620035767f628704baeb05725d91048f7fd4cee4227a70ab23d635573964fe0",
+  "noticeplace-plugin/packages/noticeplace/0.1.1/mcp.json": "e7a3db7cffe45f022bd3bf1be3f723f1fed9f0fb54da18785b275aa1d388c2ad",
+  "noticeplace-plugin/packages/noticeplace/0.1.1/opencode.json": "dfd93afec354090f1e8bc6eb5a82021c7bf08df7a9a2e019404f1a2a322f5f78",
+  "noticeplace-plugin/packages/noticeplace/0.1.1/plugin.json": "81d3641d29323a1566d708975822e9eb41560e9f7f035f337572de4efce7b8d4",
+  "noticeplace-plugin/packages/noticeplace/0.1.1/scripts/validate_plugin.py": "f1c808e9128c66166c5f8eb160dbe1ef3abebb89fffbb480ef8dd0e95bb64238",
+  "noticeplace-plugin/packages/noticeplace/0.1.1/skills/noticeplace/SKILL.md": "6653e06fcdba20f6bbb1f05150788403ab5e08e446ef2a15a05dd093f3d8f38b"
+}

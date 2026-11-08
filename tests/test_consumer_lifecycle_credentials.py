@@ -373,7 +373,19 @@ class CredentialTests(unittest.TestCase):
                 title='Fixture failure', body='Fixture failure', dedup_key='probe', event_type='health.degraded', source_id='fixture-probe',
                 host_id='fixture-host', signal_type='service', correlation_id='fixture-episode')
             incident = center.create_event(consumer['intake_token'], 'fixture-open', event)['incident_id']
-            server = ThreadingHTTPServer(('127.0.0.1', 0), build_handler(center, 'fixture-probe', 'fixture-mcp'))
+            # Kernel ephemeral ranges can start below the fixture's port floor.
+            # Bind a free test port directly, without assuming port=0 is >18100.
+            import errno
+            handler = build_handler(center, 'fixture-probe', 'fixture-mcp')
+            for port in range(19001, 19101):
+                try:
+                    server = ThreadingHTTPServer(('127.0.0.1', port), handler)
+                    break
+                except OSError as error:
+                    if error.errno != errno.EADDRINUSE:
+                        raise
+            else:
+                self.fail('no free loopback fixture port in the bounded test range')
             self.assertGreater(server.server_port, 18100)
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
             self.addCleanup(server.server_close); self.addCleanup(thread.join); self.addCleanup(server.shutdown)

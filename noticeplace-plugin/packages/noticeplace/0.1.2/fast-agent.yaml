@@ -1,0 +1,5 @@
+# Fast Agent projection: the canonical HTTP point is registered by the GPTAdmin installer
+# in the Fast Agent client config, because Fast Agent cannot resolve a bearer from the
+# environment. The package carries the skill only.
+mcp:
+  servers: {}

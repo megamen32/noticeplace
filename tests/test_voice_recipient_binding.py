@@ -31,13 +31,14 @@ def center(tmp_path):
     return NotificationCenter(tmp_path/'notify.db', {}, default_quiet_hours=[])
 
 
+# Business notices retain their explicit recipient/repeat policy under quiet operations.
 def delivered(center, *, recipient='@recipient:test', status='sent', suffix='one', account='matrix:assistant'):
     consumer = center.create_consumer(project='test', name='recipient route', policy=[{
         'id':'message', 'platform':'matrix', 'action':'message',
         'target':{'room_id':'!notice:test', 'account_ref':account, 'recipient':recipient},
         'retry_interval_seconds':30, 'max_repeats':2}])
     event = center.create_event(consumer['intake_token'], suffix, {
-        'schema':'notify.event.v1', 'project':'test', 'recipient':'me', 'kind':'incident',
+        'schema':'notify.event.v1', 'project':'test', 'recipient':'me', 'kind':'notification',
         'severity':'notice', 'title':'Exact notice', 'body':'Body', 'dedup_key':suffix,
         'correlation_id':suffix})
     row = center.claim_due_deliveries(limit=1)[0]
@@ -139,7 +140,7 @@ def test_published_sender_freezes_real_policy_and_receipt_for_normal_resolver(ce
                   'room_id':'!notice:test','conversation_id':'conv'},
         'retry_interval_seconds':30,'max_repeats':2}])
     event=center.create_event(consumer['intake_token'],'real-sender-contract',{
-        'schema':'notify.event.v1','project':'test','recipient':'me','kind':'incident',
+        'schema':'notify.event.v1','project':'test','recipient':'me','kind':'notification',
         'severity':'notice','title':'Exact notice','body':'Body','dedup_key':'real-sender',
         'correlation_id':'real-sender'})
     class Response:

@@ -18,6 +18,8 @@ import uuid
 from typing import Callable
 
 NOTICEPLACE_CONSUMER_V2 = 2
+SWEEP_PAGE_SIZE = 20
+SWEEP_MAX_PAGES = 100
 
 
 class VerificationPending(RuntimeError):
@@ -116,30 +118,73 @@ class SourceVerifier:
                 saved.update(status='confirmed', receipt=result)
                 self._save(path, saved)
                 receipts.append(result)
-            cursor = None
+            sweep_path = self.state_dir / 'sweep.json'
+            sweep = json.loads(sweep_path.read_text()) if sweep_path.exists() else {}
+            if sweep and sweep.get('binding') != binding:
+                raise VerificationPending('sweep belongs to another source identity')
+            if sweep.get('expires_at', 0) <= time.time():
+                if sweep.get('resume_supported') and sweep.get('cursor'):
+                    sweep['cursor'] = 'resume:' + sweep['cursor'].removeprefix('resume:')
+                elif not sweep.get('resume_supported'):
+                    sweep = {}
+            cursor = sweep.get('cursor')
+            expires_at = sweep.get('expires_at', 0)
+            resume_supported = sweep.get('resume_supported', False)
+            completed = sweep.get('completed', [])
             seen_cursors = set()
             processed = 0
-            for _page in range(100):
+            def checkpoint():
+                self._save(sweep_path, dict(binding=binding, cursor=cursor,
+                                           expires_at=expires_at, completed=completed,
+                                           resume_supported=resume_supported))
+            for _page in range(SWEEP_MAX_PAGES):
                 if processed >= max_checks or (deadline is not None and time.monotonic() >= deadline):
                     break
-                params = {'project': self.project, 'source_id': self.source_id, 'limit': min(20, max_checks)}
+                params = {'project': self.project, 'source_id': self.source_id, 'limit': SWEEP_PAGE_SIZE}
                 if cursor is not None:
                     params['cursor'] = cursor
                 query = urllib.parse.urlencode(params)
-                page = self.transport('GET', '/v1/verification-requests?' + query)
+                try:
+                    page = self.transport('GET', '/v1/verification-requests?' + query)
+                except urllib.error.HTTPError as error:
+                    if cursor is not None and error.code == 400:
+                        try:
+                            rejected = json.loads(error.read(4096))
+                        except (ValueError, OSError):
+                            rejected = None
+                        if rejected == {'error': 'invalid or expired verification cursor'}:
+                            cursor, expires_at, completed = None, 0, []
+                            resume_supported = False
+                            checkpoint()
+                            continue
+                    raise
                 requests = page['requests']
+                resume_supported = page.get('cursor_resume_supported') is True
+                page_identities = [[r['request_id'], r['generation']] for r in requests]
+                completed = [identity for identity in completed if identity in page_identities]
+                # Old servers need no new request parameters. A bounded local
+                # checkpoint also works when they omit cursor_expires_at.
+                expires_at = page.get('cursor_expires_at') or time.time() + 300
+                page_complete = True
                 for request in requests:
                     if processed >= max_checks or (deadline is not None and time.monotonic() >= deadline):
+                        page_complete = False
                         break
+                    identity = [request['request_id'], request['generation']]
+                    if identity in completed:
+                        continue
                     group = request['group']
-                    if (group.get('project'), group.get('source_id'), group.get('host_id')) != (
-                            self.project, self.source_id, self.host_id):
+                    if (group.get('project'), group.get('source_id')) != (
+                            self.project, self.source_id):
                         raise ValueError('verification request does not match source identity')
-                    if accept_group is not None and not accept_group(dict(group)):
+                    if (group.get('host_id') != self.host_id
+                            or (accept_group is not None and not accept_group(dict(group)))):
+                        completed.append(identity)
                         continue
                     processed += 1
                     if isinstance(request['generation'], bool) or not isinstance(request['generation'], int):
                         raise ValueError('invalid verification generation')
+                    probe_started_at = time.time()
                     observation = probe(dict(group))
                     state = observation.get('observed_state')
                     evidence = observation.get('evidence_refs')
@@ -148,7 +193,8 @@ class SourceVerifier:
                     if not evidence or not all(isinstance(ref, str) and ref.strip() for ref in evidence):
                         raise ValueError('fresh source evidence is required')
                     body = {'request_id': request['request_id'], 'generation': request['generation'],
-                            'observed_state': state, 'evidence_refs': evidence}
+                            'observed_state': state, 'evidence_refs': evidence,
+                            'observed_at': observation.get('observed_at', probe_started_at)}
                     key = 'source-check:' + uuid.uuid4().hex
                     intent = {'status': 'submitting', 'binding': binding, 'incident_id': request['incident_id'],
                               'idempotency_key': key, 'body': body}
@@ -171,11 +217,19 @@ class SourceVerifier:
                     intent.update(status='confirmed', receipt=receipt)
                     self._save(path, intent)
                     receipts.append(receipt)
+                    completed.append(identity)
+                if not page_complete:
+                    checkpoint()
+                    break
                 next_cursor = page.get('next_cursor')
                 if next_cursor is None:
+                    cursor, expires_at, completed = None, 0, []
+                    checkpoint()
                     break
                 if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
                     raise ValueError('invalid or repeated verification cursor')
                 seen_cursors.add(next_cursor)
                 cursor = next_cursor
+                completed = []
+                checkpoint()
             return receipts

@@ -62,10 +62,10 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
     @staticmethod
     def profile():
         return {'url':'http://127.0.0.1:18787/api/sessions/new-or-resume', 'cwd':'/home/roomhacker/ServersAdministartion',
-                'name':'health-repair', 'harness':'opencode', 'model':'omniroute/glm-5.3-flash-minimax-m3.1', 'mode':'queue', 'instruction':'Только выбранный план.'}
+                'name':'health-repair', 'harness':'opencode', 'model':'minimax-coding-plan/MiniMax-M3.1-Flash', 'mode':'queue', 'instruction':'Только выбранный план.'}
 
     @staticmethod
-    def event(runtime='opencode', provider='omniroute', model='glm-5.3-flash-minimax-m3.1'):
+    def event(runtime='opencode', provider='minimax-coding-plan', model='MiniMax-M3.1-Flash'):
         return {'schema':'notify.agent-job.v1','job_id':'health-remediation','humanRequested':True,
                 'incident':{'id':'existing-incident','project':'fleet-health'}, 'health':{
                 'source_sessions':[{'harness':'zcode','sessionId':'native-planner'}, {'harness':'codex','sessionId':'native-diagnosis'}],
@@ -100,8 +100,8 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
             if request.full_url.endswith('/api/settings/automation/disarm'):return self.owner_open()
             if '/coordination/context?' in request.full_url:
                 reads.append(request.full_url);return self.response({'humanStopHeld':False})
-            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'omniroute/glm-5.3-flash-minimax-m3.1'}})
-            if '/api/models?' in request.full_url:return self.response({'models':['omniroute/glm-5.3-flash-minimax-m3.1'],'stale':False})
+            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash'}})
+            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash'],'stale':False})
             posts.append(json.loads(request.data));return self.response({'ok':True,'sessionId':'remediation-native','created':True})
         with patch.object(helper,'_run_health_remediation',return_value={'status':'completed'}):
             helper.run_profile('health-remediation',self.event(),Path('unused'),runner=runner,profile_override=self.profile())
@@ -120,8 +120,8 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
         def runner(request,**kwargs):
             if request.full_url.endswith('/api/settings/automation/disarm'):return self.owner_open()
             if '/coordination/context?' in request.full_url:return self.response({'humanStopHeld':'native-diagnosis' in request.full_url})
-            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'omniroute/glm-5.3-flash-minimax-m3.1'}})
-            if '/api/models?' in request.full_url:return self.response({'models':['omniroute/glm-5.3-flash-minimax-m3.1'],'stale':False})
+            if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash'}})
+            if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash'],'stale':False})
             posts.append(request);self.fail('a held ancestor must not create/send')
         with self.assertRaisesRegex(HealthSourceGateBlocked,'human_stop_held'):
             helper.run_profile('health-remediation',self.event(),Path('unused'),runner=runner,profile_override=self.profile())
@@ -152,7 +152,7 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
             if '/coordination/context?' in request.full_url:
                 reads.append(request.full_url);return self.response({'humanStopHeld':False})
             if '/launch-policy' in request.full_url:
-                return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'omniroute/glm-5.3-flash-minimax-m3.1'}})
+                return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash'}})
             posts.append(json.loads(request.data))
             return self.response({'outcome':'pre_admission_rejected','operation_id':'op-1','routing_reason':'quota exhausted','attempts':[{'harness':'opencode','outcome':'pre_admission_rejected','reason':'quota exhausted'}]})
         with self.assertRaisesRegex(RuntimeError, 'before admission'):
@@ -161,7 +161,7 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
         # Agent Herder owns the fallback chain; Notice Place sends one launch
         # with the declared preference and no second route.
         self.assertEqual('fleet-health',posts[0]['project'])
-        self.assertEqual('omniroute/glm-5.3-flash-minimax-m3.1',posts[0]['model'])
+        self.assertEqual('minimax-coding-plan/MiniMax-M3.1-Flash',posts[0]['model'])
         self.assertTrue(any('sessionId=native-diagnosis' in url and 'consume=0' in url for url in reads))
 
     def test_failed_first_run_carries_sources_and_a_later_held_ancestor_blocks(self):
@@ -176,10 +176,10 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
             if '/coordination/context?' in request.full_url:
                 reads.append(request.full_url);return self.response({'humanStopHeld':held[0]})
             if '/launch-policy' in request.full_url:
-                return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'omniroute/glm-5.3-flash-minimax-m3.1'}})
+                return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash'}})
             if '/project-launch' in request.full_url:
                 posts.append(json.loads(request.data))
-                return self.response({'outcome':'accepted','operation_id':'op-1','selected_harness':'opencode','model':'omniroute/glm-5.3-flash-minimax-m3.1','mode':'queue','session_id':'remediation-native','routing_reason':'declared route','attempts':[]})
+                return self.response({'outcome':'accepted','operation_id':'op-1','selected_harness':'opencode','model':'minimax-coding-plan/MiniMax-M3.1-Flash','mode':'queue','session_id':'remediation-native','routing_reason':'declared route','attempts':[]})
             if '/api/autopilot/sessions/' in request.full_url:return self.response({'enabled':True,'sessionId':'remediation-native'})
             posts.append(json.loads(request.data));return self.response({'ok':True,'sessionId':'remediation-native','created':True})
         with patch.object(helper,'_run_health_remediation',side_effect=helper.HealthStartPlanUnavailable()):
@@ -231,8 +231,11 @@ class DurableNoticeSourceTests(unittest.TestCase):
             self.assertEqual('cancelled',row['status'])
             self.assertEqual([],center.claim_due_deliveries(now_epoch=10**12+1000,channel_group='agent'))
             outcome=center._connection.execute("SELECT target_json FROM deliveries WHERE incident_id=? AND json_type(target_json,'$.health_outcome')='object'",(created['incident_id'],)).fetchone()
-            import json
-            self.assertEqual('human_stopped',json.loads(outcome['target_json'])['health_outcome']['status'])
+            # Routine health incidents have no visible card under quiet policy.
+            # STOP stays durable in the delivery, without creating a new notice.
+            self.assertIsNone(outcome)
+            stopped=center._connection.execute('SELECT last_error FROM deliveries WHERE id=?',(delivery_id,)).fetchone()
+            self.assertIn('human_stop_held', stopped['last_error'])
             center._connection.close()
 
     def test_existing_plan_batch_native_receipts_are_retained_without_guessing(self):

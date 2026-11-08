@@ -55,6 +55,15 @@ class ChainTests(unittest.TestCase):
 
     def start(self,event=None,key='initial'):
         created=self.center.create_event('producer',key,event or self.event)
+        # Non-emergency incidents interrupt only for an actual pending question.
+        # This fixture exercises the admitted call chain, not quiet detection.
+        if (event or self.event)['severity'] != 'emergency':
+            self.center.create_human_request('producer', {
+                'schema':'ask_human.request.v1','request_id':'question:'+key,
+                'project':'test','recipient':'me','mode':'question',
+                'message':'Выбрать разрешённый вариант восстановления?',
+                'incident_id':created['incident_id'],'allowed_actors':['fixture:operator']})
+            self.center._schedule_delivery(created['incident_id'],'telegram.main','initial',0)
         rows=self.center.claim_due_deliveries(now_epoch=10**12,channel_group='message')
         for row in rows:self.worker.deliver(row)
         return created['incident_id']
@@ -284,7 +293,7 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(['matrix'], self.calls)
 
     def test_health_root_also_starts_matrix_not_phone(self):
-        self.start(dict(self.event,event_type='health.degraded'))
+        self.start(dict(self.event,kind='incident',severity='emergency',event_type='health.degraded'))
         self.assertEqual(['matrix.call'],[r['channel'] for r in self.rows()])
 
     def test_projected_receipt_stays_valid_and_small(self):
@@ -332,7 +341,7 @@ class ChainTests(unittest.TestCase):
         class Unknown:
             def send(this,payload):return {'answered':None,'uncertain':True}
         self.worker._matrix_call=Unknown()
-        created=self.center.create_event('producer','legacy',self.event)
+        created=self.center.create_event('producer','legacy',dict(self.event,kind='notification'))
         for row in self.center.claim_due_deliveries(now_epoch=10**12,channel_group='message'):
             self.center.complete_delivery(row['id'],'sent',result={'message_id':17,'chat_id':'42'})
         self.center.schedule_escalation(created['incident_id'],'matrix.call',0)
@@ -355,7 +364,7 @@ class ChainTests(unittest.TestCase):
             policy=[{'id':'step-1','platform':'matrix','action':'call','target':{},
                      'retry_interval_seconds':60,'max_repeats':1}],
         )
-        created=self.center.create_event(consumer['intake_token'],'matrix-only-call',self.event)
+        created=self.center.create_event(consumer['intake_token'],'matrix-only-call',dict(self.event,kind='notification'))
         incident_id=created['incident_id']
         rows=self.center._connection.execute(
             "SELECT id,channel FROM deliveries WHERE incident_id=? ORDER BY due_at",(incident_id,)).fetchall()
@@ -393,7 +402,7 @@ class ChainTests(unittest.TestCase):
             policy=[{'id': 'step-1', 'platform': 'matrix', 'action': 'call', 'target': {},
                      'retry_interval_seconds': 60, 'max_repeats': 1}],
         )
-        created = self.center.create_event(consumer['intake_token'], 'matrix-only-call', self.event)
+        created = self.center.create_event(consumer['intake_token'], 'matrix-only-call', dict(self.event,kind='notification'))
         incident_id = created['incident_id']
         self.center.schedule_incident_call_chain_if_active(incident_id, 0)
         rows = self.center._connection.execute(
@@ -440,7 +449,7 @@ class ChainTests(unittest.TestCase):
             policy=[{'id': 'step-1', 'platform': 'matrix', 'action': 'call', 'target': {},
                      'retry_interval_seconds': 60, 'max_repeats': 1}],
         )
-        created = self.center.create_event(consumer['intake_token'], 'matrix-only-answered', self.event)
+        created = self.center.create_event(consumer['intake_token'], 'matrix-only-answered', dict(self.event,kind='notification'))
         incident_id = created['incident_id']
         sender = MatrixCall()
         self.worker._matrix_call = sender
@@ -475,7 +484,7 @@ class ChainTests(unittest.TestCase):
                                 'target': '@lhc_voice_tester_b_20261021:chat.bezrabotnyi.com'},
                      'retry_interval_seconds': 60, 'max_repeats': 1}],
         )
-        created = self.center.create_event(consumer['intake_token'], 'scoped-call', self.event)
+        created = self.center.create_event(consumer['intake_token'], 'scoped-call', dict(self.event,kind='notification'))
         incident_id = created['incident_id']
         rows = self.center._connection.execute(
             "SELECT channel, target_json FROM deliveries WHERE incident_id=? ORDER BY created_at, rowid", (incident_id,)
@@ -728,7 +737,7 @@ class ScopedCallWorkerTests(unittest.TestCase):
             matrix_call=MatrixCallSender('http://bridge/v1/calls/matrix/noticeplace','test',runner=run),
             incident_call_order=ORDER,android_phone_quiet_start_hour=0,android_phone_quiet_end_hour=0)
         created=self.center.create_event(self.consumer['intake_token'],'scoped-call',{
-            'schema':'notify.event.v1','project':'hermes','recipient':'operator','kind':'incident',
+            'schema':'notify.event.v1','project':'hermes','recipient':'operator','kind':'notification',
             'severity':'critical','title':'Gateway unavailable','body':'probing','dedup_key':'scoped-call'})
         rows=self.center.claim_due_deliveries(now_epoch=10**12,channel_group='call')
         for row in rows: worker.deliver(row)

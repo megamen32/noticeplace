@@ -291,20 +291,26 @@ class AdminConsoleTests(unittest.TestCase):
             self.assertIn(expected, page)
 
     def test_health_dashboard_offers_the_bounded_incident_model_choice(self) -> None:
+        route = "minimax-coding-plan/MiniMax-M3.1-Flash"
         status, page = self._request("GET", "/admin/")
         self.assertEqual(200, status)
         self.assertIn(b'id="health-model"', page)
         self.assertIn(b'<input type="text" name="model"', page)
         self.assertIn(b'<datalist id="incident-model-routes">', page)
-        self.assertIn(b"omniroute/glm-5.3-flash-minimax-m3.1", page)
+        self.assertIn(route.encode(), page)
         csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
 
-        status, page = self._request("POST", "/admin/health-model", {"csrf": csrf, "model": "omniroute/glm-5.3-flash-minimax-m3.1"})
+        status, page = self._request("POST", "/admin/health-model", {"csrf": csrf, "model": route})
         self.assertEqual(200, status)
-        self.assertIn(b"omniroute/glm-5.3-flash-minimax-m3.1", page)
+        self.assertIn(route.encode(), page)
+        status, _ = self._request("POST", "/admin/health-model", {"csrf": csrf, "model": "omniroute/glm-5.3-flash-minimax-m3.1"})
+        self.assertEqual(400, status)
         status, page = self._request("GET", "/admin/")
         self.assertEqual(200, status)
-        self.assertIn(b"GLM 5.3 Flash + MiniMax Coding Plan", page)
+        self.assertIn(route.encode(), page)
+        self.assertIn("через OpenCode и прямой MiniMax Coding Plan".encode(), page)
+        self.assertEqual(route, self.store._consumer_notification_center().get_runtime_setting("health_incident_model"))
+        self.assertEqual(0, self.restarts)
 
     def test_health_settings_require_csrf_save_atomically_and_optionally_start_monitor(self) -> None:
         status, page = self._request("GET", "/admin/")
@@ -520,8 +526,7 @@ class AdminConsoleTests(unittest.TestCase):
 
     def test_history_page_shows_provenance_children_notifications_and_outcome(self) -> None:
         center = self.store._consumer_notification_center()
-        # «Логи» ships disabled; the history fixture still needs a delivered
-        # card, so this page runs with logs explicitly enabled.
+        # Enabling log transport does not override the quiet-incident policy.
         with mock.patch.dict("os.environ", {"TELEGRAM_ACTIVE_MODES_JSON": '["decisions","notify","log"]'}):
             parent = center.create_event(
                 "old-token",
@@ -545,7 +550,15 @@ class AdminConsoleTests(unittest.TestCase):
                     "parent_incident_id": parent["incident_id"], "parent_event_id": parent["event_id"],
                 },
             )
-        center.complete_delivery(parent["initial_delivery_id"], "sent")
+        self.assertIsNone(parent["initial_delivery_id"])
+        self.assertIsNone(child["initial_delivery_id"])
+        # History must retain a previously sent receipt while new incidents
+        # stay quiet. Seed only this temporary DB; do not bypass today's sender.
+        with center._lock, center._connection:
+            center._connection.execute(
+                "INSERT INTO deliveries(id,incident_id,channel,delivery_key,due_at,status,attempt,target_json,created_at,updated_at) "
+                "VALUES (?,?,'telegram.main','admin-history-fixture',0,'sent',1,'{}',0,0)",
+                ('dlv_' + 'a' * 32, parent['incident_id']))
         status, page = self._request("GET", "/admin/")
         self.assertEqual(200, status)
         self.assertIn(b"Event history", page)

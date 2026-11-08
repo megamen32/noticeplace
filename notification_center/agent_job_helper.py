@@ -778,6 +778,52 @@ def _launch_receipt(result: Mapping[str, Any], profile: Mapping[str, str], opera
     }
 
 
+
+def _resume_source_continuation(profile: Mapping[str, str], authority: Mapping[str, Any],
+                                message: str, operation_id: str, runner: Any) -> dict[str, Any]:
+    """Exact native resume; a missing target or lost receipt never falls back to launch."""
+    harness, session_id = authority['harness'], authority['session_id']
+    parsed = urllib.parse.urlsplit(profile['url'])
+    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, '', '', ''))
+    endpoint = (base + '/api/sessions/' + urllib.parse.quote(harness, safe='')
+                + '/' + urllib.parse.quote(session_id, safe=''))
+    details = _read_json_request(urllib.request.Request(
+        endpoint + '/details?limit=1&history=auto', headers={'Accept': 'application/json'}),
+        runner, response_limit=_SESSION_DETAILS_LIMIT)
+    session = details.get('session')
+    if (not isinstance(session, Mapping) or session.get('id') != session_id
+            or session.get('harness') != harness or not isinstance(session.get('cwd'), str)
+            or not os.path.isabs(session['cwd'])):
+        raise RuntimeError('source continuation exact session identity is unavailable')
+    # Recheck STOP immediately before native admission. The server repeats its
+    # own automatic admission/STOP checks; this request never releases a hold.
+    require_herder_owner_running(profile, runner)
+    input_id = 'noticeplace:source-check:' + operation_id
+    request = urllib.request.Request(endpoint + '/resume',
+        data=json.dumps({'message': message, 'humanRequested': False, 'inputId': input_id},
+                        ensure_ascii=False, separators=(',', ':')).encode(),
+        headers={'Content-Type': 'application/json', 'Accept': 'application/json'}, method='POST')
+    try:
+        result = _read_json_request(request, runner, timeout=90)
+    except Exception as error:
+        # This call may already have reached native admission. No retry, new
+        # operation identity, project-launch, recovery or replacement is allowed.
+        raise RuntimeError('source continuation resume outcome is unknown or refused; do not replay') from error
+    if (result.get('ok') is not True or result.get('admitted') is False
+            or result.get('admissionUnknown') or result.get('nonRetryable') or result.get('notSubmitted')
+            or result.get('inputId', input_id) != input_id
+            or result.get('sessionId', session_id) != session_id):
+        raise RuntimeError('source continuation resume admission unconfirmed; do not replay')
+    # This is an adapter acknowledgement for the exact endpoint, not a new
+    # project-launch receipt. Preserve the native proof for the caller.
+    proof = {key: result[key] for key in ('ok', 'admitted', 'pending', 'inputId', 'sessionId',
+                                         'turnId', 'nativeInputMessageId') if key in result}
+    return dict(outcome='accepted', session_id=session_id, selected_harness=harness,
+                cwd=session['cwd'], model=session.get('model') or '', mode='queue',
+                created=False, coalesced=True, delivery='resume', operation_id=operation_id,
+                resume_receipt=proof, input_id=input_id)
+
+
 def _source_check_continuation(value: Any, incident_id: str) -> dict[str, Any]:
     """Bound server-delivery authority; never read this marker from telemetry."""
     if not isinstance(value, Mapping):
@@ -1705,17 +1751,24 @@ def run_profile(
     incident = event.get("incident")
     if not isinstance(incident, dict):
         raise RuntimeError("agent job event is missing incident telemetry")
+    continuation = None
+    if 'source_check_continuation' in event:
+        if profile_id != 'health-diagnosis':
+            raise RuntimeError('source continuation requires the health-diagnosis profile')
+        continuation = _source_check_continuation(event['source_check_continuation'], str(incident.get('id') or ''))
     configured = profile_override if profile_override is not None else _load_profile(profile_id, config_path)
+    if continuation:
+        configured = {**configured, 'harness': continuation['harness']}
     if profile_id in _REPAIR_FIRST_JOB_IDS:
         # Persisted instructions belong to the retired diagnosis/planner flow.
         # Keep protected-file/security/routing validation, replace only prose.
         configured = {**configured, "instruction": "Repair the original incident in its native session."}
     profile = _validate_profile(configured)
     incident_project = str(incident.get("project") or "")
-    policy = _launch_policy(profile, runner) if profile_id in _HEALTH_JOB_IDS else {}
+    policy = _launch_policy(profile, runner) if profile_id in _HEALTH_JOB_IDS and not continuation else {}
     allowed_routes = health_execution_routes(policy, incident_project)
-    incident_model = _selected_incident_model(event) if profile_id in _HEALTH_JOB_IDS else ""
-    if profile_id == "health-diagnosis" and not incident_model:
+    incident_model = _selected_incident_model(event) if profile_id in _HEALTH_JOB_IDS and not continuation else ""
+    if profile_id == "health-diagnosis" and not incident_model and not continuation:
         # New delivery code pins the project route in its snapshot. For older
         # unsnapshotted deliveries, use this same approved route; never inherit
         # a stale profile model or provider fallback.
@@ -1727,7 +1780,7 @@ def run_profile(
             profile, policy, incident_project, incident_model,
             require_opencode=profile_id == "health-diagnosis",
         )
-    elif profile_id in _REPAIR_FIRST_JOB_IDS:
+    elif profile_id in _REPAIR_FIRST_JOB_IDS and not continuation:
         profile = _incident_profile(profile, runner, incident_project, policy)
     if profile_id == "health-remediation":
         health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
@@ -1793,6 +1846,8 @@ def run_profile(
     elif profile["model"]:
         request_body["model"] = profile["model"]
     sources = event_sources(event) if profile_id in _HEALTH_JOB_IDS else []
+    if continuation:
+        sources = source_chain(sources, [{'harness': continuation['harness'], 'sessionId': continuation['session_id']}])
     if profile_id in _HEALTH_JOB_IDS:
         request_body.update(source_launch_fields(profile, sources, lambda request, **options: _read_json_request(request, runner, **options)))
     if profile_id in _HEALTH_JOB_IDS:
@@ -1800,14 +1855,17 @@ def run_profile(
         # stops on accepted, unknown, or human hold; only a pre-admission
         # rejection is retryable, and it retries inside Agent Herder.
         try:
-            result = project_launch(
-                profile, incident_project, profile["cwd"], request_body["message"], runner,
-                operation_id=operation_id, harness=profile["harness"], model=profile["model"], mode=profile["mode"],
-                harness_order=str(profile.get("harness_order") or ""),
-                purpose=HEALTH_LAUNCH_PURPOSE if incident_model else "",
-                health_launch_token=str(profile.get("health_launch_token") or "") if incident_model else "",
-                incident_session_policy=(event.get('health') or {}).get('incident_session_policy'),
-            )
+            if continuation:
+                result = _resume_source_continuation(profile, continuation, request_body['message'], operation_id, runner)
+            else:
+                result = project_launch(
+                    profile, incident_project, profile["cwd"], request_body["message"], runner,
+                    operation_id=operation_id, harness=profile["harness"], model=profile["model"], mode=profile["mode"],
+                    harness_order=str(profile.get("harness_order") or ""),
+                    purpose=HEALTH_LAUNCH_PURPOSE if incident_model else "",
+                    health_launch_token=str(profile.get("health_launch_token") or "") if incident_model else "",
+                    incident_session_policy=(event.get('health') or {}).get('incident_session_policy'),
+                )
         except HerderOwnerStateBlocked as error:
             # This is a terminal, durable hold for this exact operation. It
             # preserves the request context and must never be re-enqueued as a
@@ -1828,6 +1886,7 @@ def run_profile(
         "name": request_body["name"],
         **_launch_receipt(result, profile, operation_id, incident_project),
         **health_result,
+        **({'resume_receipt': result['resume_receipt'], 'input_id': result['input_id']} if continuation else {}),
         **({'classification': classification} if classification is not None else {}),
     }
     if profile_id in _HEALTH_JOB_IDS:

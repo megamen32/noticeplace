@@ -18,10 +18,11 @@ class HealthCardUpdateTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.center = NotificationCenter(Path(self.tmp.name) / "state.db",
-            {"producer": {"project": "fleet", "max_severity": "critical"}}, default_quiet_hours=[])
+            {"producer": {"project": "fleet", "max_severity": "emergency"}}, default_quiet_hours=[])
         self.addCleanup(self.center._connection.close)
+        # Emergency admits the original card; all transport calls below are mocked.
         self.event = {"schema": "notify.event.v1", "project": "fleet", "recipient": "me",
-            "kind": "incident", "severity": "critical", "title": "Повышена нагрузка на сервере 100",
+            "kind": "incident", "severity": "emergency", "title": "Повышена нагрузка на сервере 100",
             "body": "Проверяем причину.", "dedup_key": "load", "event_type": "health.degraded",
             "source_id": "fleet:100", "host_id": "100", "signal_type": "load", "correlation_id": "episode"}
         self.created = self.center.create_event("producer", "intake", self.event)
@@ -46,6 +47,7 @@ class HealthCardUpdateTests(unittest.TestCase):
             receipt = sender.send(payload)
         self.assertTrue(requests[0][0].endswith("/editMessageText"))
         self.assertEqual(["42"], requests[0][1]["message_id"])
+        self.assertEqual(["-100123"], requests[0][1]["chat_id"])
         self.assertTrue(receipt["edited_in_place"])
         self.center.complete_delivery(delivery_id, "sent", result=receipt)
         return requests[0][1]
@@ -58,18 +60,18 @@ class HealthCardUpdateTests(unittest.TestCase):
             self.assertIn("Ссылка на сессию", data["text"][0])
             self.assertNotIn("Выбрано: решение через AI", data["text"][0])
         failed = self.center.schedule_health_outcome(self.incident, "failed", "failed-job")
-        self.assertIn("Работа остановилась", self.send(failed)["text"][0])
+        self.assertIn("Восстановление не подтверждено", self.send(failed)["text"][0])
         self.center.resolve_event("producer", "recovery", {
             **self.event, "action": "resolve", "event_type": "health.recovered"})
         recovery = self.center._connection.execute("SELECT id FROM deliveries WHERE json_extract(target_json,'$.health_outcome.status')='recovered'").fetchone()
-        self.assertIn("Состояние восстановилось", self.send(recovery["id"])["text"][0])
+        self.assertIn("Мониторинг подтвердил восстановление", self.send(recovery["id"])["text"][0])
 
     def test_late_session_delivery_preserves_recovered_state(self):
         session = self.center.record_health_agent_session(self.incident, "late", "", "codex", "late",
             "https://agent.bezrabotnyi.com", stage="health-diagnosis")
         self.center.resolve_event("producer", "recovery", {
             **self.event, "action": "resolve", "event_type": "health.recovered"})
-        self.assertIn("Состояние восстановилось", self.send(session["session_delivery_id"])["text"][0])
+        self.assertIn("Мониторинг подтвердил восстановление", self.send(session["session_delivery_id"])["text"][0])
 
     def test_severity_phase_change_never_claims_recovery_even_for_late_card(self):
         session = self.center.record_health_agent_session(self.incident, 'phase', '', 'codex', 'phase',
@@ -79,7 +81,7 @@ class HealthCardUpdateTests(unittest.TestCase):
         for row in self.center._connection.execute("SELECT id FROM deliveries WHERE json_extract(target_json,'$.health_outcome.status')='phase_changed'"):
             text = self.send(row['id'])['text'][0]
             self.assertIn('Сигнал ещё активен', text)
-            self.assertNotIn('Состояние восстановилось', text)
+            self.assertNotIn('Мониторинг подтвердил восстановление', text)
         text = self.send(session['session_delivery_id'])['text'][0]
         self.assertIn('Сигнал ещё активен', text)
 

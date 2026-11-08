@@ -186,6 +186,14 @@ def telegram_mode_for_payload(payload: Mapping[str, Any]) -> str:
     """
     if any(payload.get(key) for key in ("human_question", "choices", "health_plans", "health_session")):
         return "decisions"
+    # Exact existing-card outcomes pass the server-side admission gate and
+    # remain notifications even when the old incident belonged to logs.
+    target = payload.get('target')
+    card = target.get('incident_card') if isinstance(target, Mapping) else None
+    if (isinstance(payload.get('health_outcome'), Mapping) and isinstance(card, Mapping)
+            and str(card.get('chat_id') or '') and type(card.get('message_id')) is int
+            and card['message_id'] > 0):
+        return 'notify'
     return telegram_mode(payload["incident"])
 
 
@@ -1270,6 +1278,7 @@ class DeliveryWorker:
     def deliver(self, delivery: dict[str, Any]) -> None:
         """Deliver one claimed job; callers may run this in a bounded worker pool."""
         call_reserved = False
+        agent_reserved = False
         try:
             from .incident_call_chain import intended
             if intended(delivery) and call_chain_metadata(delivery) is None:
@@ -1571,6 +1580,7 @@ class DeliveryWorker:
                     attempt=int(delivery["attempt"]),
                 ):
                     return
+                agent_reserved = True
                 if job_name in {"health-diagnosis", "health-remediation"} and callable(getattr(adapter, "send_with_progress", None)):
                     receipt = adapter.send_with_progress(
                         payload,
@@ -1613,6 +1623,15 @@ class DeliveryWorker:
             )
         except Exception as error:
             from .incident_call_chain import metadata
+            from .core import IncidentModelConfigurationError
+            if isinstance(error, IncidentModelConfigurationError):
+                self._center.complete_delivery(
+                    delivery['id'], 'failed', str(error),
+                    claimed_at=delivery.get('claimed_at'), attempt=delivery.get('attempt'),
+                    result={'admission': 'not_admitted', 'reason': 'invalid_incident_model'},
+                    schedule_failure_neighbours=False,
+                )
+                return
             if intended(delivery) or call_reserved:
                 self._center.complete_delivery(delivery['id'],'uncertain' if call_reserved else 'failed',
                     'Звонок не подтверждён; автоматическое повторение остановлено',
@@ -1624,6 +1643,18 @@ class DeliveryWorker:
                 status = "human_stopped" if error.reason == "human_stop_held" else "source_blocked"
                 self._center.schedule_health_outcome(str(delivery["incident_id"]), status, f"agent-result:{delivery['id']}")
                 self._center.complete_delivery(delivery["id"], "cancelled", str(error), claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"))
+                return
+            from .gptadmin_agent import GptAdminAdmissionUnavailable
+            if agent_reserved and not isinstance(error, GptAdminAdmissionUnavailable):
+                self._center.complete_delivery(
+                    delivery['id'], 'uncertain', str(error),
+                    claimed_at=delivery.get('claimed_at'), attempt=delivery.get('attempt'),
+                    result={'uncertain': True, 'reason': 'agent_receipt_unconfirmed'},
+                    schedule_failure_neighbours=False,
+                )
+                if self._center.manual_ai_requested(str(delivery['incident_id'])):
+                    self._center.schedule_health_outcome(
+                        str(delivery['incident_id']), 'interrupted', f"agent-uncertain:{delivery['id']}")
                 return
             if str(delivery["channel"]) in {"gptadmin.agent:health-diagnosis", "gptadmin.agent:health-remediation"}:
                 self._center.schedule_health_outcome(str(delivery["incident_id"]), "interrupted", f"agent-interrupted:{delivery['id']}")

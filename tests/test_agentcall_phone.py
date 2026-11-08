@@ -27,7 +27,7 @@ class AgentCallPhoneAdapterTests(unittest.TestCase):
             center=NotificationCenter(Path(directory)/'notify.sqlite3',
                 {'test':{'project':'test','max_severity':'emergency'}},default_quiet_hours=[])
             created=center.create_event('test','native-ack',{'schema':'notify.event.v1','project':'test',
-                'recipient':'me','kind':'incident','severity':'critical','title':'Связь','body':'Проверка','dedup_key':'native'})
+                'recipient':'me','kind':'notification','severity':'critical','title':'Связь','body':'Проверка','dedup_key':'native'})
             center.complete_delivery(created['initial_delivery_id'],'sent')
             center.schedule_incident_call_chain_if_active(created['incident_id'],0)
             worker=DeliveryWorker(center,mock.Mock(active_modes=None),matrix_call=matrix,telegram_call=telegram,
@@ -134,7 +134,7 @@ class AgentCallPhoneAdapterTests(unittest.TestCase):
             path = Path(directory) / "notify.sqlite3"
             tokens = {"test": {"project": "test", "max_severity": "emergency"}}
             center = NotificationCenter(path, tokens, default_quiet_hours=[])
-            event = {"schema": "notify.event.v1", "project": "test", "recipient": "me", "kind": "incident",
+            event = {"schema": "notify.event.v1", "project": "test", "recipient": "me", "kind": "notification",
                      "severity": "critical", "title": "Связь", "body": "Проверка", "dedup_key": "voice"}
             created = center.create_event("test", "voice-ack", event)
             unrelated = center.create_event("test", "other", {**event, "dedup_key": "other"})
@@ -159,7 +159,7 @@ class AgentCallPhoneAdapterTests(unittest.TestCase):
     def test_phone_timeout_does_not_redial_and_success_preserves_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             center = NotificationCenter(Path(directory) / "notify.sqlite3", {"test": {"project": "test", "max_severity": "emergency"}}, default_quiet_hours=[])
-            event = {"schema": "notify.event.v1", "project": "test", "recipient": "me", "kind": "incident",
+            event = {"schema": "notify.event.v1", "project": "test", "recipient": "me", "kind": "notification",
                      "severity": "critical", "title": "Связь", "body": "Проверка", "dedup_key": "voice"}
             for outcome in (TimeoutError("late socket response"), {"ok": True, "call_id": "call-123"}):
                 created = center.create_event("test", str(outcome), {**event, "dedup_key": str(outcome)})

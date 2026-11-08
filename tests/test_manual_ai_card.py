@@ -30,8 +30,14 @@ class ManualAiCardTests(unittest.TestCase):
         self.incident = self.created["incident_id"]
         self.card = {"message_id": 12, "chat": {"id": -100123}, "text": "⚠️ Синхронизация остановилась",
                      "entities": [{"type": "bold", "offset": 3, "length": 26}]}
-        self.center.complete_delivery(self.created["initial_delivery_id"], "sent",
-            result={"chat_id": "-100123", "message_id": 12})
+        # A visible card sent before quiet policy; creation today stays quiet.
+        self.created["initial_delivery_id"] = "legacy-card"
+        with self.center._connection:
+            self.center._connection.execute(
+                "INSERT INTO deliveries(id,incident_id,channel,delivery_key,due_at,status,attempt,target_json,result_json,created_at,updated_at) "
+                "VALUES(?,?,'telegram.main',?,0,'sent',1,'{}',?,0,0)",
+                ("legacy-card", self.incident, self.incident+":legacy",
+                 json.dumps({"chat_id":"-100123","message_id":12})))
 
     def request_ai(self):
         return self.center.apply_telegram_action(self.incident, "ai", "telegram:42", self.card)
@@ -67,7 +73,7 @@ class ManualAiCardTests(unittest.TestCase):
         self.assertEqual(["12"], request["message_id"])
         # Since 127f0ab the manual AI launch renders the canonical session
         # heading instead of the literal selected marker.
-        self.assertIn("ИИ запущен для диагностики", request["text"][0])
+        self.assertIn("Исполнитель: Codex", request["text"][0])
         self.assertIn(payload["health_session"]["session_url"], request["text"][0])
         # The canonical card renders in place on the clicked message identity.
         self.assertEqual("-100123", request["chat_id"][0])
@@ -85,10 +91,10 @@ class ManualAiCardTests(unittest.TestCase):
         request = self.send(payload, edit_plans=True)
         # Since 127f0ab the canonical heading replaces the literal marker;
         # the migrated card still points at the latest session link.
-        self.assertIn("ИИ запущен для разбора причины", request["text"][0])
+        self.assertIn("Исполнитель: Codex", request["text"][0])
         self.assertIn("codex%3Aplanner", request["text"][0])
         buttons = json.loads(request["reply_markup"][0])["inline_keyboard"]
-        url_rows = [row[0]["url"] for row in buttons if row[0].get("url")]
+        url_rows = [row[0]["url"] for row in buttons if str(row[0].get("url", "")).startswith("https://agent.bezrabotnyi.com/")]
         self.assertEqual(["https://agent.bezrabotnyi.com/#/session/codex%3Aplanner"], url_rows)
         self.assertNotIn('AI', [button['text'] for row in buttons for button in row])
 
@@ -111,7 +117,7 @@ class ManualAiCardTests(unittest.TestCase):
         self.assertEqual(1, len(rows), "manual ordinary incident must publish the failed launch outcome")
         request = self.send(self.center.delivery_payload(rows[0]))
         text = request["text"][0]
-        self.assertIn("Запуск ИИ не подтверждён", text)
+        self.assertIn("Подтверждения создания сессии нет", text)
         self.assertNotIn("Проверьте исходную сессию", text)
         self.assertNotIn("Создаётся сессия", text)
         self.assertFalse(self.center.latest_agent_session(self.incident))
@@ -127,7 +133,7 @@ class ManualAiCardTests(unittest.TestCase):
         self.assertEqual(1, len(rows))
         request = self.send(self.center.delivery_payload(rows[0]))
         self.assertEqual(["12"], request["message_id"])
-        self.assertIn("Запуск ИИ не подтверждён", request["text"][0])
+        self.assertIn("Подтверждения создания сессии нет", request["text"][0])
 
     def test_worker_interruption_updates_manual_card_and_repeat_does_not_launch_again(self):
         calls = []
@@ -147,7 +153,7 @@ class ManualAiCardTests(unittest.TestCase):
         messages = self.center.claim_due_deliveries(channel_group="message")
         self.assertEqual(1, len(messages))
         request = self.send(self.center.delivery_payload(messages[0]))
-        self.assertIn("Запуск ИИ не подтверждён", request["text"][0])
+        self.assertIn("Подтверждения создания сессии нет", request["text"][0])
         self.assertEqual(["12"], request["message_id"])
 
     def test_completed_job_without_session_does_not_claim_launch_success(self):
@@ -157,7 +163,7 @@ class ManualAiCardTests(unittest.TestCase):
         rows = self.center.claim_due_deliveries(channel_group="message")
         self.assertEqual(1, len(rows))
         request = self.send(self.center.delivery_payload(rows[0]))
-        self.assertIn("Запуск ИИ не подтверждён", request["text"][0])
+        self.assertIn("Подтверждения создания сессии нет", request["text"][0])
         self.assertNotIn("ИИ запущен", request["text"][0])
 
     def test_plain_incident_without_manual_request_rejects_session(self):

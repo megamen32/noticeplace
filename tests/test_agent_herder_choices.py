@@ -53,10 +53,10 @@ class AgentHerderChoiceTests(unittest.TestCase):
         keyboard = telegram_inline_keyboard(codec, payload["incident"], payload["choices"])
 
         # Since 127f0ab the card keeps its notification controls on one board:
-        # the mute toggle row follows the choice rows.
+        # mute, severity and settings controls follow the choice rows.
         self.assertEqual(
             [["Inspect failed unit"], ["Correlate failure timing"], ["Assess recurrence risk"],
-             ["Отключить такие уведомления"]],
+             ["Отключить такие уведомления"], ["⚖ Изменить важность"], ["Настроить это уведомление"]],
             [[button["text"] for button in row] for row in keyboard["inline_keyboard"]],
         )
         callback_data = keyboard["inline_keyboard"][1][0]["callback_data"]
@@ -108,8 +108,8 @@ class AgentHerderChoiceTests(unittest.TestCase):
         keyboard = json.loads(str(edit_payload["reply_markup"]))
         marked = [row[0]["text"] for row in keyboard["inline_keyboard"]]
         self.assertTrue(any(t.startswith("✅") and "Correlate failure timing" in t for t in marked), marked)
-        # Choice rows keep their signed callbacks; the mute toggle follows.
-        self.assertEqual(4, len(marked))
+        # Choice rows keep signed callbacks and the three notification controls.
+        self.assertEqual(6, len(marked))
 
     def test_choice_event_rejects_authority_goal_data(self) -> None:
         with self.assertRaises(ValidationError):

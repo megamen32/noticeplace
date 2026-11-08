@@ -95,7 +95,7 @@ class NotificationRuleSettingsTests(unittest.TestCase):
         self.assertFalse(rule["notifications_enabled"])
         self.assertTrue(rule["auto_ai_enabled"])
         changed = self.center.set_notification_rule_option(
-            first["incident_id"], "auto_ai", False, 0, "test:operator"
+            first["incident_id"], "auto_ai", False, rule["revision"], "test:operator"
         )
         self.assertFalse(changed["notifications_enabled"])
         self.assertFalse(changed["auto_ai_enabled"])

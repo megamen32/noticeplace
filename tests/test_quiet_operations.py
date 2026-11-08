@@ -99,6 +99,23 @@ class QuietOperationsTests(unittest.TestCase):
         })
         self.assertIsNotNone(self.center._schedule_delivery(incident, 'telegram.main', 'question', time.time()))
 
+    def test_manual_ai_only_updates_the_clicked_card_and_cannot_admit_a_new_message(self):
+        incident = self.create()['incident_id']
+        self.legacy_delivery(incident, status='sent')
+        with self.center._connection:
+            self.center._connection.execute('UPDATE deliveries SET result_json=? WHERE id=?',
+                (json.dumps({'chat_id':'-1001','message_id':17}), 'old'))
+        self.center.apply_telegram_action(incident, 'ai', 'fixture:operator',
+            {'message_id':17,'chat':{'id':-1001},'text':'Existing card'})
+        target = {'health_outcome':{'status':'interrupted'},
+                  'incident_card':{'chat_id':'-1001','message_id':17}}
+        admitted = self.center._schedule_delivery(incident, 'telegram.main', 'manual-result', time.time(), target)
+        self.assertIsNotNone(admitted)
+        self.assertIsNone(self.center._schedule_delivery(incident, 'telegram.main', 'new-message', time.time()))
+        self.assertIsNone(self.center._schedule_delivery(incident, 'telegram.main', 'wrong-card', time.time(),
+            {**target,'incident_card':{'chat_id':'-1001','message_id':18}}))
+        self.assertIsNone(self.center._schedule_delivery(incident, 'android.phone.call', 'call', time.time(), target))
+
     def test_business_notification_keeps_its_delivery_contract(self):
         self.assertIsNotNone(self.create(kind='notification', event_type='lead.created')['initial_delivery_id'])
 

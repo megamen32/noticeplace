@@ -79,6 +79,23 @@ class IncidentCardHumanCopyTests(unittest.TestCase):
         self.assertIn("Мониторинг подтвердил восстановление", text)
         self.assertIn("действий от вас не требуется", text)
 
+    def test_resolved_controls_never_offer_ai_but_keep_existing_session_link(self):
+        identity = {
+            'harness': 'opencode', 'session_id': 'ses_confirmed',
+            'session_url': 'https://agent.bezrabotnyi.com/#/session/opencode%3Ases_confirmed',
+        }
+        for key in (None, 'health_session', 'ai_session', 'execution_identity'):
+            with self.subTest(session_field=key):
+                payload = incident_payload(incident={'state': 'resolved'}, **({key: identity} if key else {}))
+                _, keyboard = render(payload, Codec())
+                buttons = [button for row in keyboard['inline_keyboard'] for button in row]
+                self.assertFalse(any(b.get('callback_data', '').startswith('ai:') for b in buttons))
+                self.assertTrue(any(b['text'] == 'Настроить это уведомление' for b in buttons))
+                if key:
+                    self.assertTrue(any(b.get('url') == identity['session_url'] for b in buttons))
+        _, keyboard = render(incident_payload(), Codec())
+        self.assertTrue(any(b.get('callback_data', '').startswith('ai:') for row in keyboard['inline_keyboard'] for b in row))
+
 
 if __name__ == "__main__":
     unittest.main()

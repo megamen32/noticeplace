@@ -27,9 +27,11 @@ class MeshBookkeepingTests(unittest.TestCase):
         class Center:
             def due_human_completions(self, limit): return [{'request_id':'unit'}]
             def due_human_completion_cards(self, limit): return []
+            def publish_executor_outcome_digest(self): pass
 
         class Worker:
             _center = Center()
+            def run_task_decision_tick(self): pass
             def replay_human_completions(self, limit): pass
             def claim_due(self, **kwargs): raise sqlite3.OperationalError('local injected storage exception')
 

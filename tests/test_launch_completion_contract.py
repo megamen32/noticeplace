@@ -24,18 +24,30 @@ class LaunchCompletionContractTests(unittest.TestCase):
                 return Response(dict(version=1, preferredHarness='opencode', allowedHarnesses=['opencode'],
                     models={'opencode':agent_job_helper.HEALTH_LAUNCH_DEFAULT},
                     incidentExecution=dict(agent_job_helper.HEALTH_EXECUTION_PROFILE)))
+            if '/api/coordination/context?' in request.full_url:
+                return Response({'humanStopHeld': False})
+            if '/details?' in request.full_url:
+                authority = event['source_check_continuation']
+                return Response({'session': {'id': authority['session_id'], 'harness': authority['harness'],
+                    'cwd': str(Path(__file__).resolve().parents[1])}})
             if request.full_url.endswith('/api/automation/project-launch'):
-                captured.append(json.loads(request.data))
+                self.assertNotIn('source_check_continuation', event)
+                captured.append(json.loads(request.data)['operation_id'])
+            if request.full_url.endswith('/resume'):
+                payload = json.loads(request.data)
+                self.assertIs(payload['humanRequested'], False)
+                self.assertTrue(payload['inputId'].startswith('noticeplace:source-check:'))
+                captured.append(payload['inputId'].removeprefix('noticeplace:source-check:'))
             return Response({})
         with (mock.patch.object(agent_job_helper, '_load_health_callback', return_value=('http://127.0.0.1:8091', 'test-only')),
-              self.assertRaisesRegex(RuntimeError, 'session identity')):
+              self.assertRaisesRegex(RuntimeError, 'admission unconfirmed' if 'source_check_continuation' in event else 'session identity')):
             agent_job_helper.run_profile('health-diagnosis', event, Path('unused'), runner=runner,
                 profile_override=dict(url='http://127.0.0.1:18787/api/sessions/new-or-resume',
                     harness='opencode', model=agent_job_helper.HEALTH_LAUNCH_DEFAULT,
                     health_launch_token='test-only', name='contract', cwd=str(Path(__file__).resolve().parents[1]),
                     instruction='Read only.'))
         self.assertEqual(1, len(captured))
-        return captured[0]['operation_id']
+        return captured[0]
 
     def test_actual_adapter_launch_uses_one_new_operation_per_finished_attempt(self):
         from notification_center.gptadmin_agent import _agent_job_event

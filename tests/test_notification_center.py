@@ -22,20 +22,20 @@ class NotificationCenterTests(unittest.TestCase):
     def setUp(self) -> None:
         """Create a fresh durable store for every test."""
         self.tempdir = tempfile.TemporaryDirectory()
-        self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"producer-token": {"project": "hermes", "max_severity": "critical"}}, default_quiet_hours=[])
+        self.center = NotificationCenter(Path(self.tempdir.name) / "notify.sqlite3", {"producer-token": {"project": "hermes", "max_severity": "emergency"}}, default_quiet_hours=[])
 
     def tearDown(self) -> None:
         """Remove isolated SQLite data after every test."""
         self.tempdir.cleanup()
 
     def event(self, **overrides: object) -> dict[str, object]:
-        """Return a valid critical event, adjusted by explicit overrides."""
+        """Return a deliverable emergency incident, adjusted by explicit overrides."""
         event: dict[str, object] = {
             "schema": "notify.event.v1",
             "project": "hermes",
             "recipient": "me",
             "kind": "incident",
-            "severity": "critical",
+            "severity": "emergency",
             "title": "Hermes unavailable",
             "body": "Health probe failed three times.",
             "dedup_key": "hermes:gateway:100",

@@ -1,0 +1,80 @@
+test_actual_loader_registers_shared_http_and_literal_header_reference (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... FAIL
+test_historical_011_reproduces_official_loader_rejection (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... ok
+test_http_package_loads_from_path_with_spaces (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... FAIL
+test_missing_env_is_rejected_before_transport (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... FAIL
+test_native_projections_preserve_shared_http_auth_and_skill (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... FAIL
+test_official_connect_renders_fake_env_at_real_http_transport (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... FAIL
+test_package_validator (test_noticeplace_plugin_hermes.HermesPortablePluginTests) ... FAIL
+
+======================================================================
+FAIL: test_actual_loader_registers_shared_http_and_literal_header_reference (test_noticeplace_plugin_hermes.HermesPortablePluginTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/roomhacker/agents-projects/.worktrees/noticeplace-quiet-implementation-20261107/tests/test_noticeplace_plugin_hermes.py", line 122, in test_actual_loader_registers_shared_http_and_literal_header_reference
+    self.assertFalse(package.diagnostics, [(d.scope, d.message) for d in package.diagnostics])
+AssertionError: (AgentPluginDiagnostic(scope='mcp', message='mcp.json has an invalid top-level shape'),) is not false : [('mcp', 'mcp.json has an invalid top-level shape')]
+
+======================================================================
+FAIL: test_http_package_loads_from_path_with_spaces (test_noticeplace_plugin_hermes.HermesPortablePluginTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/roomhacker/agents-projects/.worktrees/noticeplace-quiet-implementation-20261107/tests/test_noticeplace_plugin_hermes.py", line 134, in test_http_package_loads_from_path_with_spaces
+    self.assertFalse(package.diagnostics)
+AssertionError: (AgentPluginDiagnostic(scope='mcp', message='mcp.json has an invalid top-level shape'),) is not false
+
+======================================================================
+FAIL: test_missing_env_is_rejected_before_transport (test_noticeplace_plugin_hermes.HermesPortablePluginTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/roomhacker/agents-projects/.worktrees/noticeplace-quiet-implementation-20261107/tests/test_noticeplace_plugin_hermes.py", line 159, in test_missing_env_is_rejected_before_transport
+    self.assertEqual({'missing_credentials': True, 'requests': 0}, self.transport_proof('missing'))
+  File "/home/roomhacker/agents-projects/.worktrees/noticeplace-quiet-implementation-20261107/tests/test_noticeplace_plugin_hermes.py", line 150, in transport_proof
+    self.assertEqual(0, result.returncode, result.stderr)
+AssertionError: 0 != 1 : Traceback (most recent call last):
+  File "<string>", line 12, in <module>
+AssertionError: [('mcp', 'mcp.json has an invalid top-level shape')]
+
+
+======================================================================
+FAIL: test_native_projections_preserve_shared_http_auth_and_skill (test_noticeplace_plugin_hermes.HermesPortablePluginTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/roomhacker/agents-projects/.worktrees/noticeplace-quiet-implementation-20261107/tests/test_noticeplace_plugin_hermes.py", line 168, in test_native_projections_preserve_shared_http_auth_and_skill
+    self.assertEqual('0.1.2', json.loads((package / name).read_text())['version'])
+AssertionError: '0.1.2' != '0.1.1'
+- 0.1.2
+?     ^
++ 0.1.1
+?     ^
+
+
+======================================================================
+FAIL: test_official_connect_renders_fake_env_at_real_http_transport (test_noticeplace_plugin_hermes.HermesPortablePluginTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/roomhacker/agents-projects/.worktrees/noticeplace-quiet-implementation-20261107/tests/test_noticeplace_plugin_hermes.py", line 154, in test_official_connect_renders_fake_env_at_real_http_transport
+    proof = self.transport_proof('present')
+  File "/home/roomhacker/agents-projects/.worktrees/noticeplace-quiet-implementation-20261107/tests/test_noticeplace_plugin_hermes.py", line 150, in transport_proof
+    self.assertEqual(0, result.returncode, result.stderr)
+AssertionError: 0 != 1 : Traceback (most recent call last):
+  File "<string>", line 12, in <module>
+AssertionError: [('mcp', 'mcp.json has an invalid top-level shape')]
+
+
+======================================================================
+FAIL: test_package_validator (test_noticeplace_plugin_hermes.HermesPortablePluginTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/roomhacker/agents-projects/.worktrees/noticeplace-quiet-implementation-20261107/tests/test_noticeplace_plugin_hermes.py", line 180, in test_package_validator
+    self.assertEqual('PASS noticeplace 0.1.2', result.stdout.strip())
+AssertionError: 'PASS noticeplace 0.1.2' != 'PASS noticeplace 0.1.1'
+- PASS noticeplace 0.1.2
+?                      ^
++ PASS noticeplace 0.1.1
+?                      ^
+
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.919s
+
+FAILED (failures=6)

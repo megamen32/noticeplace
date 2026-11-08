@@ -92,7 +92,7 @@ class HttpApiTests(unittest.TestCase):
                 "schema": "notify.event.v1",
                 "project": "hermes",
                 "recipient": "operator",
-                "kind": "incident",
+                "kind": "notification",
                 "severity": "critical",
                 "title": "Gateway unavailable",
                 "dedup_key": "notice-scoped",
@@ -430,7 +430,7 @@ class HttpApiTests(unittest.TestCase):
                 "schema": "notify.event.v1",
                 "project": "hermes",
                 "recipient": "operator",
-                "kind": "incident",
+                "kind": "notification",
                 "severity": "critical",
                 "event_type": "health.degraded",
                 "title": "Health readiness test",
@@ -454,7 +454,7 @@ class HttpApiTests(unittest.TestCase):
                 "schema": "notify.event.v1",
                 "project": "hermes",
                 "recipient": "operator",
-                "kind": "incident",
+                "kind": "notification",
                 "severity": "critical",
                 "event_type": "health.degraded",
                 "title": "Invalid health receipt",
@@ -498,7 +498,7 @@ class HttpApiTests(unittest.TestCase):
                 "schema": "notify.event.v1",
                 "project": "hermes",
                 "recipient": "operator",
-                "kind": "incident",
+                "kind": "notification",
                 "severity": "critical",
                 "event_type": "health.degraded",
                 "title": "Synthetic canary",
@@ -522,7 +522,7 @@ class HttpApiTests(unittest.TestCase):
                 "schema": "notify.event.v1",
                 "project": "hermes",
                 "recipient": "operator",
-                "kind": "incident",
+                "kind": "notification",
                 "severity": "critical",
                 "event_type": "health.degraded",
                 "title": "Late duplicate health card",
@@ -598,9 +598,9 @@ class HttpApiTests(unittest.TestCase):
         status, listing = self.request("GET", "/v1/mutes?project=hermes", Authorization="Bearer secret-token")
         self.assertEqual(200, status)
         self.assertEqual("prefix", listing["mutes"][0]["match_mode"])
-        self.assertEqual("fail2ban:fail2ban.server-100:sshd:2001:db8::", listing["mutes"][0]["dedup_key"])
+        self.assertEqual("fail2ban:fail2ban.server-100:sshd:", listing["mutes"][0]["dedup_key"])
 
-        sibling = {**event, "dedup_key": "fail2ban:fail2ban.server-100:sshd:2001:db8::2"}
+        sibling = {**event, "dedup_key": "fail2ban:fail2ban.server-100:sshd:2001:db8:ffff::2"}
         status, next_ip = self.request(
             "POST", "/v1/events", sibling,
             Authorization="Bearer secret-token", **{"Idempotency-Key": "mute-http-ipv6-2"},

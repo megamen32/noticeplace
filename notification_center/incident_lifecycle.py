@@ -23,6 +23,108 @@ PROBLEM_TYPE_ALIASES = {
 # The mesh response frame is 16 MiB. A raw UTF-8 byte can need up to six
 # JSON-escaped bytes; leave ample room for columns and the response envelope.
 MIGRATION_PAGE_BYTES = 1024 * 1024
+VERIFICATION_TTL_SECONDS = 300
+MEASUREMENT_CLOCK_SKEW_SECONDS = 5
+MAX_TIMESTAMP_SECONDS = 253402300799  # End of year 9999; safely convertible to float.
+
+
+def finite_timestamp(value):
+    return (not isinstance(value, bool) and isinstance(value, (int, float))
+            and 0 < value <= MAX_TIMESTAMP_SECONDS and math.isfinite(value))
+
+
+def measurement_is_fresh(observed_at, requested_at, deadline, now):
+    """A source measurement belongs to this live server-issued window."""
+    return (all(finite_timestamp(v) for v in (observed_at, requested_at, deadline, now))
+            and now < deadline
+            and requested_at - MEASUREMENT_CLOCK_SKEW_SECONDS <= observed_at
+            <= min(deadline, now + MEASUREMENT_CLOCK_SKEW_SECONDS))
+
+
+def request_expired(row, now):
+    return not finite_timestamp(row['verification_deadline']) or now >= row['verification_deadline']
+
+
+def rearm_unknown(center, row, now):
+    """Caller owns transaction/lock. Expiration is not a source observation."""
+    center._connection.execute('''UPDATE incident_lifecycle SET generation=generation+1,
+      verification_state='unknown',verification_due=?,request_id=?,
+      verification_requested_at=?,verification_deadline=? WHERE incident_id=?''',
+      (now, 'check_' + uuid.uuid4().hex, now, now + VERIFICATION_TTL_SECONDS, row['incident_id']))
+    return center._connection.execute('SELECT * FROM incident_lifecycle WHERE incident_id=?',
+                                      (row['incident_id'],)).fetchone()
+
+
+
+def cancelled_continuation_can_retarget(origin, ticket):
+    """Only a resolved origin and definite zero-dispatch ticket release authority."""
+    return bool(origin and origin['state'] == 'resolved' and ticket
+                and ticket['status'] == 'cancelled' and ticket['attempt'] == 0
+                and ticket['claimed_at'] is None and ticket['result_json'] is None)
+
+
+def continuation_can_retarget(center, continuation, incident_id):
+    if not continuation or continuation.get('incident_id') == incident_id:
+        return False
+    origin = center._connection.execute('SELECT state FROM incidents WHERE id=?',
+                                        (continuation.get('incident_id'),)).fetchone()
+    ticket = center._connection.execute('SELECT status,attempt,claimed_at,result_json FROM deliveries WHERE id=?',
+                                        (continuation.get('delivery_id'),)).fetchone()
+    return cancelled_continuation_can_retarget(origin, ticket)
+
+
+def expire_verification_requests(center, *, now=None, limit=20):
+    """Bounded server clock: unknown source, one continuation per finished attempt.
+
+    This records no source observation and never closes an incident. The usual
+    source/STOP admission fence still applies when the durable ticket executes.
+    """
+    now = time.time() if now is None else now
+    if not finite_timestamp(now) or not 1 <= limit <= 100:
+        raise ValueError('bounded timestamp and limit required')
+    report = dict(expired=0, continuations=0)
+    with center._lock, center._connection:
+        rows = center._connection.execute("""SELECT l.* FROM incident_lifecycle l
+          JOIN incidents i ON i.id=l.incident_id
+          WHERE l.verification_state IN ('due','unknown','degraded')
+          AND l.verification_deadline<=? AND i.state='open'
+          AND l.attempt_state='work_finished'
+          ORDER BY l.verification_deadline,l.incident_id LIMIT ?""", (now,limit)).fetchall()
+        for old in rows:
+            row = rearm_unknown(center, old, now)
+            report['expired'] += 1
+            continuation = json.loads(row['continuation_json']) if row['continuation_json'] else None
+            if row['completion_id']:
+                shared = center._connection.execute(
+                    'SELECT continuation_json FROM incident_group_completions WHERE id=?',
+                    (row['completion_id'],)).fetchone()
+                if shared and shared['continuation_json']:
+                    continuation = json.loads(shared['continuation_json'])
+            if continuation_can_retarget(center, continuation, row['incident_id']):
+                continuation = None
+            if not continuation and all(row[f] for f in ('session_id','harness','attempt_id','executor_principal')):
+                continuation = {f:row[f] for f in ('session_id','harness','attempt_id','request_id','generation')}
+                continuation['incident_id'] = row['incident_id']
+                continuation['evidence_refs'] = [
+                    'Server verification deadline expired; source health is UNKNOWN. '
+                    'Investigate verifier availability; do not assert recovery.']
+                target = center._health_agent_delivery_target()
+                target['source_check_continuation'] = dict(continuation)
+                continuation['delivery_id'] = center._schedule_delivery(
+                    row['incident_id'], 'gptadmin.agent:health-diagnosis',
+                    'source-check:' + row['attempt_id'], now, target)
+                report['continuations'] += 1
+                if row['completion_id']:
+                    center._connection.execute(
+                        'UPDATE incident_group_completions SET continuation_json=? WHERE id=?',
+                        (json.dumps(continuation,sort_keys=True),row['completion_id']))
+            if continuation:
+                center._connection.execute('UPDATE incident_lifecycle SET continuation_json=? WHERE incident_id=?',
+                    (json.dumps(continuation,sort_keys=True),row['incident_id']))
+            center._audit(row['incident_id'],'health.verification_expired','server-clock',
+                          dict(request_id=old['request_id'],generation=old['generation'],
+                               continuation_delivery_id=(continuation or {}).get('delivery_id')))
+    return report
 
 
 def _migration_rows(center, columns, source, cursor, size, params=()):
@@ -87,6 +189,10 @@ def initialize(center):
         for name in ('continuation_json', 'last_check_receipt_json', 'completion_id'):
             if name not in columns:
                 center._connection.execute('ALTER TABLE incident_lifecycle ADD COLUMN ' + name + ' TEXT')
+        for name in ('verification_requested_at', 'verification_deadline'):
+            if name not in columns:
+                center._connection.execute('ALTER TABLE incident_lifecycle ADD COLUMN ' + name + ' REAL')
+        center._connection.execute('CREATE INDEX IF NOT EXISTS incident_lifecycle_deadline ON incident_lifecycle(verification_state,verification_deadline)')
         # Upgrade existing accepted receipts without replaying a delivery. A
         # previously queued continuation retains its exact original operation.
         # Pick the final receipt before paging: updating the lifecycle nonce
@@ -109,6 +215,15 @@ def initialize(center):
               (json.dumps(receipt,sort_keys=True),json.dumps(continuation,sort_keys=True) if continuation else None,
                'check_' + uuid.uuid4().hex if nonhealthy else row['request_id'],
                time.time()+60 if nonhealthy else row['verification_due'], 'due' if row['verification_state']=='stale' else row['verification_state'], row['incident_id']))
+
+        # Preserve existing nonces and receipts. Old due dates remain old:
+        # expired requests are rearmed when pulled/submitted, never blessed as
+        # fresh merely because the server restarted.
+        center._connection.execute('''UPDATE incident_lifecycle SET
+          verification_requested_at=COALESCE(verification_due,?),
+          verification_deadline=COALESCE(verification_due,?)+?
+          WHERE request_id IS NOT NULL AND verification_state IN ('due','unknown','degraded')
+          AND verification_deadline IS NULL''', (time.time(), time.time(), VERIFICATION_TTL_SECONDS))
 
         # One joined historical scan, not an incident-by-incident lookup. No
         # recovery or attempt is inferred from existing cards or session status.
@@ -216,6 +331,10 @@ def observe_degraded(center, token, incident_id, event):
       ON CONFLICT(incident_id) DO UPDATE SET generation=generation+1,
       metadata_json=excluded.metadata_json, group_key=excluded.group_key, latest_observed_at=CASE WHEN latest_observed_at IS NULL OR excluded.latest_observed_at > latest_observed_at THEN excluded.latest_observed_at ELSE latest_observed_at END, verification_state=CASE WHEN attempt_id IS NOT NULL THEN 'due' ELSE verification_state END, request_id=CASE WHEN attempt_id IS NOT NULL THEN ? ELSE request_id END, verification_due=CASE WHEN attempt_id IS NOT NULL THEN ? ELSE verification_due END''',
       (incident_id,principal(center,token),json.dumps(group,sort_keys=True),group_key(group),group['source_id'],observed,pending_nonce,time.time()))
+    if pending_nonce:
+        now = time.time()
+        center._connection.execute('''UPDATE incident_lifecycle SET verification_requested_at=?,
+          verification_deadline=? WHERE incident_id=?''', (now, now + VERIFICATION_TTL_SECONDS, incident_id))
 
 
 def view(center, incident_id):
@@ -248,6 +367,23 @@ def view(center, incident_id):
     return result
 
 
+def verification_identity_allowed(scope, authenticated, source_principal,
+                                  executor_principal, source_id, consumer_id):
+    """The same server-owned identity policy for pull and result submission."""
+    sources = scope.get('verification_sources', [])
+    exact = isinstance(sources, (list, tuple)) and source_id in sources
+    dynamic = scope.get('incident_role') == 'verifier' and scope.get('verification_owned_sources') is True
+    consumers = scope.get('verification_consumer_ids', [])
+    consumer_granted = (exact and scope.get('incident_role') == 'verifier'
+                        and isinstance(consumers, (list, tuple)) and consumer_id in consumers)
+    allowed = ((source_principal == authenticated and (exact or dynamic))
+               or (source_principal == 'historical-unbound' and exact)
+               or consumer_granted)
+    return bool(scope.get('principal_id') and allowed
+                and scope.get('incident_role') != 'executor'
+                and authenticated != executor_principal)
+
+
 def verifier(center, token, incident_id):
     from .core import AuthorizationError, ValidationError
     center.authorize_incident(token,incident_id)
@@ -256,31 +392,17 @@ def verifier(center, token, incident_id):
         raise ValidationError('incident has no registered source identity')
     source = json.loads(row['metadata_json'])['source_id']
     scope = center._token_scope(token)
-    sources = scope.get('verification_sources', [])
     authenticated = principal(center, token)
-    exact = isinstance(sources, (list, tuple)) and source in sources
-    owned = row['source_principal'] == authenticated
-    dynamic = scope.get('incident_role') == 'verifier' and scope.get('verification_owned_sources') is True
     incident = center._connection.execute(
         'SELECT consumer_id FROM incidents WHERE id=?', (incident_id,),
     ).fetchone()
-    consumer_ids = scope.get('verification_consumer_ids', [])
-    consumer_granted = bool(
-        exact and scope.get('incident_role') == 'verifier'
-        and isinstance(consumer_ids, (list, tuple))
-        and incident is not None and incident['consumer_id'] in consumer_ids
-    )
     # An explicit server-owned verifier grant for one consumer/source covers
     # every producer identity of that same consumer: the current
     # consumer:<id> principal and pre-migration credential:<sha256> rows. The
     # incident's own consumer binding is authoritative; this never inherits
     # another consumer or lets an executor verify its own work.
-    allowed = ((owned and (exact or dynamic))
-               or (row['source_principal'] == 'historical-unbound' and exact)
-               or consumer_granted)
-    if (not scope.get('principal_id') or not allowed
-            or scope.get('incident_role') == 'executor'
-            or (row['executor_principal'] and authenticated == row['executor_principal'])):
+    if not verification_identity_allowed(scope, authenticated, row['source_principal'],
+            row['executor_principal'], source, incident['consumer_id'] if incident else None):
         raise AuthorizationError('source verification requires a registered independent source principal')
     return row
 
@@ -344,7 +466,7 @@ def finish(center, token, incident_id, key, body):
         result = None
         for episode in eligible:
             request_id = 'check_' + uuid.uuid4().hex
-            episode_result = dict(incident_id=episode['incident_id'],request_id=request_id,generation=episode['generation'],attempt_state='work_finished',verification_state='due',verification_due=due,**payload)
+            episode_result = dict(incident_id=episode['incident_id'],request_id=request_id,generation=episode['generation'],attempt_state='work_finished',verification_state='due',verification_due=due,verification_requested_at=due,verification_deadline=due+VERIFICATION_TTL_SECONDS,**payload)
             previous_episode = center._connection.execute('SELECT * FROM incident_verification_requests WHERE incident_id=? AND attempt_id=?', (episode['incident_id'],body['attempt_id'])).fetchone()
             if previous_episode:
                 if previous_episode['finish_json'] != encoded:
@@ -353,8 +475,8 @@ def finish(center, token, incident_id, key, body):
                 continue
             center._connection.execute('INSERT INTO incident_verification_requests VALUES (?,?,?,?,?,?)',
                 (request_id,episode['incident_id'],episode['generation'],body['attempt_id'],encoded,json.dumps(episode_result,sort_keys=True)))
-            center._connection.execute('''UPDATE incident_lifecycle SET attempt_state='work_finished', verification_state='due',verification_due=?,request_id=?,session_id=?,harness=?,attempt_id=?,executor_principal=?,continuation_json=NULL,completion_id=? WHERE incident_id=?''',
-                (due,request_id,body['session_id'],body['harness'],body['attempt_id'],executor,completion_id,episode['incident_id']))
+            center._connection.execute('''UPDATE incident_lifecycle SET attempt_state='work_finished', verification_state='due',verification_due=?,request_id=?,session_id=?,harness=?,attempt_id=?,executor_principal=?,continuation_json=NULL,completion_id=?,verification_requested_at=?,verification_deadline=? WHERE incident_id=?''',
+                (due,request_id,body['session_id'],body['harness'],body['attempt_id'],executor,completion_id,due,due+VERIFICATION_TTL_SECONDS,episode['incident_id']))
             center._audit(episode['incident_id'],'health.work_finished',executor,episode_result)
             if episode['incident_id'] == incident_id:
                 result = episode_result
@@ -393,34 +515,41 @@ def due_checks_page(center, token, project, source_id, limit=20, cursor=None, wa
         try:
             if not isinstance(cursor, str) or len(cursor) > 2048:
                 raise ValueError()
+            # A checkpoint resumes a read position, never an observation or an
+            # authorization snapshot. Current token/project/grants are checked
+            # again above and below. Ordinary cursors still expire normally.
+            resume = cursor.startswith('resume:')
+            if resume:
+                cursor = cursor[len('resume:'):]
             encoded, signature = cursor.split('.')
             expected = hmac.new(key, encoded.encode(), hashlib.sha256).hexdigest()
             if not hmac.compare_digest(signature, expected):
                 raise ValueError()
             data = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
-            if data['scope'] != [authenticated, project, source_id] or data['expires'] <= time.time():
+            if data['scope'] != [authenticated, project, source_id] or (not resume and data['expires'] <= time.time()):
                 raise ValueError()
             due, incident = data['due'], data['incident']
             if isinstance(due, bool) or not isinstance(due, (int, float)) or not math.isfinite(due) or not isinstance(incident, str) or not incident:
                 raise ValueError()
-            position, expires = (due, incident), data['expires']
+            position = (due, incident)
+            if not resume:
+                expires = data['expires']
         except (ValueError, KeyError, TypeError, UnicodeError, json.JSONDecodeError):
             raise ValidationError('invalid or expired verification cursor') from None
     while True:
-        with center._lock:
+        with center._lock, center._connection:
             source_identity = "l.source_principal=? OR (l.source_principal='historical-unbound' AND ?)"
             params = [project, source_id, authenticated, int(exact)]
             if verification_consumer_ids:
                 placeholders = ','.join('?' for _ in verification_consumer_ids)
-                source_identity += (f" OR (l.source_principal LIKE 'credential:%' "
-                                    f"OR l.source_principal LIKE 'consumer:%') "
-                                    f"AND i.consumer_id IN ({placeholders})")
+                source_identity += f" OR i.consumer_id IN ({placeholders})"
                 params.extend(verification_consumer_ids)
             sql = ("SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id "
                    "WHERE i.project=? AND l.source_id=? AND (" + source_identity + ") "
                    "AND i.state!='resolved' AND l.verification_state IN ('due','unknown','degraded') "
+                   "AND (l.executor_principal IS NULL OR l.executor_principal!=?) "
                    "AND l.verification_due<=?")
-            params.append(time.time())
+            params.extend([authenticated, time.time()])
             if position:
                 sql += ' AND (l.verification_due>? OR (l.verification_due=? AND l.incident_id>?))'
                 params.extend([position[0], position[0], position[1]])
@@ -429,6 +558,8 @@ def due_checks_page(center, token, project, source_id, limit=20, cursor=None, wa
             for row in rows[:limit]:
                 if json.loads(row['metadata_json'])['source_id'] == source_id:
                     verifier(center,token,row['incident_id'])
+                    if request_expired(row, time.time()):
+                        rearm_unknown(center, row, time.time())
                     result.append(view(center,row['incident_id']))
             next_cursor = None
             if len(rows) > limit:
@@ -437,7 +568,8 @@ def due_checks_page(center, token, project, source_id, limit=20, cursor=None, wa
                 encoded = base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).rstrip(b'=').decode()
                 next_cursor = encoded + '.' + hmac.new(key, encoded.encode(), hashlib.sha256).hexdigest()
         if result or next_cursor or time.monotonic() >= deadline:
-            return {'requests':result, 'next_cursor':next_cursor, 'cursor_expires_at':expires if next_cursor else None}
+            return {'requests':result, 'next_cursor':next_cursor, 'cursor_expires_at':expires if next_cursor else None,
+                    'cursor_resume_supported': True}
         time.sleep(min(0.2, max(0, deadline - time.monotonic())))
 
 
@@ -455,65 +587,84 @@ def check(center, token, incident_id, key, body):
     if state not in ('healthy','degraded','unknown'):
         raise ValidationError('observed_state must be healthy, degraded or unknown')
     payload={f:body.get(f) for f in ('request_id','generation','observed_state','evidence_refs')}
+    # Keep historical receipt payloads byte-compatible when no timestamp was
+    # present. Already accepted operations are reconciled before new validation.
+    if 'observed_at' in body:
+        payload['observed_at'] = body['observed_at']
     encoded=json.dumps(payload,sort_keys=True)
-    with center._lock, center._connection:
-        row=verifier(center,token,incident_id)
-        bind_source(center,token,row,allow_legacy_consumer_verifier=True)
-        previous=center._connection.execute('SELECT * FROM incident_check_receipts WHERE idempotency_key=?',(key,)).fetchone()
-        if previous:
-            if previous['request_id']!=body.get('request_id') or previous['payload_json']!=encoded:
-                raise IdempotencyConflict('check receipt key already bound')
-            return json.loads(previous['result_json'])
-        if row['request_id']!=body.get('request_id') or row['generation']!=body.get('generation'):
-            raise ValidationError('stale verification request or generation')
-        if row['verification_state'] not in ('due','unknown','degraded'):
-            raise ValidationError('verification request already has a terminal result')
-        if state!='unknown' and (not isinstance(body.get('evidence_refs'),list) or not body['evidence_refs']):
-            raise ValidationError('a health measurement requires evidence_refs')
-        result=dict(incident_id=incident_id,request_id=row['request_id'],generation=row['generation'],observed_state=state)
-        if state=='healthy':
-            center._transition(incident_id,'resolved',principal(center,token))
-            center.schedule_health_outcome(incident_id,'recovered','source-check:'+row['request_id'])
-        continuation = json.loads(row['continuation_json']) if row['continuation_json'] else None
+    with center._lock:
+        with center._connection:
+            row=verifier(center,token,incident_id)
+            previous=center._connection.execute('SELECT * FROM incident_check_receipts WHERE idempotency_key=?',(key,)).fetchone()
+            if previous:
+                if previous['request_id']!=body.get('request_id') or previous['payload_json']!=encoded:
+                    raise IdempotencyConflict('check receipt key already bound')
+                return json.loads(previous['result_json'])
+            if row['request_id']!=body.get('request_id') or row['generation']!=body.get('generation'):
+                raise ValidationError('stale verification request or generation')
+            if row['verification_state'] not in ('due','unknown','degraded'):
+                raise ValidationError('verification request already has a terminal result')
+            if state!='unknown' and (not isinstance(body.get('evidence_refs'),list) or not body['evidence_refs']):
+                raise ValidationError('a health measurement requires evidence_refs')
+            now = time.time()
+            # Legacy SDKs have no measurement timestamp. Their source assertion is
+            # trusted only inside the server request TTL; it is not proof of the
+            # sample's absolute freshness. A provided timestamp is never ignored.
+            if request_expired(row, now) or ('observed_at' in body and state != 'unknown' and not measurement_is_fresh(
+                    body.get('observed_at'), row['verification_requested_at'], row['verification_deadline'], now)):
+                # Exit the transaction successfully before returning HTTP 400.
+                # The new request is durable, but no source receipt was accepted.
+                rearm_unknown(center, row, now)
+            else:
+                return _accept_check(center, token, incident_id, key, body, row, encoded)
+        raise ValidationError('stale verification request or generation')
+
+
+def _accept_check(center, token, incident_id, key, body, row, encoded):
+    """Caller holds the center lock and transaction; receipt and effect are atomic."""
+    state = body['observed_state']
+    bind_source(center, token, row, allow_legacy_consumer_verifier=True)
+    result=dict(incident_id=incident_id,request_id=row['request_id'],generation=row['generation'],observed_state=state)
+    if 'observed_at' in body:
+        result['observed_at'] = body['observed_at']
+    if state=='healthy':
+        center._transition(incident_id,'resolved',principal(center,token))
+        center.schedule_health_outcome(incident_id,'recovered','source-check:'+row['request_id'])
+    continuation = json.loads(row['continuation_json']) if row['continuation_json'] else None
+    if row['completion_id']:
+        shared = center._connection.execute('SELECT continuation_json FROM incident_group_completions WHERE id=?', (row['completion_id'],)).fetchone()
+        if shared and shared['continuation_json']:
+            continuation = json.loads(shared['continuation_json'])
+    if state == 'degraded' and continuation_can_retarget(center, continuation, incident_id):
+        continuation = None
+    if state == 'degraded' and not continuation:
+        continuation = {f:row[f] for f in ('session_id','harness','attempt_id','request_id','generation')}
+        continuation['incident_id'] = incident_id
+        continuation['evidence_refs'] = center._health_value(body['evidence_refs'])
+        target = center._health_agent_delivery_target()
+        target['source_check_continuation'] = dict(continuation)
+        continuation['delivery_id'] = center._schedule_delivery(
+            incident_id, 'gptadmin.agent:health-diagnosis',
+            'source-check:' + row['attempt_id'], time.time(), target)
         if row['completion_id']:
-            shared = center._connection.execute('SELECT continuation_json FROM incident_group_completions WHERE id=?', (row['completion_id'],)).fetchone()
-            if shared and shared['continuation_json']:
-                continuation = json.loads(shared['continuation_json'])
-        if state == 'degraded' and continuation and continuation.get('incident_id') != incident_id:
-            origin = center._connection.execute('SELECT state FROM incidents WHERE id=?', (continuation.get('incident_id'),)).fetchone()
-            ticket = center._connection.execute('SELECT status,attempt,claimed_at,result_json FROM deliveries WHERE id=?', (continuation.get('delivery_id'),)).fetchone()
-            # Resolution can cancel a queued ticket before its first claim. Only
-            # that durable proof permits a new target. Any dispatch/receipt or
-            # missing history remains fenced, including accepted/UNKNOWN work.
-            if (origin and origin['state'] == 'resolved' and ticket
-                    and ticket['status'] == 'cancelled' and ticket['attempt'] == 0
-                    and ticket['claimed_at'] is None and ticket['result_json'] is None):
-                continuation = None
-        if state == 'degraded' and not continuation:
-            continuation = {f:row[f] for f in ('session_id','harness','attempt_id','request_id','generation')}
-            continuation['incident_id'] = incident_id
-            continuation['evidence_refs'] = center._health_value(body['evidence_refs'])
-            target = center._health_agent_delivery_target()
-            target['source_check_continuation'] = dict(continuation)
-            continuation['delivery_id'] = center._schedule_delivery(
-                incident_id, 'gptadmin.agent:health-diagnosis',
-                'source-check:' + row['attempt_id'], time.time(), target)
-            if row['completion_id']:
-                center._connection.execute('UPDATE incident_group_completions SET continuation_json=? WHERE id=?', (json.dumps(continuation,sort_keys=True),row['completion_id']))
-        if state == 'degraded':
-            result['continuation'] = {k:v for k,v in continuation.items() if k != 'delivery_id'}
-            result['continuation_delivery_id'] = continuation.get('delivery_id')
-        if state == 'healthy':
-            continuation = None
-        # The accepted receipt keeps the submitted nonce. Only the next round
-        # rotates; a lost HTTP response can be reconciled through incident GET.
-        receipt = dict(idempotency_key=key,request_id=row['request_id'],result=result)
-        center._connection.execute("""UPDATE incident_lifecycle SET verification_state=?,verification_due=?,
-          request_id=?,continuation_json=?,last_check_receipt_json=? WHERE incident_id=?""",
-          (state,time.time()+60 if state!='healthy' else None,
-           'check_' + uuid.uuid4().hex if state!='healthy' else row['request_id'],
-           json.dumps(continuation,sort_keys=True) if continuation else None,
-           json.dumps(receipt,sort_keys=True),incident_id))
-        center._connection.execute('INSERT INTO incident_check_receipts VALUES (?,?,?,?)',(key,row['request_id'],encoded,json.dumps(result,sort_keys=True)))
-        center._audit(incident_id,'health.source_check',principal(center,token),{**result,'evidence_refs':center._health_value(body.get('evidence_refs') or [])})
-        return result
+            center._connection.execute('UPDATE incident_group_completions SET continuation_json=? WHERE id=?', (json.dumps(continuation,sort_keys=True),row['completion_id']))
+    if state == 'degraded':
+        result['continuation'] = {k:v for k,v in continuation.items() if k != 'delivery_id'}
+        result['continuation_delivery_id'] = continuation.get('delivery_id')
+    if state == 'healthy':
+        continuation = None
+    # The accepted receipt keeps the submitted nonce. Only the next round
+    # rotates; a lost HTTP response can be reconciled through incident GET.
+    receipt = dict(idempotency_key=key,request_id=row['request_id'],result=result)
+    now = time.time()
+    center._connection.execute("""UPDATE incident_lifecycle SET verification_state=?,verification_due=?,
+      request_id=?,continuation_json=?,last_check_receipt_json=?,
+      verification_requested_at=?,verification_deadline=? WHERE incident_id=?""",
+      (state,now+60 if state!='healthy' else None,
+       'check_' + uuid.uuid4().hex if state!='healthy' else row['request_id'],
+       json.dumps(continuation,sort_keys=True) if continuation else None,
+       json.dumps(receipt,sort_keys=True),now if state!='healthy' else row['verification_requested_at'],
+       now+60+VERIFICATION_TTL_SECONDS if state!='healthy' else row['verification_deadline'],incident_id))
+    center._connection.execute('INSERT INTO incident_check_receipts VALUES (?,?,?,?)',(key,row['request_id'],encoded,json.dumps(result,sort_keys=True)))
+    center._audit(incident_id,'health.source_check',principal(center,token),{**result,'evidence_refs':center._health_value(body.get('evidence_refs') or [])})
+    return result

@@ -34,7 +34,7 @@ class IncidentNativeProgressTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             center=NotificationCenter(Path(root)/'db',{'p':{'project':'fleet','max_severity':'critical'}},default_quiet_hours=[])
             self.addCleanup(center._connection.close)
-            created=center.create_event('p','new',{'schema':'notify.event.v1','project':'fleet','recipient':'me','kind':'incident',
+            created=center.create_event('p','new',{'schema':'notify.event.v1','project':'fleet','recipient':'me','kind':'notification',
                 'severity':'critical','title':'Проверка','dedup_key':'load','event_type':'health.degraded',
                 'source_id':'host:load','host_id':'100','signal_type':'load','correlation_id':'episode'})
             center.record_health_agent_session(created['incident_id'],'native-start','','hermes','actual native id',

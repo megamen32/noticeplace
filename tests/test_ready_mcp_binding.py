@@ -2,8 +2,8 @@
 
 Only the two outbound networks are replaced: the Telegram Bot API and the
 Agent Herder loopback. The Notice Place HTTP API, the durable store, and the MCP
-tool handlers are the real ones, so a passing run means the installed binding
-really issues a card and really continues the bound native session.
+tool handlers are the real ones. Passing proves the source contract against
+isolated transports; it does not prove an installed release or live delivery.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import os
 import runpy
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -133,6 +134,20 @@ class ReadyBindingTests(unittest.TestCase):
         from mcp import notify_mcp
         self.tools = notify_mcp.TOOLS
         self.request_id = "3f5b0c2a-1d44-4c6e-9a71-58b1c0f7d902"
+
+    def _historical_incident_card(self, created, *, status="sent"):
+        """Seed a pre-quiet-policy receipt, without scheduling a new notification."""
+        self.assertIsNone(created['initial_delivery_id'])
+        delivery_id = 'historical-' + created['incident_id']
+        now = time.time()
+        receipt = {'chat_id': '-100', 'message_id': 42} if status == 'sent' else {}
+        with self.center._lock, self.center._connection:
+            self.center._connection.execute(
+                "INSERT INTO deliveries(id,incident_id,channel,delivery_key,due_at,status,attempt,"
+                "target_json,result_json,created_at,updated_at) VALUES (?,?,?,?,?,?,1,'{}',?,?,?)",
+                (delivery_id, created['incident_id'], 'telegram.main', delivery_id, now, status,
+                 json.dumps(receipt), now, now))
+        return delivery_id
 
     def _create_bound(self, mode: str = "choice") -> None:
         self._call("noticeplace_ask_human", {
@@ -340,22 +355,15 @@ class ReadyBindingTests(unittest.TestCase):
         from notification_center.telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
         choice_request = '11111111-1111-4111-8111-111111111111'
         created = self.center.create_event('p', 'incident-buttons', {
-            'schema': 'notify.event.v1', 'project': 'hermes', 'recipient': 'me', 'kind': 'notification',
+            'schema': 'notify.event.v1', 'project': 'hermes', 'recipient': 'me', 'kind': 'incident',
             'severity': 'important', 'title': 'Выбери путь', 'body': 'Нужен выбор', 'dedup_key': 'incident-buttons',
             'choice_request_id': choice_request,
             'choices': [{'choice_id': 'repair', 'label': 'Починить'}, {'choice_id': 'observe', 'label': 'Наблюдать'}]})
         incident_id = created['incident_id']
         codec = TelegramActionCodec('s' * 32)
-        sender = http_api.TelegramSender('bot-token', '-100', action_codec=codec, center=self.center)
-        import io
-        import urllib.parse
-        def fake_sender_network(request, **kwargs):
-            payload = {key: values[0] for key, values in urllib.parse.parse_qs(request.data.decode()).items()}
-            method = request.full_url.rsplit('/', 1)[-1]
-            return io.BytesIO(json.dumps(http_api.telegram_api('bot-token', method, payload)).encode())
-        with patch('notification_center.http_api.urllib.request.urlopen', side_effect=fake_sender_network):
-            http_api.DeliveryWorker(self.center, sender).run_once()
-        initial = json.loads(next(p['reply_markup'] for m,p in self.telegram if m == 'sendMessage'))
+        self._historical_incident_card(created)
+        from notification_center.incident_card import render
+        _, initial = render(self.center.incident_card_payload(incident_id), codec)
         native = []
         def resume(request_id, choice_id, actor):
             native.append((request_id, choice_id, actor))
@@ -371,8 +379,10 @@ class ReadyBindingTests(unittest.TestCase):
         marked = json.loads(edits[-1]['reply_markup'])['inline_keyboard']
         self.assertEqual(['Починить', '✅ Наблюдать'], [r[0]['text'] for r in marked[:2]])
         self.assertIn('Отключить такие уведомления',[r[0]['text'] for r in marked])
-        self.assertEqual([r[0]['callback_data'] for r in initial['inline_keyboard']],
-                         [r[0]['callback_data'] for r in marked])
+        # Preserve every control destination, including settings URL buttons.
+        def destinations(rows):
+            return [[{k: v for k, v in button.items() if k != 'text'} for button in row] for row in rows]
+        self.assertEqual(destinations(initial['inline_keyboard']), destinations(marked))
         repeat = self._call('noticeplace_answer', {'incident_id': incident_id, 'request_id': choice_request,
                                                   'choice_id': 'repair'})
         self.assertEqual('observe', repeat['choice_id'])
@@ -440,6 +450,9 @@ class ReadyBindingTests(unittest.TestCase):
             'title':'Сервис не отвечает','body':'Проверяем причину','dedup_key':'site','event_type':'health.degraded',
             'source_id':'host:site','host_id':'100','signal_type':'https','correlation_id':'site-episode'}
         incident=self.center.create_event('p','incident-create',event)
+        self._historical_incident_card(incident)
+        # An explicit operator action may continue editing that same historical card.
+        self.center.apply_telegram_action(incident['incident_id'], 'ai', 'telegram:42')
         worker=http_api.DeliveryWorker(self.center,http_api.TelegramSender('bot-token','-100',
             action_codec=TelegramActionCodec('s'*32),center=self.center,severity_routes={'decisions':{'chat_id':'-100','message_thread_id':324}}))
         original=urllib.request.urlopen
@@ -456,7 +469,6 @@ class ReadyBindingTests(unittest.TestCase):
                 delivery=dict(self.center._connection.execute('SELECT * FROM deliveries WHERE id=?',(delivery_id,)).fetchone())
             worker.deliver(delivery)
         with patch('urllib.request.urlopen',side_effect=network):
-            deliver(incident['initial_delivery_id'])
             session=self.center.record_health_agent_session(incident['incident_id'],'native','','opencode','ses_executor_1',
                 'https://agent.bezrabotnyi.com',stage='health-diagnosis')
             deliver(session['session_delivery_id'])
@@ -504,21 +516,21 @@ class ReadyBindingTests(unittest.TestCase):
             self.center.resolve_event('p','recovery',{**event,'action':'resolve','event_type':'health.recovered'})
             recovery=self.center._connection.execute("SELECT id FROM deliveries WHERE json_extract(target_json,'$.health_outcome.status')='recovered'").fetchone()[0]
             deliver(recovery)
-        self.assertEqual(1,sum(method=='sendMessage' for method,_ in self.telegram))
+        self.assertEqual(0,sum(method=='sendMessage' for method,_ in self.telegram),
+                         'the historical incident card must never be recreated')
         self.assertTrue(all(str(body['message_id'])=='42' for method,body in self.telegram if method=='editMessageText'))
         labels=[b['text'] for row in json.loads(self.telegram[-1][1]['reply_markup'])['inline_keyboard'] for b in row]
         self.assertIn('Отключить такие уведомления',labels)
         self.assertIn('✅ Починить',labels);self.assertIn('Наблюдать',labels)
         self.assertIn('✅ Ответ: О сайте',self.telegram[-1][1]['text'])
-        self.assertIn('Состояние восстановилось',self.telegram[-1][1]['text'])
+        self.assertIn('Мониторинг подтвердил восстановление. Инцидент закрыт; действий от вас не требуется.',self.telegram[-1][1]['text'])
 
     def test_unknown_incident_create_queues_bound_question_without_extra_card(self) -> None:
         """Focused integration: no replay of an unknown original create (<2s/5s)."""
         created=self.center.create_event('p','unknown-create',{'schema':'notify.event.v1','project':'hermes','recipient':'me',
             'kind':'incident','severity':'critical','title':'Проверка сервиса','dedup_key':'unknown','event_type':'health.degraded',
             'source_id':'site','host_id':'100','signal_type':'https','correlation_id':'unknown-episode'})
-        with self.center._lock,self.center._connection:
-            self.center._connection.execute("UPDATE deliveries SET status='uncertain' WHERE id=?",(created['initial_delivery_id'],))
+        self._historical_incident_card(created, status='uncertain')
         self.center.record_health_agent_session(created['incident_id'],'native','','opencode','ses_executor_1',
             'https://agent.bezrabotnyi.com',stage='health-diagnosis')
         self._create_bound(mode='question')
@@ -537,7 +549,7 @@ class ReadyBindingTests(unittest.TestCase):
             'signal_type':'https','correlation_id':'late-episode','choice_request_id':self.request_id,
             'choices':[{'choice_id':'repair','label':'Починить'},{'choice_id':'observe','label':'Наблюдать'}]}
         created=self.center.create_event('p','late-create',event)
-        self.center.complete_delivery(created['initial_delivery_id'],'sent',result={'chat_id':'-100','message_id':42})
+        self._historical_incident_card(created)
         self.center.record_health_agent_session(created['incident_id'],'late-native','','opencode','ses_executor_1',
             'https://agent.bezrabotnyi.com',stage='health-diagnosis')
         self._create_bound()
@@ -569,7 +581,7 @@ class ReadyBindingTests(unittest.TestCase):
         self.assertEqual('resolved',self.center.get_incident(created['incident_id'])['state'])
         from notification_center.incident_card import render
         text,keyboard=render(self.center.incident_card_payload(created['incident_id']),codec)
-        self.assertIn('Состояние восстановилось',text)
+        self.assertIn('Мониторинг подтвердил восстановление. Инцидент закрыт; действий от вас не требуется.',text)
         self.assertFalse(any(b.get('callback_data','').startswith('n:human_choice:') for row in keyboard['inline_keyboard'] for b in row))
 
     def test_incident_linked_legacy_progress_keeps_recovery_title_and_controls(self) -> None:
@@ -583,7 +595,9 @@ class ReadyBindingTests(unittest.TestCase):
             'title':'Проверка важного сервиса','dedup_key':'legacy','event_type':'health.degraded','source_id':'site','host_id':'100',
             'signal_type':'https','correlation_id':'legacy-episode'}
         created=self.center.create_event('p','legacy-create',event)
-        self.center.complete_delivery(created['initial_delivery_id'],'sent',result={'chat_id':'-100','message_id':42})
+        self._historical_incident_card(created)
+        # The human requested these progress updates on the existing card.
+        self.center.apply_telegram_action(created['incident_id'], 'ai', 'telegram:42')
         base=f'http://127.0.0.1:{self.notice.server_address[1]}'
         def post(path,body):
             request=urllib.request.Request(base+path,data=json.dumps(body).encode(),
@@ -611,7 +625,7 @@ class ReadyBindingTests(unittest.TestCase):
         with patch('notification_center.http_api.urllib.request.urlopen',side_effect=network): worker.deliver(claimed)
         method,body=self.telegram[-1]
         self.assertEqual('editMessageText',method);self.assertEqual('42',body['message_id'])
-        self.assertIn('Проверка важного сервиса',body['text']);self.assertIn('Состояние восстановилось',body['text'])
+        self.assertIn('Проверка важного сервиса',body['text']);self.assertIn('Мониторинг подтвердил восстановление. Инцидент закрыт; действий от вас не требуется.',body['text'])
         labels=[b['text'] for row in json.loads(body['reply_markup'])['inline_keyboard'] for b in row]
         self.assertIn('✅ Подробно',labels);self.assertIn('Неважно',labels);self.assertIn('Отключить такие уведомления',labels)
         self.assertNotIn('Принял, запускаю',body['text']);self.assertNotIn('Глубокий разбор идёт',body['text'])

@@ -43,9 +43,21 @@ class TelegramCleanupTests(unittest.TestCase):
         p.start(); self.addCleanup(p.stop)
 
     def create(self, dedup='dns-one'):
-        return self.center.create_event('token', dedup, {'schema':'notify.event.v1', 'kind':'incident',
+        created = self.center.create_event('token', dedup, {'schema':'notify.event.v1', 'kind':'incident',
             'project':'dns','recipient':'me','severity':'notice','dedup_key':dedup,
-            'title':'DNS','body':'Проверка'})['incident_id']
+            'title':'DNS','body':'Проверка'})
+        self.assertIsNone(created['initial_delivery_id'])
+        # Recovery cleans up an already delivered pre-quiet-policy incident card.
+        # Keep incident renderer semantics and never create a new unsolicited send.
+        incident_id = created['incident_id']
+        now = time.time()
+        with self.center._connection:
+            self.center._connection.execute(
+                "INSERT INTO deliveries(id,incident_id,channel,delivery_key,due_at,status,attempt,"
+                "target_json,result_json,created_at,updated_at) VALUES (?,?,?,?,?,'sent',1,'{}',?,?,?)",
+                ('historical-'+dedup, incident_id, 'telegram.main', 'historical-'+dedup, now,
+                 json.dumps({'chat_id':'-100','message_id':1}), now, now))
+        return incident_id
 
     def tick(self):
         self.clock += 30
@@ -54,7 +66,7 @@ class TelegramCleanupTests(unittest.TestCase):
 
     def test_disabled_by_default_preserves_card(self):
         i = self.create(); self.tick(); self.center.resolve(i, 'monitor'); self.tick()
-        self.assertEqual(['sendMessage'], [m for m,_ in self.calls])
+        self.assertEqual([], [m for m,_ in self.calls])
         self.assertIsNotNone(self.center.original_telegram_card(i))
 
     def test_enabled_deletes_once_keeps_history_and_late_refresh_does_not_resurrect(self):
@@ -62,19 +74,19 @@ class TelegramCleanupTests(unittest.TestCase):
         original = self.center.original_telegram_card(i)
         self.center.set_runtime_setting(SETTING+'dns', 'true')
         self.center.resolve(i, 'monitor'); self.tick(); self.tick()
-        self.assertEqual(['sendMessage','deleteMessage'], [m for m,_ in self.calls])
+        self.assertEqual(['deleteMessage'], [m for m,_ in self.calls])
         self.assertEqual(str(original['message_id']), self.calls[-1][1]['message_id'])
         self.assertIsNone(self.center.original_telegram_card(i))
         self.assertEqual('resolved', self.center.get_incident(i)['state'])
         self.center.queue_incident_card_refresh(i); self.tick(); self.tick()
-        self.assertEqual(2, len(self.calls))
+        self.assertEqual(1, len(self.calls))
         self.assertEqual(1, self.center._connection.execute(
             "select count(*) from audit_events where incident_id=? and type='telegram_card_deleted'", (i,)).fetchone()[0])
 
     def test_unknown_delete_not_replayed(self):
         i = self.create(); self.tick(); self.center.set_runtime_setting(SETTING+'dns', 'true')
         self.fail_delete=True; self.center.resolve(i,'monitor'); self.tick(); self.tick()
-        self.assertEqual(['sendMessage','deleteMessage'], [m for m,_ in self.calls])
+        self.assertEqual(['deleteMessage'], [m for m,_ in self.calls])
         self.assertIsNotNone(self.center.original_telegram_card(i))
         self.assertEqual(1,self.center._connection.execute("select count(*) from deliveries where status='uncertain'").fetchone()[0])
 

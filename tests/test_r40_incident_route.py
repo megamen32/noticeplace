@@ -3,12 +3,12 @@ from notification_center.core import ValidationError
 from notification_center.health_workflow import HEALTH_EXECUTION_PROFILE, normalize_health_execution
 from notification_center import agent_job_helper as helper
 
-PROFILE = dict(runtime='opencode', provider='omniroute', model='glm-5.3-flash-minimax-m3.1', reasoning='default', topic='health')
-MODEL = 'omniroute/glm-5.3-flash-minimax-m3.1'
+PROFILE = dict(runtime='opencode', provider='minimax-coding-plan', model='MiniMax-M3.1-Flash', reasoning='default', topic='health')
+MODEL = 'minimax-coding-plan/MiniMax-M3.1-Flash'
 HERDER_PROFILE = dict(PROFILE, model=MODEL)
 
 class IncidentRouteTests(unittest.TestCase):
-    def test_new_plan_pins_the_existing_glm_minimax_combo(self):
+    def test_new_plan_pins_the_direct_minimax_subscription(self):
         self.assertEqual(PROFILE, HEALTH_EXECUTION_PROFILE)
         self.assertEqual(PROFILE, normalize_health_execution(PROFILE))
         self.assertEqual(MODEL, helper._health_model_route(PROFILE))
@@ -35,7 +35,7 @@ class IncidentPreflightTests(unittest.TestCase):
         selected = helper._incident_profile({'url':'http://127.0.0.1:18787/api/sessions/new-or-resume','harness':'codex','model':'omniroute/subagent'}, runner)
         return selected, calls
 
-    def test_incident_uses_exact_combo_and_does_not_probe_or_fallback(self):
+    def test_incident_uses_exact_subscription_and_does_not_probe_or_fallback(self):
         selected, calls = self.select({'incidentExecution':HERDER_PROFILE, 'preferredHarness':'codex','models':{'codex':'gpt-6.1-sol'}}, {'models':[MODEL], 'stale':False})
         self.assertEqual('opencode', selected['harness'])
         self.assertEqual(MODEL, selected['model'])

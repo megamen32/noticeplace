@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -100,13 +101,6 @@ class MatrixReplyQuestionTests(unittest.TestCase):
             },
         )
         incident_id = created["incident_id"]
-        row = self.center._connection.execute(
-            "SELECT id FROM deliveries WHERE incident_id=? ORDER BY created_at LIMIT 1", (incident_id,)
-        ).fetchone()
-        self.center.complete_delivery(
-            row["id"], "sent",
-            result={"event_id": "$notice-question", "room_id": ROOM},
-        )
         request_id = f"q-{incident_id}"
         body: dict[str, object] = {
             "schema": "ask_human.request.v1",
@@ -123,7 +117,14 @@ class MatrixReplyQuestionTests(unittest.TestCase):
             body["choices"] = choices
         if native:
             body["native_target"] = {"harness": "opencode", "session_id": "ses_executor", "cwd": "/srv/app"}
+        self.assertIsNone(created["initial_delivery_id"])
         self.center.create_human_request(consumer["intake_token"], body)
+        # Only the actual pending question admits the configured Matrix route.
+        with self.center._lock, self.center._connection:
+            delivery_id = self.center._schedule_consumer_policy(incident_id, consumer["id"], time.time())
+        self.assertIsNotNone(delivery_id)
+        self.center.complete_delivery(delivery_id, "sent",
+                                      result={"event_id": "$notice-question", "room_id": ROOM})
         return consumer, incident_id, request_id
 
     def _reply(self, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
@@ -142,7 +143,7 @@ class MatrixReplyQuestionTests(unittest.TestCase):
     def test_room_answer_completes_the_bound_question_and_resumes_the_session(self) -> None:
         consumer, incident_id, request_id = self._notice_with_question()
         with mock.patch("notification_center.agent_job_helper.resume_bound_native_session") as resume:
-            resume.side_effect = lambda rid, harness, session, cwd, result_ref, runner: {"status": "resuming"}
+            resume.side_effect = lambda rid, harness, session, cwd, result_ref, runner, answer=None: {"status": "resuming"}
             status, body = self._reply(self._reply_payload("$reply-1"))
         self.assertEqual(200, status)
         self.assertTrue(body["bound"])
@@ -181,7 +182,7 @@ class MatrixReplyQuestionTests(unittest.TestCase):
         """The incident's own consumer route declares who may answer in that room."""
         consumer, incident_id, request_id = self._notice_with_question(actors=["telegram:owner"])
         with mock.patch("notification_center.agent_job_helper.resume_bound_native_session") as resume:
-            resume.side_effect = lambda rid, harness, session, cwd, result_ref, runner: {"status": "resuming"}
+            resume.side_effect = lambda rid, harness, session, cwd, result_ref, runner, answer=None: {"status": "resuming"}
             status, body = self._reply(self._reply_payload("$reply-6"))
         self.assertEqual(200, status)
         self.assertTrue(body["bound"])
@@ -209,7 +210,7 @@ class MatrixReplyQuestionTests(unittest.TestCase):
     def test_repeat_reply_event_never_resumes_twice(self) -> None:
         consumer, incident_id, request_id = self._notice_with_question()
         with mock.patch("notification_center.agent_job_helper.resume_bound_native_session") as resume:
-            resume.side_effect = lambda rid, harness, session, cwd, result_ref, runner: {"status": "resuming"}
+            resume.side_effect = lambda rid, harness, session, cwd, result_ref, runner, answer=None: {"status": "resuming"}
             status, body = self._reply(self._reply_payload("$reply-4"))
             self.assertEqual(200, status)
             self.assertTrue(body["bound"])
@@ -246,11 +247,17 @@ class MatrixReplyQuestionTests(unittest.TestCase):
                 "dedup_key": "notice-plain",
             },
         )
-        row = self.center._connection.execute(
-            "SELECT id FROM deliveries WHERE incident_id=? ORDER BY created_at LIMIT 1",
-            (created["incident_id"],),
-        ).fetchone()
-        self.center.complete_delivery(row["id"], "sent", result={"event_id": "$notice-plain", "room_id": ROOM})
+        self.assertIsNone(created["initial_delivery_id"])
+        # A reply to a pre-quiet-policy card remains bindable, without sending
+        # a new unsolicited incident message merely to arrange the fixture.
+        now = time.time()
+        with self.center._connection:
+            self.center._connection.execute(
+                "INSERT INTO deliveries(id,incident_id,channel,delivery_key,due_at,status,attempt,"
+                "target_json,result_json,created_at,updated_at) VALUES (?,?,?,?,?,'sent',1,?,?,?,?)",
+                ("historical-matrix", created["incident_id"], "matrix.message", "historical-matrix", now,
+                 json.dumps({"room_id": ROOM, "participants": [BOT_B], "senders": [BOT_B], "target": BOT_B}),
+                 json.dumps({"event_id": "$notice-plain", "room_id": ROOM}), now, now))
         with mock.patch("notification_center.agent_job_helper.resume_bound_native_session") as resume:
             status, body = self._reply({
                 "reply_event_id": "$reply-5",

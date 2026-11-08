@@ -1,4 +1,4 @@
-"""Ordinary health events wait for one existing diagnosis to judge relevance."""
+"""Quiet health work retains decisions; only emergency or a real question interrupts."""
 import tempfile
 import json
 import unittest
@@ -24,8 +24,7 @@ class HealthNotificationDecisionTests(unittest.TestCase):
         self.center = NotificationCenter(Path(self.tmp.name) / 'db', {'token': {'project': 'fleet',
             'max_severity': 'emergency', 'agent_jobs': ['health-diagnosis']}}, default_quiet_hours=[])
         self.addCleanup(self.center._connection.close)
-        # The optional old quiet policy remains available; the current default
-        # explicitly keeps all notifications visible.
+        # Exercise the legacy review audit as well as the unconditional quiet gate.
         self.center.set_runtime_setting('telegram_all_notifications_enabled','0')
 
     def create(self, severity='important', **changes):
@@ -55,9 +54,27 @@ class HealthNotificationDecisionTests(unittest.TestCase):
         self.center.resolve_event('token', 'recovery', {**self.event, 'action': 'resolve', 'event_type': 'health.recovered'})
         self.assertEqual([], self.queued_messages(created['incident_id']))
 
-    def test_positive_decision_queues_one_original_card_once(self):
+    def pending_question(self, created):
+        return self.center.create_human_request('token', {
+            'schema': 'ask_human.request.v1', 'request_id': 'fixture-question',
+            'project': 'fleet', 'recipient': 'me', 'mode': 'question',
+            'message': 'Для восстановления нужен ваш выбор.',
+            'allowed_actors': ['telegram:42'], 'incident_id': created['incident_id'],
+        })
+
+    def test_positive_decision_without_question_stays_internal(self):
+        created = self.create()
+        self.result(created, True)
+        self.result(created, True)
+        self.assertEqual([], self.queued_messages(created['incident_id']))
+        self.assertTrue(self.center.health_notification_decision(created['incident_id'])['notify_user'])
+        self.assertEqual('native', self.center.latest_agent_session(created['incident_id'])['session_id'])
+        self.assertEqual('open', self.center.get_incident(created['incident_id'])['state'])
+
+    def test_positive_decision_with_pending_question_queues_one_original_card_once(self):
         created = self.create()
         self.assertEqual([], self.queued_messages(created['incident_id']))
+        self.pending_question(created)
         self.result(created, True)
         self.result(created, True)
         self.assertEqual(1, len(self.queued_messages(created['incident_id'])))
@@ -75,13 +92,15 @@ class HealthNotificationDecisionTests(unittest.TestCase):
         self.assertEqual([], self.queued_messages(created['incident_id']))
         self.assertTrue(outcome['awaiting_executor'])
 
-    def test_failed_observer_still_notifies_when_repair_cannot_continue(self):
+    def test_failed_observer_keeps_decision_without_unsolicited_card(self):
         created = self.create()
         self.center.record_agent_job_result(created['incident_id'], created['agent_job_delivery_id'],
             'health-diagnosis', {'status':'failed','agent_receipt':{
                 'session_id':'native','harness':'opencode','path':'repair-first','observer_only':True,'awaiting_executor':True}})
         self.assertTrue(self.center.health_notification_decision(created['incident_id'])['notify_user'])
-        self.assertTrue(self.queued_messages(created['incident_id']))
+        self.assertEqual([], self.queued_messages(created['incident_id']))
+        self.assertEqual('native', self.center.latest_agent_session(created['incident_id'])['session_id'])
+        self.assertEqual('open', self.center.get_incident(created['incident_id'])['state'])
 
     def test_progress_refresh_cannot_create_the_first_quiet_card(self):
         created = self.create()
@@ -90,16 +109,25 @@ class HealthNotificationDecisionTests(unittest.TestCase):
         self.assertIsNone(self.center.queue_incident_card_refresh(created['incident_id']))
         self.assertEqual([],self.queued_messages(created['incident_id']))
         self.result(created, True)
-        self.assertTrue(self.center.queue_incident_card_refresh(created['incident_id']))
+        self.assertIsNone(self.center.queue_incident_card_refresh(created['incident_id']))
+        self.assertEqual([], self.queued_messages(created['incident_id']))
 
     def test_operator_question_is_not_suppressed_as_pending_observer(self):
         created = self.create()
-        outcome=self.center.record_agent_job_result(created['incident_id'],created['agent_job_delivery_id'],
-            'health-diagnosis',{'status':'completed','agent_receipt':{'session_id':'native','harness':'opencode',
-                'path':'repair-first','observer_only':True,'awaiting_human':True,'question_ref':'fixture-question'}})
+        receipt = {'status':'completed','agent_receipt':{'session_id':'native','harness':'opencode',
+            'path':'repair-first','observer_only':True,'awaiting_human':True,'question_ref':'fixture-question'}}
+        self.center.record_agent_job_result(created['incident_id'], created['agent_job_delivery_id'],
+            'health-diagnosis', receipt)
+        # An unbound question_ref is not evidence of an actionable pending question.
+        self.assertEqual([], self.queued_messages(created['incident_id']))
+        self.pending_question(created)
+        outcome = self.center.record_agent_job_result(created['incident_id'], created['agent_job_delivery_id'],
+            'health-diagnosis', receipt)
         self.assertTrue(outcome['awaiting_human'])
         self.assertTrue(self.center.health_notification_decision(created['incident_id'])['notify_user'])
-        self.assertTrue(self.queued_messages(created['incident_id']))
+        self.assertEqual(1, len(self.queued_messages(created['incident_id'])))
+        self.assertEqual('fixture-question', self.center.incident_human_question(created['incident_id'])['request_id'])
+        self.assertEqual('native', self.center.latest_agent_session(created['incident_id'])['session_id'])
 
     def test_pending_incident_question_creates_card_before_executor_receipt(self):
         created = self.create()
@@ -135,7 +163,9 @@ class HealthNotificationDecisionTests(unittest.TestCase):
             'event_type': 'health.phase_changed', 'next_severity': 'critical'})
         self.assertEqual([], self.queued_messages(created['incident_id']))
         critical = self.create('critical')
-        self.assertIsNotNone(critical['initial_delivery_id'])
+        self.assertIsNone(critical['initial_delivery_id'])
+        self.assertIsNotNone(critical['agent_job_delivery_id'])
+        self.assertEqual('open', self.center.get_incident(critical['incident_id'])['state'])
 
     def test_real_hub_stdout_envelope_keeps_quiet_decision_through_worker(self):
         created = self.create()
@@ -167,32 +197,50 @@ class HealthNotificationDecisionTests(unittest.TestCase):
             else:
                 self.assertNotIn('notify_user', receipt)
 
-    def test_critical_and_emergency_bypass_quiet_ai_decision(self):
+    def test_only_emergency_bypasses_quiet_ai_decision(self):
         for severity in ('critical', 'emergency'):
-            created = self.create(severity)
-            self.assertIsNotNone(created['initial_delivery_id'])
-            self.result(created, False)
-            self.assertTrue(self.queued_messages(created['incident_id']))
+            with self.subTest(severity=severity):
+                created = self.create(severity)
+                self.assertIsNotNone(created['agent_job_delivery_id'])
+                if severity == 'emergency':
+                    self.assertIsNotNone(created['initial_delivery_id'])
+                else:
+                    self.assertIsNone(created['initial_delivery_id'])
+                self.result(created, False)
+                messages = self.queued_messages(created['incident_id'])
+                if severity == 'emergency':
+                    self.assertIn(created['initial_delivery_id'], [row['id'] for row in messages])
+                else:
+                    self.assertEqual([], messages)
+                self.assertEqual('native', self.center.latest_agent_session(created['incident_id'])['session_id'])
 
-    def test_manual_ai_request_overrides_pending_quiet_decision(self):
+    def test_manual_ai_request_preserves_executor_without_unsolicited_card(self):
         created = self.create()
-        self.center.apply_telegram_action(created['incident_id'], 'ai', 'operator',
-            {'chat': {'id': -100123}, 'message_id': 42, 'text': 'Проверь'})
+        self.assertIsNone(self.center.original_telegram_card(created['incident_id']))
+        action = self.center.apply_telegram_action(created['incident_id'], 'ai', 'operator')
+        self.assertEqual(created['agent_job_delivery_id'], action['agent_job_delivery_id'])
+        self.assertTrue(self.center.manual_ai_requested(created['incident_id']))
         self.result(created, False)
-        self.assertTrue(self.queued_messages(created['incident_id']))
+        self.assertEqual([], self.queued_messages(created['incident_id']))
+        self.assertEqual('native', self.center.latest_agent_session(created['incident_id'])['session_id'])
 
-    def test_missing_or_nonboolean_decision_cannot_silently_hide_incident(self):
+    def test_missing_or_nonboolean_decision_retains_audit_without_card(self):
         for value in (None, 'false'):
             with self.subTest(value=value):
-                created = self.create()
+                created = self.create(dedup_key='invalid-' + str(value))
                 self.result(created, value)
-                self.assertTrue(self.queued_messages(created['incident_id']))
+                self.assertTrue(self.center.health_notification_decision(created['incident_id'])['notify_user'])
+                self.assertEqual([], self.queued_messages(created['incident_id']))
+                self.assertEqual('open', self.center.get_incident(created['incident_id'])['state'])
+                self.assertEqual('native', self.center.latest_agent_session(created['incident_id'])['session_id'])
 
-    def test_failed_diagnosis_falls_back_to_one_card(self):
+    def test_failed_diagnosis_retains_fallback_decision_without_card(self):
         created = self.create()
-        self.center.schedule_health_outcome(created['incident_id'], 'interrupted', 'timeout')
-        self.center.schedule_health_outcome(created['incident_id'], 'interrupted', 'timeout-again')
-        self.assertEqual(1, len(self.queued_messages(created['incident_id'])))
+        self.assertIsNone(self.center.schedule_health_outcome(created['incident_id'], 'interrupted', 'timeout'))
+        self.assertIsNone(self.center.schedule_health_outcome(created['incident_id'], 'interrupted', 'timeout-again'))
+        self.assertTrue(self.center.health_notification_decision(created['incident_id'])['notify_user'])
+        self.assertEqual('open', self.center.get_incident(created['incident_id'])['state'])
+        self.assertEqual([], self.queued_messages(created['incident_id']))
 
     def test_quiet_native_receipt_precedes_decision_without_a_planner_launch(self):
         created = self.create()
@@ -284,14 +332,14 @@ class HealthNotificationDecisionTests(unittest.TestCase):
             payload['health_context']['notification_review_required'] = value
             self.assertNotIn('notification_review_required', _agent_job_event('health-diagnosis', payload)['health'])
 
-    def test_untyped_explicit_diagnosis_is_direct_and_not_quiet(self):
+    def test_untyped_explicit_diagnosis_is_direct_but_stays_quiet(self):
         created = self.create(event_type='custom.event', agent_job='health-diagnosis')
-        self.assertIsNotNone(created['initial_delivery_id'])
+        self.assertIsNone(created['initial_delivery_id'])
         self.assertIsNotNone(created['agent_job_delivery_id'])
         self.assertFalse(self.center.health_notification_review_required(created['incident_id']))
 
-    def test_other_health_types_or_incomplete_identity_are_not_auto_quiet(self):
+    def test_other_health_types_or_incomplete_identity_stay_quiet_without_auto_diagnosis(self):
         for change in ({'event_type': 'health.other'}, {'source_id': ''}):
             created = self.create(**change)
-            self.assertIsNotNone(created['initial_delivery_id'])
+            self.assertIsNone(created['initial_delivery_id'])
             self.assertIsNone(created['agent_job_delivery_id'])

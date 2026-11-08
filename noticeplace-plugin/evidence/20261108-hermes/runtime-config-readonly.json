@@ -1,0 +1,29 @@
+{
+  "profile": "/home/roomhacker/.hermes/config.yaml",
+  "enabled_notice_plugins": [
+    "noticeplace"
+  ],
+  "native_notice_entries": [
+    {
+      "name": "AskHuman",
+      "shared_endpoint": true,
+      "has_command": false,
+      "has_auth_header": true,
+      "has_env_reference": false
+    },
+    {
+      "name": "noticeplace",
+      "shared_endpoint": true,
+      "has_command": false,
+      "has_auth_header": true,
+      "has_env_reference": false
+    }
+  ],
+  "installed_notice_plugins": [
+    {
+      "path": "/home/roomhacker/.hermes/plugins/noticeplace",
+      "name": "noticeplace",
+      "version": "0.1.1"
+    }
+  ]
+}
