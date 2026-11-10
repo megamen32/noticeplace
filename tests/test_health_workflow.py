@@ -65,6 +65,8 @@ class HealthWorkflowTests(unittest.TestCase):
                 self.assertEqual("unknown", core_module._artifact_version())
                 (root / "VERSION").write_text("unknown\n", encoding="utf-8")
                 self.assertEqual("unknown", core_module._artifact_version())
+                (root / "VERSION").write_bytes(b"\xff\xfe")
+                self.assertEqual("unknown", core_module._artifact_version())
         with patch.object(core_module, "_ARTIFACT_VERSION", "unknown"):
             self.assertEqual("unknown", self.center.service_health()["version"])
             self.assertEqual("unknown", self.center.health()["version"])

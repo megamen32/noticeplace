@@ -116,7 +116,7 @@ def _artifact_version() -> str:
     """Read the immutable release version adjacent to this source module."""
     try:
         version = (Path(__file__).resolve().parents[1] / "VERSION").read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeError):
         return "unknown"
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         return "unknown"
