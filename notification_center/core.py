@@ -133,6 +133,63 @@ class IdempotencyConflict(ValidationError):
     """Raised when a producer reuses a request key for different event content."""
 
 
+def read_notification_rule_settings(connection: Any, incident_id: str) -> dict[str, Any]:
+    """Read a rule with one query using an already-open connection; never initialize schema."""
+    row = connection.execute(
+        "SELECT i.id, i.project, i.recipient, i.dedup_key, i.collapse_key, "
+        "(SELECT first.payload_json FROM events first "
+        "WHERE first.incident_id=i.id ORDER BY first.created_at, first.rowid LIMIT 1) AS source_payload, "
+        "(SELECT json_group_array(json_object('dedup_key', m.dedup_key, "
+        "'revision', m.revision, 'auto_ai_by_source', m.auto_ai_by_source, "
+        "'unmuted_at', m.unmuted_at, 'match_mode', m.match_mode)) "
+        "FROM notification_mutes m WHERE m.project=i.project AND m.recipient=i.recipient) AS mute_rows "
+        "FROM incidents i "
+        "WHERE i.id = ?", (incident_id,),
+    ).fetchone()
+    if row is None:
+        raise ValidationError("incident not found")
+    incident = dict(row)
+    mute_rows_raw = incident.pop("mute_rows") or "[]"
+    try:
+        mute_rows = json.loads(mute_rows_raw)
+    except (TypeError, ValueError):
+        mute_rows = []
+    if not isinstance(mute_rows, list):
+        mute_rows = []
+    mutes = [item for item in mute_rows if isinstance(item, dict)]
+    mute_key, match_mode = NotificationCenter._notification_mute_rule(incident)
+    scope_key = str(incident.get("collapse_key") or incident["dedup_key"])
+    dedup_key = str(incident["dedup_key"])
+    keys = {scope_key, mute_key, dedup_key}
+    revision = sum(int(item.get("revision") or 0) + 1 for item in mutes if str(item.get("dedup_key") or "") in keys)
+    active = [item for item in mutes if item.get("unmuted_at") is None]
+    if match_mode == "prefix":
+        rule_muted = any(str(item.get("dedup_key") or "") == mute_key for item in active)
+    else:
+        exact_keys = {str(incident.get("collapse_key") or dedup_key), dedup_key}
+        prefixes = [str(item.get("dedup_key") or "") for item in active if item.get("match_mode") == "prefix"]
+        rule_muted = any(str(item.get("dedup_key") or "") in exact_keys for item in active)
+        rule_muted = rule_muted or any(
+            key.startswith(prefix) for key in exact_keys for prefix in prefixes
+        )
+    try:
+        source_event = json.loads(incident.pop("source_payload") or "{}")
+    except (TypeError, ValueError):
+        source_event = {}
+    source_id = str(source_event.get("source_id") or "") if isinstance(source_event, Mapping) else ""
+    scope_mute = next((item for item in mutes if str(item.get("dedup_key") or "") == scope_key), None)
+    return notification_rule_projection(
+        incident,
+        scope_mute,
+        source_id,
+        rule_key=mute_key,
+        match_mode=match_mode,
+        revision=revision,
+        notifications_enabled=not rule_muted,
+    )
+
+
+
 class NotificationCenter:
     """Persist events, incidents, deliveries, and audit history in SQLite.
 
@@ -5587,11 +5644,12 @@ class NotificationCenter:
         escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return escaped + "%"
 
-    def _notification_mute_rule(self, incident: Mapping[str, Any], scope: str = "source") -> tuple[str, str]:
+    @staticmethod
+    def _notification_mute_rule(incident: Mapping[str, Any], scope: str = "source") -> tuple[str, str]:
         """One notification scope for display, CAS and mutation; AI keeps its own key."""
         collapse, dedup = incident["collapse_key"], str(incident["dedup_key"])
         if scope == "source" and not collapse:
-            key = self._notification_mute_prefix(dedup)
+            key = NotificationCenter._notification_mute_prefix(dedup)
             return key, "prefix" if key != dedup else "exact"
         return str(collapse or dedup), "exact"
 
@@ -5737,59 +5795,7 @@ class NotificationCenter:
     def notification_rule_settings(self, incident_id: str) -> dict[str, Any]:
         """Read one existing mute scope and its independent AI-autostart flag."""
         with self._lock:
-            row = self._connection.execute(
-                "SELECT i.id, i.project, i.recipient, i.dedup_key, i.collapse_key, "
-                "e.payload_json AS source_payload, "
-                "(SELECT json_group_array(json_object('dedup_key', m.dedup_key, "
-                "'revision', m.revision, 'auto_ai_by_source', m.auto_ai_by_source, "
-                "'unmuted_at', m.unmuted_at, 'match_mode', m.match_mode)) "
-                "FROM notification_mutes m WHERE m.project=i.project AND m.recipient=i.recipient) AS mute_rows "
-                "FROM incidents i "
-                "LEFT JOIN events e ON e.event_id=(SELECT first.event_id FROM events first "
-                "WHERE first.incident_id=i.id ORDER BY first.created_at, first.rowid LIMIT 1) "
-                "WHERE i.id = ?", (incident_id,),
-            ).fetchone()
-            if row is None:
-                raise ValidationError("incident not found")
-            incident = dict(row)
-            mute_rows_raw = incident.pop("mute_rows") or "[]"
-            try:
-                mute_rows = json.loads(mute_rows_raw)
-            except (TypeError, ValueError):
-                mute_rows = []
-            if not isinstance(mute_rows, list):
-                mute_rows = []
-            mutes = [item for item in mute_rows if isinstance(item, dict)]
-            mute_key, match_mode = self._notification_mute_rule(incident)
-            scope_key = str(incident.get("collapse_key") or incident["dedup_key"])
-            dedup_key = str(incident["dedup_key"])
-            keys = {scope_key, mute_key, dedup_key}
-            revision = sum(int(item.get("revision") or 0) + 1 for item in mutes if str(item.get("dedup_key") or "") in keys)
-            active = [item for item in mutes if item.get("unmuted_at") is None]
-            if match_mode == "prefix":
-                rule_muted = any(str(item.get("dedup_key") or "") == mute_key for item in active)
-            else:
-                exact_keys = {str(incident.get("collapse_key") or dedup_key), dedup_key}
-                prefixes = [str(item.get("dedup_key") or "") for item in active if item.get("match_mode") == "prefix"]
-                rule_muted = any(str(item.get("dedup_key") or "") in exact_keys for item in active)
-                rule_muted = rule_muted or any(
-                    key.startswith(prefix) for key in exact_keys for prefix in prefixes
-                )
-            try:
-                source_event = json.loads(incident.pop("source_payload") or "{}")
-            except (TypeError, ValueError):
-                source_event = {}
-            source_id = str(source_event.get("source_id") or "") if isinstance(source_event, Mapping) else ""
-            scope_mute = next((item for item in mutes if str(item.get("dedup_key") or "") == scope_key), None)
-            return notification_rule_projection(
-                incident,
-                scope_mute,
-                source_id,
-                rule_key=mute_key,
-                match_mode=match_mode,
-                revision=revision,
-                notifications_enabled=not rule_muted,
-            )
+            return read_notification_rule_settings(self._connection, incident_id)
 
     def set_notification_rule_option(
         self, incident_id: str, option: str, enabled: bool, expected_revision: int, actor: str,

@@ -1,5 +1,6 @@
 """Exercise the upgrade entrypoint against a real disposable Git remote."""
 import os
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -27,8 +28,24 @@ def test_telegram_route_dropin_uses_environment_directives():
     text = TELEGRAM_ROUTE.read_text(encoding='utf-8')
     expected = ('TELEGRAM_ACTIVE_MODES_JSON', 'TELEGRAM_AUTO_CREATE_TOPICS', 'TELEGRAM_SEVERITY_ROUTES_JSON')
     assert _bare_service_keys(text) == ()
-    for key in expected:
-        assert re.search(rf'(?m)^Environment={re.escape(key)}=', text)
+    # Keep route values in the operator-owned EnvironmentFile only. A JSON
+    # value in Environment= is parsed by systemd's unit lexer, which can strip
+    # the JSON quotes before the application receives it.
+    assert 'EnvironmentFile=/etc/notification-center-telegram-routes.env' in text
+    assert not any(re.search(rf'(?m)^Environment={re.escape(key)}=', text) for key in expected)
+    env_path = Path(__file__).resolve().parents[1] / 'deploy' / 'notification-center-telegram-routes.env'
+    env = {}
+    for line in env_path.read_text(encoding='utf-8').splitlines():
+        if line and not line.startswith('#') and '=' in line:
+            key, value = line.split('=', 1)
+            env[key] = value
+    assert json.loads(env['TELEGRAM_ACTIVE_MODES_JSON']) == ['decisions', 'notify']
+    assert env['TELEGRAM_AUTO_CREATE_TOPICS'] == 'false'
+    assert json.loads(env['TELEGRAM_SEVERITY_ROUTES_JSON']) == {
+        'decisions': {'chat_id': '-1004419894781'},
+        'notify': {'chat_id': '-1004450539053'},
+        'log': {'chat_id': '-1004322359393', 'message_thread_id': 122},
+    }
 
 def git(source, *args):
     return subprocess.check_output(['git','-C',str(source),*args], text=True, stderr=subprocess.DEVNULL).strip()
@@ -82,3 +99,22 @@ def test_published_ancestor_with_unrelated_remote_advance_uses_approved_inputs(p
     assert (root/'opt'/'noticeplace'/'notification_center'/'runtime.py').read_text()=='approved = True\n'
     assert (source/'notification_center'/'runtime.py').read_text()=='foreign_wip = True\n'
     assert not (root/'opt'/'noticeplace'/'docs'/'unrelated.md').exists()
+
+def test_upgrade_preserves_existing_operator_telegram_routes_env(publication):
+    _,_,_,root,_,_=publication
+    routes=root/'etc'/'notification-center-telegram-routes.env'
+    routes.parent.mkdir(parents=True,exist_ok=True)
+    operator_config=(
+        '# operator-owned customized route policy\n'
+        'TELEGRAM_ACTIVE_MODES_JSON=["decisions"]\n'
+        'TELEGRAM_AUTO_CREATE_TOPICS=true\n'
+        'OPERATOR_ROUTE_NOTE=keep-this-setting\n'
+    )
+    routes.write_text(operator_config,encoding='utf-8')
+    routes.chmod(0o600)
+
+    result=upgrade(publication)
+
+    assert result.returncode==0,result.stderr
+    assert routes.read_text(encoding='utf-8')==operator_config
+    assert routes.stat().st_mode & 0o777 == 0o600

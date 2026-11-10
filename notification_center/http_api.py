@@ -359,6 +359,15 @@ def telegram_delivery_destination(default_chat_id: str, severity_routes: dict[st
     return telegram_destination(default_chat_id, severity_routes, payload["incident"], active_modes, mode=telegram_mode_for_payload(payload))
 
 
+class TelegramModeInactive(RuntimeError):
+    """The mode policy rejected this operation before a network request."""
+
+
+def telegram_mode_inactive(payload: Mapping[str, Any], active_modes: set[str] | None) -> bool:
+    """Decide mode admission without issuing a Telegram request."""
+    return active_modes is not None and telegram_mode_for_payload(payload) not in active_modes
+
+
 class TelegramSender:
     """Send compact incident cards via Telegram's HTTPS Bot API."""
 
@@ -497,8 +506,8 @@ class TelegramSender:
         destination = ({'chat_id': str(card['chat_id'])} if isinstance(card, dict)
                        else telegram_delivery_destination(self._chat_id, self._routes(), payload, self._active_modes))
         mode = telegram_mode_for_payload(payload)
-        if self._active_modes is not None and mode not in self._active_modes:
-            raise RuntimeError(f'Telegram mode is inactive: {mode}')
+        if telegram_mode_inactive(payload, self._active_modes):
+            raise TelegramModeInactive(f'Telegram mode is inactive: {mode}')
         if not destination:
             raise RuntimeError('Telegram topic route is not configured')
         if mode == 'decisions' and self._action_codec is None:
@@ -1336,6 +1345,12 @@ class DeliveryWorker:
                     else:
                         receipt = self._telegram.edit_health_card(payload, message_id, chat_id)
                     self._center.record_health_delivery_migrated(source_delivery_id, receipt)
+                except TelegramModeInactive as error:
+                    self._center.complete_delivery(
+                        delivery["id"], "cancelled", str(error),
+                        claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    )
+                    return
                 except Exception as error:
                     self._center.complete_delivery(
                         delivery["id"],
@@ -1375,27 +1390,26 @@ class DeliveryWorker:
                             attempt=delivery.get("attempt"),
                         )
                         return
-                    if delivery["channel"] == "telegram.main":
-                        active_modes = getattr(self._telegram, "active_modes", None)
-                        if active_modes is not None and telegram_mode_for_payload(payload) not in active_modes:
-                            if str(payload["incident"].get("event_type") or "").startswith("health."):
-                                self._center.complete_delivery(
-                                    delivery["id"],
-                                    "retry",
-                                    "Telegram health topic route is not active",
-                                    retry_after_seconds=300,
-                                    claimed_at=delivery.get("claimed_at"),
-                                    attempt=delivery.get("attempt"),
-                                )
-                            else:
-                                self._center.complete_delivery(
-                                    delivery["id"],
-                                    "cancelled",
-                                    "Telegram mode is inactive",
-                                    claimed_at=delivery.get("claimed_at"),
-                                    attempt=delivery.get("attempt"),
-                                )
-                            return
+                    active_modes = getattr(self._telegram, "active_modes", None)
+                    if telegram_mode_inactive(payload, active_modes):
+                        if delivery["channel"] == "telegram.main" and is_health:
+                            self._center.complete_delivery(
+                                delivery["id"],
+                                "retry",
+                                "Telegram health topic route is not active",
+                                retry_after_seconds=300,
+                                claimed_at=delivery.get("claimed_at"),
+                                attempt=delivery.get("attempt"),
+                            )
+                        else:
+                            self._center.complete_delivery(
+                                delivery["id"],
+                                "cancelled",
+                                "Telegram mode is inactive",
+                                claimed_at=delivery.get("claimed_at"),
+                                attempt=delivery.get("attempt"),
+                            )
+                        return
                     if not self._center.reserve_delivery_send(
                         str(delivery["id"]),
                         claimed_at=float(delivery["claimed_at"]),
@@ -1415,6 +1429,12 @@ class DeliveryWorker:
                         return
                 try:
                     send_result = self._telegram.send(payload)
+                except TelegramModeInactive as error:
+                    self._center.complete_delivery(
+                        delivery["id"], "cancelled", str(error),
+                        claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    )
+                    return
                 except Exception as error:
                     self._center.complete_delivery(
                         delivery["id"],

@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .core import NotificationCenter, SEVERITIES, ValidationError
+from .core import NotificationCenter, SEVERITIES, ValidationError, read_notification_rule_settings
 from .http_api import telegram_create_forum_topic, telegram_edit_forum_topic
 from .incident_card import CARD_SETTINGS
 from .incident_model_policy import (
@@ -784,7 +784,19 @@ class AdminConfigStore:
                         target["topic_id"] = topic_id
 
     def notification_rule_settings(self, incident_id: str) -> dict[str, Any]:
-        return self._consumer_notification_center().notification_rule_settings(incident_id)
+        database = parse_environment(self.primary_env).get("NOTIFY_CENTER_DB", "").strip()
+        if not database:
+            raise ValidationError("NOTIFY_CENTER_DB must be configured for consumer policies")
+        if database.startswith("mesh:"):
+            from .mesh_store import connect
+            connection = connect(database, readonly=True)
+        else:
+            connection = sqlite3.connect(Path(database).resolve().as_uri() + "?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+        try:
+            return read_notification_rule_settings(connection, incident_id)
+        finally:
+            connection.close()
 
     def set_notification_rule_option(
         self, incident_id: str, option: str, enabled: bool, expected_revision: int, actor: str,

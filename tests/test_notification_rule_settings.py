@@ -2,6 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from notification_center.core import NotificationCenter, ValidationError, notification_rule_projection, notification_rule_source_key
 from notification_center.incident_card import controls
@@ -77,6 +78,47 @@ class NotificationRuleSettingsTests(unittest.TestCase):
             self.center._connection = original
         self.assertTrue(result["notifications_enabled"])
         self.assertEqual(1, counted.execute_count)
+
+    def test_notification_rule_read_uses_incident_indexed_source_scalar(self):
+        first = self.event()
+        traces = []
+        self.center._connection.set_trace_callback(traces.append)
+        try:
+            self.center.notification_rule_settings(first["incident_id"])
+        finally:
+            self.center._connection.set_trace_callback(None)
+        select = next(sql for sql in traces if sql.lstrip().upper().startswith("SELECT"))
+        self.assertIn("SELECT first.payload_json FROM events first", select)
+        self.assertNotIn("LEFT JOIN events e", select)
+        plan = self.center._connection.execute("EXPLAIN QUERY PLAN " + select).fetchall()
+        details = [str(row[3]) for row in plan]
+        self.assertFalse(any("SCAN e" in detail for detail in details), details)
+        self.assertTrue(any("SEARCH first USING INDEX" in detail for detail in details), details)
+
+    def test_cold_admin_rule_read_is_read_only_without_schema_initialization(self):
+        import sqlite3
+        from notification_center.admin import AdminConfigStore
+
+        first = self.event()
+        expected = self.center.notification_rule_settings(first["incident_id"])
+        database = self.center._connection.execute("PRAGMA database_list").fetchone()[2]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = root / "primary.env"
+            env.write_text(f"NOTIFY_CENTER_DB={database}\n")
+            store = AdminConfigStore(env, root / "routes", root)
+            statements = []
+            connect = sqlite3.connect
+            def traced_connect(*args, **kwargs):
+                connection = connect(*args, **kwargs)
+                connection.set_trace_callback(statements.append)
+                return connection
+            with patch("notification_center.admin.NotificationCenter", side_effect=AssertionError("schema init invoked")), \
+                 patch("sqlite3.connect", side_effect=traced_connect):
+                actual = store.notification_rule_settings(first["incident_id"])
+            self.assertEqual(expected, actual)
+            self.assertTrue(any(s.lstrip().upper().startswith("SELECT") for s in statements))
+            self.assertFalse(any(s.lstrip().upper().startswith(("CREATE", "ALTER", "INSERT", "UPDATE", "DELETE", "BEGIN", "REPLACE")) for s in statements), statements)
 
     def test_independent_scoped_rules_and_revision_cas(self):
         first = self.event()
