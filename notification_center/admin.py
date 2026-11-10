@@ -490,13 +490,17 @@ class AdminConfigStore:
         state["last_used"] = self.last_used_incident_model(incidents)
         return state
 
-    def set_incident_model(self, value: str, actor: str) -> str:
+    def set_incident_model(self, value: str, actor: str, expected_revision: str = "") -> str:
         """Persist one bounded model choice for future health analyses only."""
         try:
             normalized = normalize_incident_model(value)
         except ValueError as error:
             raise ValidationError(str(error)) from error
-        write_incident_model(self._consumer_notification_center(), normalized)
+        from .herder_policy_client import HerderPolicyUnavailable
+        try:
+            write_incident_model(self._consumer_notification_center(), normalized, expected_revision)
+        except HerderPolicyUnavailable as error:
+            raise ValidationError(str(error)) from error
         self._audit({
             "timestamp": int(time.time()),
             "actor": actor,

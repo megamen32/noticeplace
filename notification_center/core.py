@@ -2696,23 +2696,9 @@ class NotificationCenter:
             }
 
     def _health_agent_delivery_target(self) -> dict[str, Any]:
-        """Snapshot the operator-selected incident route into a new delivery.
-
-        The snapshot is durable and taken at scheduling time. A delivery that
-        was scheduled before the operator saved a route keeps its empty target
-        and therefore the legacy pinned behaviour: an existing job is never
-        rerouted and never replayed under a different model.
-
-        A saved route that is not usable is never replaced by another model:
-        the snapshot keeps the reason, so the launch fails closed and the
-        operator sees the reason in the console.
-        """
-        from .health_workflow import selected_incident_model
-        try:
-            route = selected_incident_model(self)
-        except ValidationError as error:
-            return {"incident_model_error": str(error)}
-        return {"incident_model": route} if route else {}
+        """Snapshot intent to resolve the project route at admission time."""
+        from .incident_model_policy import PROJECT_ROUTE_INTENT
+        return {"incident_model": PROJECT_ROUTE_INTENT}
 
     def _delivery_incident_model(self, target: Mapping[str, Any]) -> str:
         """Return the exact incident route stored in a delivery target.
@@ -3919,22 +3905,12 @@ class NotificationCenter:
     @staticmethod
     def _explicit_agent_prelaunch_negative(receipt: Mapping[str, Any], incident_id: str) -> bool:
         """Recognize the trusted helper's explicit negative, never empty sessions."""
-        result = receipt.get('agent_receipt')
+        from .prelaunch_receipt import valid_prelaunch_negative
         def identity(value):
             return isinstance(value, str) and bool(value.strip()) and len(value) <= 128 and not any(ord(c) < 32 or ord(c) == 127 for c in value)
-        return bool(
-            receipt.get('status') == 'completed' and identity(receipt.get('job_id'))
-            and identity(receipt.get('route_id')) and isinstance(result, Mapping)
-            and result.get('status') == 'source_blocked'
-            and result.get('source') == 'agent-herder-owner-disarm'
-            and result.get('reason') == 'herder_owner_state_unknown'
-            and result.get('admission') == 'not_attempted'
-            and result.get('incident_id') == incident_id and identity(result.get('operation_id'))
-            and result.get('human_held') is True and result.get('non_retryable') is True
-            and result.get('retryable') is False
-            and not any(result.get(key) for key in ('session_id', 'sessionId', 'created', 'accepted', 'admitted'))
-            and result.get('outcome') not in ('accepted', 'unknown', 'admission_unknown', 'in_flight')
-            and result.get('delivery') not in ('accepted', 'unknown', 'admission_unknown', 'in_flight'))
+        return bool(receipt.get('status') == 'completed' and identity(receipt.get('job_id'))
+                    and identity(receipt.get('route_id'))
+                    and valid_prelaunch_negative(receipt.get('agent_receipt'), incident_id))
 
     def _manual_prelaunch_retry_allowed(self, delivery: Mapping[str, Any], incident_id: str) -> bool:
         if delivery['status'] != 'sent' or not delivery['result_json']:

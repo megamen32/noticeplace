@@ -170,7 +170,11 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                     self._reply(HTTPStatus.OK, _page("Health monitor updated", "The bounded fleet config was saved atomically."))
                     return
                 if self.path in ("/health-model", "/admin/health-model"):
-                    store.set_incident_model(form.get("model", ""), actor)
+                    try:
+                        store.set_incident_model(form.get("model", ""), actor, form.get("revision", ""))
+                    except ValidationError as error:
+                        self._reply(HTTPStatus.CONFLICT, _page("Configuration rejected", f"{error} Введённый маршрут: {form.get('model', '')}"))
+                        return
                     self.send_response(HTTPStatus.SEE_OTHER)
                     self.send_header("Location", "/admin/#health-model")
                     self.send_header("Cache-Control", "no-store")
@@ -566,15 +570,15 @@ def _incident_model_block(model: dict[str, Any], csrf: str) -> str:
         '</div>'
         f'<form class="model-form" method="post" action="/admin/health-model">'
         f'<input type="hidden" name="csrf" value="{html.escape(csrf)}">'
+        f'<input type="hidden" name="revision" value="{html.escape(str(state.get("revision") or ""), quote=True)}">'
         '<label>Маршрут модели для новых разборов инцидентов'
         f'<input type="text" name="model" list="incident-model-routes"'
         f' value="{html.escape(effective or default)}"'
-        ' placeholder="minimax-coding-plan/MiniMax-M3.1-Flash" autocomplete="off" spellcheck="false"></label>'
+        ' placeholder="provider/model" autocomplete="off" spellcheck="false"></label>'
         f'<datalist id="incident-model-routes">{datalist}</datalist>'
         '<button>Сохранить модель</button></form>'
-        '<p class="hint">Для разборов инцидентов используется модель '
-        '<code>minimax-coding-plan/MiniMax-M3.1-Flash</code> через OpenCode и прямой MiniMax Coding Plan. '
-        'Notice Place не добавляет другой маршрут или запасной harness. Выбор применяется только к новым '
+        '<p class="hint">Модель и ограничения задаются в <a href="https://agent.bezrabotnyi.com/">настройках Agent Herder</a>; маршрут проекта может отличаться от общего. '
+        'Выбор применяется только к новым '
         'разборам инцидентов. Уже созданные задачи не переигрываются и не перезапускаются, '
         'сервис не перезапускается. Сохранённый выбор считается использованным только после '
         'квитанции реального запуска.</p>'

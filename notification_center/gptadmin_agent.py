@@ -175,7 +175,7 @@ class DirectHealthRemediationAdapter:
             # longer remediation polling window below.
             "mode": "queue",
             "instruction": "Выполни только выбранный план устранения инцидента и сообщай полезный прогресс. Пользовательские объяснения пиши по-русски. Последним сообщением верни только JSON: {\"status\":\"completed\",\"plan_id\":\"<selected>\",\"step\":\"<done>\",\"observed_state\":\"healthy|degraded|unknown\",\"verification_id\":\"<id>\",\"source_id\":\"<id>\",\"source_fingerprint\":\"<fingerprint>\",\"verifier_id\":\"<distinct id>\",\"evidence_refs\":[\"<ref>\"],\"trace_refs\":[\"<ref>\"]}. Для плана observe допустим observed_state=unknown с непустым evidence_refs без выдуманных verification_id, source_fingerprint и verifier_id; такой результат не закрывает инцидент.",
-            "model": f"{HEALTH_EXECUTION_PROFILE['provider']}/{HEALTH_EXECUTION_PROFILE['model']}",
+            "model": "",
             "reasoning": HEALTH_EXECUTION_PROFILE["reasoning"],
             "topic": "health",
             "poll_seconds": os.environ.get("NOTIFY_HEALTH_REMEDIATION_POLL_SECONDS", "1"),
@@ -197,6 +197,9 @@ class DirectHealthRemediationAdapter:
                 else (lambda session: post_health_session_started(_agent_job_event(self.job_id, payload, idempotency_key), session))
             ),
         )
+        if receipt.get("status") == "source_blocked":
+            return {"job_id": "direct-agent-herder", "route_id": "noticeplace-direct-health-remediation",
+                    "status": "completed", "agent_receipt": receipt}
         if progress_callback is not None:
             progress_callback({"status": "completed", "agent_receipt": receipt})
         return {
@@ -393,20 +396,8 @@ class GptAdminAgentJobAdapter:
         parsed_stdout: dict[str, Any] | None = None
 
         def explicit_prelaunch_negative(candidate: Mapping[str, Any]) -> bool:
-            operation = candidate.get('operation_id')
-            return bool(
-                job.get('status') == 'completed'
-                and candidate.get('status') == 'source_blocked'
-                and candidate.get('source') == 'agent-herder-owner-disarm'
-                and candidate.get('reason') == 'herder_owner_state_unknown'
-                and candidate.get('admission') == 'not_attempted'
-                and isinstance(operation, str) and operation.strip() and len(operation) <= 128
-                and not any(character in operation for character in '\r\n\0')
-                and not candidate.get('session_id') and not candidate.get('sessionId')
-                and not candidate.get('created')
-                and candidate.get('outcome') not in ('accepted', 'admission_unknown', 'in_flight')
-                and candidate.get('delivery') not in ('accepted', 'unknown', 'admission_unknown')
-            )
+            from .prelaunch_receipt import valid_prelaunch_negative
+            return job.get('status') == 'completed' and valid_prelaunch_negative(candidate)
 
         def looks_like_receipt(candidate: Mapping[str, Any]) -> bool:
             return bool(
@@ -442,8 +433,8 @@ class GptAdminAgentJobAdapter:
             # This is helper-owned negative admission evidence, not an inference
             # from an empty session field or a lost/ambiguous response.
             return {
-                'status': 'source_blocked', 'source': 'agent-herder-owner-disarm',
-                'reason': 'herder_owner_state_unknown', 'admission': 'not_attempted',
+                'status': 'source_blocked', 'source': parsed_stdout['source'],
+                'reason': parsed_stdout['reason'], 'admission': 'not_attempted',
                 'operation_id': parsed_stdout['operation_id'],
                 'incident_id': _safe_health_ref(parsed_stdout.get('incident_id'), 128),
                 'human_held': parsed_stdout.get('human_held') is True,

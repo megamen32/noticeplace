@@ -23,7 +23,7 @@ _RESPONSE_LIMIT = 64 * 1024
 _SESSION_DETAILS_LIMIT = 1024 * 1024
 _HEALTH_CALLBACK_DEFAULT = "/home/roomhacker/.config/gptadmin/health-callback.json"
 _HERDER_SECRETS_PATH = Path("/home/roomhacker/.config/agent-herder/secrets.json")
-_HERDER_AUTH_PATHS = frozenset({"/mcp", "/internal/human-requests/ask-user-completion"})
+_HERDER_AUTH_PATHS = frozenset({"/mcp", "/internal/human-requests/ask-user-completion", "/api/automation/launch-policy"})
 _HEALTH_JOB_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
 _HEALTH_STAGE_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
 _REPAIR_FIRST_JOB_IDS = {"health-diagnosis", "health-orchestrator"}
@@ -74,7 +74,7 @@ def _health_model_route(execution: Mapping[str, str]) -> str:
     if execution["runtime"] == "zcode":
         return f"{execution['provider']}/{execution['model']}${execution['reasoning']}"
     if execution["runtime"] == "opencode":
-        return f"{execution['provider']}/{execution['model']}"
+        return f"{execution['provider']}/{execution['model']}" if execution["model"] else ""
     return execution["model"]
 
 
@@ -413,14 +413,18 @@ def _read_json_request(request: urllib.request.Request, runner: Any, timeout: fl
             result = json.loads(body)
     except urllib.error.HTTPError as error:
         detail = ""
+        parsed_error = None
         try:
             raw = error.read(_RESPONSE_LIMIT + 1)
-            parsed_error = json.loads(raw[:_RESPONSE_LIMIT])
+            if len(raw) <= _RESPONSE_LIMIT:
+                parsed_error = json.loads(raw)
             if isinstance(parsed_error, dict):
                 detail = str(parsed_error.get("error") or parsed_error.get("message") or "")
         except Exception:
             detail = ""
-        raise HealthAgentEndpointError(error.code, detail) from error
+        failure = HealthAgentEndpointError(error.code, detail)
+        failure.response_body = parsed_error
+        raise failure from error
     except (urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError) as error:
         raise RuntimeError("health agent endpoint request failed or returned invalid JSON") from error
     if not isinstance(result, dict):
@@ -639,7 +643,19 @@ def project_launch(profile: Mapping[str, str], project: str, cwd: str, message: 
         headers=headers,
         method="POST",
     )
-    return _read_json_request(request, runner, timeout=90)
+    try:
+        return _read_json_request(request, runner, timeout=90)
+    except HealthAgentEndpointError as error:
+        raw = getattr(error, "response_body", None)
+        from .prelaunch_receipt import no_admission_contradictions
+        if (error.status_code == 409 and isinstance(raw, dict)
+                and raw.get("outcome") == "no_harness"
+                and raw.get("routingReasonCode") == "model_not_permitted_for_project"
+                and raw.get("attempts") == [] and raw.get("operationId") == operation_id
+                and isinstance(raw.get("project"), str) and raw.get("project").casefold() == project.strip().casefold()
+                and no_admission_contradictions(raw)):
+            return raw
+        raise
 
 
 _REQUIRED_HERDER_NODES = ("server-100", "server-44", "server-88")
@@ -742,6 +758,8 @@ def _launch_receipt(result: Mapping[str, Any], profile: Mapping[str, str], opera
     session_id = str(result.get("session_id") or result.get("sessionId") or "")
     if outcome in {"accepted", "handoff_required"} and not session_id:
         raise RuntimeError(f"Agent Herder reported {outcome} without a session identity")
+    if outcome == "accepted" and not str(result.get("model") or "").strip():
+        raise RuntimeError("Agent Herder accepted without a model receipt; outcome unknown")
     if outcome == "no_harness":
         raise RuntimeError(f"Agent Herder has no runnable harness for this project: {project}")
     if outcome == "pre_admission_rejected":
@@ -1765,47 +1783,18 @@ def run_profile(
         configured = {**configured, "instruction": "Repair the original incident in its native session."}
     profile = _validate_profile(configured)
     incident_project = str(incident.get("project") or "")
-    policy = _launch_policy(profile, runner) if profile_id in _HEALTH_JOB_IDS and not continuation else {}
-    allowed_routes = health_execution_routes(policy, incident_project)
+    from .incident_model_policy import PROJECT_ROUTE_INTENT
     incident_model = _selected_incident_model(event) if profile_id in _HEALTH_JOB_IDS and not continuation else ""
-    if profile_id == "health-diagnosis" and not incident_model and not continuation:
-        # New delivery code pins the project route in its snapshot. For older
-        # unsnapshotted deliveries, use this same approved route; never inherit
-        # a stale profile model or provider fallback.
-        incident_model = HEALTH_LAUNCH_DEFAULT
-    if incident_model:
-        # The operator's selected route owns this launch. The legacy pinned
-        # route stays in force for every delivery without a snapshot.
-        profile = _selected_route_profile(
-            profile, policy, incident_project, incident_model,
-            require_opencode=profile_id == "health-diagnosis",
-        )
-    elif profile_id in _REPAIR_FIRST_JOB_IDS and not continuation:
-        profile = _incident_profile(profile, runner, incident_project, policy)
-    if profile_id == "health-remediation":
-        health = event.get("health") if isinstance(event.get("health"), Mapping) else {}
-        selection = health.get("selection") if isinstance(health.get("selection"), Mapping) else {}
-        execution = selection.get("execution") if isinstance(selection.get("execution"), Mapping) else {}
-        normalized_execution = {key: str(execution.get(key) or "") for key in _HEALTH_EXECUTION_PROFILES[0]}
-        if not incident_model and normalized_execution not in [dict(route) for route in allowed_routes]:
-            raise RuntimeError("health remediation event has an execution profile this project does not allow")
-        if incident_model:
-            # The snapshot's route text owns the model; the project route owns
-            # the harness, so a codex-first project never gets an opencode pin.
-            expected_execution = {**health_launch_execution(incident_model), "runtime": profile["harness"]}
-        else:
-            expected_execution = normalized_execution
-        profile = {
-            **profile,
-            "harness": expected_execution["runtime"],
-            "model": _health_model_route(expected_execution),
-            "reasoning": expected_execution["reasoning"],
-            "topic": expected_execution["topic"],
-        }
+    if profile_id in _HEALTH_JOB_IDS and not continuation:
+        selected_model = "" if incident_model == PROJECT_ROUTE_INTENT else incident_model or profile["model"]
+        if not incident_model and not selected_model:
+            return {"status": "source_blocked", "source": "agent-herder", "admission": "not_attempted",
+                    "reason": "legacy_model_unknown", "human_held": True, "retryable": False,
+                    "non_retryable": True,
+                    "operation_id": _operation_id(event, profile_id), "incident_id": str(incident.get("id") or "")}
+        profile = {**profile, "harness": "opencode", "model": selected_model, "reasoning": "default", "topic": "health"}
     health_result: dict[str, str] = {}
     started_at = time.monotonic()
-    if profile_id == "health-remediation" and not incident_model:
-        profile = _incident_profile(profile, runner, incident_project, policy)
     plan_for_operation = str((health_result or {}).get("plan_id") or "")
     operation_id = _operation_id(event, profile_id, plan_for_operation)
     if profile_id in _HEALTH_JOB_IDS:
@@ -1839,17 +1828,20 @@ def run_profile(
     if profile_id in _REPAIR_FIRST_JOB_IDS:
         request_body["message"] = _repair_first_message(profile, event, incident)
     if profile_id == "health-remediation":
-        expected_execution = dict(health_launch_execution(incident_model), runtime=profile["harness"]) if incident_model else None
+        expected_execution = dict(health_launch_execution(profile["model"]), runtime=profile["harness"]) if profile["model"] else {"runtime": profile["harness"], "provider": "", "model": "", "reasoning": profile["reasoning"], "topic": profile["topic"]}
         plan_id, request_body["message"] = _health_remediation_message(profile, event, incident, expected_execution)
         request_body["model"] = profile["model"]
-        health_result = {"plan_id": plan_id, "model": profile["model"], "reasoning": profile["reasoning"], "topic": profile["topic"]}
+        health_result = {"plan_id": plan_id, "reasoning": profile["reasoning"], "topic": profile["topic"]}
     elif profile["model"]:
         request_body["model"] = profile["model"]
     sources = event_sources(event) if profile_id in _HEALTH_JOB_IDS else []
     if continuation:
         sources = source_chain(sources, [{'harness': continuation['harness'], 'sessionId': continuation['session_id']}])
     if profile_id in _HEALTH_JOB_IDS:
-        request_body.update(source_launch_fields(profile, sources, lambda request, **options: _read_json_request(request, runner, **options)))
+        try:
+            request_body.update(source_launch_fields(profile, sources, lambda request, **options: _read_json_request(request, runner, **options)))
+        except Exception as error:
+            return _owner_blocked_receipt(HerderOwnerStateBlocked("herder_preflight_unavailable", str(error)[:200]), event, profile_id, operation_id)
     if profile_id in _HEALTH_JOB_IDS:
         # One admission call decides harness, model, and retry. Agent Herder
         # stops on accepted, unknown, or human hold; only a pre-admission
@@ -1860,10 +1852,10 @@ def run_profile(
             else:
                 result = project_launch(
                     profile, incident_project, profile["cwd"], request_body["message"], runner,
-                    operation_id=operation_id, harness=profile["harness"], model=profile["model"], mode=profile["mode"],
+                    operation_id=operation_id, harness="opencode", model=profile["model"], mode=profile["mode"],
                     harness_order=str(profile.get("harness_order") or ""),
-                    purpose=HEALTH_LAUNCH_PURPOSE if incident_model else "",
-                    health_launch_token=str(profile.get("health_launch_token") or "") if incident_model else "",
+                    purpose=HEALTH_LAUNCH_PURPOSE,
+                    health_launch_token=str(profile.get("health_launch_token") or ""),
                     incident_session_policy=(event.get('health') or {}).get('incident_session_policy'),
                 )
         except HerderOwnerStateBlocked as error:
@@ -1881,6 +1873,20 @@ def run_profile(
         result = _read_json_request(request, runner)
         result = {**result, "outcome": "accepted", "selected_harness": result.get("harness", profile["harness"]),
                   "session_id": result.get("sessionId", "")}
+    from .prelaunch_receipt import no_admission_contradictions
+    no_attempts = isinstance(result.get("attempts"), list) and not result["attempts"]
+    result_project = result.get("project")
+    result_operation = result.get("operationId") or result.get("operation_id")
+    identity_matches = (isinstance(result_project, str) and result_project.casefold() == incident_project.strip().casefold()
+                        and result_operation == operation_id)
+    denied_model = (result.get("outcome") == "no_harness" and no_attempts and identity_matches and no_admission_contradictions(result)
+                    and (result.get("routing_reason_code") or result.get("routingReasonCode")) == "model_not_permitted_for_project")
+    explicit_reject = result.get("outcome") == "pre_admission_rejected" and no_attempts and identity_matches and no_admission_contradictions(result)
+    if profile_id in _HEALTH_JOB_IDS and not continuation and (explicit_reject or denied_model):
+        return {"status": "source_blocked", "source": "agent-herder", "admission": "not_attempted",
+                "reason": "herder_rejected", "detail": str(result.get("routing_reason") or "")[:200],
+                "human_held": True, "retryable": False, "non_retryable": True,
+                "operation_id": operation_id, "incident_id": str(incident.get("id") or "")}
     receipt = {
         "profile": profile_id,
         "name": request_body["name"],
@@ -1900,6 +1906,8 @@ def run_profile(
         # receipt and never the requested profile.
         launched = {**profile, "harness": receipt["harness"], "model": receipt.get("model") or profile["model"],
                     "cwd": str(receipt.get("cwd") or profile["cwd"])}
+        launched["orchestrator_model"] = launched["model"]
+        launched["orchestrator_requested_model"] = launched["model"]
         try:
             receipt["autopilot_armed"] = arm_session_autopilot(
                 launched["harness"], receipt["session_id"], launched["cwd"], runner,

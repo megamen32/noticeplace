@@ -668,7 +668,7 @@ class HealthWorkflowTests(unittest.TestCase):
         self.workflow.attach_plans(self.created["incident_id"], "plans-remediation", self._plans(), actor="omniroute")
         selected = self.workflow.select_plan(self.created["incident_id"], "selection-remediation", "repair", "telegram:42")
 
-        expected_execution = dict(health_workflow.HEALTH_EXECUTION_PROFILE)
+        expected_execution = {}
         self.assertEqual(expected_execution, self.center.latest_health_selection(self.created["incident_id"])["execution"])
         self.assertTrue(selected["remediation_delivery_id"])
         self.assertTrue(selected["remediation_event_id"])

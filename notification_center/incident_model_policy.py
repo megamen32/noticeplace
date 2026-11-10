@@ -1,18 +1,4 @@
-"""Pinned direct MiniMax subscription for NoticePlace health-incident analysis.
-
-NoticePlace sends incident analysis through OpenCode and the direct MiniMax Coding Plan. Agent Herder stays the launch and admission
-runtime and keeps its own allow/deny decision.
-
-This module is the single source of truth for the route contract:
-
-- the settings key, the one permitted route and the console suggestion;
-- a one-way migration for the former OmniRoute combo default when reading the
-  saved preference for future incidents; and
-- the strict normalizer used by settings writes and delivery snapshots.
-  Existing delivery snapshots are never migrated.
-
-Nothing here resolves credentials, talks to a provider, or starts a session.
-"""
+"""Model intent and Herder-backed display for health incident execution."""
 
 from __future__ import annotations
 
@@ -21,9 +7,11 @@ from typing import Any, Mapping
 
 INCIDENT_MODEL_SETTING_KEY = "health_incident_model"
 
-# The only approved route for new incident analyses.
-DEFAULT_INCIDENT_MODEL = "minimax-coding-plan/MiniMax-M3.1-Flash"
+# No local default: Herder owns model selection.
+DEFAULT_INCIDENT_MODEL = ""
+PROJECT_ROUTE_INTENT = "herder/project-route"
 LEGACY_INCIDENT_MODELS = (
+    "minimax-coding-plan/MiniMax-M3.1-Flash",
     "omniroute/minimax-combo.m3.1",
     "omniroute/minimax-combo-m3.1",
     "omniroute/glm-5.3-flash-minimax-m3.1",
@@ -38,14 +26,7 @@ MAX_LAUNCH_ROUTE_LENGTH = 128
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 
 # The console shows the same single route that the launch contract permits.
-KNOWN_INCIDENT_MODELS: tuple[dict[str, Any], ...] = (
-    {
-        "value": DEFAULT_INCIDENT_MODEL,
-        "label": "OpenCode · MiniMax Coding Plan",
-        "default": True,
-        "manual_only": False,
-    },
-)
+KNOWN_INCIDENT_MODELS: tuple[dict[str, Any], ...] = ()
 
 
 def incident_model_options() -> list[dict[str, Any]]:
@@ -81,11 +62,8 @@ def incident_model_error(value: Any) -> str | None:
             f"Маршрут модели анализа инцидентов длиннее {MAX_LAUNCH_ROUTE_LENGTH} символов: "
             "более длинное значение обрезается в подписанном контексте запуска"
         )
-    if route != DEFAULT_INCIDENT_MODEL:
-        return (
-            "Для диагностики инцидентов разрешён только маршрут "
-            f"{DEFAULT_INCIDENT_MODEL}; другие маршруты не разрешены"
-        )
+    if "/" not in route or any(c.isspace() for c in route):
+        return "Некорректный маршрут модели анализа инцидентов"
     return None
 
 
@@ -112,59 +90,50 @@ def incident_model_label(value: Any) -> str:
 
 
 def read_incident_model(center: Any) -> str:
-    """Return the effective route for future health analyses.
-
-    The exact former default is migrated in memory for future incidents only.
-    Existing delivery snapshots still use the strict normalizer and fail
-    closed, so this cannot reroute an already scheduled incident.
-    """
-    stored = center.get_runtime_setting(INCIDENT_MODEL_SETTING_KEY)
-    if stored is None or not str(stored).strip():
-        return default_incident_model()
-    if str(stored).strip() in LEGACY_INCIDENT_MODELS:
-        return default_incident_model()
-    return normalize_incident_model(stored)
+    """Read the authoritative Herder policy, never the local setting."""
+    state = incident_model_state(center)
+    if not state.get("available"):
+        raise ValueError(state.get("stored_error") or "Herder недоступен")
+    return str(state["effective"])
 
 
 def saved_incident_model(center: Any) -> str | None:
-    """Return the raw stored value, or None when the operator never saved one."""
-    stored = center.get_runtime_setting(INCIDENT_MODEL_SETTING_KEY)
-    if stored is None or not str(stored).strip():
-        return None
-    return str(stored).strip()
+    return None
 
 
-def write_incident_model(center: Any, value: Any) -> str:
-    """Persist one hand-picked route for future health analyses."""
+def write_incident_model(center: Any, value: Any, expected_revision: str = "") -> str:
+    """Update Herder's policy with its current ETag; never write SQLite."""
     normalized = normalize_incident_model(value)
-    center.set_runtime_setting(INCIDENT_MODEL_SETTING_KEY, normalized)
+    from .herder_policy_client import HerderPolicyClient
+    HerderPolicyClient().set_incident_model(normalized, expected_revision)
     return normalized
 
 
 def incident_model_state(center: Any) -> dict[str, Any]:
     """Return the display-safe model state for the operator console."""
-    stored = saved_incident_model(center)
-    migration_pending = stored in LEGACY_INCIDENT_MODELS
-    error = incident_model_error(stored) if stored is not None and not migration_pending else None
-    effective = default_incident_model() if stored is None or migration_pending else ("" if error else normalize_incident_model(stored))
-    return {
-        "value": effective,
-        "label": incident_model_label(effective),
-        "route": effective,
-        "effective": effective,
-        "default": default_incident_model(),
-        "stored": stored,
-        "stored_recognized": error is None,
-        "stored_error": error,
-        "migration_pending": migration_pending,
-        "migration_message": (
-            f"Старый маршрут {stored} заменён для новых разборов на "
-            f"{DEFAULT_INCIDENT_MODEL}; сохранённые события не перенаправляются."
-            if migration_pending else ""
-        ),
-        "options": incident_model_options(),
-    }
-
+    from .herder_policy_client import HerderPolicyClient, HerderPolicyUnavailable
+    try:
+        policy, revision = HerderPolicyClient().read()
+        execution = policy.get('incidentExecution')
+        if not isinstance(execution, Mapping):
+            raise HerderPolicyUnavailable('Настройки модели Herder некорректны')
+        if not isinstance(execution.get('model'), str) or not isinstance(execution.get('provider'), str):
+            raise HerderPolicyUnavailable('Настройки модели Herder некорректны')
+        value = execution['model'].strip()
+        provider = execution['provider'].strip()
+        if provider and value and not value.startswith(provider + '/'):
+            value = provider + '/' + value
+        if not value:
+            raise HerderPolicyUnavailable('В настройках Herder не указана модель')
+        return {'value': value, 'label': value, 'route': value, 'effective': value,
+                'default': '', 'stored': None, 'stored_recognized': True,
+                'stored_error': None, 'migration_pending': False,
+                'migration_message': '', 'options': [], 'available': True, 'revision': revision}
+    except HerderPolicyUnavailable as error:
+        return {'value': '', 'label': 'Herder недоступен', 'route': '', 'effective': '',
+                'default': '', 'stored': None, 'stored_recognized': False,
+                'stored_error': str(error), 'migration_pending': False,
+                'migration_message': '', 'options': [], 'available': False}
 
 def model_route_text(value: Any) -> str:
     """Return a short human route description without leaking internals."""

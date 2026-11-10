@@ -114,7 +114,7 @@ class RepairFirstExecutorTests(unittest.TestCase):
                     "created": created,
                     "project": json.loads(request.data)["project"],
                     "selected_harness": json.loads(request.data)["harness"],
-                    "model": json.loads(request.data)["model"], "mode": "queue",
+                    "model": json.loads(request.data).get("model") or "omniroute/cx/gpt-6-luna", "mode": "queue",
                     "session_id": "executor-native", "routing_reason": "declared route",
                     "attempts": [{"harness": "opencode", "outcome": "accepted", "reason": "declared route"}],
                 })
@@ -147,7 +147,7 @@ class RepairFirstExecutorTests(unittest.TestCase):
             "schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
             "incident": {"id": "inc-repair", "project": "fleet-health", "severity": "critical",
                          "title": "Диск заполнен", "body": "bounded", "dedup_key": "health:disk", "occurrences": 1},
-            "health": {"correlation_id": "corr-1", "trace_refs": ["trace:source"], "evidence_refs": ["probe:disk"]},
+            "health": {"incident_model": "herder/project-route", "correlation_id": "corr-1", "trace_refs": ["trace:source"], "evidence_refs": ["probe:disk"]},
         }
 
     def _run(self, texts: dict[str, str], root: str) -> tuple[dict[str, object], list[object]]:
@@ -449,7 +449,7 @@ class IndependentVerificationTests(unittest.TestCase):
 
 
 class ProjectRouteTests(unittest.TestCase):
-    """Explicit per-project routes are honoured; everything else stays pinned."""
+    """A Herder fixture selects the model and reports the admitted route."""
 
     def setUp(self) -> None:
         # Route tests model an explicitly open owner control state; STOP denial
@@ -472,9 +472,15 @@ class ProjectRouteTests(unittest.TestCase):
                 return _Response({"enabled": True, "sessionId": "route-native"})
             if "project-launch" in url:
                 body = json.loads(request.data)
+                assert body["harness"] == "opencode" and "model" not in body
+                project = body["project"].casefold()
+                routes = policy.get("projectRoutes", {})
+                route = next((value for key, value in routes.items()
+                              if project in [key.casefold(), *[a.casefold() for a in value.get("aliases", [])]]), {})
+                model = route.get("models", {}).get("opencode") or policy["models"]["opencode"]
                 return _Response({
                     "outcome": "accepted", "operation_id": body["operation_id"], "project": body["project"],
-                    "selected_harness": body["harness"], "model": body["model"], "mode": body.get("mode", "queue"),
+                    "selected_harness": "opencode", "model": model, "mode": body.get("mode", "queue"),
                     "session_id": "route-native", "routing_reason": "declared route",
                     "attempts": [{"harness": body["harness"], "outcome": "accepted", "reason": "declared route"}],
                 })
@@ -485,7 +491,7 @@ class ProjectRouteTests(unittest.TestCase):
         policy = {
             "version": 1, "incidentExecution": dict(agent_job_helper.HEALTH_EXECUTION_PROFILE),
             "allowedHarnesses": ["opencode", "zcode"], "preferredHarness": "opencode",
-            "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash",
+            "models": {"opencode": "omniroute/cx/gpt-6-luna",
                        "zcode": "account:zai-individual-coding-plan/GLM-5.3-Flash$high"},
         }
         if project_routes is not None:
@@ -503,7 +509,8 @@ class ProjectRouteTests(unittest.TestCase):
         }
         event = {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
                  "incident": {"id": "inc-1", "project": project, "severity": "critical",
-                              "title": "t", "body": "b", "dedup_key": "d", "occurrences": 1}}
+                              "title": "t", "body": "b", "dedup_key": "d", "occurrences": 1},
+                 "health": {"incident_model": "herder/project-route"}}
         with patch.object(agent_job_helper, "_load_health_callback", return_value=("http://127.0.0.1:8091", "token")), \
              patch.object(agent_job_helper, "_run_health_diagnosis", return_value={"status": "completed"}):
             receipt = agent_job_helper.run_profile("health-diagnosis", event, Path("unused"),
@@ -527,34 +534,37 @@ class ProjectRouteTests(unittest.TestCase):
             helper._launch_receipt(result, profile, "op-1", "tg-commentator")
         self.assertEqual(1, len(calls), "one reservation attempt, never a second launch")
 
-    def test_unconfigured_project_keeps_the_pinned_direct_minimax_subscription(self) -> None:
+    def test_unconfigured_project_uses_herder_default(self) -> None:
         receipt, requests = self._run("fleet-health", self._policy(), {"opencode": ["minimax-coding-plan/MiniMax-M3.1-Flash"]})
         self.assertEqual("opencode", receipt["harness"])
-        self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", receipt["model"])
+        self.assertEqual("omniroute/cx/gpt-6-luna", receipt["model"])
 
     def test_configured_project_route_keeps_the_exact_subscription_and_one_harness(self) -> None:
-        policy = self._policy({"TelegramAuto": {"harnesses": ["opencode"]}})
+        policy = self._policy({"TelegramAuto": {"harnesses": ["opencode"], "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"}}})
         receipt, requests = self._run("TelegramAuto", policy, {"opencode": ["minimax-coding-plan/MiniMax-M3.1-Flash"]})
         self.assertEqual("opencode", receipt["harness"])
         self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", receipt["model"])
         launch = [json.loads(r.data) for r in requests if "project-launch" in str(r.full_url)][0]
         self.assertEqual("TelegramAuto", launch["project"])
         self.assertEqual("opencode", launch["harness"])
+        self.assertNotIn("model", launch)
         self.assertEqual(32, len(launch["operation_id"]))
         self.assertEqual("TelegramAuto", launch["project"])
 
     def test_declared_aliases_resolve_case_insensitively_like_herder(self) -> None:
         policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator", "autotelegramviews"],
-                                                "harnesses": ["opencode"]}})
+                                                "harnesses": ["opencode"], "models": {"opencode": "minimax-coding-plan/MiniMax-M3.1-Flash"}}})
         for project in ("tg-commentator", "TG-Commentator", "autotelegramviews", "AutoTelegramViews"):
             with self.subTest(project=project):
                 receipt, _ = self._run(project, policy, {"opencode": ["minimax-coding-plan/MiniMax-M3.1-Flash"]})
                 self.assertEqual("opencode", receipt["harness"])
+                self.assertEqual("minimax-coding-plan/MiniMax-M3.1-Flash", receipt["model"])
 
     def test_undeclared_project_name_is_never_guessed(self) -> None:
         policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator"], "harnesses": ["opencode"]}})
         receipt, _ = self._run("autosell", policy, {"opencode": ["minimax-coding-plan/MiniMax-M3.1-Flash"]})
         self.assertEqual("opencode", receipt["harness"])
+        self.assertEqual("omniroute/cx/gpt-6-luna", receipt["model"])
 
     def test_admission_receipt_is_authoritative_and_never_relaunched(self) -> None:
         policy = self._policy({"TelegramAuto": {"aliases": ["tg-commentator"], "harnesses": ["opencode"]}})
@@ -568,7 +578,8 @@ class ProjectRouteTests(unittest.TestCase):
         }
         event = {"schema": "notify.agent-job.v1", "job_id": "health-diagnosis",
                  "incident": {"id": "inc-1", "project": "tg-commentator", "severity": "critical",
-                              "title": "t", "body": "b", "dedup_key": "d", "occurrences": 1}}
+                              "title": "t", "body": "b", "dedup_key": "d", "occurrences": 1},
+                 "health": {"incident_model": "herder/project-route"}}
 
         def runner(request, **_kwargs):
             url = str(getattr(request, "full_url", ""))

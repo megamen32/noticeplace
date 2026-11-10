@@ -26,15 +26,13 @@ _BEARER_RE = re.compile(r"(?i)\bbearer\s+\S+")
 
 HEALTH_EXECUTION_PROFILE = {
     "runtime": "opencode",
-    "provider": "minimax-coding-plan",
-    "model": "MiniMax-M3.1-Flash",
+    "provider": "",
+    "model": "",
     "reasoning": "default",
     "topic": "health",
 }
 
-# Incident execution is pinned to the direct MiniMax subscription route.
-# Agent Herder keeps the launch/admission decision; it must declare the same
-# project route, and a mismatch fails closed rather than falling back.
+# Agent Herder owns model choice and launch admission.
 HEALTH_LAUNCH_MODELS: tuple[str, ...] = tuple(
     str(option["value"]) for option in incident_model_options()
 )
@@ -177,6 +175,14 @@ def resolve_project_route(configured: Any, aliases: Any, project: str) -> Any:
         declared = entry.get("aliases")
         if isinstance(declared, list) and wanted in {_bounded_text(item, 128).casefold() for item in declared}:
             return entry
+    import posixpath
+    path = posixpath.normpath(project.strip())
+    matches = [(posixpath.normpath(str(key).strip()), str(key), value)
+               for key, value in configured.items() if str(key).startswith("/")]
+    matches = [(root, key, value) for root, key, value in matches
+               if path.startswith(root.rstrip("/") + "/")]
+    if matches:
+        return sorted(matches, key=lambda item: (-len(item[0]), item[0], item[1]))[0][2]
     return None
 
 
@@ -195,81 +201,44 @@ def health_execution_profile(harness: str, model: str, topic: str = "health", re
 
 
 def health_execution_routes(policy: Any, project: str = "") -> tuple[dict[str, str], ...]:
-    """Return the declared preference for one incident project.
-
-    The route order lives in the Agent Herder launch policy. This NoticePlace
-    project also requires the global ``incidentExecution`` declaration to
-    match its pinned route, and fails closed when it does not.
-    """
-    global_execution = policy.get("incidentExecution") if isinstance(policy, Mapping) else None
-    if isinstance(global_execution, Mapping):
-        expected = dict(HEALTH_EXECUTION_PROFILE)
-        observed_provider = _bounded_text(global_execution.get("provider"), 64).lower()
-        observed_model = _bounded_text(global_execution.get("model"), 256)
-        # Herder stores the full native ID in its model field for this route.
-        # Normalize only for comparison with NoticePlace's split form.
-        if observed_model.startswith(observed_provider + "/"):
-            observed_model = observed_model[len(observed_provider) + 1:]
-        observed = {
-            "runtime": _bounded_text(global_execution.get("runtime"), 32).lower(),
-            "provider": observed_provider,
-            "model": observed_model,
-            "reasoning": _bounded_text(global_execution.get("reasoning") or expected["reasoning"], 16).lower(),
-            "topic": _bounded_text(global_execution.get("topic") or expected["topic"], 64).lower(),
-        }
-        if observed != expected:
-            raise ValidationError("Agent Herder incidentExecution conflicts with NoticePlace's pinned OpenCode direct MiniMax subscription")
-    routes_map = policy.get("projectRoutes") if isinstance(policy, Mapping) else None
-    route = resolve_project_route(routes_map, policy.get("projectAliases") if isinstance(policy, Mapping) else None, project) if project else None
-    raw_harnesses: Any = []
-    raw_models: Any = None
-    if isinstance(route, Mapping):
-        raw_harnesses = route.get("harnesses") or route.get("fallbackHarnesses") or []
-        raw_models = route.get("models")
-        # Herder may expose this project route directly as runtime/provider/model.
-        if route.get("runtime") or route.get("provider") or route.get("model"):
-            runtime = _bounded_text(
-                route.get("runtime") or route.get("harness")
-                or (raw_harnesses[0] if isinstance(raw_harnesses, list) and raw_harnesses else HEALTH_LAUNCH_HARNESS),
-                32,
-            ).lower()
-            provider = _bounded_text(route.get("provider"), 64).lower()
-            model = _bounded_text(route.get("model"), 256)
-            if model.startswith(provider + "/"):
-                model = model[len(provider) + 1:]
-            direct = {"runtime": runtime, "provider": provider, "model": model,
-                      "reasoning": _bounded_text(route.get("reasoning") or HEALTH_EXECUTION_PROFILE["reasoning"], 16).lower(),
-                      "topic": _bounded_text(route.get("topic") or HEALTH_EXECUTION_PROFILE["topic"], 64).lower()}
-            if direct != HEALTH_EXECUTION_PROFILE:
-                raise ValidationError("Agent Herder projectRoute conflicts with NoticePlace's pinned OpenCode direct MiniMax subscription")
-            return (dict(HEALTH_EXECUTION_PROFILE),)
-    elif isinstance(route, list):
-        raw_harnesses = route
-    models = raw_models if isinstance(raw_models, Mapping) else {}
+    """Resolve the declared project route; Herder enforces its blacklist."""
+    if not isinstance(policy, Mapping):
+        raise ValidationError("Agent Herder launch policy is unavailable")
+    route = resolve_project_route(policy.get("projectRoutes"), policy.get("projectAliases"), project) if project else None
+    if route is None:
+        global_execution = policy.get("incidentExecution")
+        if global_execution is None:
+            raise ValidationError("Agent Herder incident execution is not configured")
+        if not isinstance(global_execution, Mapping):
+            raise ValidationError("Agent Herder incident execution is invalid")
+        runtime = str(global_execution.get("runtime") or "").strip().lower()
+        provider = str(global_execution.get("provider") or "").strip()
+        model = str(global_execution.get("model") or "").strip()
+        if provider and model and not model.startswith(provider + "/"):
+            model = provider + "/" + model
+        if not runtime or not provider or not model or len(model) > 128 or any(c.isspace() for c in model):
+            raise ValidationError("Agent Herder incident execution has no valid model")
+        return (health_execution_profile(runtime, model, topic=str(global_execution.get("topic") or "health"), reasoning=str(global_execution.get("reasoning") or "")),)
+    if not isinstance(route, Mapping):
+        raise ValidationError("Agent Herder project route has no model")
+    harnesses = route.get("harnesses") or route.get("fallbackHarnesses") or []
+    runtime = str(route.get("runtime") or route.get("harness") or (harnesses[0] if isinstance(harnesses, list) and harnesses else HEALTH_LAUNCH_HARNESS)).strip().lower()
+    models = route.get("models") if isinstance(route.get("models"), Mapping) else {}
     global_models = policy.get("models") if isinstance(policy.get("models"), Mapping) else {}
-    for harness in raw_harnesses if isinstance(raw_harnesses, list) else []:
-        name = _bounded_text(harness, 32).lower()
-        # A project without its own model inherits the incident-purpose pin,
-        # not the ordinary harness default (which may name an older combo).
-        # Explicit project models still have to match the approved incident route.
-        implicit_model = (
-            f"{HEALTH_EXECUTION_PROFILE['provider']}/{HEALTH_EXECUTION_PROFILE['model']}"
-            if name == HEALTH_LAUNCH_HARNESS else global_models.get(name)
-        )
-        model = _bounded_text(models.get(name) or implicit_model, 256)
-        if name and model:
-            selected = health_execution_profile(name, model)
-            if selected != HEALTH_EXECUTION_PROFILE:
-                raise ValidationError("Agent Herder projectRoute conflicts with NoticePlace's pinned OpenCode direct MiniMax subscription")
-            return (selected,)
-    return (dict(HEALTH_EXECUTION_PROFILE),)
+    model = str(route.get("model") or models.get(runtime) or global_models.get(runtime) or "").strip()
+    provider = str(route.get("provider") or "").strip()
+    if provider and model and not model.startswith(provider + "/"):
+        model = provider + "/" + model
+    if not runtime or not model or len(model) > 128 or any(c.isspace() for c in model):
+        raise ValidationError("Agent Herder project route has no valid model")
+    return (health_execution_profile(runtime, model, topic=str(route.get("topic") or "health"), reasoning=str(route.get("reasoning") or "")),)
 
 
 def normalize_health_execution(value: Any, routes: tuple[dict[str, str], ...] | None = None) -> dict[str, str]:
     """Accept the pinned combo route and its configured project route only."""
     allowed = [dict(route) for route in (routes if routes is not None else (HEALTH_EXECUTION_PROFILE,))]
     if value is None:
-        return dict(HEALTH_EXECUTION_PROFILE)
+        return {}
     if not isinstance(value, Mapping):
         raise ValidationError("health execution profile must be an object")
 
@@ -300,7 +269,7 @@ def bounded_health_execution(value: Any) -> dict[str, str]:
     the Agent Herder launch policy. Launch itself still refuses any route the
     project does not declare.
     """
-    if value is None:
+    if value is None or value == {}:
         return {}
     if not isinstance(value, Mapping):
         raise ValidationError("health execution profile must be an object")
