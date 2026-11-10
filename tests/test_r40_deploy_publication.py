@@ -1,10 +1,34 @@
 """Exercise the upgrade entrypoint against a real disposable Git remote."""
 import os
+import re
 import subprocess
 from pathlib import Path
 import pytest
 
 DEPLOY = Path(__file__).resolve().parents[1] / 'deploy' / 'noticeplace'
+TELEGRAM_ROUTE = Path(__file__).resolve().parents[1] / 'deploy' / 'notification-center-telegram-route.conf'
+
+
+def _bare_service_keys(text):
+    """Return assignment keys that systemd would reject in a Service section."""
+    service = False
+    keys = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith('[') and line.endswith(']'):
+            service = line == '[Service]'
+            continue
+        if service and line and not line.startswith('#') and '=' in line and not line.startswith(('Environment=', 'EnvironmentFile=')):
+            keys.append(line.split('=', 1)[0])
+    return tuple(keys)
+
+
+def test_telegram_route_dropin_uses_environment_directives():
+    text = TELEGRAM_ROUTE.read_text(encoding='utf-8')
+    expected = ('TELEGRAM_ACTIVE_MODES_JSON', 'TELEGRAM_AUTO_CREATE_TOPICS', 'TELEGRAM_SEVERITY_ROUTES_JSON')
+    assert _bare_service_keys(text) == ()
+    for key in expected:
+        assert re.search(rf'(?m)^Environment={re.escape(key)}=', text)
 
 def git(source, *args):
     return subprocess.check_output(['git','-C',str(source),*args], text=True, stderr=subprocess.DEVNULL).strip()

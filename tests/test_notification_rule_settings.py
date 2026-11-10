@@ -3,13 +3,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from notification_center.core import NotificationCenter, ValidationError
+from notification_center.core import NotificationCenter, ValidationError, notification_rule_projection, notification_rule_source_key
 from notification_center.incident_card import controls
 
 
 class _Codec:
     def encode(self, action, incident_id):
         return f"n:{action}:{incident_id}"
+
+
+class _CountingConnection:
+    def __init__(self, connection):
+        self.connection = connection
+        self.execute_count = 0
+
+    def execute(self, *args, **kwargs):
+        self.execute_count += 1
+        return self.connection.execute(*args, **kwargs)
 
 
 class NotificationRuleSettingsTests(unittest.TestCase):
@@ -34,6 +44,39 @@ class NotificationRuleSettingsTests(unittest.TestCase):
             "event_type": "monitor.signal", "agent_job": "diagnostic",
         }
         return self.center.create_event("test-token", f"synthetic-{self.counter}", payload)
+
+    def test_notification_rule_projection_is_pure_and_scopes_source_override(self):
+        incident = {
+            "id": "inc_fixture",
+            "project": "fleet-health",
+            "recipient": "test-only",
+            "dedup_key": "monitor:cpu",
+            "collapse_key": "telegram-family:cpu",
+            "notifications_muted": 0,
+        }
+        mute = {
+            "auto_ai_by_source": '{"' + notification_rule_source_key("host:one", "monitor:cpu") + '": false}',
+            "revision": 7,
+        }
+        result = notification_rule_projection(
+            incident, mute, "host:one", rule_key="telegram-family:cpu", match_mode="exact",
+        )
+        self.assertEqual(False, result["auto_ai_enabled"])
+        self.assertEqual("telegram-family:cpu", result["dedup_key"])
+        self.assertEqual("monitor:cpu", result["ai_dedup_key"])
+        self.assertEqual(7, result["revision"])
+
+    def test_notification_rule_read_uses_one_mesh_round_trip(self):
+        first = self.event()
+        original = self.center._connection
+        counted = _CountingConnection(original)
+        self.center._connection = counted
+        try:
+            result = self.center.notification_rule_settings(first["incident_id"])
+        finally:
+            self.center._connection = original
+        self.assertTrue(result["notifications_enabled"])
+        self.assertEqual(1, counted.execute_count)
 
     def test_independent_scoped_rules_and_revision_cas(self):
         first = self.event()

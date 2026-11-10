@@ -42,6 +42,55 @@ def _is_session_notice(delivery: Mapping[str, Any]) -> bool:
     return isinstance(target, dict) and any(isinstance(target.get(key), dict) for key in ("health_session", "health_outcome"))
 
 
+def notification_rule_source_key(source_id: Any, reason: Any) -> str:
+    """Return the opaque source-specific key used by notification rules."""
+    identity = [str(source_id or ""), str(reason or "")]
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def notification_rule_projection(
+    incident: Mapping[str, Any],
+    mute: Mapping[str, Any] | None,
+    source_id: str,
+    *,
+    rule_key: str | None = None,
+    match_mode: str = "exact",
+    revision: int | None = None,
+    notifications_enabled: bool | None = None,
+) -> dict[str, Any]:
+    """Project one rule read from bounded rows without performing I/O."""
+    incident_id = str(incident.get("id") or "")
+    project = str(incident.get("project") or "")
+    recipient = str(incident.get("recipient") or "")
+    reason = str(incident.get("dedup_key") or "")
+    options: dict[str, Any] = {}
+    if mute is not None:
+        raw_options = mute.get("auto_ai_by_source") or "{}"
+        try:
+            parsed = json.loads(raw_options)
+        except (TypeError, ValueError) as error:
+            raise ValidationError("invalid existing auto AI rule") from error
+        if not isinstance(parsed, dict):
+            raise ValidationError("invalid existing auto AI rule")
+        options = parsed
+    return {
+        "incident_id": incident_id,
+        "project": project,
+        "recipient": recipient,
+        "dedup_key": str(rule_key or incident.get("collapse_key") or reason),
+        "match_mode": str(match_mode),
+        "ai_dedup_key": reason,
+        "source_id": str(source_id or "")[:256],
+        "notifications_enabled": (
+            bool(notifications_enabled)
+            if notifications_enabled is not None
+            else not bool(incident.get("notifications_muted"))
+        ),
+        "auto_ai_enabled": options.get(notification_rule_source_key(source_id, reason), True) is not False,
+        "revision": int(revision if revision is not None else (mute.get("revision") or 0) if mute is not None else 0),
+    }
+
+
 DEFAULT_CONSUMER_QUIET_HOURS = (
     {"start": "01:00", "end": "09:00", "timezone": "Europe/Moscow", "suppress": ["call"]},
 )
@@ -5665,8 +5714,7 @@ class NotificationCenter:
         source_id, reason = str(event.get("source_id") or ""), str(row["dedup_key"])
         # An opaque key prevents arbitrary delimiters or lookalike source names
         # from changing the exact-match boundary.
-        key = hashlib.sha256(json.dumps([source_id, reason], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-        return source_id, reason, key
+        return source_id, reason, notification_rule_source_key(source_id, reason)
 
     def _notification_rule_auto_ai_enabled(
         self, incident_id: str, event: Mapping[str, Any] | None = None,
@@ -5689,29 +5737,59 @@ class NotificationCenter:
     def notification_rule_settings(self, incident_id: str) -> dict[str, Any]:
         """Read one existing mute scope and its independent AI-autostart flag."""
         with self._lock:
-            scope = self._incident_rule_scope(incident_id)
-            incident = self.get_incident(incident_id)
+            row = self._connection.execute(
+                "SELECT i.id, i.project, i.recipient, i.dedup_key, i.collapse_key, "
+                "e.payload_json AS source_payload, "
+                "(SELECT json_group_array(json_object('dedup_key', m.dedup_key, "
+                "'revision', m.revision, 'auto_ai_by_source', m.auto_ai_by_source, "
+                "'unmuted_at', m.unmuted_at, 'match_mode', m.match_mode)) "
+                "FROM notification_mutes m WHERE m.project=i.project AND m.recipient=i.recipient) AS mute_rows "
+                "FROM incidents i "
+                "LEFT JOIN events e ON e.event_id=(SELECT first.event_id FROM events first "
+                "WHERE first.incident_id=i.id ORDER BY first.created_at, first.rowid LIMIT 1) "
+                "WHERE i.id = ?", (incident_id,),
+            ).fetchone()
+            if row is None:
+                raise ValidationError("incident not found")
+            incident = dict(row)
+            mute_rows_raw = incident.pop("mute_rows") or "[]"
+            try:
+                mute_rows = json.loads(mute_rows_raw)
+            except (TypeError, ValueError):
+                mute_rows = []
+            if not isinstance(mute_rows, list):
+                mute_rows = []
+            mutes = [item for item in mute_rows if isinstance(item, dict)]
             mute_key, match_mode = self._notification_mute_rule(incident)
-            # The form contains two controls: the notification family and the
-            # original per-source AI choice. Count every relevant row once.
-            # +1 distinguishes an absent row from its first revision (zero).
-            keys = sorted({scope[2], mute_key, str(incident["dedup_key"])})
-            rows = self._connection.execute(
-                "SELECT revision FROM notification_mutes WHERE project=? AND recipient=? "
-                "AND dedup_key IN (" + ",".join("?" for _ in keys) + ")",
-                (scope[0], scope[1], *keys),
-            ).fetchall()
-            rule_muted = (self._notification_scope_muted(scope[0], scope[1], mute_key)
-                          if match_mode == "prefix" else bool(incident["notifications_muted"]))
-            source_id, reason, _ = self._ai_source_identity(incident_id)
-            return {
-                "incident_id": incident_id, "project": scope[0], "recipient": scope[1],
-                "dedup_key": mute_key, "match_mode": match_mode, "ai_dedup_key": reason,
-                "source_id": source_id[:256],
-                "notifications_enabled": not rule_muted,
-                "auto_ai_enabled": self._notification_rule_auto_ai_enabled(incident_id),
-                "revision": sum(int(row["revision"]) + 1 for row in rows),
-            }
+            scope_key = str(incident.get("collapse_key") or incident["dedup_key"])
+            dedup_key = str(incident["dedup_key"])
+            keys = {scope_key, mute_key, dedup_key}
+            revision = sum(int(item.get("revision") or 0) + 1 for item in mutes if str(item.get("dedup_key") or "") in keys)
+            active = [item for item in mutes if item.get("unmuted_at") is None]
+            if match_mode == "prefix":
+                rule_muted = any(str(item.get("dedup_key") or "") == mute_key for item in active)
+            else:
+                exact_keys = {str(incident.get("collapse_key") or dedup_key), dedup_key}
+                prefixes = [str(item.get("dedup_key") or "") for item in active if item.get("match_mode") == "prefix"]
+                rule_muted = any(str(item.get("dedup_key") or "") in exact_keys for item in active)
+                rule_muted = rule_muted or any(
+                    key.startswith(prefix) for key in exact_keys for prefix in prefixes
+                )
+            try:
+                source_event = json.loads(incident.pop("source_payload") or "{}")
+            except (TypeError, ValueError):
+                source_event = {}
+            source_id = str(source_event.get("source_id") or "") if isinstance(source_event, Mapping) else ""
+            scope_mute = next((item for item in mutes if str(item.get("dedup_key") or "") == scope_key), None)
+            return notification_rule_projection(
+                incident,
+                scope_mute,
+                source_id,
+                rule_key=mute_key,
+                match_mode=match_mode,
+                revision=revision,
+                notifications_enabled=not rule_muted,
+            )
 
     def set_notification_rule_option(
         self, incident_id: str, option: str, enabled: bool, expected_revision: int, actor: str,
