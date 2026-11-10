@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from notification_center.core import NotificationCenter, ValidationError
+import notification_center.core as core_module
 from notification_center.http_api import DeliveryWorker, TelegramSender
 from notification_center.telegram_interactions import TelegramActionCodec, TelegramInteractionPoller
 
@@ -47,6 +48,26 @@ class HealthWorkflowTests(unittest.TestCase):
         incident = self.center.get_incident(self.created["incident_id"])
         assert incident is not None
         return incident
+
+    def test_health_payload_versions_match_packaged_artifact_version(self) -> None:
+        expected = (Path(__file__).resolve().parents[1] / "VERSION").read_text(encoding="utf-8").strip()
+        self.assertEqual(expected, self.center.service_health()["version"])
+        self.assertEqual(expected, self.center.health()["version"])
+
+    def test_artifact_version_is_unknown_when_release_metadata_is_missing_or_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            package = root / "notification_center"
+            package.mkdir()
+            module_file = package / "core.py"
+            module_file.touch()
+            with patch.object(core_module, "__file__", str(module_file)):
+                self.assertEqual("unknown", core_module._artifact_version())
+                (root / "VERSION").write_text("unknown\n", encoding="utf-8")
+                self.assertEqual("unknown", core_module._artifact_version())
+        with patch.object(core_module, "_ARTIFACT_VERSION", "unknown"):
+            self.assertEqual("unknown", self.center.service_health()["version"])
+            self.assertEqual("unknown", self.center.health()["version"])
 
     def _emergency_incident(self, key: str) -> dict[str, object]:
         # These delivery-specific tests intentionally opt the isolated fixture

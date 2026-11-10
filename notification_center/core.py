@@ -112,6 +112,19 @@ _HEALTH_REPAIR_FIRST_PLAN_IDS = frozenset({"observe", "repair", "verify"})
 _HUMAN_REQUEST_CHOICE_LABEL_MAX = 80
 _TASK_DECISION_CHOICE_LABEL_MAX = 256
 
+def _artifact_version() -> str:
+    """Read the immutable release version adjacent to this source module."""
+    try:
+        version = (Path(__file__).resolve().parents[1] / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "unknown"
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        return "unknown"
+    return version
+
+
+_ARTIFACT_VERSION = _artifact_version()
+
 
 class NotificationCenterError(Exception):
     """Base error raised by the notification-center domain layer."""
@@ -6349,7 +6362,7 @@ class NotificationCenter:
             'sending_deliveries': counts.get('sending', 0) if storage_ready else None,
             'uncertain_deliveries': counts.get('uncertain', 0) if storage_ready else None,
             'reconciliation_required': None, 'reconciliation_status': 'not_evaluated',
-            'version': '0.1.0',
+            'version': _ARTIFACT_VERSION,
         }
 
     def health(self) -> dict[str, Any]:
@@ -6477,7 +6490,7 @@ class NotificationCenter:
             "sending_deliveries": sending,
             "uncertain_deliveries": uncertain,
             "reconciliation_required": reconciliation_required,
-            "version": "0.1.0",
+            "version": _ARTIFACT_VERSION,
         }
 
     @staticmethod
