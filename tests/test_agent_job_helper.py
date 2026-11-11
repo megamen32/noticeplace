@@ -154,6 +154,17 @@ class AgentJobHelperTests(unittest.TestCase):
             {'url': 'http://127.0.0.1:18787/api/sessions/new-or-resume'}, runner)
         self.assertEqual(['GET'], calls)
 
+    def test_owner_preflight_attaches_bearer_to_the_disarm_read(self) -> None:
+        from notification_center.agent_job_helper import _herder_authorized_headers
+
+        with mock.patch("notification_center.agent_job_helper._herder_http_token", return_value="fixture-herder-token"):
+            headers = _herder_authorized_headers(
+                "http://127.0.0.1:18787/api/settings/automation/disarm",
+                {"Accept": "application/json"},
+            )
+
+        self.assertEqual("Bearer fixture-herder-token", headers["Authorization"])
+
     def test_project_launch_owner_stop_blocks_before_post(self) -> None:
         requests: list[object] = []
         def runner(request: object, **_kwargs: object) -> _Response:

@@ -23,7 +23,12 @@ _RESPONSE_LIMIT = 64 * 1024
 _SESSION_DETAILS_LIMIT = 1024 * 1024
 _HEALTH_CALLBACK_DEFAULT = "/home/roomhacker/.config/gptadmin/health-callback.json"
 _HERDER_SECRETS_PATH = Path("/home/roomhacker/.config/agent-herder/secrets.json")
-_HERDER_AUTH_PATHS = frozenset({"/mcp", "/internal/human-requests/ask-user-completion", "/api/automation/launch-policy"})
+_HERDER_AUTH_PATHS = frozenset({
+    "/mcp",
+    "/internal/human-requests/ask-user-completion",
+    "/api/automation/launch-policy",
+    "/api/settings/automation/disarm",
+})
 _HEALTH_JOB_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
 _HEALTH_STAGE_IDS = {"health-diagnosis", "health-orchestrator", "health-remediation"}
 _REPAIR_FIRST_JOB_IDS = {"health-diagnosis", "health-orchestrator"}
