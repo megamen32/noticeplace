@@ -227,6 +227,12 @@ class NotificationCenter:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
+        # Test runs create many disposable SQLite databases.  WAL with NORMAL
+        # synchronous mode keeps those fixtures durable enough for a process
+        # crash while avoiding an fsync for every schema statement.  The
+        # production default remains FULL unless the test harness opts in.
+        if os.environ.get("NOTICEPLACE_TEST_FAST_DB") == "1":
+            self._connection.execute("PRAGMA synchronous=NORMAL")
         self._lock = threading.RLock()
         self._tokens = {str(key): dict(value) for key, value in tokens.items()}
         # No verifier is installed by default. Task-decision creation remains
@@ -947,8 +953,13 @@ class NotificationCenter:
             if not all(str(source_event.get(key) or "").strip() == recovery_identity[key] for key in keys):
                 return False
             lifecycle = self.incident_lifecycle(incident_id)
-            if lifecycle and lifecycle.get('request_id'):
-                return False  # opted-in completion requires the current check receipt
+            if lifecycle and lifecycle.get('request_id') and lifecycle.get('attempt_id'):
+                return False  # executor completion requires the current check receipt
+            # A typed source may close its own episode directly when no
+            # executor attempt was ever admitted.  The server still requires
+            # a newer source observation below; the request created by
+            # observe_degraded remains available for verifiers that use the
+            # check-result route instead.
             observed, latest = event.get('observed_at'), source_event.get('observed_at')
             if lifecycle and lifecycle.get('latest_observed_at') is not None:
                 latest = lifecycle['latest_observed_at']

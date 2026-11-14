@@ -325,16 +325,26 @@ def observe_degraded(center, token, incident_id, event):
         if any(group[k] != original[k] for k in group):
             raise ValidationError('health episode source identity cannot change')
         bind_source(center, token, prior)
-    pending_nonce = 'check_' + uuid.uuid4().hex if prior and prior['attempt_id'] else None
+    # A source-owned health episode needs an independent check even when no
+    # executor attempt was admitted.  Without a request, a recovered source
+    # has no legal path to close its own episode and the card stays open
+    # forever.  The request is a server-issued nonce; it does not assert that
+    # the source is healthy and it never fabricates an executor attempt.
+    pending_nonce = 'check_' + uuid.uuid4().hex
+    now = time.time()
     center._connection.execute('''INSERT INTO incident_lifecycle
-      (incident_id,generation,source_principal,metadata_json,group_key,source_id,latest_observed_at) VALUES (?,1,?,?,?,?,?)
+      (incident_id,generation,source_principal,metadata_json,group_key,source_id,latest_observed_at,
+       verification_state,request_id,verification_due,verification_requested_at,verification_deadline)
+      VALUES (?,1,?,?,?,?,?,'due',?,?,?,?)
       ON CONFLICT(incident_id) DO UPDATE SET generation=generation+1,
-      metadata_json=excluded.metadata_json, group_key=excluded.group_key, latest_observed_at=CASE WHEN latest_observed_at IS NULL OR excluded.latest_observed_at > latest_observed_at THEN excluded.latest_observed_at ELSE latest_observed_at END, verification_state=CASE WHEN attempt_id IS NOT NULL THEN 'due' ELSE verification_state END, request_id=CASE WHEN attempt_id IS NOT NULL THEN ? ELSE request_id END, verification_due=CASE WHEN attempt_id IS NOT NULL THEN ? ELSE verification_due END''',
-      (incident_id,principal(center,token),json.dumps(group,sort_keys=True),group_key(group),group['source_id'],observed,pending_nonce,time.time()))
-    if pending_nonce:
-        now = time.time()
-        center._connection.execute('''UPDATE incident_lifecycle SET verification_requested_at=?,
-          verification_deadline=? WHERE incident_id=?''', (now, now + VERIFICATION_TTL_SECONDS, incident_id))
+      metadata_json=excluded.metadata_json, group_key=excluded.group_key,
+      latest_observed_at=CASE WHEN latest_observed_at IS NULL OR excluded.latest_observed_at > latest_observed_at
+        THEN excluded.latest_observed_at ELSE latest_observed_at END,
+      verification_state='due', request_id=?, verification_due=?,
+      verification_requested_at=?, verification_deadline=?''',
+      (incident_id,principal(center,token),json.dumps(group,sort_keys=True),group_key(group),
+       group['source_id'],observed,pending_nonce,now,now,now + VERIFICATION_TTL_SECONDS,
+       pending_nonce,now,now,now + VERIFICATION_TTL_SECONDS))
 
 
 def view(center, incident_id):
@@ -639,7 +649,11 @@ def _accept_check(center, token, incident_id, key, body, row, encoded):
             continuation = json.loads(shared['continuation_json'])
     if state == 'degraded' and continuation_can_retarget(center, continuation, incident_id):
         continuation = None
-    if state == 'degraded' and not continuation:
+    # A source check can be degraded before any executor attempt exists.  It
+    # must keep the episode open, but it must not manufacture a continuation
+    # with null session/attempt fields or schedule a repair delivery that has
+    # no admitted executor operation behind it.
+    if state == 'degraded' and not continuation and all(row[f] for f in ('attempt_id', 'session_id', 'harness')):
         continuation = {f:row[f] for f in ('session_id','harness','attempt_id','request_id','generation')}
         continuation['incident_id'] = incident_id
         continuation['evidence_refs'] = center._health_value(body['evidence_refs'])
@@ -650,7 +664,7 @@ def _accept_check(center, token, incident_id, key, body, row, encoded):
             'source-check:' + row['attempt_id'], time.time(), target)
         if row['completion_id']:
             center._connection.execute('UPDATE incident_group_completions SET continuation_json=? WHERE id=?', (json.dumps(continuation,sort_keys=True),row['completion_id']))
-    if state == 'degraded':
+    if state == 'degraded' and continuation:
         result['continuation'] = {k:v for k,v in continuation.items() if k != 'delivery_id'}
         result['continuation_delivery_id'] = continuation.get('delivery_id')
     if state == 'healthy':

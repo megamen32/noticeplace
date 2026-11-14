@@ -153,7 +153,8 @@ class LifecycleTests(unittest.TestCase):
         result = self.center.record_work_finished('agent', latest, 'latest-finish',
             dict(attempt_id='latest-delivery', session_id='session', harness='codex'))
         due = self.center.due_source_checks('source', 'test', 'probe')
-        self.assertEqual({self.inc, latest}, {row['incident_id'] for row in due})
+        self.assertEqual({self.inc, latest, unrelated, otherhost, historical},
+                         {row['incident_id'] for row in due})
         latest_request = next(row for row in due if row['incident_id'] == latest)
         self.center.record_source_check('source', latest, 'healthy-latest',
             dict(request_id=latest_request['request_id'], generation=latest_request['generation'],
@@ -162,8 +163,9 @@ class LifecycleTests(unittest.TestCase):
         old_request = next(row for row in due if row['incident_id'] == self.inc)
         self.check(old_request)
         self.assertEqual('resolved', self.center.get_incident(self.inc)['state'])
-        for incident in (unrelated, otherhost, historical, otherconsumer):
-            self.assertIsNone(self.center.get_incident(incident)['lifecycle']['verification_due'])
+        for incident in (unrelated, otherhost, historical):
+            self.assertIsNotNone(self.center.get_incident(incident)['lifecycle']['verification_due'])
+        self.assertIsNotNone(self.center.get_incident(otherconsumer)['lifecycle']['verification_due'])
         self.assertEqual(result, self.center.record_work_finished('agent', latest, 'latest-finish',
             dict(attempt_id='latest-delivery', session_id='session', harness='codex')))
 
@@ -195,7 +197,8 @@ class LifecycleTests(unittest.TestCase):
         latest = self.shared_episode('latest')
         self.center.record_work_finished('agent', latest, 'latest-finish',
             dict(attempt_id='latest-delivery', session_id='session', harness='codex'))
-        self.assertEqual([latest], [r['incident_id'] for r in self.center.due_source_checks('source','test','probe')])
+        self.assertEqual({self.inc, other_session, latest},
+                         {r['incident_id'] for r in self.center.due_source_checks('source','test','probe')})
         requests = self.center.due_source_checks('other-source','test','probe')
         self.assertEqual([sibling], [r['incident_id'] for r in requests])
         row = requests[0]
@@ -204,7 +207,7 @@ class LifecycleTests(unittest.TestCase):
             self.center.record_source_check('source', sibling, 'forged-source', body)
         self.center.record_source_check('other-source', sibling, 'own-source', body)
         self.assertEqual('resolved', self.center.get_incident(sibling)['state'])
-        self.assertIsNone(self.center.get_incident(other_session)['lifecycle']['verification_due'])
+        self.assertIsNotNone(self.center.get_incident(other_session)['lifecycle']['verification_due'])
 
     def test_older_degraded_latest_healthy_retains_one_durable_group_authority(self):
         self.center.record_health_agent_session(self.inc, 'native:first', '', 'codex', 'session',
@@ -259,7 +262,9 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(IdempotencyConflict):
             self.center.record_work_finished('agent', latest, 'conflicting-finish',
                 dict(attempt_id='shared-attempt', session_id='session', harness='codex', evidence_refs=['different']))
-        self.assertIsNone(self.center.get_incident(latest)['lifecycle']['verification_due'])
+        latest_lifecycle = self.center.get_incident(latest)['lifecycle']
+        self.assertEqual('due', latest_lifecycle['verification_state'])
+        self.assertIsNone(latest_lifecycle['attempt_id'])
 
     def cancelled_shared_authority(self):
         self.center.record_health_agent_session(self.inc, 'native:first', '', 'codex', 'session',
@@ -360,6 +365,32 @@ class LifecycleTests(unittest.TestCase):
     def test_legacy_unambiguous_periodic_recovery_remains_supported(self):
         recovery={**self.event,'action':'resolve','event_type':'health.recovered','observed_at':200}
         self.assertTrue(self.center.resolve_event('source','recovery',recovery)['resolved'])
+
+    def test_source_owned_episode_without_attempt_gets_due_request(self):
+        life = self.center.get_incident(self.inc)['lifecycle']
+        self.assertIsNone(life['attempt_id'])
+        self.assertEqual('due', life['verification_state'])
+        request = self.center.due_source_checks('source', 'test', 'probe')
+        self.assertEqual([self.inc], [row['incident_id'] for row in request])
+        self.center.record_source_check(
+            'source', self.inc, 'source-owned-healthy',
+            dict(request_id=request[0]['request_id'], generation=request[0]['generation'],
+                 observed_state='healthy', evidence_refs=['fresh source sample']),
+        )
+        self.assertEqual('resolved', self.center.get_incident(self.inc)['state'])
+
+    def test_source_owned_degraded_check_does_not_fabricate_executor_attempt(self):
+        request = self.center.due_source_checks('source', 'test', 'probe')[0]
+        result = self.center.record_source_check(
+            'source', self.inc, 'source-owned-degraded',
+            dict(request_id=request['request_id'], generation=request['generation'],
+                 observed_state='degraded', evidence_refs=['fresh source failure']),
+        )
+        self.assertNotIn('continuation', result)
+        self.assertEqual('open', self.center.get_incident(self.inc)['state'])
+        self.assertEqual(0, self.center._connection.execute(
+            "SELECT COUNT(*) FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'"
+        ).fetchone()[0])
 
     def test_ambiguous_legacy_without_clock_is_unverified(self):
         event={k:v for k,v in self.event.items() if k!='observed_at'}
