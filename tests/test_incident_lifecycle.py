@@ -694,6 +694,40 @@ class LifecycleTests(unittest.TestCase):
                 'executor-autotelegramviews', 'autotelegramviews', 'views-coverage-watchdog',
             )
 
+    def test_consumer_verifier_can_resolve_legacy_source_recovery_event(self):
+        """The exact consumer grant also covers the typed recovery path."""
+        consumer = self.consumer('autotelegramviews')
+        event = {
+            **self.event,
+            'project': 'autotelegramviews',
+            'recipient': 'me',
+            'dedup_key': 'views-coverage/legacy-source-recovery',
+            'source_id': 'views-coverage-watchdog',
+            'signal_type': 'views-coverage',
+            'correlation_id': 'legacy-source-recovery',
+        }
+        incident = self.center.create_event(
+            consumer['intake_token'], 'legacy-source-recovery-event', event,
+        )['incident_id']
+        self.center._tokens['legacy-consumer-verifier'] = {
+            'project': 'autotelegramviews', 'max_severity': 'critical',
+            'incident_role': 'verifier', 'principal_id': 'source:views-coverage-watchdog',
+            'verification_sources': ['views-coverage-watchdog'],
+            'verification_consumer_ids': [consumer['id']],
+        }
+        recovery = {
+            **event,
+            'action': 'resolve',
+            'event_type': 'health.recovered',
+            'observed_at': 200,
+            'verification_id': 'legacy-source-recovery-healthy',
+        }
+        result = self.center.resolve_event(
+            'legacy-consumer-verifier', 'legacy-source-recovery-resolve', recovery,
+        )
+        self.assertTrue(result['resolved'])
+        self.assertEqual('resolved', self.center.get_incident(incident)['state'])
+
     def test_foreign_or_executor_or_ambiguous_consumer_grants_are_ignored(self):
         consumer=self.consumer()
         token=consumer['intake_token']

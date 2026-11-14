@@ -2734,7 +2734,7 @@ class NotificationCenter:
                     from .incident_lifecycle import principal
                     source_row = self._connection.execute('SELECT * FROM incident_lifecycle WHERE incident_id=?',(incident_id,)).fetchone()
                     from .incident_lifecycle import bind_source
-                    bind_source(self, token, source_row)
+                    bind_source(self, token, source_row, allow_legacy_consumer_verifier=True)
                     if principal(self,token) == source_row['executor_principal']:
                         raise AuthorizationError('recovery requires the original source principal')
                     if not source_matches:
