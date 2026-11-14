@@ -1,22 +1,29 @@
+"""The health model is a Herder-owned intent, not a NoticePlace default."""
+
 import unittest
-from notification_center.incident_model_policy import default_incident_model, normalize_incident_model, read_incident_model
+
 from notification_center.health_workflow import HEALTH_EXECUTION_PROFILE, health_launch_execution
+from notification_center.incident_model_policy import DEFAULT_INCIDENT_MODEL, PROJECT_ROUTE_INTENT, normalize_incident_model
 
-ROUTE = 'minimax-coding-plan/MiniMax-M3.1-Flash'
-OLD = 'omniroute/glm-5.3-flash-minimax-m3.1'
 
-class Settings:
-    def __init__(self, value): self.value = value
-    def get_runtime_setting(self, key): return self.value
+class HerderOwnedModelTest(unittest.TestCase):
+    def test_noticeplace_has_no_local_default_and_launches_project_route_intent(self):
+        self.assertEqual("", DEFAULT_INCIDENT_MODEL)
+        self.assertEqual("", HEALTH_EXECUTION_PROFILE["provider"])
+        self.assertEqual("", HEALTH_EXECUTION_PROFILE["model"])
+        self.assertEqual(
+            {"runtime": "opencode", "provider": "herder", "model": "project-route", "reasoning": "default", "topic": "health"},
+            health_launch_execution(PROJECT_ROUTE_INTENT),
+        )
 
-class DirectMiniMaxTest(unittest.TestCase):
-    def test_direct_default_and_profile(self):
-        self.assertEqual(default_incident_model(), ROUTE)
-        self.assertEqual(normalize_incident_model(ROUTE), ROUTE)
-        self.assertEqual(health_launch_execution(ROUTE), HEALTH_EXECUTION_PROFILE)
-    def test_only_future_setting_migrates_and_snapshots_fail_closed(self):
-        stored = Settings(OLD)
-        self.assertEqual(read_incident_model(stored), ROUTE)
-        self.assertEqual(stored.value, OLD)
-        for route in (OLD, 'auto/minimax', 'minimax-coding-plan/other'):
-            with self.subTest(route=route), self.assertRaises(ValueError): normalize_incident_model(route)
+    def test_route_validation_is_syntactic_and_never_selects_a_fallback(self):
+        for route in ("provider/model", "vendor/model/variant"):
+            with self.subTest(route=route):
+                self.assertEqual(route, normalize_incident_model(route))
+        for route in ("", "malformed", "provider/model\nforbidden", "x" * 257):
+            with self.subTest(route=route), self.assertRaises(ValueError):
+                normalize_incident_model(route)
+
+
+if __name__ == "__main__":
+    unittest.main()
