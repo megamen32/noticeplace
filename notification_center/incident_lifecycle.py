@@ -406,13 +406,18 @@ def verifier(center, token, incident_id):
     incident = center._connection.execute(
         'SELECT consumer_id FROM incidents WHERE id=?', (incident_id,),
     ).fetchone()
-    # An explicit server-owned verifier grant for one consumer/source covers
-    # every producer identity of that same consumer: the current
-    # consumer:<id> principal and pre-migration credential:<sha256> rows. The
-    # incident's own consumer binding is authoritative; this never inherits
-    # another consumer or lets an executor verify its own work.
+    lifecycle_group = json.loads(row['metadata_json'])
+    # Built-in delivery profiles are projection routes, not verifier
+    # identities.  The lifecycle migration pins their canonical consumer
+    # alias in metadata_json; use that reviewed identity for the grant.
+    consumer_id = str(lifecycle_group.get('consumer_id') or (incident['consumer_id'] if incident else '') or '')
+    # An explicit server-owned verifier grant for one canonical consumer/source
+    # covers every producer identity of that same group: the current
+    # consumer:<id> principal and pre-migration credential:<sha256> rows. A
+    # built-in delivery profile cannot widen this exact group, and an executor
+    # still cannot verify its own work.
     if not verification_identity_allowed(scope, authenticated, row['source_principal'],
-            row['executor_principal'], source, incident['consumer_id'] if incident else None):
+            row['executor_principal'], source, consumer_id):
         raise AuthorizationError('source verification requires a registered independent source principal')
     return row
 

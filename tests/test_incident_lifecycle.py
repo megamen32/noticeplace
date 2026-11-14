@@ -728,6 +728,53 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(result['resolved'])
         self.assertEqual('resolved', self.center.get_incident(incident)['state'])
 
+    def test_consumer_verifier_uses_canonical_group_for_builtin_legacy_recovery(self):
+        """A built-in delivery profile must not hide the reviewed legacy group."""
+        event = {
+            **self.event,
+            'project': 'autotelegramviews',
+            'recipient': 'me',
+            'severity': 'important',
+            'dedup_key': 'views-coverage/builtin-profile-recovery',
+            'source_id': 'views-coverage-watchdog',
+            'signal_type': 'views-coverage',
+            'correlation_id': 'builtin-profile-recovery',
+        }
+        self.center._tokens['legacy-intake'] = {
+            'project': 'autotelegramviews', 'max_severity': 'important',
+            'principal_id': 'credential:legacy-intake',
+        }
+        incident = self.center.create_event(
+            'legacy-intake', 'builtin-profile-recovery-event', event,
+        )['incident_id']
+        self.assertEqual(
+            'profile_important',
+            self.center._connection.execute(
+                'SELECT consumer_id FROM incidents WHERE id=?', (incident,),
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            'autotelegramviews+views-coverage-watchdog',
+            self.center.get_incident(incident)['lifecycle']['group']['consumer_id'],
+        )
+        self.center._tokens['legacy-consumer-verifier'] = {
+            'project': 'autotelegramviews', 'max_severity': 'critical',
+            'incident_role': 'verifier', 'principal_id': 'source:views-coverage-watchdog',
+            'verification_sources': ['views-coverage-watchdog'],
+            'verification_consumer_ids': ['autotelegramviews+views-coverage-watchdog'],
+        }
+        result = self.center.resolve_event(
+            'legacy-consumer-verifier', 'builtin-profile-recovery-resolve', {
+                **event,
+                'action': 'resolve',
+                'event_type': 'health.recovered',
+                'observed_at': 200,
+                'verification_id': 'builtin-profile-recovery-healthy',
+            },
+        )
+        self.assertTrue(result['resolved'])
+        self.assertEqual('resolved', self.center.get_incident(incident)['state'])
+
     def test_foreign_or_executor_or_ambiguous_consumer_grants_are_ignored(self):
         consumer=self.consumer()
         token=consumer['intake_token']
