@@ -68,6 +68,50 @@ class NotificationCenterTests(unittest.TestCase):
         self.assertEqual(2, incident["occurrences"])
         self.assertEqual(1, len(self.center.claim_due_deliveries(now_epoch=10**12)))
 
+    def test_health_recovery_is_scoped_to_consumer_and_terminal_repeat_reuses_incident(self) -> None:
+        """Keep recovery and terminal health replays within one consumer episode."""
+        self.center._tokens.update({
+            "consumer-one-token": {
+                "project": "hermes", "max_severity": "emergency", "consumer_id": "consumer-one",
+            },
+            "consumer-two-token": {
+                "project": "hermes", "max_severity": "emergency", "consumer_id": "consumer-two",
+            },
+        })
+        degraded = self.event(
+            event_type="health.degraded", source_id="watchdog", host_id="server-100",
+            signal_type="gateway", correlation_id="episode-1", observed_at=1,
+            dedup_key="hermes:gateway",
+        )
+        first = self.center.create_event("consumer-one-token", "health-one", degraded)
+        second = self.center.create_event("consumer-two-token", "health-two", degraded)
+        recovery = {**degraded, "action": "resolve", "event_type": "health.recovered", "observed_at": 2,
+                    "verification_id": "source-recovery"}
+
+        resolved = self.center.resolve_event("consumer-one-token", "recover-one", recovery)
+        self.assertEqual(first["incident_id"], resolved["incident_id"])
+        self.assertEqual("resolved", self.center.get_incident(first["incident_id"])["state"])
+        self.assertEqual("open", self.center.get_incident(second["incident_id"])["state"])
+
+        terminal_replay = self.center.create_event(
+            "consumer-one-token", "health-one-after-resolve", degraded,
+        )
+        self.assertEqual(first["incident_id"], terminal_replay["incident_id"])
+        self.assertTrue(terminal_replay["deduplicated"])
+        self.assertEqual("resolved", terminal_replay["state"])
+        self.assertIsNone(terminal_replay["initial_delivery_id"])
+        self.assertIsNone(terminal_replay["agent_job_delivery_id"])
+        self.assertEqual(2, self.center._connection.execute(
+            "SELECT COUNT(*) FROM events WHERE incident_id=?", (first["incident_id"],)
+        ).fetchone()[0])
+        self.assertEqual(1, self.center._connection.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE incident_id=? AND type='incident_terminal_repeated'",
+            (first["incident_id"],),
+        ).fetchone()[0])
+        self.assertEqual(2, self.center._connection.execute(
+            "SELECT COUNT(*) FROM incidents WHERE project='hermes' AND dedup_key='hermes:gateway'",
+        ).fetchone()[0])
+
     def test_health_queries_have_bounded_lookup_indexes(self) -> None:
         indexes = {
             str(row["name"])
@@ -79,6 +123,7 @@ class NotificationCenterTests(unittest.TestCase):
             "events_incident_type_created",
             "deliveries_status",
             "deliveries_incident_channel_status",
+            "incidents_health_episode",
         }.issubset(indexes))
 
     def test_rejects_idempotency_key_reused_for_different_event(self) -> None:

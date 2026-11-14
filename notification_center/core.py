@@ -647,6 +647,10 @@ class NotificationCenter:
                 "WHERE state NOT IN ('resolved','discarded')"
             )
             self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS incidents_health_episode "
+                "ON incidents(project, recipient, IFNULL(consumer_id, ''), dedup_key, correlation_id, state, resolved_at DESC)"
+            )
+            self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS events_incident_type_created "
                 "ON events(incident_id, event_type, created_at DESC)"
             )
@@ -2452,9 +2456,18 @@ class NotificationCenter:
                     "AND IFNULL(consumer_id, '') = IFNULL(?, '') AND dedup_key = ? AND state NOT IN ('resolved','discarded')",
                     (project, recipient, consumer_id, dedup_key),
                 ).fetchone()
+            terminal = None
+            if episode_scoped and existing is None:
+                terminal = self._connection.execute(
+                    "SELECT id, state FROM incidents WHERE project = ? AND recipient = ? "
+                    "AND IFNULL(consumer_id, '') = IFNULL(?, '') AND dedup_key = ? "
+                    "AND correlation_id = ? AND state = 'resolved' "
+                    "ORDER BY resolved_at DESC, rowid DESC LIMIT 1",
+                    (project, recipient, consumer_id, dedup_key, correlation_id),
+                ).fetchone()
             deduplicated = existing is not None
             event = self._apply_source_severity(event, project, recipient)
-            if existing is None:
+            if existing is None and terminal is None:
                 incident_id = f"inc_{uuid.uuid4().hex}"
                 self._connection.execute(
                     "INSERT INTO incidents(id, project, recipient, kind, severity, title, body, operator_note, dedup_key, collapse_key, consumer_id, state, occurrences, created_at, updated_at, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, proxy_ip, forwarded_for) VALUES (" + ", ".join(["?"] * 11) + ", 'open', 1, " + ", ".join(["?"] * 12) + ")",
@@ -2463,12 +2476,23 @@ class NotificationCenter:
                 self._audit(incident_id, "incident_created", "producer", {"dedup_key": dedup_key})
                 if parent_incident_id:
                     self._audit(incident_id, "incident_child_linked", "producer", {"parent_incident_id": parent_incident_id, "parent_event_id": parent_event_id})
-            else:
+            elif existing is not None:
                 incident_id = str(existing["id"])
                 self._connection.execute("UPDATE incidents SET occurrences = occurrences + 1, title = ?, body = ?, operator_note = ?, updated_at = ? WHERE id = ?", (str(event["title"]), str(event.get("body") or ""), str(event.get("operator_note") or "").strip() or None, now, incident_id))
                 self._audit(incident_id, "incident_repeated", "producer", {"dedup_key": dedup_key})
+            else:
+                incident_id = str(terminal["id"])
+                self._connection.execute("UPDATE incidents SET occurrences = occurrences + 1 WHERE id = ?", (incident_id,))
+                self._audit(incident_id, "incident_terminal_repeated", "producer", {
+                    "dedup_key": dedup_key, "correlation_id": correlation_id,
+                })
             event_id = f"evt_{uuid.uuid4().hex}"
             self._connection.execute("INSERT INTO events(idempotency_key, event_id, incident_id, payload_json, created_at, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, proxy_ip, forwarded_for) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (idempotency_key, event_id, incident_id, payload_json, now, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, ingress.get("peer_ip"), ingress.get("source_ip"), ingress.get("proxy_ip"), ingress.get("forwarded_for")))
+            if terminal is not None:
+                ingress.update({"project": project, "profile_id": consumer_id, "severity": str(event["severity"]), "event_type": event_type, "producer": producer, "plugin": plugin, "correlation_id": correlation_id, "parent_incident_id": parent_incident_id, "parent_event_id": parent_event_id})
+                self._audit(incident_id, "event_ingress", "producer", ingress)
+                terminal_incident = self.get_incident(incident_id) or {}
+                return {"event_id": event_id, "incident_id": incident_id, "state": "resolved", "deduplicated": True, "idempotent": False, "initial_delivery_id": None, "agent_job_delivery_id": None, "notifications_muted": bool(terminal_incident.get("notifications_muted"))}
             from .incident_lifecycle import observe_degraded
             observe_degraded(self, token, incident_id, event)
             ingress.update({"project": project, "profile_id": consumer_id, "severity": str(event["severity"]), "event_type": event_type, "producer": producer, "plugin": plugin, "correlation_id": correlation_id, "parent_incident_id": parent_incident_id, "parent_event_id": parent_event_id})
@@ -2654,17 +2678,32 @@ class NotificationCenter:
             correlation_id = str(event.get("correlation_id") or "")[:256] or None
             event_type = str(event.get("event_type") or "")[:128]
             if event_type.startswith("health.") and correlation_id is not None:
-                row = self._connection.execute(
-                    "SELECT id, severity FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? "
-                    "AND correlation_id = ? AND state NOT IN ('resolved','discarded')",
-                    (project, recipient, dedup_key, correlation_id),
-                ).fetchone()
-                if row is None:
-                    conflicting = self._connection.execute(
-                        "SELECT id FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? "
-                        "AND state NOT IN ('resolved','discarded') LIMIT 1",
-                        (project, recipient, dedup_key),
+                scoped_consumer = str(resolution_scope.get("consumer_id") or "")
+                if scoped_consumer:
+                    row = self._connection.execute(
+                        "SELECT id, severity FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? "
+                        "AND IFNULL(consumer_id, '') = ? AND correlation_id = ? AND state NOT IN ('resolved','discarded')",
+                        (project, recipient, dedup_key, scoped_consumer, correlation_id),
                     ).fetchone()
+                else:
+                    row = self._connection.execute(
+                        "SELECT id, severity FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? "
+                        "AND correlation_id = ? AND state NOT IN ('resolved','discarded')",
+                        (project, recipient, dedup_key, correlation_id),
+                    ).fetchone()
+                if row is None:
+                    if scoped_consumer:
+                        conflicting = self._connection.execute(
+                            "SELECT id FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? "
+                            "AND IFNULL(consumer_id, '') = ? AND state NOT IN ('resolved','discarded') LIMIT 1",
+                            (project, recipient, dedup_key, scoped_consumer),
+                        ).fetchone()
+                    else:
+                        conflicting = self._connection.execute(
+                            "SELECT id FROM incidents WHERE project = ? AND recipient = ? AND dedup_key = ? "
+                            "AND state NOT IN ('resolved','discarded') LIMIT 1",
+                            (project, recipient, dedup_key),
+                        ).fetchone()
                     if conflicting is not None:
                         raise ValidationError("health recovery correlation_id does not match an active episode")
             else:
