@@ -1843,10 +1843,11 @@ def run_profile(
     if continuation:
         sources = source_chain(sources, [{'harness': continuation['harness'], 'sessionId': continuation['session_id']}])
     if profile_id in _HEALTH_JOB_IDS:
-        try:
-            request_body.update(source_launch_fields(profile, sources, lambda request, **options: _read_json_request(request, runner, **options)))
-        except Exception as error:
-            return _owner_blocked_receipt(HerderOwnerStateBlocked("herder_preflight_unavailable", str(error)[:200]), event, profile_id, operation_id)
+        request_body.update(source_launch_fields(
+            profile,
+            sources,
+            lambda request, **options: _read_json_request(request, runner, **options),
+        ))
     if profile_id in _HEALTH_JOB_IDS:
         # One admission call decides harness, model, and retry. Agent Herder
         # stops on accepted, unknown, or human hold; only a pre-admission

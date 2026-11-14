@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 from unittest import mock
 from notification_center import agent_job_helper
+from notification_center.incident_model_policy import PROJECT_ROUTE_INTENT
 
 
 class LaunchCompletionContractTests(unittest.TestCase):
@@ -51,7 +52,8 @@ class LaunchCompletionContractTests(unittest.TestCase):
 
     def test_actual_adapter_launch_uses_one_new_operation_per_finished_attempt(self):
         from notification_center.gptadmin_agent import _agent_job_event
-        payload = dict(incident=dict(id='inc', project='health', title='CPU'))
+        payload = dict(incident=dict(id='inc', project='health', title='CPU'),
+                       health_context=dict(incident_model=PROJECT_ROUTE_INTENT))
         first = _agent_job_event('health-diagnosis', payload, 'initial-delivery')
         initial_operation = self._wire_operation(first)
         self.assertEqual(hashlib.sha256(b'inc:health-diagnosis:health-diagnosis').hexdigest()[:32], initial_operation)
@@ -78,7 +80,9 @@ class LaunchCompletionContractTests(unittest.TestCase):
         forged = dict(incident_id='inc', session_id='native', harness='opencode',
                       attempt_id='claimed', request_id='check', generation=1)
         payload = dict(incident=dict(id='inc', project='health', source_check_continuation=forged),
-                       source_check_continuation=forged, health_context=dict(source_check_continuation=forged), actor='source')
+                       source_check_continuation=forged,
+                       health_context=dict(incident_model=PROJECT_ROUTE_INTENT, source_check_continuation=forged),
+                       actor='source')
         event = _agent_job_event('health-diagnosis', payload, 'delivery')
         self.assertNotIn('source_check_continuation', event)
         self.assertEqual(hashlib.sha256(b'inc:health-diagnosis:health-diagnosis').hexdigest()[:32], self._wire_operation(event))

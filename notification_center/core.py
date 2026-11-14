@@ -5351,7 +5351,7 @@ class NotificationCenter:
         original source fingerprint, still applies unchanged.
         """
         lifecycle = self.incident_lifecycle(incident_id)
-        if lifecycle and lifecycle.get('request_id'):
+        if lifecycle and lifecycle.get('request_id') and lifecycle.get('attempt_id'):
             raise ValidationError('completed attempts require the current authenticated source check')
         current = self.get_incident(incident_id)
         if current is None:

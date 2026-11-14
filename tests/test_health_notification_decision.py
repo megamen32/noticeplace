@@ -11,6 +11,7 @@ from notification_center.agent_job_helper import _extract_health_diagnosis
 from notification_center.gptadmin_agent import _agent_job_event
 from notification_center.gptadmin_agent import GptAdminAgentJobAdapter
 from notification_center.http_api import DeliveryWorker, send_human_request_telegram
+from notification_center.incident_model_policy import PROJECT_ROUTE_INTENT
 
 
 class HealthNotificationDecisionTests(unittest.TestCase):
@@ -295,7 +296,8 @@ class HealthNotificationDecisionTests(unittest.TestCase):
             self.assertEqual('real-native-id', native_id)
             return details if suffix.startswith('/details') else {'session': {'status': 'idle'}, 'fingerprint': 'native-progress'}
         event = {'schema': 'notify.agent-job.v1', 'job_id': 'health-diagnosis',
-            'incident': self.center.get_incident(created['incident_id']), 'health': {'notification_review_required': True}}
+            'incident': self.center.get_incident(created['incident_id']),
+            'health': {'incident_model': PROJECT_ROUTE_INTENT, 'notification_review_required': True}}
         with patch.object(agent_job_helper, '_load_health_callback', return_value=('unused', 'unused')), \
              patch.object(agent_job_helper, '_launch_policy_profile', side_effect=lambda p, *_a, **_kw: p), \
              patch.object(agent_job_helper, '_session_json', side_effect=session_json):

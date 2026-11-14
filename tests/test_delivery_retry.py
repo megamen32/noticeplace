@@ -75,7 +75,7 @@ class InvalidRouteRetryTests(unittest.TestCase):
             delivery_id = created['agent_job_delivery_id']
             with center._connection:
                 center._connection.execute('UPDATE deliveries SET target_json=? WHERE id=?',
-                    (json.dumps({'incident_model': 'unsupported/immutable-route'}), delivery_id))
+                    (json.dumps({'incident_model': 'unsupported'}), delivery_id))
             adapter = Mock()
             worker = DeliveryWorker(center, Mock(), agent_jobs={'health-diagnosis': adapter})
             worker.deliver(center.claim_due_deliveries(delivery_id=delivery_id)[0])

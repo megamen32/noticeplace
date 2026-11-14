@@ -14,7 +14,8 @@ from pathlib import Path
 from unittest import mock
 
 from notification_center.core import AuthorizationError, NotificationCenter, ValidationError
-from notification_center.health_workflow import HealthWorkflow, HEALTH_EXECUTION_PROFILE
+from notification_center.health_workflow import HealthWorkflow
+from notification_center.incident_model_policy import PROJECT_ROUTE_INTENT
 from notification_center.gptadmin_agent import (
     DirectHealthRemediationAdapter,
     DurableHealthRemediationAdapter,
@@ -928,7 +929,7 @@ class GptAdminAgentJobTests(unittest.TestCase):
             result = adapter.send_with_progress(
                 {
                     "incident": {"id": "inc-direct"},
-                    "health_context": {},
+                    "health_context": {"incident_model": PROJECT_ROUTE_INTENT},
                     "health_selection": {
                         "plan_id": "plan-003",
                         "execution": {"runtime": "opencode", "provider": "minimax-coding-plan", "model": "MiniMax-M3.1-Flash", "reasoning": "default", "topic": "health"},
@@ -940,7 +941,8 @@ class GptAdminAgentJobTests(unittest.TestCase):
         self.assertEqual("completed", result["status"])
         self.assertEqual("opencode", run.call_args.kwargs["profile_override"]["harness"])
         self.assertEqual("queue", run.call_args.kwargs["profile_override"]["mode"])
-        self.assertEqual(f"{HEALTH_EXECUTION_PROFILE['provider']}/{HEALTH_EXECUTION_PROFILE['model']}", run.call_args.kwargs["profile_override"]["model"])
+        self.assertEqual("", run.call_args.kwargs["profile_override"]["model"])
+        self.assertEqual(PROJECT_ROUTE_INTENT, run.call_args.args[1]["health"]["incident_model"])
         self.assertEqual("http://127.0.0.1:18787/api/sessions/new-or-resume", run.call_args.kwargs["profile_override"]["url"])
         progress.assert_any_call({"agent_session": {"session_id": "ses-live-1", "harness": "opencode", "plan_id": "plan-003"}})
 

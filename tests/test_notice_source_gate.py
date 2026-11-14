@@ -62,7 +62,8 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
     @staticmethod
     def profile():
         return {'url':'http://127.0.0.1:18787/api/sessions/new-or-resume', 'cwd':'/home/roomhacker/ServersAdministartion',
-                'name':'health-repair', 'harness':'opencode', 'model':'minimax-coding-plan/MiniMax-M3.1-Flash', 'mode':'queue', 'instruction':'Только выбранный план.'}
+                'name':'health-repair', 'harness':'opencode', 'model':'minimax-coding-plan/MiniMax-M3.1-Flash', 'mode':'queue',
+                'instruction':'Только выбранный план.', 'health_launch_token':'test-health-launch-token'}
 
     @staticmethod
     def event(runtime='opencode', provider='minimax-coding-plan', model='MiniMax-M3.1-Flash'):
@@ -102,6 +103,11 @@ class ProducerSourceAdmissionTests(unittest.TestCase):
                 reads.append(request.full_url);return self.response({'humanStopHeld':False})
             if '/launch-policy' in request.full_url:return self.response({'version':1,'incidentExecution':self.execution(),'allowedHarnesses':['opencode'],'preferredHarness':'opencode','models':{'opencode':'minimax-coding-plan/MiniMax-M3.1-Flash'}})
             if '/api/models?' in request.full_url:return self.response({'models':['minimax-coding-plan/MiniMax-M3.1-Flash'],'stale':False})
+            if '/api/automation/project-launch' in request.full_url:
+                posts.append(json.loads(request.data))
+                return self.response({'outcome':'accepted','operation_id':posts[-1]['operation_id'],
+                    'selected_harness':'opencode','model':'minimax-coding-plan/MiniMax-M3.1-Flash',
+                    'mode':'queue','session_id':'remediation-native','routing_reason':'declared route','attempts':[]})
             posts.append(json.loads(request.data));return self.response({'ok':True,'sessionId':'remediation-native','created':True})
         with patch.object(helper,'_run_health_remediation',return_value={'status':'completed'}):
             helper.run_profile('health-remediation',self.event(),Path('unused'),runner=runner,profile_override=self.profile())

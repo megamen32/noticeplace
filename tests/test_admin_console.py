@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import html
 import re
 import tempfile
 import threading
@@ -17,6 +18,7 @@ from pathlib import Path
 from notification_center.admin import AdminConfigStore, _environment_json, parse_environment
 from notification_center.admin_http import build_admin_handler
 from notification_center.core import NotificationCenter, ValidationError
+from notification_center.herder_policy_client import HerderPolicyUnavailable
 from notification_center.health_workflow import HealthWorkflow
 
 
@@ -292,24 +294,53 @@ class AdminConsoleTests(unittest.TestCase):
 
     def test_health_dashboard_offers_the_bounded_incident_model_choice(self) -> None:
         route = "minimax-coding-plan/MiniMax-M3.1-Flash"
-        status, page = self._request("GET", "/admin/")
-        self.assertEqual(200, status)
-        self.assertIn(b'id="health-model"', page)
-        self.assertIn(b'<input type="text" name="model"', page)
-        self.assertIn(b'<datalist id="incident-model-routes">', page)
-        self.assertIn(route.encode(), page)
-        csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
+        class FakeHerderPolicy:
+            def __init__(self) -> None:
+                self.revision = '"v1"'
+                self.route = route
+                self.writes: list[tuple[str, str]] = []
 
-        status, page = self._request("POST", "/admin/health-model", {"csrf": csrf, "model": route})
-        self.assertEqual(200, status)
-        self.assertIn(route.encode(), page)
-        status, _ = self._request("POST", "/admin/health-model", {"csrf": csrf, "model": "omniroute/glm-5.3-flash-minimax-m3.1"})
-        self.assertEqual(400, status)
-        status, page = self._request("GET", "/admin/")
-        self.assertEqual(200, status)
-        self.assertIn(route.encode(), page)
-        self.assertIn("через OpenCode и прямой MiniMax Coding Plan".encode(), page)
-        self.assertEqual(route, self.store._consumer_notification_center().get_runtime_setting("health_incident_model"))
+            def read(self) -> tuple[dict[str, object], str]:
+                return ({"incidentExecution": {
+                    "runtime": "opencode",
+                    "provider": "minimax-coding-plan",
+                    "model": self.route,
+                }}, self.revision)
+
+            def set_incident_model(self, model: str, expected_revision: str) -> None:
+                if expected_revision != self.revision:
+                    raise HerderPolicyUnavailable("Настройки Herder изменились; обновите страницу")
+                if model != route:
+                    raise HerderPolicyUnavailable("Herder отклонил неподдерживаемый маршрут")
+                self.writes.append((model, expected_revision))
+                self.revision = '"v2"'
+
+        fake = FakeHerderPolicy()
+        with mock.patch("notification_center.herder_policy_client.HerderPolicyClient", return_value=fake):
+            status, page = self._request("GET", "/admin/")
+            self.assertEqual(200, status)
+            self.assertIn(b'id="health-model"', page)
+            self.assertIn(b'<input type="text" name="model"', page)
+            self.assertIn(b'<datalist id="incident-model-routes">', page)
+            self.assertIn(route.encode(), page)
+            csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
+            revision = html.unescape(re.search(rb'name="revision" value="([^"]*)"', page).group(1).decode())
+
+            status, page = self._request("POST", "/admin/health-model", {"csrf": csrf, "model": route, "revision": revision})
+            self.assertEqual(200, status)
+            self.assertIn(route.encode(), page)
+            status, _ = self._request("POST", "/admin/health-model", {
+                "csrf": csrf, "model": "omniroute/glm-5.3-flash-minimax-m3.1", "revision": '"v2"',
+            })
+            self.assertEqual(409, status)
+            status, page = self._request("GET", "/admin/")
+            self.assertEqual(200, status)
+            self.assertIn(route.encode(), page)
+            self.assertIn("Модель и ограничения задаются в".encode(), page)
+            self.assertIn("настройках Agent Herder".encode(), page)
+
+        self.assertEqual([(route, '"v1"')], fake.writes)
+        self.assertIsNone(self.store._consumer_notification_center().get_runtime_setting("health_incident_model"))
         self.assertEqual(0, self.restarts)
 
     def test_health_settings_require_csrf_save_atomically_and_optionally_start_monitor(self) -> None:
