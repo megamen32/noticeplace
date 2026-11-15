@@ -12,3 +12,6 @@ dist/
 .tmp/
 .worktrees/noticeplace-mesh-ha-20261013/
 .agents/shared-session/knowledge/code-map.lock
+
+# Local QA credentials: never commit secret material.
+/.agents/last-human-commit/qa/
