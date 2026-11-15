@@ -343,6 +343,34 @@ class AdminConsoleTests(unittest.TestCase):
         self.assertIsNone(self.store._consumer_notification_center().get_runtime_setting("health_incident_model"))
         self.assertEqual(0, self.restarts)
 
+    def test_automatic_health_diagnosis_policy_is_replicated_and_cas_controlled(self) -> None:
+        self.primary.write_text(
+            f'NOTIFY_CENTER_DB={self.database}\n'
+            'NOTIFY_CENTER_TOKENS_JSON={"atv-token":{"project":"autotelegramviews","max_severity":"important","agent_jobs":["health-diagnosis"],"automatic_health_diagnosis":true}}\n',
+            encoding="utf-8",
+        )
+        self.store._consumer_center = None
+        status, page = self._request("GET", "/admin/")
+        self.assertEqual(200, status)
+        self.assertIn(b"Automatic health diagnosis", page)
+        self.assertIn(b"generation", page)
+        csrf = re.search(rb'name="csrf" value="([^"]+)"', page).group(1).decode()
+        status, page = self._request("POST", "/admin/health-diagnosis", {
+            "csrf": csrf, "project": "autotelegramviews", "enabled": "false",
+            "expected_generation": "0",
+        })
+        self.assertEqual(200, status)
+        self.assertIn(b"paused", page)
+        policy = self.store.snapshot()["health_diagnosis_policies"][0]
+        self.assertFalse(policy["enabled"])
+        self.assertEqual(1, policy["generation"])
+        status, _ = self._request("POST", "/admin/health-diagnosis", {
+            "csrf": csrf, "project": "autotelegramviews", "enabled": "true",
+            "expected_generation": "0",
+        })
+        self.assertEqual(400, status)
+        self.assertFalse(self.store.snapshot()["health_diagnosis_policies"][0]["enabled"])
+
     def test_health_settings_require_csrf_save_atomically_and_optionally_start_monitor(self) -> None:
         status, page = self._request("GET", "/admin/")
         self.assertEqual(200, status)

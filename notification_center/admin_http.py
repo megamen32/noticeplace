@@ -120,6 +120,26 @@ def build_admin_handler(store: AdminConfigStore, csrf_secret: str) -> type[BaseH
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
+                if self.path in ("/health-diagnosis", "/admin/health-diagnosis"):
+                    enabled_value = form.get("enabled")
+                    if enabled_value not in ("true", "false"):
+                        raise ValidationError("invalid health diagnosis policy value")
+                    expected_generation = form.get("expected_generation", "")
+                    generation = None
+                    if expected_generation:
+                        try:
+                            generation = int(expected_generation)
+                        except ValueError as error:
+                            raise ValidationError("invalid health diagnosis policy generation") from error
+                    store.set_project_health_diagnosis(
+                        form.get("project", ""), enabled_value == "true", actor,
+                        expected_generation=generation,
+                    )
+                    self.send_response(HTTPStatus.SEE_OTHER)
+                    self.send_header("Location", "/admin/#health-diagnosis")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
                 if self.path in ("/projects", "/admin/projects"):
                     token = store.create_project(form.get("project", ""), form.get("max_severity", ""), actor)
                     self._reply(HTTPStatus.OK, _token_page(form.get("project", ""), token))
@@ -614,6 +634,20 @@ def _dashboard(snapshot: dict[str, Any], csrf: str) -> str:
         f'<tr><td><strong>{html.escape(item["project"])}</strong></td><td>{_badge(item["max_severity"])}</td><td><code>{html.escape(item["fingerprint"])}</code></td><td class="row-actions"><form method="post" action="/admin/projects/{urllib.parse.quote(item["project"], safe="")}/severity"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><select name="max_severity">{options}</select><button>Save level</button></form><form method="post" action="/admin/projects/{urllib.parse.quote(item["project"], safe="")}/revoke"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><button class="danger">Revoke</button></form></td></tr>'
         for item in snapshot["projects"]
     ) or '<tr><td colspan="4">No producer projects yet.</td></tr>'
+    health_policies = snapshot.get("health_diagnosis_policies", [])
+    health_policy_rows = "".join(
+        f'<tr><td><strong>{html.escape(str(policy.get("project") or ""))}</strong></td>'
+        f'<td>{"enabled" if policy.get("enabled") else "paused"}</td>'
+        f'<td>{html.escape(str(policy.get("generation") or 0))}</td>'
+        f'<td>{html.escape(str(policy.get("source") or ""))}<br><span class="hint">{html.escape(str(policy.get("updated_by") or ""))}</span></td>'
+        f'<td><form method="post" action="/admin/health-diagnosis"><input type="hidden" name="csrf" value="{html.escape(csrf)}">'
+        f'<input type="hidden" name="project" value="{html.escape(str(policy.get("project") or ""))}">'
+        f'<input type="hidden" name="expected_generation" value="{html.escape(str(policy.get("generation") or 0))}">'
+        f'<select name="enabled"><option value="true"{" selected" if policy.get("enabled") else ""}>enabled</option>'
+        f'<option value="false"{" selected" if not policy.get("enabled") else ""}>paused</option></select>'
+        f'<button>Save project policy</button></form></td></tr>'
+        for policy in health_policies
+    ) or '<tr><td colspan="5">No project has automatic health diagnosis enabled.</td></tr>'
     topics = snapshot.get("topics", [])
     topic_rows = "".join(
         f'<tr><td>{html.escape(topic["name"])}</td><td>{html.escape(topic["id"])}</td><td>{html.escape(topic["chat_id"])}</td><td>{html.escape(str(topic["message_thread_id"] or ""))}</td><td><a href="#topic-{html.escape(topic["id"])}">Edit</a></td></tr>'
@@ -709,6 +743,7 @@ document.getElementById('add-adapter-step').onclick = addStep;
 <section class="card" id="telegram-cleanup"><div class="card-head"><h2>Удаление закрытых Telegram-карточек</h2><p class="hint">По умолчанию выключено для каждого проекта. После подтверждённого восстановления карточка удаляется из Telegram; история и результаты остаются в Notice Place. Общая карточка сохраняется, пока есть открытая проблема или вопрос. Включение также уберёт до 100 недавних закрытых карточек проекта. Сообщения старше 48 часов и неподтверждённые удаления сохраняются.</p></div>{cleanup_forms}</section>
 <section class="card" id="add-producer"><div class="card-head"><h2>Add producer</h2></div><form class="card-form" method="post" action="/admin/projects"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input required name="project" pattern="[A-Za-z0-9._-]+" placeholder="my-service"><select name="max_severity">{options}</select><button>Create one-time token</button></form></section>
 <section class="card"><div class="card-head"><h2>Producer projects</h2></div><div class="table-wrap"><table><tr><th>Project</th><th>Maximum level</th><th>Token fingerprint</th><th>Actions</th></tr>{project_rows}</table></div></section>
+<section class="card" id="health-diagnosis"><div class="card-head"><h2>Automatic health diagnosis</h2><p class="hint">The project policy is stored in the replicated NoticePlace mesh store. Generation is a compare-and-set guard; a stale node cannot overwrite a newer pause or resume.</p></div><div class="table-wrap"><table><tr><th>Project</th><th>State</th><th>Generation</th><th>Source / actor</th><th>Action</th></tr>{health_policy_rows}</table></div></section>
 <section class="card"><div class="card-head"><h2>Automatic call escalation</h2><p class="hint">{calls_label}. This controls future Android phone, Telegram-call, and Matrix-call escalations. Text notifications are unchanged; an already active phone call cannot be interrupted.</p></div><form class="card-form" method="post" action="/admin/calls"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="enabled" value="{calls_action}"><button>{calls_button}</button></form></section>
 <section class="card"><div class="card-head"><h2>Test adapters</h2><p class="hint">These buttons use the central Notify HTTP/MCP boundary. Phone starts one short test call; message sends one notice to the configured test recipient.</p></div><form class="card-form" method="post" action="/admin/test-adapter" onsubmit="return confirm('Start one test phone call now?')"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="adapter" value="phone"><input name="message" value="NoticePlace phone adapter test" maxlength="300"><button>Call me</button></form><form class="card-form" method="post" action="/admin/test-adapter"><input type="hidden" name="csrf" value="{html.escape(csrf)}"><input type="hidden" name="adapter" value="message"><input name="message" value="NoticePlace message adapter test" maxlength="300"><button>Send message</button></form></section>
 <section class="card"><div class="card-head"><h2>Live delivery timers</h2><p class="hint">Changes apply to newly scheduled/retried deliveries and do not restart Notify. Zero disables that timer. An already executing adapter call is unchanged.</p></div><form class="settings" method="post" action="/admin/settings"><input type="hidden" name="csrf" value="{html.escape(csrf)}">{setting_inputs}<button>Save live settings</button></form></section>

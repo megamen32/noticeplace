@@ -164,6 +164,7 @@ class AdminConfigStore:
         health = self.health_dashboard()
         return {
             "projects": sorted(projects, key=lambda item: item["project"]),
+            "health_diagnosis_policies": self.health_diagnosis_policies(),
             "telegram_cleanup_projects": cleanup_projects,
             "routes": self._topic_routes(),
             "topics": self.topics(),
@@ -176,6 +177,24 @@ class AdminConfigStore:
             "incident_model": health.get("incident_model", {}),
             "health": health,
         }
+
+    def health_diagnosis_policies(self) -> list[dict[str, Any]]:
+        """Return the redacted, replicated project pause-policy readback."""
+        scopes = self._scopes()
+        defaults: dict[str, bool] = {}
+        for scope in scopes.values():
+            project = str(scope.get("project") or "").strip()
+            jobs = scope.get("agent_jobs")
+            if (not project or project == "*" or not isinstance(jobs, list)
+                    or "health-diagnosis" not in jobs):
+                continue
+            current = bool(scope.get("automatic_health_diagnosis", True))
+            defaults[project] = defaults.get(project, True) and current
+        center = self._consumer_notification_center()
+        return [
+            center.get_health_diagnosis_policy(project, default)
+            for project, default in sorted(defaults.items())
+        ]
 
     def health_dashboard(self) -> dict[str, Any]:
         """Project the live fleet config and durable health workflow for operators."""
@@ -847,7 +866,8 @@ class AdminConfigStore:
         enabled: bool,
         actor: str,
         expected_current: bool | None = None,
-    ) -> None:
+        expected_generation: int | None = None,
+    ) -> dict[str, Any] | None:
         """Toggle automatic diagnosis only for an existing health-enabled project."""
         self._validate_project(project)
         if not isinstance(enabled, bool):
@@ -856,13 +876,26 @@ class AdminConfigStore:
         token = self._token_for_project(scopes, project)
         if not scopes[token].get("agent_jobs"):
             raise ValidationError("project is not eligible for automatic health diagnosis")
+        database = parse_environment(self.primary_env).get("NOTIFY_CENTER_DB", "").strip()
+        if database:
+            default_enabled = bool(scopes[token].get("automatic_health_diagnosis", True))
+            center = self._consumer_notification_center()
+            current_policy = center.get_health_diagnosis_policy(project, default_enabled)
+            current = bool(current_policy["enabled"])
+            if expected_current is not None and current is not expected_current:
+                raise ValidationError("health diagnosis policy changed; reload before saving")
+            generation = current_policy["generation"] if expected_generation is None else expected_generation
+            return center.set_health_diagnosis_policy(
+                project, enabled, actor, expected_generation=generation,
+            )
         current = bool(scopes[token].get("automatic_health_diagnosis", True))
         if expected_current is not None and current is not expected_current:
             raise ValidationError("project policy changed since fleet preflight")
         if current is enabled:
-            return
+            return None
         scopes[token]["automatic_health_diagnosis"] = enabled
         self._apply_primary(scopes, actor, "project_health_diagnosis_changed", project, token)
+        return None
 
     def revoke_project(self, project: str, actor: str) -> None:
         self._validate_project(project)

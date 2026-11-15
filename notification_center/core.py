@@ -242,6 +242,10 @@ class NotificationCenter:
         self._default_quiet_hours = list(DEFAULT_CONSUMER_QUIET_HOURS) if default_quiet_hours is None else default_quiet_hours
         self._dispatcher_heartbeat = time.time()
         self._initialize_schema()
+        # The environment remains a bootstrap source for legacy installations;
+        # an explicit project policy in the replicated store is authoritative
+        # for every node and survives a local process restart.
+        self._seed_health_diagnosis_policies()
         from .voice_recipient import initialize as initialize_voice_recipients
         initialize_voice_recipients(self)
         from .incident_lifecycle import initialize
@@ -399,6 +403,13 @@ class NotificationCenter:
                 CREATE TABLE IF NOT EXISTS runtime_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS health_diagnosis_policy (
+                    project TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL,
+                    generation INTEGER NOT NULL,
+                    updated_by TEXT NOT NULL,
                     updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS call_problem_budgets (
@@ -689,6 +700,122 @@ class NotificationCenter:
                 (f"profile_{profile_key}", profile_key.title(), f"builtin:{profile_key}", f"builtin-{profile_key}", max_severity, now, now, quiet_hours, profile_key),
             )
 
+    def _health_diagnosis_env_candidates(self) -> dict[str, list[bool]]:
+        """Collect explicit legacy policy values without exposing credentials."""
+        candidates: dict[str, list[bool]] = {}
+        for scope in self._tokens.values():
+            if not isinstance(scope, Mapping):
+                continue
+            project = str(scope.get("project") or "").strip()
+            jobs = scope.get("agent_jobs")
+            if (not project or project == "*" or not isinstance(jobs, (list, tuple))
+                    or HEALTH_DIAGNOSIS_AGENT_JOB not in {str(value) for value in jobs}
+                    or "automatic_health_diagnosis" not in scope):
+                continue
+            candidates.setdefault(project, []).append(bool(scope["automatic_health_diagnosis"]))
+        for grant in self._consumer_verifier_grants:
+            project = str(grant.get("project") or "").strip()
+            jobs = grant.get("agent_jobs")
+            if (not project or project == "*" or not isinstance(jobs, (list, tuple))
+                    or HEALTH_DIAGNOSIS_AGENT_JOB not in {str(value) for value in jobs}
+                    or "automatic_health_diagnosis" not in grant):
+                continue
+            candidates.setdefault(project, []).append(bool(grant["automatic_health_diagnosis"]))
+        return candidates
+
+    def _health_diagnosis_env_default(self, project: str, fallback: bool = True) -> bool:
+        """Resolve the old local policy conservatively during migration."""
+        values = self._health_diagnosis_env_candidates().get(str(project), [])
+        return all(values) if values else bool(fallback)
+
+    def _seed_health_diagnosis_policies(self) -> None:
+        """Seed explicit env policy once; never overwrite replicated state."""
+        candidates = self._health_diagnosis_env_candidates()
+        if not candidates:
+            return
+        now = time.time()
+        with self._lock, self._connection:
+            for project, values in candidates.items():
+                enabled = all(values)
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO health_diagnosis_policy(project, enabled, generation, updated_by, updated_at) VALUES (?, ?, 0, ?, ?)",
+                    (project, int(enabled), "bootstrap:environment", now),
+                )
+
+    def get_health_diagnosis_policy(self, project: str, default_enabled: bool = True) -> dict[str, Any]:
+        """Read the replicated project pause policy with a legacy fallback."""
+        project = str(project or "").strip()
+        if not project:
+            raise ValidationError("health diagnosis policy project is required")
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT project, enabled, generation, updated_by, updated_at FROM health_diagnosis_policy WHERE project=?",
+                (project,),
+            ).fetchone()
+        if row is None:
+            return {
+                "project": project,
+                "enabled": bool(default_enabled),
+                "generation": 0,
+                "updated_by": "environment:legacy",
+                "updated_at": None,
+                "source": "environment",
+            }
+        return {
+            "project": str(row["project"]),
+            "enabled": bool(row["enabled"]),
+            "generation": int(row["generation"]),
+            "updated_by": str(row["updated_by"]),
+            "updated_at": float(row["updated_at"]),
+            "source": "mesh-store",
+        }
+
+    def set_health_diagnosis_policy(
+        self,
+        project: str,
+        enabled: bool,
+        actor: str,
+        *,
+        expected_generation: int | None = None,
+    ) -> dict[str, Any]:
+        """CAS-update one project's replicated automatic diagnosis policy."""
+        project = str(project or "").strip()
+        actor = str(actor or "").strip()
+        if not project or project == "*" or len(project) > 128:
+            raise ValidationError("health diagnosis policy project is invalid")
+        if type(enabled) is not bool:
+            raise ValidationError("health diagnosis policy enabled must be boolean")
+        if not actor or len(actor) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in actor):
+            raise ValidationError("health diagnosis policy actor is invalid")
+        if expected_generation is not None and (type(expected_generation) is not int or expected_generation < 0):
+            raise ValidationError("health diagnosis policy generation is invalid")
+        now = time.time()
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT enabled, generation FROM health_diagnosis_policy WHERE project=?",
+                (project,),
+            ).fetchone()
+            current_generation = int(row["generation"]) if row is not None else 0
+            if expected_generation is not None and current_generation != expected_generation:
+                raise ValidationError("health diagnosis policy changed; reload before saving")
+            next_generation = current_generation + 1
+            if row is None:
+                self._connection.execute(
+                    "INSERT INTO health_diagnosis_policy(project, enabled, generation, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (project, int(enabled), next_generation, actor, now),
+                )
+            else:
+                self._connection.execute(
+                    "UPDATE health_diagnosis_policy SET enabled=?, generation=?, updated_by=?, updated_at=? WHERE project=? AND generation=?",
+                    (int(enabled), next_generation, actor, now, project, current_generation),
+                )
+            self._audit(None, "health_diagnosis_policy_changed", actor, {
+                "project": project,
+                "enabled": enabled,
+                "generation": next_generation,
+            })
+        return self.get_health_diagnosis_policy(project, enabled)
+
     @staticmethod
     def _load_consumer_verifier_grants(value: list[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
         """Load bounded, non-secret server policy; never accept event claims."""
@@ -897,22 +1024,24 @@ class NotificationCenter:
         if event.get("schema", "notify.event.v1") != "notify.event.v1" or event.get("action") != "resolve":
             raise ValidationError("unsupported resolution event")
 
-    @staticmethod
-    def _effective_agent_job(event: Mapping[str, Any], scope: Mapping[str, Any]) -> str:
+    def _effective_agent_job(self, event: Mapping[str, Any], scope: Mapping[str, Any]) -> str:
         """Resolve producer intent plus the central deterministic diagnosis policy."""
         if ('_consumer_agent_sources' in scope
                 and event.get('source_id') not in scope['_consumer_agent_sources']):
             return ''
+        project = str(event.get("project") or scope.get("project") or "").strip()
+        env_enabled = scope.get("automatic_health_diagnosis", True) is not False
+        policy = self.get_health_diagnosis_policy(project, env_enabled)
+        diagnosis_enabled = bool(policy["enabled"])
         explicit = str(event.get("agent_job") or "")
         if explicit:
             # A producer cannot bypass the project-level automatic-diagnosis
             # switch by naming the same job explicitly. Trusted operator
             # actions use their separate action handler and remain available.
-            if (explicit == HEALTH_DIAGNOSIS_AGENT_JOB
-                    and scope.get("automatic_health_diagnosis", True) is False):
+            if explicit == HEALTH_DIAGNOSIS_AGENT_JOB and not diagnosis_enabled:
                 return ""
             return explicit
-        if scope.get("automatic_health_diagnosis", True) is False:
+        if not diagnosis_enabled:
             return ""
         allowed_jobs = {str(value) for value in scope.get("agent_jobs", [])} if isinstance(scope.get("agent_jobs"), (list, tuple)) else set()
         required_health_identity = ("source_id", "host_id", "signal_type", "correlation_id")
@@ -4137,11 +4266,12 @@ class NotificationCenter:
         incident = self.get_incident(incident_id)
         if not incident or incident['severity'] in {'critical', 'emergency'} or self.manual_ai_requested(incident_id):
             return False
-        # One project-scoped producer owns this setting. An external watcher
+        # One replicated project policy owns this setting. An external watcher
         # already dispatches its own diagnosis; do not wait for a second AI job.
-        if any(scope.get('project') == incident['project']
-               and scope.get('automatic_health_diagnosis', True) is False
-               for scope in self._tokens.values()):
+        if not self.get_health_diagnosis_policy(
+                str(incident['project']),
+                self._health_diagnosis_env_default(str(incident['project'])),
+        )["enabled"]:
             return False
         with self._lock:
             return self._connection.execute("SELECT 1 FROM audit_events WHERE incident_id=? "

@@ -127,6 +127,74 @@ class AutomaticDiagnosisScopeTests(unittest.TestCase):
             store.set_project_health_diagnosis('noticeplace.qa-default', True, 'fixture-request-2', expected_current=True)
         self.assertEqual(len(restarts), 1)
 
+    def test_replicated_policy_overrides_local_env_after_restart(self):
+        database = self.root / 'shared.sqlite3'
+        enabled_scope = {'project': 'autotelegramviews', 'max_severity': 'important',
+                         'agent_jobs': ['health-diagnosis'], 'automatic_health_diagnosis': True}
+        first = NotificationCenter(database, {'fixture-token': enabled_scope}, default_quiet_hours=[])
+        self.addCleanup(first._connection.close)
+        seeded = first.get_health_diagnosis_policy('autotelegramviews', False)
+        self.assertTrue(seeded['enabled'])
+        self.assertEqual(0, seeded['generation'])
+        changed = first.set_health_diagnosis_policy(
+            'autotelegramviews', False, 'fixture-owner', expected_generation=0,
+        )
+        self.assertFalse(changed['enabled'])
+        self.assertEqual(1, changed['generation'])
+
+        # A fresh process with a stale local env still obeys the replicated
+        # project policy and does not launch a duplicate diagnosis.
+        stale_env_scope = dict(enabled_scope, automatic_health_diagnosis=True)
+        second = NotificationCenter(database, {'fixture-token': stale_env_scope}, default_quiet_hours=[])
+        self.addCleanup(second._connection.close)
+        created = HealthWorkflow(second).intake_signal('fixture-token', 'fixture-replicated-pause', self.signal() | {
+            'project': 'autotelegramviews', 'dedup_key': 'fixture:replicated-pause',
+        })
+        self.assertIsNone(created['agent_job_delivery_id'])
+        self.assertFalse(second.get_health_diagnosis_policy('autotelegramviews')['enabled'])
+
+    def test_replicated_policy_resume_and_generation_cas(self):
+        database = self.root / 'resume.sqlite3'
+        disabled_scope = {'project': 'autotelegramviews', 'max_severity': 'important',
+                          'agent_jobs': ['health-diagnosis'], 'automatic_health_diagnosis': False}
+        first = NotificationCenter(database, {'fixture-token': disabled_scope}, default_quiet_hours=[])
+        self.addCleanup(first._connection.close)
+        paused = first.get_health_diagnosis_policy('autotelegramviews', True)
+        self.assertFalse(paused['enabled'])
+        resumed = first.set_health_diagnosis_policy(
+            'autotelegramviews', True, 'fixture-owner', expected_generation=0,
+        )
+        self.assertTrue(resumed['enabled'])
+        self.assertEqual(1, resumed['generation'])
+        with self.assertRaisesRegex(ValidationError, 'changed'):
+            first.set_health_diagnosis_policy(
+                'autotelegramviews', False, 'stale-owner', expected_generation=0,
+            )
+        created = HealthWorkflow(first).intake_signal('fixture-token', 'fixture-replicated-resume', self.signal() | {
+            'project': 'autotelegramviews', 'dedup_key': 'fixture:replicated-resume',
+        })
+        self.assertIsNotNone(created['agent_job_delivery_id'])
+
+    def test_admin_snapshot_exposes_replicated_policy_without_token(self):
+        database = self.root / 'admin-shared.sqlite3'
+        primary = self.root / 'admin-primary.env'
+        primary.write_text('NOTIFY_CENTER_DB=' + str(database) + '\n' +
+            'NOTIFY_CENTER_TOKENS_JSON=' + json.dumps({'fixture-token': {
+                'project': 'autotelegramviews', 'max_severity': 'important',
+                'agent_jobs': ['health-diagnosis'], 'automatic_health_diagnosis': True}}) + '\n')
+        routes = self.root / 'routes.env'
+        routes.write_text('TELEGRAM_SEVERITY_ROUTES_JSON={}\n')
+        store = AdminConfigStore(primary, routes, self.root / 'admin-state', restart=lambda: None)
+        changed = store.set_project_health_diagnosis(
+            'autotelegramviews', False, 'fixture-owner', expected_current=True,
+        )
+        self.assertEqual({'project': 'autotelegramviews', 'enabled': False, 'generation': 1},
+                         {key: changed[key] for key in ('project', 'enabled', 'generation')})
+        policies = store.snapshot()['health_diagnosis_policies']
+        self.assertEqual(1, len(policies))
+        self.assertEqual(False, policies[0]['enabled'])
+        self.assertNotIn('fixture-token', json.dumps(policies))
+
     def test_actual_health_contract_rejects_missing_recipient(self):
         center = self.center(False)
         event = self.signal()
