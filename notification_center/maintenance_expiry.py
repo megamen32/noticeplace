@@ -8,12 +8,14 @@ from contextlib import nullcontext
 import json
 import math
 import time
+import uuid
 
 from .retention import RetentionWorker
 
 QUESTION_CURSOR_KEY = 'history_question_expiry_cursor'
 INCIDENT_CURSOR_KEY = 'history_open_review_cursor'
 REPORT_KEY = 'history_maintenance_report'
+TERMINAL_DELIVERY_ERROR = 'Связанный инцидент уже закрыт; queued-доставка погашена без внешней отправки'
 
 # Partial/legacy ownership is ownership too. Require absence rather than trying
 # to interpret task decisions, STOP acknowledgements or native completion state.
@@ -55,6 +57,87 @@ def _save(connection, key, value, now):
         (key, value, now))
 
 
+def _terminal_delivery_page(connection, batch_size):
+    """Return only pre-send deliveries made impossible by a terminal incident."""
+    return connection.execute(
+        """SELECT d.rowid,d.id,d.incident_id,d.channel,d.status,d.attempt,
+                  i.state AS incident_state,i.project,
+                  l.session_id,l.attempt_id,l.attempt_state
+           FROM deliveries d
+           JOIN incidents i ON i.id=d.incident_id
+           LEFT JOIN incident_lifecycle l ON l.incident_id=i.id
+          WHERE d.status IN ('queued','claimed')
+            AND i.state IN ('resolved','discarded')
+            AND NOT (
+              d.channel='telegram.main' AND (
+                COALESCE(json_type(COALESCE(d.target_json,'{}'),'$.health_session'),'')='object'
+                OR COALESCE(json_type(COALESCE(d.target_json,'{}'),'$.health_outcome'),'')='object'
+              )
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM human_requests h
+               WHERE h.incident_id=i.id AND h.state='pending'
+            )
+            AND (
+              l.incident_id IS NULL
+              OR (l.session_id IS NULL AND l.attempt_id IS NULL AND l.attempt_state IS NULL)
+            )
+          ORDER BY d.rowid
+          LIMIT ?""",
+        (batch_size,),
+    ).fetchall()
+
+
+def reconcile_terminal_deliveries(connection, *, now=None, batch_size=100, dry_run=True):
+    """Boundedly cancel pre-send work made obsolete by a terminal incident."""
+    if type(batch_size) is not int or not 1 <= batch_size <= 1000:
+        raise ValueError('batch_size must be 1..1000')
+    now = time.time() if now is None else float(now)
+    if not math.isfinite(now):
+        raise ValueError('finite now required')
+    rows = _terminal_delivery_page(connection, batch_size)
+    report = {
+        'scope': 'terminal_delivery_page',
+        'now': now,
+        'dry_run': dry_run,
+        'sampled': len(rows),
+        'eligible': len(rows),
+        'cancelled': 0,
+        'ids': [str(row['id']) for row in rows],
+    }
+    if dry_run:
+        return report
+    with connection:
+        for row in rows:
+            changed = connection.execute(
+                """UPDATE deliveries
+                      SET status='cancelled',last_error=?,updated_at=?
+                    WHERE id=? AND status IN ('queued','claimed')""",
+                (TERMINAL_DELIVERY_ERROR, now, row['id']),
+            )
+            if changed.rowcount != 1:
+                report['eligible'] -= 1
+                continue
+            connection.execute(
+                'INSERT INTO audit_events(id,incident_id,type,actor,payload_json,created_at) VALUES(?,?,?,?,?,?)',
+                (
+                    uuid.uuid4().hex,
+                    row['incident_id'],
+                    'delivery_terminal_reconciled',
+                    'maintenance',
+                    json.dumps({
+                        'delivery_id': row['id'],
+                        'channel': row['channel'],
+                        'incident_state': row['incident_state'],
+                        'reason': 'terminal_incident_before_external_send',
+                    }, ensure_ascii=False, sort_keys=True),
+                    now,
+                ),
+            )
+            report['cancelled'] += 1
+    return report
+
+
 def maintain_expiry(connection, *, now=None, cutoff=None, batch_size=100, dry_run=True):
     """Sample at most one page per table; report describes that page, not totals.
 
@@ -71,6 +154,8 @@ def maintain_expiry(connection, *, now=None, cutoff=None, batch_size=100, dry_ru
         raise ValueError('finite now and cutoff <= now required')
 
     report = {'scope': 'bounded_page', 'now': now, 'cutoff': cutoff, 'dry_run': dry_run,
+              'terminal_deliveries': reconcile_terminal_deliveries(
+                  connection, now=now, batch_size=batch_size, dry_run=dry_run),
               'questions': {'sampled': 0, 'eligible': 0, 'expired': 0},
               'incidents': {'sampled': 0, 'stale_open': 0, 'protected_with_evidence': 0,
                             'requires_owner_review': 0, 'sample_ids': []}}

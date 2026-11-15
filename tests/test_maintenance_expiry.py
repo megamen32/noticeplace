@@ -72,6 +72,51 @@ def test_preview_is_read_only_and_deadlines_take_precedence(center):
     assert states(center) == dict(age='expired', deadline='expired', future='pending', fresh='pending')
 
 
+def test_terminal_delivery_sweep_is_bounded_audited_and_preserves_unknown(center):
+    from notification_center.maintenance_expiry import maintain_expiry
+
+    resolved = center.create_event('p', 'resolved-event', dict(
+        project='p', recipient='fixture', kind='incident', severity='critical',
+        title='Resolved', dedup_key='resolved'))['incident_id']
+    open_incident = center.create_event('p', 'open-event', dict(
+        project='p', recipient='fixture', kind='incident', severity='critical',
+        title='Open', dedup_key='open'))['incident_id']
+    db = center._connection
+    with db:
+        db.execute("UPDATE incidents SET state='resolved',resolved_at=10 WHERE id=?", (resolved,))
+        db.executemany(
+            'INSERT INTO deliveries(id,incident_id,channel,delivery_key,due_at,status,attempt,created_at,updated_at,target_json) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?)',
+            [
+                ('terminal-queued', resolved, 'telegram.edit', 'terminal-queued', 0, 'queued', 0, 1, 1, '{}'),
+                ('terminal-claimed', resolved, 'gptadmin.agent:health-remediation', 'terminal-claimed', 0, 'claimed', 1, 1, 1, '{}'),
+                ('session-notice', resolved, 'telegram.main', 'session-notice', 0, 'queued', 0, 1, 1,
+                 json.dumps({'health_outcome': {'status': 'resolved'}})),
+                ('open-queued', open_incident, 'telegram.edit', 'open-queued', 0, 'queued', 0, 1, 1, '{}'),
+                ('terminal-sending', resolved, 'gptadmin.agent:health-diagnosis', 'terminal-sending', 0, 'sending', 1, 1, 1, '{}'),
+                ('terminal-unknown', resolved, 'matrix.call', 'terminal-unknown', 0, 'uncertain', 1, 1, 1, '{}'),
+            ],
+        )
+
+    preview = maintain_expiry(db, now=20)
+    assert preview['terminal_deliveries']['sampled'] == 2
+    assert preview['terminal_deliveries']['cancelled'] == 0
+    assert db.execute("SELECT COUNT(*) FROM deliveries WHERE status='cancelled'").fetchone()[0] == 0
+
+    applied = maintain_expiry(db, now=20, dry_run=False)
+    assert applied['terminal_deliveries']['cancelled'] == 2
+    statuses = dict(db.execute('SELECT id,status FROM deliveries'))
+    assert statuses['terminal-queued'] == 'cancelled'
+    assert statuses['terminal-claimed'] == 'cancelled'
+    assert statuses['session-notice'] == 'queued'
+    assert statuses['open-queued'] == 'queued'
+    assert statuses['terminal-sending'] == 'sending'
+    assert statuses['terminal-unknown'] == 'uncertain'
+    assert db.execute(
+        "SELECT COUNT(*) FROM audit_events WHERE type='delivery_terminal_reconciled'"
+    ).fetchone()[0] == 2
+
+
 @pytest.mark.parametrize('fields', [
     {'native_harness': 'codex'}, {'native_session_id': 'session'}, {'native_cwd': '/fixture'},
     {'kind': 'secret'}, {'mode': 'notify'}, {'state': 'uncertain'}, {'state': 'unknown'},
