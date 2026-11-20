@@ -111,6 +111,10 @@ _CHOICE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _HEALTH_REPAIR_FIRST_PLAN_IDS = frozenset({"observe", "repair", "verify"})
 _HUMAN_REQUEST_CHOICE_LABEL_MAX = 80
 _TASK_DECISION_CHOICE_LABEL_MAX = 256
+_POLICY_STAGE_COLUMNS = (
+    "consumer_id", "stage", "kind", "enabled", "target_json", "step_id", "platform", "action",
+    "previous_step_id", "retry_interval_seconds", "max_repeats",
+)
 
 def _artifact_version() -> str:
     """Read the immutable release version adjacent to this source module."""
@@ -143,7 +147,7 @@ class IncidentModelConfigurationError(ValidationError):
 
 
 class IdempotencyConflict(ValidationError):
-    """Raised when a producer reuses a request key for different event content."""
+    """Raised for conflicting idempotency keys or stale consumer policy writes."""
 
 
 def read_notification_rule_settings(connection: Any, incident_id: str) -> dict[str, Any]:
@@ -215,7 +219,13 @@ class NotificationCenter:
     failure, while stable delivery keys prevent routine duplicate scheduling.
     """
 
-    def __init__(self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]], default_quiet_hours: list[Mapping[str, Any]] | None = None, *, task_decision_verifier: Any | None = None, consumer_verifier_grants: list[Mapping[str, Any]] | None = None) -> None:
+    def __init__(
+        self, database_path: Path | str, tokens: Mapping[str, Mapping[str, Any]],
+        default_quiet_hours: list[Mapping[str, Any]] | None = None, *,
+        task_decision_verifier: Any | None = None,
+        consumer_verifier_grants: list[Mapping[str, Any]] | None = None,
+        bootstrap_store: bool = True,
+    ) -> None:
         self._STORE_TOKEN = "\x00store-internal\x00"
         """Open and initialize durable state; raises sqlite errors on storage failures."""
         self._consumer_verifier_grants = self._load_consumer_verifier_grants(consumer_verifier_grants)
@@ -241,15 +251,14 @@ class NotificationCenter:
         self._task_decision_writer = object()
         self._default_quiet_hours = list(DEFAULT_CONSUMER_QUIET_HOURS) if default_quiet_hours is None else default_quiet_hours
         self._dispatcher_heartbeat = time.time()
-        self._initialize_schema()
-        # The environment remains a bootstrap source for legacy installations;
-        # an explicit project policy in the replicated store is authoritative
-        # for every node and survives a local process restart.
-        self._seed_health_diagnosis_policies()
-        from .voice_recipient import initialize as initialize_voice_recipients
-        initialize_voice_recipients(self)
-        from .incident_lifecycle import initialize
-        initialize(self)
+        if bootstrap_store:
+            self._initialize_schema()
+            # The environment remains a bootstrap source for legacy installations.
+            self._seed_health_diagnosis_policies()
+            from .voice_recipient import initialize as initialize_voice_recipients
+            from .incident_lifecycle import initialize
+            initialize_voice_recipients(self)
+            initialize(self)
         from .task_decisions import TaskDecisionStore
         self.task_decisions = TaskDecisionStore(self)
 
@@ -308,7 +317,8 @@ class NotificationCenter:
                     peer_ip TEXT,
                     source_ip TEXT,
                     proxy_ip TEXT,
-                    forwarded_for TEXT
+                    forwarded_for TEXT,
+                    consumer_policy_revision INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS consumers (
                     id TEXT PRIMARY KEY,
@@ -322,7 +332,8 @@ class NotificationCenter:
                     quiet_hours_json TEXT,
                     profile_type TEXT,
                     profile_key TEXT,
-                    operator_note TEXT
+                    operator_note TEXT,
+                    policy_revision INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS consumer_policy_stages (
                     consumer_id TEXT NOT NULL REFERENCES consumers(id),
@@ -337,6 +348,21 @@ class NotificationCenter:
                     retry_interval_seconds REAL,
                     max_repeats INTEGER,
                     PRIMARY KEY (consumer_id, stage)
+                );
+                CREATE TABLE IF NOT EXISTS consumer_policy_history (
+                    consumer_id TEXT NOT NULL REFERENCES consumers(id),
+                    revision INTEGER NOT NULL,
+                    stage INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    target_json TEXT NOT NULL,
+                    step_id TEXT,
+                    platform TEXT,
+                    action TEXT,
+                    previous_step_id TEXT,
+                    retry_interval_seconds REAL,
+                    max_repeats INTEGER,
+                    PRIMARY KEY (consumer_id, revision, stage)
                 );
                 CREATE TABLE IF NOT EXISTS deliveries (
                     id TEXT PRIMARY KEY,
@@ -647,6 +673,20 @@ class NotificationCenter:
             ):
                 if column not in policy_columns:
                     self._connection.execute(f"ALTER TABLE consumer_policy_stages ADD COLUMN {column} {definition}")
+            # The consumer backfill above has acquired the writer lock. Older
+            # incidents already refer to revision zero via the column default.
+            for table, column in (("incidents", "consumer_policy_revision"), ("consumers", "policy_revision")):
+                columns = {row["name"] for row in self._connection.execute(f"PRAGMA table_info({table})")}
+                if column not in columns:
+                    self._connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+            current_columns = ", ".join(f"s.{column}" for column in _POLICY_STAGE_COLUMNS)
+            archived_columns = ", ".join(_POLICY_STAGE_COLUMNS)
+            self._connection.execute(
+                "CREATE VIEW IF NOT EXISTS versioned_consumer_policy_stages AS "
+                f"SELECT c.policy_revision AS revision, {current_columns} "
+                "FROM consumer_policy_stages s JOIN consumers c ON c.id = s.consumer_id "
+                f"UNION ALL SELECT revision, {archived_columns} FROM consumer_policy_history"
+            )
             self._connection.execute("DROP INDEX IF EXISTS incidents_open_dedup")
             self._connection.execute("DROP INDEX IF EXISTS incidents_open_dedup_scope")
             self._connection.execute("CREATE TABLE IF NOT EXISTS incident_discard_tombstones (incident_id TEXT PRIMARY KEY, project TEXT NOT NULL, recipient TEXT NOT NULL, consumer_id TEXT, dedup_key TEXT NOT NULL, correlation_id TEXT NOT NULL, revision TEXT NOT NULL, actor TEXT NOT NULL, created_at REAL NOT NULL)")
@@ -2447,21 +2487,31 @@ class NotificationCenter:
                 "INSERT INTO consumers(id, project, name, token_hash, token_fingerprint, max_severity, created_at, updated_at, quiet_hours_json, profile_type, profile_key, operator_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'custom', NULL, ?)",
                 (consumer_id, project, name, token_hash, fingerprint, max_severity, now, now, json.dumps(normalized_quiet_hours, sort_keys=True), normalized_note or None),
             )
-            self._connection.executemany(
-                "INSERT INTO consumer_policy_stages(consumer_id, stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, retry_interval_seconds, max_repeats) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (consumer_id, stage["stage"], stage["kind"], int(stage["enabled"]), json.dumps(stage["target"], sort_keys=True), stage.get("step_id"), stage.get("platform"), stage.get("action"), stage.get("previous_step_id"), stage.get("retry_interval_seconds"), stage.get("max_repeats"))
-                    for stage in normalized_policy
-                ],
-            )
+            self._insert_consumer_policy(consumer_id, normalized_policy)
             self._audit(None, "consumer_created", "operator", {"consumer_id": consumer_id, "project": project})
         return {"id": consumer_id, "token_fingerprint": fingerprint, "intake_token": intake_token}
 
-    def get_consumer(self, consumer_id: str) -> dict[str, Any] | None:
-        """Return safe consumer metadata and its operator-owned delivery policy."""
+    def _insert_consumer_policy(self, consumer_id: str, policy: list[dict[str, Any]]) -> None:
+        columns = ", ".join(_POLICY_STAGE_COLUMNS)
+        placeholders = ", ".join("?" for _ in _POLICY_STAGE_COLUMNS)
+        self._connection.executemany(
+            f"INSERT INTO consumer_policy_stages({columns}) VALUES ({placeholders})",
+            [
+                (consumer_id, stage["stage"], stage["kind"], int(stage["enabled"]),
+                 json.dumps(stage["target"], sort_keys=True), stage.get("step_id"), stage.get("platform"),
+                 stage.get("action"), stage.get("previous_step_id"), stage.get("retry_interval_seconds"),
+                 stage.get("max_repeats"))
+                for stage in policy
+            ],
+        )
+
+    def get_consumer(self, consumer_id: str, *, nested_targets: bool = False) -> dict[str, Any] | None:
+        """Return metadata and one policy revision, with raw targets for the editor."""
         with self._lock:
             consumer = self._connection.execute(
-                "SELECT id, project, name, token_fingerprint, max_severity, created_at, updated_at, quiet_hours_json, profile_type, profile_key, operator_note FROM consumers WHERE id = ?",
+                "SELECT id, project, name, token_fingerprint, max_severity, created_at, updated_at, "
+                "quiet_hours_json, profile_type, profile_key, operator_note, policy_revision AS revision "
+                "FROM consumers WHERE id = ?",
                 (consumer_id,),
             ).fetchone()
             if consumer is None:
@@ -2473,12 +2523,19 @@ class NotificationCenter:
                 result["quiet_hours"] = list(self._default_quiet_hours)
             result["profile_type"] = result.get("profile_type") or "custom"
             stages = self._connection.execute(
-                "SELECT stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? ORDER BY stage",
-                (consumer_id,),
+                "SELECT stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, "
+                "retry_interval_seconds, max_repeats FROM versioned_consumer_policy_stages "
+                "WHERE consumer_id = ? AND revision = ? ORDER BY stage",
+                (consumer_id, consumer["revision"]),
             ).fetchall()
             result["policy"] = []
             for row in stages:
-                item = {"stage": row["stage"], "kind": row["kind"], "enabled": bool(row["enabled"]), **json.loads(row["target_json"])}
+                target = json.loads(row["target_json"])
+                item = {"stage": row["stage"], "kind": row["kind"], "enabled": bool(row["enabled"])}
+                if nested_targets:
+                    item["target"] = target
+                else:
+                    item.update(target)
                 if row["step_id"] is not None:
                     item.update({"id": row["step_id"], "step_id": row["step_id"], "platform": row["platform"], "action": row["action"], "retry_interval_seconds": row["retry_interval_seconds"], "max_repeats": row["max_repeats"]})
                     if row["previous_step_id"] is not None:
@@ -2609,9 +2666,20 @@ class NotificationCenter:
             event = self._apply_source_severity(event, project, recipient)
             if existing is None and terminal is None:
                 incident_id = f"inc_{uuid.uuid4().hex}"
+                # Read the revision in the INSERT so the pin and the first plan
+                # share a transaction even with an independent policy writer.
                 self._connection.execute(
-                    "INSERT INTO incidents(id, project, recipient, kind, severity, title, body, operator_note, dedup_key, collapse_key, consumer_id, state, occurrences, created_at, updated_at, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, proxy_ip, forwarded_for) VALUES (" + ", ".join(["?"] * 11) + ", 'open', 1, " + ", ".join(["?"] * 12) + ")",
-                    (incident_id, project, recipient, str(event["kind"]), str(event["severity"]), str(event["title"]), str(event.get("body") or ""), str(event.get("operator_note") or "").strip() or None, dedup_key, event.get("collapse_key"), consumer_id, now, now, event_type, producer, plugin, correlation_id, parent_event_id, parent_incident_id, ingress.get("peer_ip"), ingress.get("source_ip"), ingress.get("proxy_ip"), ingress.get("forwarded_for")),
+                    "INSERT INTO incidents(id, project, recipient, kind, severity, title, body, operator_note, "
+                    "dedup_key, collapse_key, consumer_id, state, occurrences, created_at, updated_at, event_type, "
+                    "producer, plugin, correlation_id, parent_event_id, parent_incident_id, peer_ip, source_ip, "
+                    "proxy_ip, forwarded_for, consumer_policy_revision) VALUES ("
+                    + ", ".join(["?"] * 11) + ", 'open', 1, " + ", ".join(["?"] * 12)
+                    + ", COALESCE((SELECT policy_revision FROM consumers WHERE id = ?), 0))",
+                    (incident_id, project, recipient, str(event["kind"]), str(event["severity"]), str(event["title"]),
+                     str(event.get("body") or ""), str(event.get("operator_note") or "").strip() or None,
+                     dedup_key, event.get("collapse_key"), consumer_id, now, now, event_type, producer, plugin,
+                     correlation_id, parent_event_id, parent_incident_id, ingress.get("peer_ip"),
+                     ingress.get("source_ip"), ingress.get("proxy_ip"), ingress.get("forwarded_for"), consumer_id),
                 )
                 self._audit(incident_id, "incident_created", "producer", {"dedup_key": dedup_key})
                 if parent_incident_id:
@@ -2928,7 +2996,7 @@ class NotificationCenter:
             (json.dumps(target, ensure_ascii=False), delivery_id),
         )
 
-    def consumer_policy_is_matrix_only(self, consumer_id: str) -> bool:
+    def consumer_policy_is_matrix_only(self, consumer_id: str, *, revision: int | None = None) -> bool:
         """True when the effective policy of a consumer is explicit and Matrix only.
 
         An explicit policy whose every enabled stage names Matrix is the
@@ -2937,8 +3005,9 @@ class NotificationCenter:
         failure neighbour must respect that decision.
         """
         rows = self._connection.execute(
-            "SELECT platform, kind FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1",
-            (consumer_id,),
+            "SELECT platform, kind FROM versioned_consumer_policy_stages WHERE consumer_id = ? AND enabled = 1 "
+            "AND revision = COALESCE(?, (SELECT policy_revision FROM consumers WHERE id = ?))",
+            (consumer_id, revision, consumer_id),
         ).fetchall()
         explicit = False
         for row in rows:
@@ -2974,11 +3043,11 @@ class NotificationCenter:
     def incident_is_matrix_only(self, incident_id: str) -> bool:
         """True when the incident belongs to a consumer with a Matrix only policy."""
         row = self._connection.execute(
-            "SELECT consumer_id FROM incidents WHERE id = ?", (incident_id,)
+            "SELECT consumer_id, consumer_policy_revision FROM incidents WHERE id = ?", (incident_id,)
         ).fetchone()
         if row is None or not row["consumer_id"]:
             return False
-        return self.consumer_policy_is_matrix_only(str(row["consumer_id"]))
+        return self.consumer_policy_is_matrix_only(str(row["consumer_id"]), revision=row["consumer_policy_revision"])
 
     def channel_denied_by_matrix_only_policy(self, incident_id: str, channel: str) -> bool:
         """Deny every non Matrix transport for an incident of a Matrix only consumer.
@@ -2994,7 +3063,7 @@ class NotificationCenter:
             return False
         return self.incident_is_matrix_only(incident_id)
 
-    def consumer_matrix_scope(self, consumer_id: str) -> dict[str, Any] | None:
+    def consumer_matrix_scope(self, consumer_id: str, *, revision: int | None = None) -> dict[str, Any] | None:
         """Return the explicit Matrix route of a consumer, if it declares one.
 
         An explicit Matrix stage that names a room is the operator route of
@@ -3002,10 +3071,11 @@ class NotificationCenter:
         room, and only the identities that route declares may answer there.
         """
         row = self._connection.execute(
-            "SELECT target_json FROM consumer_policy_stages "
+            "SELECT target_json FROM versioned_consumer_policy_stages "
             "WHERE consumer_id = ? AND enabled = 1 AND platform = ? "
+            "AND revision = COALESCE(?, (SELECT policy_revision FROM consumers WHERE id = ?)) "
             "AND previous_step_id IS NULL ORDER BY stage LIMIT 1",
-            (consumer_id, MATRIX_ONLY_POLICY_PLATFORM),
+            (consumer_id, MATRIX_ONLY_POLICY_PLATFORM, revision, consumer_id),
         ).fetchone()
         if row is None:
             return None
@@ -3037,13 +3107,13 @@ class NotificationCenter:
         }
 
     def incident_matrix_scope(self, incident_id: str) -> dict[str, Any] | None:
-        """Return the explicit Matrix route of the consumer that owns an incident."""
+        """Return the explicit Matrix route pinned to the incident."""
         row = self._connection.execute(
-            "SELECT consumer_id FROM incidents WHERE id = ?", (incident_id,)
+            "SELECT consumer_id, consumer_policy_revision FROM incidents WHERE id = ?", (incident_id,)
         ).fetchone()
         if row is None or not row["consumer_id"]:
             return None
-        return self.consumer_matrix_scope(str(row["consumer_id"]))
+        return self.consumer_matrix_scope(str(row["consumer_id"]), revision=row["consumer_policy_revision"])
 
     def matrix_route_scope_denied(self, incident_id: str, channel: str, target: Mapping[str, Any] | None) -> bool:
         """Deny a Matrix delivery that would leave the explicit route of its consumer.
@@ -3177,8 +3247,8 @@ class NotificationCenter:
         if not policy_step_id or not incident_id:
             return None
         row = self._connection.execute(
-            "SELECT s.max_repeats FROM consumer_policy_stages s "
-            "JOIN incidents i ON i.consumer_id = s.consumer_id "
+            "SELECT s.max_repeats FROM versioned_consumer_policy_stages s "
+            "JOIN incidents i ON i.consumer_id = s.consumer_id AND i.consumer_policy_revision = s.revision "
             "WHERE s.step_id = ? AND s.enabled = 1 AND i.id = ?",
             (policy_step_id, incident_id),
         ).fetchone()
@@ -3212,14 +3282,20 @@ class NotificationCenter:
 
     def _schedule_consumer_policy(self, incident_id: str, consumer_id: str, now: float) -> str | None:
         """Materialize the root notification before any optional diagnosis."""
-        incident = self.get_incident(incident_id)
-        is_health = incident is not None and str(incident.get("event_type") or "").startswith("health.")
-        profile = self._connection.execute("SELECT profile_type FROM consumers WHERE id = ?", (consumer_id,)).fetchone()
-        if profile is not None and str(profile["profile_type"]) == "builtin":
+        profile = self._connection.execute(
+            "SELECT i.consumer_policy_revision, c.profile_type FROM incidents i "
+            "LEFT JOIN consumers c ON c.id = i.consumer_id WHERE i.id = ? AND i.consumer_id = ?",
+            (incident_id, consumer_id),
+        ).fetchone()
+        if profile is None:
+            return None
+        if profile["profile_type"] == "builtin":
             return self._schedule_delivery(incident_id, "telegram.main", "initial", now)
+        revision = profile["consumer_policy_revision"]
         generic = self._connection.execute(
-            "SELECT step_id, platform, action, target_json, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1 AND step_id IS NOT NULL AND previous_step_id IS NULL",
-            (consumer_id,),
+            "SELECT step_id, platform, action, target_json FROM versioned_consumer_policy_stages "
+            "WHERE consumer_id = ? AND revision = ? AND enabled = 1 AND step_id IS NOT NULL AND previous_step_id IS NULL",
+            (consumer_id, revision),
         ).fetchone()
         if generic is not None:
             return self._schedule_delivery(
@@ -3227,8 +3303,9 @@ class NotificationCenter:
                 json.loads(generic["target_json"]), str(generic["step_id"]), 1,
             )
         stages = self._connection.execute(
-            "SELECT stage, kind, target_json FROM consumer_policy_stages WHERE consumer_id = ? AND enabled = 1 ORDER BY stage",
-            (consumer_id,),
+            "SELECT kind, target_json FROM versioned_consumer_policy_stages "
+            "WHERE consumer_id = ? AND revision = ? AND enabled = 1 ORDER BY stage",
+            (consumer_id, revision),
         ).fetchall()
         initial_delivery_id: str | None = None
         for stage in stages:
@@ -3556,17 +3633,18 @@ class NotificationCenter:
         self._connection.execute("INSERT INTO call_problem_budgets(scope_key,last_attempt_at,last_delivery_id) VALUES(?,?,?) ON CONFLICT(scope_key) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,last_delivery_id=excluded.last_delivery_id", (key, now, row["id"]))
         return True
 
-    def _schedule_next_policy_successor(self, incident_id: str, consumer_id: str, previous_step_id: str, now: float, health: bool) -> bool:
+    def _schedule_next_policy_successor(self, row: sqlite3.Row, now: float, health: bool) -> bool:
         """Schedule the first non-Telegram successor when Health skips message repeats."""
-        current_step = previous_step_id
+        current_step = str(row["policy_step_id"])
         visited: set[str] = set()
         for _ in range(32):
             if current_step in visited:
                 return False
             visited.add(current_step)
             successor = self._connection.execute(
-                "SELECT step_id, platform, action, target_json FROM consumer_policy_stages WHERE consumer_id = ? AND previous_step_id = ? AND enabled = 1",
-                (consumer_id, current_step),
+                "SELECT step_id, platform, action, target_json FROM versioned_consumer_policy_stages "
+                "WHERE consumer_id = ? AND revision = ? AND previous_step_id = ? AND enabled = 1",
+                (row["consumer_id"], row["consumer_policy_revision"], current_step),
             ).fetchone()
             if successor is None:
                 return False
@@ -3575,7 +3653,7 @@ class NotificationCenter:
                 current_step = str(successor["step_id"])
                 continue
             delivery_id = self._schedule_delivery(
-                incident_id,
+                str(row["incident_id"]),
                 channel,
                 f"step:{successor['step_id']}:repeat:1",
                 now,
@@ -3594,23 +3672,24 @@ class NotificationCenter:
         neighbours: list[tuple[str, sqlite3.Row]] = []
         policy_step_id = row["policy_step_id"]
         if policy_step_id is not None:
+            policy = (row["consumer_id"], row["consumer_policy_revision"])
             current = self._connection.execute(
-                "SELECT previous_step_id FROM consumer_policy_stages "
-                "WHERE consumer_id=? AND step_id=? AND enabled=1",
-                (row["consumer_id"], policy_step_id),
+                "SELECT previous_step_id FROM versioned_consumer_policy_stages "
+                "WHERE consumer_id=? AND revision=? AND step_id=? AND enabled=1",
+                (*policy, policy_step_id),
             ).fetchone()
             if current is not None and current["previous_step_id"] is not None:
                 previous = self._connection.execute(
-                    "SELECT step_id,platform,action,target_json FROM consumer_policy_stages "
-                    "WHERE consumer_id=? AND step_id=? AND enabled=1",
-                    (row["consumer_id"], current["previous_step_id"]),
+                    "SELECT step_id, platform, action, target_json FROM versioned_consumer_policy_stages "
+                    "WHERE consumer_id=? AND revision=? AND step_id=? AND enabled=1",
+                    (*policy, current["previous_step_id"]),
                 ).fetchone()
                 if previous is not None:
                     neighbours.append(("previous", previous))
             successor = self._connection.execute(
-                "SELECT step_id,platform,action,target_json FROM consumer_policy_stages "
-                "WHERE consumer_id=? AND previous_step_id=? AND enabled=1",
-                (row["consumer_id"], policy_step_id),
+                "SELECT step_id, platform, action, target_json FROM versioned_consumer_policy_stages "
+                "WHERE consumer_id=? AND revision=? AND previous_step_id=? AND enabled=1",
+                (*policy, policy_step_id),
             ).fetchone()
             if successor is not None:
                 neighbours.append(("next", successor))
@@ -3671,7 +3750,12 @@ class NotificationCenter:
         now = time.time()
         safe_error = " ".join((error or "").replace("\x00", "").splitlines())[-1000:] or None
         with self._lock, self._connection:
-            row = self._connection.execute("SELECT d.id, d.status, d.claimed_at, d.attempt, d.incident_id, d.channel, d.delivery_key, d.policy_step_id, d.repeat_number, d.target_json, i.state, i.consumer_id, i.event_type FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,)).fetchone()
+            row = self._connection.execute(
+                "SELECT d.id, d.status, d.claimed_at, d.attempt, d.incident_id, d.channel, d.delivery_key, "
+                "d.policy_step_id, d.repeat_number, d.target_json, i.state, i.consumer_id, "
+                "i.consumer_policy_revision, i.event_type "
+                "FROM deliveries d JOIN incidents i ON i.id = d.incident_id WHERE d.id = ?", (delivery_id,),
+            ).fetchone()
             if row is None:
                 raise ValidationError("delivery not found")
             from .incident_call_chain import metadata, receipt_projection, advance
@@ -3728,15 +3812,17 @@ class NotificationCenter:
             if chain is None and outcome == "sent" and row["policy_step_id"] is not None and str(row["state"]) in DELIVERABLE_STATES:
                 try:
                     step = self._connection.execute(
-                        "SELECT platform, action, target_json, retry_interval_seconds, max_repeats FROM consumer_policy_stages WHERE consumer_id = ? AND step_id = ? AND enabled = 1",
-                        (row["consumer_id"], row["policy_step_id"]),
+                        "SELECT platform, action, target_json, retry_interval_seconds, max_repeats "
+                        "FROM versioned_consumer_policy_stages "
+                        "WHERE consumer_id = ? AND revision = ? AND step_id = ? AND enabled = 1",
+                        (row["consumer_id"], row["consumer_policy_revision"], row["policy_step_id"]),
                     ).fetchone()
                     repeat_number = int(row["repeat_number"] or 1)
                     is_health = str(row["event_type"] or "").startswith("health.")
                     if step is not None and repeat_number < int(step["max_repeats"]):
                         next_channel = f"{step['platform']}.{step['action']}"
                         if is_health and next_channel.startswith("telegram."):
-                            self._schedule_next_policy_successor(str(row["incident_id"]), str(row["consumer_id"]), str(row["policy_step_id"]), now, is_health)
+                            self._schedule_next_policy_successor(row, now, is_health)
                         else:
                             self._schedule_delivery(
                                 str(row["incident_id"]), next_channel,
@@ -3745,7 +3831,7 @@ class NotificationCenter:
                                 str(row["policy_step_id"]), repeat_number + 1,
                             )
                     elif step is not None:
-                        self._schedule_next_policy_successor(str(row["incident_id"]), str(row["consumer_id"]), str(row["policy_step_id"]), now, is_health)
+                        self._schedule_next_policy_successor(row, now, is_health)
                 except Exception as followup_error:
                     self._audit(
                         str(row["incident_id"]),
@@ -3914,7 +4000,7 @@ class NotificationCenter:
             if incident is None:
                 raise ValidationError("the answered notice has no incident")
             consumer_id = str(incident["consumer_id"] or "")
-            scope = self.consumer_matrix_scope(consumer_id) if consumer_id else None
+            scope = self.incident_matrix_scope(incident_id)
             if scope is None:
                 raise ValidationError("the incident has no explicit Matrix route")
             if room_id != scope["room_id"]:
@@ -3974,44 +4060,55 @@ class NotificationCenter:
                 "reply_event_id": reply_event_id,
             }
 
-    def replace_consumer_policy(self, consumer_id: str, policy: list[Mapping[str, Any]], actor: str) -> dict[str, Any]:
-        """Replace the delivery policy of one consumer and keep its identity.
-
-        The consumer keeps its id, its intake token, its project and its
-        severity. Only the stages change, so a scoped Matrix route can gain
-        its sender bindings without a new consumer and without a new grant.
-        """
+    def replace_consumer_policy(
+        self, consumer_id: str, policy: list[Mapping[str, Any]], actor: str, *, expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Publish the next policy revision and retain the policy of existing incidents."""
         consumer_id = str(consumer_id or "").strip()
         if not consumer_id:
             raise ValidationError("consumer id is required")
+        if expected_revision is not None and (type(expected_revision) is not int or expected_revision < 0):
+            raise ValidationError("invalid consumer policy revision")
         normalized_policy = self._validate_consumer_policy(policy)
-        now = time.time()
         with self._lock, self._connection:
+            # The mesh context already holds the writer lease. SQLite otherwise
+            # waits until the first mutation, after the revision read below.
+            if isinstance(self._connection, sqlite3.Connection):
+                self._connection.execute("BEGIN IMMEDIATE")
             consumer = self._connection.execute(
-                "SELECT id, project, profile_type FROM consumers WHERE id = ?", (consumer_id,)
+                "SELECT project, profile_type, policy_revision FROM consumers WHERE id = ?", (consumer_id,)
             ).fetchone()
             if consumer is None:
                 raise ValidationError("consumer not found")
             if str(consumer["profile_type"] or "custom") == "builtin":
                 raise ValidationError("a builtin profile policy cannot be replaced")
-            self._connection.execute("DELETE FROM consumer_policy_stages WHERE consumer_id = ?", (consumer_id,))
-            self._connection.executemany(
-                "INSERT INTO consumer_policy_stages(consumer_id, stage, kind, enabled, target_json, step_id, platform, action, previous_step_id, retry_interval_seconds, max_repeats) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (consumer_id, stage["stage"], stage["kind"], int(stage["enabled"]), json.dumps(stage["target"], sort_keys=True), stage.get("step_id"), stage.get("platform"), stage.get("action"), stage.get("previous_step_id"), stage.get("retry_interval_seconds"), stage.get("max_repeats"))
-                    for stage in normalized_policy
-                ],
+            previous_revision = consumer["policy_revision"]
+            if expected_revision is not None and previous_revision != expected_revision:
+                raise IdempotencyConflict("consumer policy changed; reload before saving")
+            revision = previous_revision + 1
+            stage_columns = ", ".join(_POLICY_STAGE_COLUMNS)
+            self._connection.execute(
+                f"INSERT INTO consumer_policy_history(revision, {stage_columns}) "
+                f"SELECT ?, {stage_columns} FROM consumer_policy_stages WHERE consumer_id = ?",
+                (previous_revision, consumer_id),
             )
-            self._connection.execute("UPDATE consumers SET updated_at = ? WHERE id = ?", (now, consumer_id))
+            self._connection.execute("DELETE FROM consumer_policy_stages WHERE consumer_id = ?", (consumer_id,))
+            self._insert_consumer_policy(consumer_id, normalized_policy)
+            self._connection.execute(
+                "UPDATE consumers SET policy_revision = ?, updated_at = ? WHERE id = ?",
+                (revision, time.time(), consumer_id),
+            )
             self._audit(None, "consumer_policy_updated", str(actor or "operator"), {
                 "consumer_id": consumer_id,
                 "project": str(consumer["project"]),
+                "previous_revision": previous_revision,
+                "revision": revision,
                 "stages": [
                     {"step_id": stage.get("step_id"), "platform": stage.get("platform"), "action": stage.get("action")}
                     for stage in normalized_policy
                 ],
             })
-        return self.get_consumer(consumer_id) or {}
+            return self.get_consumer(consumer_id) or {}
 
     def acknowledge_if_active(self, incident_id: str, actor: str) -> dict[str, Any] | None:
         """ACK only an open or snoozed incident; never resurrect a resolved one."""

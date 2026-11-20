@@ -2026,8 +2026,7 @@ def complete_bound_matrix_question(
     if pending["mode"] != "question":
         return {**pending, "status": "skipped_unsupported_mode"}
     if actor not in set(request.get("allowed_actors") or []):
-        incident = center.get_incident(incident_id) or {}
-        scope = center.consumer_matrix_scope(str(incident.get("consumer_id") or "")) if incident.get("consumer_id") else None
+        scope = center.incident_matrix_scope(incident_id)
         declared = {f"matrix:{str(sender).strip()}" for sender in ((scope or {}).get("senders") or [])}
         if actor not in declared:
             return {**pending, "status": "sender_not_allowed"}
