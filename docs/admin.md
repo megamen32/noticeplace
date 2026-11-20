@@ -1,5 +1,25 @@
 # NoticePlace operator console
 
+## Managed operator console
+
+Open [Notice Place](https://notify.bezrabotnyi.com/admin/). After SSO,
+nginx strips the `/admin/` prefix and sends requests to the operator console
+service, `noticeplace-console-api.service` on port 8094. The public landing
+links to this entry. The producer API and HTTP MCP remain separate.
+
+The source of the managed console is
+[`ServersAdministartion/automation/noticeplace-console`](https://github.com/megamen32/ServersAdministartion/tree/main/automation/noticeplace-console).
+The browser panel is in its `panel/` directory and shares a deployment with
+`console_api.py` and `mesh_data.py`. See the
+[canonical inventory entry](https://github.com/megamen32/ServersAdministartion/blob/main/docs/inventory/sites/notify.md#operator-console-on-the-canonical-address-2026-10-26)
+for routing, verification and rollback.
+
+## Built-in admin listener for a standalone installation
+
+This repository also provides `bin/notify-center-admin`; the sections below
+document that listener. It is a separate implementation and is retired on
+the managed public service.
+
 `GET /` redirects to `/admin/`. `/admin/` is the protected operator surface,
 not a producer API. Nginx uses the existing `auth.bezrabotnyi.com` login flow,
 then overwrites `X-Notify-Admin: 1` before proxying to the loopback-only admin
