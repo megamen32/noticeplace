@@ -6486,6 +6486,12 @@ class NotificationCenter:
             from .incident_skills import read_policy as read_skill_policy
             payload["health_context"]["incident_skill_policy"] = read_skill_policy(self)
             payload["health_context"]["classifier_enabled"] = self.get_runtime_setting('incident_classifier_enabled','1') == '1'
+        if (delivery_map.get("channel") == f"gptadmin.agent:{HEALTH_DIAGNOSIS_AGENT_JOB}"
+                and "source_check_continuation" not in payload.get("target", {})):
+            from .operator_instructions import instruction_for_delivery
+            instruction = instruction_for_delivery(self, str(incident["project"]))
+            if instruction:
+                payload["operator_instruction"] = instruction
         return payload
 
     def mark_dispatcher_healthy(self) -> None:

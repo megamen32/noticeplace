@@ -78,6 +78,9 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any], delivery_key: str 
             key: sanitize_bounded_text(group.get(key), 256)
             for key in ('consumer_id', 'problem_type') if group.get(key) is not None}}
     event: dict[str, Any] = {"schema": "notify.agent-job.v1", "job_id": job_id, "incident": bounded_incident}
+    instruction = payload.get("operator_instruction")
+    if job_id == "health-diagnosis" and isinstance(instruction, str) and instruction:
+        event["operator_instruction"] = instruction
     if delivery_key:
         event['attempt_id'] = 'np-attempt:' + hashlib.sha256((job_id + ':' + delivery_key).encode()).hexdigest()
     target = payload.get('target')
