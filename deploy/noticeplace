@@ -239,9 +239,7 @@ install_release() {
     if [[ -n "$previous" ]]; then
         atomic_link "$previous" "$RELEASE_ROOT/previous"
     fi
-    atomic_link "$release" "$APP_ROOT"
-    mkdir -p -- "$STATE_ROOT"
-    printf '%s\n' "$release" >"$STATE_ROOT/current-release"
+    set_active_release "$release"
 
     install_units "$release"
     install_configuration "$release"
@@ -252,7 +250,7 @@ install_release() {
     elif configuration_ready; then
         if ! start_services; then
             if [[ -n "$previous" ]]; then
-                atomic_link "$previous" "$APP_ROOT"
+                set_active_release "$previous"
                 install_units "$previous"
                 daemon_reload
                 [[ -n "$DESTDIR" ]] || restart_services_after_rollback
@@ -267,6 +265,16 @@ install_release() {
     fi
 }
 
+set_active_release() {
+    local release=$1 marker
+    mkdir -p -- "$STATE_ROOT"
+    marker=$(mktemp "$STATE_ROOT/.current-release.XXXXXXXX")
+    printf '%s\n' "$release" >"$marker"
+    chmod 0644 "$marker"
+    atomic_link "$release" "$APP_ROOT"
+    mv -fT -- "$marker" "$STATE_ROOT/current-release"
+}
+
 rollback_release() {
     need_root
     [[ -L "$RELEASE_ROOT/previous" ]] || die "no previous managed release is available"
@@ -276,7 +284,7 @@ rollback_release() {
     if [[ -L "$APP_ROOT" ]]; then
         current=$(readlink "$APP_ROOT")
     fi
-    atomic_link "$previous" "$APP_ROOT"
+    set_active_release "$previous"
     [[ -z "$current" ]] || atomic_link "$current" "$RELEASE_ROOT/previous"
     install_units "$previous"
     daemon_reload

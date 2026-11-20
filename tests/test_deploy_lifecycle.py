@@ -31,6 +31,7 @@ def current_release(root: Path) -> str:
 def test_release_archives_include_the_deploy_lifecycle() -> None:
     builder = (ROOT / "scripts" / "build-release-assets.sh").read_text()
     assert "docs deploy assets" in builder
+    assert 'skill notification_center "$TMP/$NAME/"' in builder
 
 
 def test_persistent_units_have_explicit_resource_budgets() -> None:
@@ -86,6 +87,7 @@ def test_managed_deploy_upgrade_rollback_uninstall_and_purge(tmp_path: Path) -> 
 
     run_deploy(tmp_path, "rollback", "--no-start")
     assert current_release(staged_root) == first
+    assert (staged_root / "var/lib/noticeplace-deploy/current-release").read_text().strip() == first
 
     status = run_deploy(tmp_path, "status")
     assert "managed release:" in status.stdout

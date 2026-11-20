@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from .agentcall_phone import AgentCallPhoneAdapter
 from .android_phone import AndroidPhoneAdapter, AndroidPhoneConfig
-from .core import AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
+from .core import CONNECTION_TEST_EVENT, AuthorizationError, IdempotencyConflict, NotificationCenter, NotificationCenterError, ValidationError
 from .gptadmin_phone import GptAdminPhoneAdapter
 from .gptadmin_agent import DirectHealthRemediationAdapter, DurableHealthRemediationAdapter, GptAdminAgentJobAdapter
 from .health_workflow import HealthWorkflow, TelegramHealthPlanCodec, health_plan_keyboard as health_plan_keyboard_cards, normalize_health_recommendation, sanitize_bounded_text, validate_health_plans
@@ -1288,6 +1288,8 @@ class DeliveryWorker:
         """Deliver one claimed job; callers may run this in a bounded worker pool."""
         call_reserved = False
         agent_reserved = False
+        connection_test = False
+        message_reserved = False
         try:
             from .incident_call_chain import intended
             if intended(delivery) and call_chain_metadata(delivery) is None:
@@ -1295,6 +1297,11 @@ class DeliveryWorker:
                     claimed_at=delivery.get('claimed_at'),attempt=delivery.get('attempt'))
                 return
             payload = self._center.delivery_payload(delivery)
+            connection_test = (
+                delivery["channel"] == "matrix.message"
+                and payload["incident"].get("event_type") == CONNECTION_TEST_EVENT
+                and str(delivery["delivery_key"]).endswith(":connection-test")
+            )
             if str(delivery["channel"]).endswith(".call") and not self._automatic_calls_enabled():
                 self._center.complete_delivery(delivery["id"], "cancelled", "automatic calls disabled by operator")
                 return
@@ -1465,6 +1472,7 @@ class DeliveryWorker:
                     attempt=int(delivery["attempt"]),
                 ):
                     return
+                message_reserved = True
                 result = adapter.send(payload, str(delivery["delivery_key"]))
                 self._center.complete_delivery(
                     delivery["id"], "sent",
@@ -1642,6 +1650,15 @@ class DeliveryWorker:
                 claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
             )
         except Exception as error:
+            if connection_test:
+                rejected = not message_reserved or isinstance(error, MatrixDeliveryRejected)
+                self._center.complete_delivery(
+                    delivery["id"], "failed" if rejected else "uncertain",
+                    "Matrix connection test did not return a receipt",
+                    claimed_at=delivery.get("claimed_at"), attempt=delivery.get("attempt"),
+                    schedule_failure_neighbours=False,
+                )
+                return
             from .incident_call_chain import metadata
             from .core import IncidentModelConfigurationError
             if isinstance(error, IncidentModelConfigurationError):

@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 
 SEVERITIES = ("debug", "info", "notice", "important", "critical", "emergency")
+CONNECTION_TEST_EVENT = "connection.delivery_test"
 OPEN_STATES = ("open", "acknowledged", "snoozed")
 DELIVERABLE_STATES = ("open", "snoozed")
 # An explicit consumer policy that names Matrix only is the operator decision
@@ -334,6 +335,13 @@ class NotificationCenter:
                     profile_key TEXT,
                     operator_note TEXT,
                     policy_revision INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS consumer_token_replacements (
+                    consumer_id TEXT PRIMARY KEY REFERENCES consumers(id),
+                    base_fingerprint TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    fingerprint TEXT NOT NULL,
+                    created_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS consumer_policy_stages (
                     consumer_id TEXT NOT NULL REFERENCES consumers(id),
@@ -719,6 +727,10 @@ class NotificationCenter:
                 "ON deliveries(incident_id, channel, status)"
             )
             self._connection.execute('CREATE INDEX IF NOT EXISTS incidents_telegram_owner ON incidents(telegram_card_owner_id)')
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS incidents_connection_tests ON incidents(consumer_id, created_at DESC, id DESC) "
+                f"WHERE event_type='{CONNECTION_TEST_EVENT}'"
+            )
             self._connection.execute('CREATE INDEX IF NOT EXISTS incidents_telegram_family ON incidents(project,recipient,collapse_key,created_at)')
             self._connection.execute('CREATE INDEX IF NOT EXISTS incidents_native_poll ON incidents(state,native_polled_at)')
             # Archive candidate selection correlates each session with its
@@ -901,7 +913,11 @@ class NotificationCenter:
         if scope is None:
             token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
             row = self._connection.execute(
-                "SELECT id, project, max_severity FROM consumers WHERE token_hash = ?", (token_hash,)
+                "SELECT id, project, max_severity FROM consumers WHERE token_hash=? "
+                "UNION ALL SELECT c.id, c.project, c.max_severity FROM consumer_token_replacements r "
+                "JOIN consumers c ON c.id=r.consumer_id AND c.token_fingerprint=r.base_fingerprint "
+                "WHERE r.token_hash=? LIMIT 1",
+                (token_hash, token_hash),
             ).fetchone()
             if row is None:
                 raise AuthorizationError("invalid bearer token")
@@ -2543,7 +2559,11 @@ class NotificationCenter:
                 result["policy"].append(item)
             return result
 
-    def create_event(self, token: str, idempotency_key: str, event: Mapping[str, Any], request_meta: Mapping[str, Any] | None = None, *, _internal_consumer_id: str | None = None) -> dict[str, Any]:
+    def create_event(
+        self, token: str, idempotency_key: str, event: Mapping[str, Any],
+        request_meta: Mapping[str, Any] | None = None, *, _internal_consumer_id: str | None = None,
+        _onboarding_consumer_id: str | None = None,
+    ) -> dict[str, Any]:
         """Accept one event and schedule its initial Telegram delivery.
 
         Args:
@@ -2576,6 +2596,10 @@ class NotificationCenter:
                 scope['consumer_id'] = _internal_consumer_id
         else:
             scope = self._token(token, event)
+        if _onboarding_consumer_id is not None and scope.get("consumer_id") != _onboarding_consumer_id:
+            raise AuthorizationError("token is not bound to this consumer")
+        if event.get("event_type") == CONNECTION_TEST_EVENT and _onboarding_consumer_id is None:
+            raise ValidationError("connection test is an operator action")
         if scope.get('incident_role') == 'executor' and str(event.get('event_type') or '') in {'health.recovered', 'health.phase_changed', 'health.verification_recorded'}:
             raise AuthorizationError('executor credentials cannot publish source health authority')
         requested_agent_job = str(event.get("agent_job") or "")
@@ -2603,6 +2627,8 @@ class NotificationCenter:
                 if not matches:
                     raise IdempotencyConflict("Idempotency-Key was already used with different event content")
                 previous_incident = self.get_incident(str(previous["incident_id"]))
+                if _onboarding_consumer_id and previous_incident["consumer_id"] != _onboarding_consumer_id:
+                    raise IdempotencyConflict("Idempotency-Key belongs to a different consumer")
                 initial = self._connection.execute(
                     "SELECT id FROM deliveries WHERE incident_id = ? AND channel NOT LIKE 'gptadmin.agent:%' ORDER BY created_at, id LIMIT 1",
                     (previous["incident_id"],),
@@ -2722,7 +2748,12 @@ class NotificationCenter:
             # A scope marked suppress_owner_delivery keeps the incident and the
             # executor launch but never schedules an owner-facing card.
             owner_quiet = bool(scope.get('suppress_owner_delivery')) and event.get('severity') != 'emergency'
-            delivery_id = None if notifications_muted or review_quiet or owner_quiet else self._schedule_consumer_policy(incident_id, consumer_id, now)
+            if _onboarding_consumer_id:
+                from .consumer_onboarding import schedule_test
+
+                delivery_id = schedule_test(self, incident_id, consumer_id, now)
+            else:
+                delivery_id = None if notifications_muted or review_quiet or owner_quiet else self._schedule_consumer_policy(incident_id, consumer_id, now)
             if existing is not None and not notifications_muted and not review_quiet and not owner_quiet and self.original_telegram_card(incident_id) is not None:
                 self.queue_incident_card_refresh(incident_id, now)
             if notifications_muted:
