@@ -2,7 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from notification_center.core import NotificationCenter, AuthorizationError, ValidationError
+from notification_center.core import NotificationCenter, AuthorizationError, ValidationError, IdempotencyConflict
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
@@ -356,6 +356,24 @@ class LifecycleTests(unittest.TestCase):
         result=self.check(req)
         self.assertEqual('resolved',self.center.get_incident(self.inc)['state'])
         self.assertEqual(result,self.check(req))
+
+    def test_late_work_finished_is_bookkeeping_only_and_idempotent(self):
+        source_request = self.center.due_source_checks('source', 'test', 'probe')[0]
+        self.center.record_source_check('source', self.inc, 'source-healthy-first', dict(
+            request_id=source_request['request_id'], generation=source_request['generation'],
+            observed_state='healthy', evidence_refs=['independent source']))
+        late_body = dict(attempt_id='late-attempt', session_id='session', harness='codex', evidence_refs=['late evidence'])
+        result = self.center.record_work_finished('agent', self.inc, 'late-finish', late_body)
+        self.assertTrue(result['late_completion'])
+        self.assertEqual('resolved', result['incident_state'])
+        self.assertEqual('resolved', self.center.get_incident(self.inc)['state'])
+        self.assertEqual([], self.center.due_source_checks('source', 'test', 'probe'))
+        self.assertEqual(result, self.center.record_work_finished('agent', self.inc, 'late-finish', late_body))
+        with self.assertRaises(IdempotencyConflict):
+            self.center.record_work_finished('agent', self.inc, 'late-finish',
+                {**late_body, 'evidence_refs':['different']})
+        self.assertEqual(1, self.center._connection.execute(
+            'SELECT COUNT(*) FROM incident_late_finish_keys WHERE incident_id=?', (self.inc,)).fetchone()[0])
 
     def test_delayed_legacy_recovery_rejected(self):
         self.center.create_event('source','new-degraded',{**self.event,'observed_at':300})

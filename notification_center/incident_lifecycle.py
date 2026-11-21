@@ -177,6 +177,10 @@ def initialize(center):
         CREATE TABLE IF NOT EXISTS incident_finish_keys (
           idempotency_key TEXT PRIMARY KEY, incident_id TEXT NOT NULL,
           attempt_id TEXT NOT NULL, payload_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS incident_late_finish_keys (
+          idempotency_key TEXT PRIMARY KEY, incident_id TEXT NOT NULL,
+          attempt_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+          result_json TEXT NOT NULL, UNIQUE(incident_id, attempt_id));
         CREATE TABLE IF NOT EXISTS incident_check_receipts (
           idempotency_key TEXT PRIMARY KEY, request_id TEXT NOT NULL,
           payload_json TEXT NOT NULL, result_json TEXT NOT NULL);
@@ -443,6 +447,9 @@ def finish(center, token, incident_id, key, body):
         key_row = center._connection.execute('SELECT * FROM incident_finish_keys WHERE idempotency_key=?',(key,)).fetchone()
         if key_row and (key_row['incident_id'] != incident_id or key_row['attempt_id'] != body['attempt_id'] or key_row['payload_json'] != encoded):
             raise IdempotencyConflict('Idempotency-Key already bound to another completion')
+        late_key_row = center._connection.execute('SELECT * FROM incident_late_finish_keys WHERE idempotency_key=?',(key,)).fetchone()
+        if late_key_row and (late_key_row['incident_id'] != incident_id or late_key_row['attempt_id'] != body['attempt_id'] or late_key_row['payload_json'] != encoded):
+            raise IdempotencyConflict('Idempotency-Key already bound to another completion')
         previous = center._connection.execute('SELECT * FROM incident_verification_requests WHERE incident_id=? AND attempt_id=?' ,(incident_id,body['attempt_id'])).fetchone()
         if previous:
             if previous['finish_json'] != encoded:
@@ -451,7 +458,28 @@ def finish(center, token, incident_id, key, body):
                 center._connection.execute('INSERT INTO incident_finish_keys VALUES (?,?,?,?)',(key,incident_id,body['attempt_id'],encoded))
             return json.loads(previous['result_json'])
         if center.get_incident(incident_id)['state'] in ('resolved', 'discarded'):
-            raise ValidationError('incident is terminal')
+            previous_late = center._connection.execute(
+                'SELECT * FROM incident_late_finish_keys WHERE incident_id=? AND attempt_id=?',
+                (incident_id, body['attempt_id'])).fetchone()
+            if previous_late:
+                if previous_late['payload_json'] != encoded:
+                    raise IdempotencyConflict('attempt completion content is already bound')
+                if not late_key_row:
+                    center._connection.execute('INSERT INTO incident_late_finish_keys VALUES (?,?,?,?,?)',
+                        (key, incident_id, body['attempt_id'], encoded, previous_late['result_json']))
+                return json.loads(previous_late['result_json'])
+            # The source may have independently resolved the episode before an
+            # executor's completion arrived.  Keep that source decision
+            # authoritative and persist only bookkeeping for the late attempt.
+            late_result = dict(incident_id=incident_id, attempt_id=body['attempt_id'],
+                session_id=body['session_id'], harness=body['harness'],
+                attempt_state='work_finished', verification_state='terminal',
+                incident_state=center.get_incident(incident_id)['state'],
+                late_completion=True, evidence_refs=payload['evidence_refs'])
+            center._connection.execute('INSERT INTO incident_late_finish_keys VALUES (?,?,?,?,?)',
+                (key, incident_id, body['attempt_id'], encoded, json.dumps(late_result,sort_keys=True)))
+            center._audit(incident_id, 'health.work_finished_late', principal(center, token), late_result)
+            return late_result
         bound = center.latest_health_agent_session(incident_id)
         if bound and (bound.get('session_id') != body['session_id'] or bound.get('harness') != body['harness']):
             raise ValidationError('completion must match the incident native session')

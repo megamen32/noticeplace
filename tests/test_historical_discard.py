@@ -34,9 +34,11 @@ def test_exact_discard_is_terminal_and_retains_replay_receipts():
         assert center.create_event('source', 'existing-key', event)['incident_id'] == incident
         with pytest.raises(ValidationError):
             center.create_event('source', 'new-key', event)
-        with pytest.raises(ValidationError):
-            center.record_work_finished('agent', incident, 'new-finish',
-                                        dict(attempt_id='a', session_id='s', harness='codex'))
+        late = center.record_work_finished('agent', incident, 'new-finish',
+                                           dict(attempt_id='a', session_id='s', harness='codex'))
+        assert late['late_completion'] is True
+        assert late['incident_state'] == 'discarded'
+        assert center.get_incident(incident)['state'] == 'discarded'
         with pytest.raises(ValidationError):
             center.snooze(incident, 9999999999, 'operator')
         with pytest.raises(ValidationError):
