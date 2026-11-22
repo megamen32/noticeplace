@@ -5349,10 +5349,13 @@ class NotificationCenter:
                 # separate NotificationCenter instances.  The primary key is
                 # the durable single-winner gate across those processes.
                 with self._connection:
-                    self._connection.execute(
-                        "INSERT INTO health_plan_selections(incident_id, plan_id, idempotency_key, created_at) VALUES (?, ?, ?, ?)",
-                        (incident_id, safe_plan, idempotency_key, time.time()),
+                    selection = self._connection.execute(
+                        "INSERT INTO health_plan_selections(incident_id, plan_id, idempotency_key, created_at) "
+                        "SELECT id, ?, ?, ? FROM incidents WHERE id=? AND state NOT IN ('resolved','discarded')",
+                        (safe_plan, idempotency_key, time.time(), incident_id),
                     )
+                    if selection.rowcount != 1:
+                        raise ValidationError("health plan selection requires an active incident")
                     result = self._record_health_event(
                         incident_id,
                         idempotency_key,

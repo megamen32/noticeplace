@@ -3243,6 +3243,10 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                 if len(parts) == 6 and parts[:3] == ["", "v1", "incidents"] and parts[4] == "health":
                     incident_id, action = parts[3], parts[5]
                     center.authorize_incident(token, incident_id)
+                    # Selecting or recommending a plan can launch an executor.
+                    # Source verifiers report observations through check-result.
+                    if action in {"plans", "select"} and center._token_scope(token).get("incident_role") == "verifier":
+                        raise AuthorizationError("source verification credentials cannot schedule remediation plans")
                     key = self.headers.get("Idempotency-Key") or ""
                     actor = str(body.get("actor") or "api")
                     if action == "work-finished":

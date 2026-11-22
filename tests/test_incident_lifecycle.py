@@ -442,6 +442,7 @@ class LifecycleTests(unittest.TestCase):
         import urllib.error
         from http.server import ThreadingHTTPServer
         from notification_center.http_api import build_handler
+        self.center._tokens['source']['incident_role'] = 'verifier'
         server=ThreadingHTTPServer(('127.0.0.1',0),build_handler(self.center,'probe-secret','mcp-test-secret'))
         thread=threading.Thread(target=server.serve_forever,daemon=True)
         thread.start()
@@ -454,6 +455,16 @@ class LifecycleTests(unittest.TestCase):
                 with urllib.request.urlopen(req,timeout=5) as res:return res.status,json.load(res)
             except urllib.error.HTTPError as res:return res.code,json.load(res)
         path='/v1/incidents/'+self.inc
+        plans = [{'plan_id': plan, 'title': plan, 'summary': 'Test plan'}
+                 for plan in ('observe', 'repair', 'verify')]
+        self.assertEqual(200, request('POST', path+'/health/plans', 'agent', {'plans': plans}, key='worker-plans')[0])
+        with self.subTest('source cannot schedule an executor by selecting a plan'):
+            self.assertEqual(401, request('POST', path+'/health/select', 'source',
+                {'plan_id': 'verify', 'actor': 'agent-herder'}, key='source-select')[0])
+        with self.subTest('source cannot schedule an executor through a recommendation'):
+            self.assertEqual(401, request('POST', path+'/health/plans', 'source',
+                {'plans': plans, 'recommendation': {'needs_human': False, 'plan_id': 'verify'}},
+                key='source-plans')[0])
         status,finished=request('POST',path+'/health/work-finished','agent',dict(attempt_id='one',session_id='session',harness='codex'))
         self.assertEqual(200,status,finished)
         self.assertEqual(200,request('GET',path,'agent')[0])
@@ -473,6 +484,13 @@ class LifecycleTests(unittest.TestCase):
         status,result=request('POST',path+'/health/check-result','source',{**body,'request_id':second['request_id']},key='fresh-check')
         self.assertEqual(200,status,result)
         self.assertEqual('resolved',self.center.get_incident(self.inc)['state'])
+        with self.subTest('a resolved incident cannot acquire a new remediation delivery'):
+            self.assertEqual(400, request('POST', path+'/health/select', 'agent',
+                {'plan_id': 'verify'}, key='terminal-select')[0])
+            self.assertIsNone(self.center.latest_health_selection(self.inc))
+            self.assertIsNone(self.center._connection.execute(
+                'SELECT id FROM deliveries WHERE incident_id=? AND channel=?',
+                (self.inc, 'gptadmin.agent:health-remediation')).fetchone())
         self.assertEqual(1,self.center._connection.execute("SELECT COUNT(*) FROM deliveries WHERE channel='gptadmin.agent:health-diagnosis'").fetchone()[0])
 
     def test_historical_enrollment_has_groups_but_no_fabricated_health(self):
