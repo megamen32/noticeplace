@@ -28,6 +28,7 @@ Usage: sudo ./deploy/noticeplace COMMAND [OPTIONS]
 Commands:
   install       Install a versioned release; start when configuration is ready
   upgrade       Install a new release while preserving configuration and data
+  enable-api-rollout  Install and enable the quorum-coordinated API updater
   rollback      Switch to the previous managed release
   start         Enable and start the two persistent NoticePlace services
   stop          Stop the two persistent NoticePlace services
@@ -93,6 +94,9 @@ release=$id
 revision=${id#*-}
 installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
+    if [[ $DEPLOY_REVISION =~ ^[0-9a-f]{40}$ ]]; then
+        printf 'source_revision=%s\n' "$DEPLOY_REVISION" >>"$release/.noticeplace-release"
+    fi
     # The runtime services use a dedicated unprivileged account. Source
     # checkouts may use a restrictive umask, so normalize public release
     # readability without widening write permissions.
@@ -219,6 +223,7 @@ verify_publication() {
 
 install_release() {
     need_root
+    lock_local_deploy
     if [[ $COMMAND == upgrade && ( -z "$DESTDIR" || ${NOTICEPLACE_REQUIRE_PUBLISHED:-0} == 1 ) ]]; then
         verify_publication
     fi
@@ -228,6 +233,11 @@ install_release() {
     id=$(release_id)
     release=$(stage_release "$id")
 
+    if [[ -n ${NOTICEPLACE_EXPECTED_RELEASE:-} ]]; then
+        mesh_api_alias || die "mesh API service changed after rollout admission"
+        [[ $(readlink -f "$APP_ROOT") == "$NOTICEPLACE_EXPECTED_RELEASE" ]] ||
+            die "installed API changed after rollout admission"
+    fi
     if [[ -L "$APP_ROOT" ]]; then
         previous=$(readlink "$APP_ROOT")
     elif [[ -e "$APP_ROOT" ]]; then
@@ -265,6 +275,33 @@ install_release() {
     fi
 }
 
+lock_local_deploy() {
+    [[ -z "$DESTDIR" ]] || return 0
+    exec {DEPLOY_LOCK}>/run/lock/noticeplace-deploy.lock
+    flock -n "$DEPLOY_LOCK" || die "another API change is in progress on this host"
+}
+
+enable_api_rollout() {
+    need_root
+    mesh_api_alias || die "API rollout requires the existing NoticePlace mesh unit"
+    lock_local_deploy
+    verify_publication
+    local runner_root runner
+    runner_root=$(at_root /opt/noticeplace-rollout-releases)
+    mkdir -p -- "$runner_root"
+    runner=$(mktemp -d "$runner_root/${DEPLOY_REVISION:0:12}.XXXXXXXX")
+    git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" archive "$DEPLOY_REVISION" \
+        VERSION bin/noticeplace-api-rollout notification_center \
+        deploy/noticeplace-api-rollout.service deploy/noticeplace-api-rollout.timer | tar -C "$runner" -xf -
+    atomic_link "$runner" "$(at_root /opt/noticeplace-api-rollout)"
+    install -D -m 0644 "$runner/deploy/noticeplace-api-rollout.service" "$SYSTEMD_ROOT/noticeplace-api-rollout.service"
+    install -D -m 0644 "$runner/deploy/noticeplace-api-rollout.timer" "$SYSTEMD_ROOT/noticeplace-api-rollout.timer"
+    daemon_reload
+    if [[ -z "$DESTDIR" ]] && (( ! NO_START )); then
+        systemctl enable --now noticeplace-api-rollout.timer
+    fi
+}
+
 set_active_release() {
     local release=$1 marker
     mkdir -p -- "$STATE_ROOT"
@@ -277,6 +314,7 @@ set_active_release() {
 
 rollback_release() {
     need_root
+    lock_local_deploy
     [[ -L "$RELEASE_ROOT/previous" ]] || die "no previous managed release is available"
     local previous current=
     previous=$(readlink "$RELEASE_ROOT/previous")
@@ -361,6 +399,7 @@ done
 
 case "$COMMAND" in
     install|upgrade) install_release ;;
+    enable-api-rollout) enable_api_rollout ;;
     rollback) rollback_release ;;
     start) need_root; daemon_reload; start_services ;;
     stop) need_root; stop_services ;;

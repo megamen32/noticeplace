@@ -11,6 +11,18 @@ sudo /opt/noticeplace/deploy/noticeplace status
 sudo /opt/noticeplace/deploy/noticeplace rollback
 ```
 
+On a three-node mesh, run `sudo ./deploy/noticeplace enable-api-rollout` from
+the published checkout on each node. The timer discovers a stable GitHub
+Release once per discovery lease and writes one plan into Dqlite. The first
+configured mesh host is updated last. Each node runs the regular native
+upgrade only at its own turn and checks its running API revision before the
+next node can proceed.
+
+Inspect the recorded step with `journalctl -u noticeplace-api-rollout.service`.
+An interrupted or blocked step holds the queue until that node reports the
+exact target serving HTTP again. Stop the rollout timers on all nodes before
+a manual change to the planned version or an API rollback.
+
 `install` and `upgrade` create an immutable release below
 `/opt/noticeplace-releases/`, atomically point `/opt/noticeplace` at it, install
 the systemd units, and preserve existing `/etc/notification-center*.env` files

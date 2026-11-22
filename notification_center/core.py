@@ -3440,16 +3440,11 @@ class NotificationCenter:
 
     def claim_runtime_lease(self, name: str, holder: str, ttl_seconds: float = 45, now: float | None = None) -> bool:
         """Elect one bounded task owner using the same durable transaction store."""
+        from .runtime_lease import claim
+
         moment = time.time() if now is None else float(now)
         with self._lock, self._connection:
-            self._connection.execute(
-                "INSERT INTO runtime_leases(name,holder,expires_at) VALUES(?,?,?) "
-                "ON CONFLICT(name) DO UPDATE SET holder=excluded.holder,expires_at=excluded.expires_at "
-                "WHERE runtime_leases.holder=excluded.holder OR runtime_leases.expires_at<=?",
-                (str(name), str(holder), moment + max(5, min(120, ttl_seconds)), moment),
-            )
-            row = self._connection.execute("SELECT holder FROM runtime_leases WHERE name=?", (str(name),)).fetchone()
-            return row is not None and row["holder"] == holder
+            return claim(self._connection, str(name), str(holder), moment, ttl_seconds)
 
     def run_history_retention_tick(self):
         """One bounded maintenance batch on the existing agent worker clock."""
