@@ -443,6 +443,7 @@ class LifecycleTests(unittest.TestCase):
         from http.server import ThreadingHTTPServer
         from notification_center.http_api import build_handler
         self.center._tokens['source']['incident_role'] = 'verifier'
+        self.center._tokens['operator'] = {'project': 'test', 'max_severity': 'emergency'}
         server=ThreadingHTTPServer(('127.0.0.1',0),build_handler(self.center,'probe-secret','mcp-test-secret'))
         thread=threading.Thread(target=server.serve_forever,daemon=True)
         thread.start()
@@ -465,6 +466,14 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(401, request('POST', path+'/health/plans', 'source',
                 {'plans': plans, 'recommendation': {'needs_human': False, 'plan_id': 'verify'}},
                 key='source-plans')[0])
+        with self.subTest('executor cannot schedule legacy remediation for a source-managed incident'):
+            self.assertEqual(401, request('POST', path+'/health/select', 'agent',
+                {'plan_id': 'verify'}, key='executor-select')[0])
+        with self.subTest('executor cannot schedule legacy remediation through plans either'):
+            self.assertEqual(401, request('POST', path+'/health/plans', 'agent',
+                {'plans': plans, 'recommendation': {'needs_human': False, 'plan_id': 'verify'}},
+                key='executor-auto-select')[0])
+        self.assertIsNone(self.center.latest_health_selection(self.inc))
         status,finished=request('POST',path+'/health/work-finished','agent',dict(attempt_id='one',session_id='session',harness='codex'))
         self.assertEqual(200,status,finished)
         self.assertEqual(200,request('GET',path,'agent')[0])
@@ -485,7 +494,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(200,status,result)
         self.assertEqual('resolved',self.center.get_incident(self.inc)['state'])
         with self.subTest('a resolved incident cannot acquire a new remediation delivery'):
-            self.assertEqual(400, request('POST', path+'/health/select', 'agent',
+            self.assertEqual(400, request('POST', path+'/health/select', 'operator',
                 {'plan_id': 'verify'}, key='terminal-select')[0])
             self.assertIsNone(self.center.latest_health_selection(self.inc))
             self.assertIsNone(self.center._connection.execute(
