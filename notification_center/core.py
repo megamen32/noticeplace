@@ -2787,14 +2787,26 @@ class NotificationCenter:
                 issue = 'host-signal:' + signal
             identity = [incident['project'], incident['recipient'], incident.get('consumer_id'), event['event_type'], event['signal_type'], issue]
             family = 'telegram-family:' + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-            previous = self._connection.execute(
-                "SELECT COALESCE(telegram_card_owner_id,id) AS owner FROM incidents "
-                "WHERE project=? AND recipient=? AND collapse_key=? AND id!=? AND state!='discarded' AND (state!='resolved' OR created_at>=?) "
-                "ORDER BY created_at,rowid LIMIT 1",
-                (incident['project'], incident['recipient'], family, incident_id, now-setting(self, 'telegram_group_window_seconds')),
-            ).fetchone()
-            if previous and not has_original:
-                owner = str(previous['owner'])
+            if not has_original:
+                cutoff = now - setting(self, 'telegram_group_window_seconds')
+                candidates = self._connection.execute(
+                    "SELECT card.id,card.state,COALESCE(card.resolved_at,card.created_at) AS resolved_at "
+                    "FROM incidents AS member JOIN incidents AS card "
+                    "ON card.id=COALESCE(member.telegram_card_owner_id,member.id) "
+                    "WHERE member.project=? AND member.recipient=? AND member.collapse_key=? "
+                    "AND member.id!=? AND member.state!='discarded' "
+                    "AND (member.state!='resolved' OR member.created_at>=?) "
+                    "GROUP BY card.id ORDER BY MIN(member.created_at),MIN(member.rowid)",
+                    (incident['project'], incident['recipient'], family, incident_id, cutoff),
+                )
+                for candidate in candidates:
+                    # An open member can still point to a long-resolved owner.
+                    # Its unknown send stays fenced in that older card group.
+                    if (candidate['state'] == 'resolved' and candidate['resolved_at'] < cutoff
+                            and self.original_telegram_card(str(candidate['id'])) is None):
+                        continue
+                    owner = str(candidate['id'])
+                    break
         self._connection.execute("UPDATE incidents SET telegram_card_owner_id=?,collapse_key=COALESCE(?,collapse_key) WHERE id=?",
                                  (owner, family, incident_id))
 

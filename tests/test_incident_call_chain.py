@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import tempfile
+import time
 import unittest
 import urllib.error
 from datetime import datetime
@@ -74,6 +75,44 @@ class ChainTests(unittest.TestCase):
         return rows
 
     def rows(self): return self.center._connection.execute("SELECT * FROM deliveries WHERE channel LIKE '%.call' ORDER BY created_at,rowid").fetchall()
+
+    def test_fresh_emergency_can_escalate_after_old_card_owner_recovered_with_unknown_send(self):
+        now = time.time()
+
+        def new_episode(host):
+            return self.center.create_event('producer', host, {
+                **self.event, 'severity': 'emergency', 'event_type': 'health.degraded',
+                'signal_type': 'service-down', 'source_id': 'host:' + host,
+                'host_id': host, 'correlation_id': host + '-episode',
+            })
+
+        with patch('notification_center.core.time.time', return_value=now - 86400):
+            original = new_episode('original')
+            original_id = original['incident_id']
+            delivery_id = original['initial_delivery_id']
+            claim = self.center.claim_due_deliveries(delivery_id=delivery_id)[0]
+            self.assertTrue(self.center.reserve_delivery_send(delivery_id, claim['claimed_at'], claim['attempt']))
+            self.center.complete_delivery(delivery_id, 'uncertain', 'lost card receipt',
+                                          claimed_at=claim['claimed_at'], attempt=claim['attempt'],
+                                          schedule_failure_neighbours=False)
+            sibling = new_episode('old-sibling')
+            self.assertEqual(original_id, self.center.telegram_card_owner(sibling['incident_id']))
+            with self.center._connection:
+                self.center._connection.execute(
+                    "UPDATE incidents SET state='resolved',resolved_at=? WHERE id=?",
+                    (time.time(), original_id),
+                )
+
+        fresh = new_episode('fresh')
+        fresh_id = fresh['incident_id']
+        claim = self.center.claim_due_deliveries(delivery_id=fresh['initial_delivery_id'])[0]
+        self.worker.deliver(claim)
+        self.assertEqual([(fresh_id, 'matrix.call')], [(row['incident_id'], row['channel']) for row in self.rows()])
+        self.assertEqual(fresh_id, self.center.telegram_card_owner(fresh_id))
+        newest = new_episode('fresh-sibling')
+        self.assertEqual(fresh_id, self.center.telegram_card_owner(newest['incident_id']))
+        self.assertEqual('uncertain', self.center._connection.execute(
+            'SELECT status FROM deliveries WHERE id=?', (delivery_id,)).fetchone()[0])
 
     def test_serial_fallback_uses_one_episode_and_retains_phone_ack_receipt(self):
         self.start();self.assertEqual(['matrix.call'],[r['channel'] for r in self.rows()])
