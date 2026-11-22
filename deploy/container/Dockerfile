@@ -2,9 +2,11 @@ ARG PYTHON_IMAGE=python:3.12.15-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba
 FROM ${PYTHON_IMAGE}
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="NoticePlace API" \
+      org.opencontainers.image.source="https://github.com/megamen32/noticeplace" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp
 WORKDIR /app
+COPY VERSION /app/VERSION
 COPY bin/noticeplace-api /app/bin/noticeplace-api
 COPY notification_center /app/notification_center
 COPY mcp /app/mcp
