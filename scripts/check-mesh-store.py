@@ -28,6 +28,7 @@ from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from notification_center.core import NotificationCenter
+from notification_center.api_rollout import Api, DISCOVERY_LEASE, Queue, Release
 from notification_center.http_api import build_handler
 from notification_center.mesh_store import Connection
 
@@ -254,6 +255,24 @@ def main() -> None:
         assert not centers[1].reserve_delivery_send(row["id"], row["claimed_at"], row["attempt"])
         leader = membership["leader"]
         failed_index = addresses.index(leader)
+        survivors = [i for i in range(3) if i != failed_index]
+        order = [f"node-{i}" for i in [failed_index, *survivors]]
+        queues = [Queue(c, order) for c in connections]
+        election = queues[failed_index]
+        election.initialize()
+        previous_api = Api("0.1.19", "a" * 40, "/test/previous")
+        target_api = Api("0.1.20", "b" * 40, "/test/target")
+        target_release = Release(target_api.version, target_api.revision)
+        with election.db:
+            for host in order:
+                election.observe(host, previous_api)
+        election.discover(order[0], lambda: target_release)
+        used = []
+        takeover = queues[survivors[0]]
+        takeover.discover(order[1], lambda: used.append(True) or target_release)
+        assert not used, "a second discovery owner was admitted"
+        assert takeover.reserve(takeover.plan(), order[1], previous_api)
+        pending_rollout = takeover.plan()
         children[failed_index].kill()
         children[failed_index].wait(timeout=5)
         survivor = next(i for i in range(3) if i != failed_index)
@@ -263,6 +282,15 @@ def main() -> None:
             center._connection.close()
         second = until(lambda: intake(survivor, "real-mesh-after-crash"), maximum=35)
         another = next(i for i in range(3) if i not in (failed_index, survivor))
+        assert queues[another].plan() == pending_rollout, "active rollout step was lost after leader crash"
+        with takeover.db:
+            takeover.db.execute("UPDATE runtime_leases SET expires_at=0 WHERE name=?", (DISCOVERY_LEASE,))
+        takeover.discover(order[1], lambda: used.append(True) or target_release)
+        assert used == [True], "release discovery owner did not hand off"
+        assert queues[another].plan() == pending_rollout, "takeover replaced an active rollout"
+        assert not queues[another].finish(pending_rollout, order[2], target_api)
+        assert takeover.finish(pending_rollout, order[1], target_api)
+        assert queues[another].plan()["step"] == 1
         assert centers[another].get_incident(second["incident_id"]) is not None
         old = centers[another]._connection.execute("SELECT status FROM deliveries WHERE id=?", (row["id"],)).fetchone()
         assert old["status"] == "sending", "uncertain external reservation was lost"
@@ -278,6 +306,7 @@ def main() -> None:
                    "real_sqlite_migration_and_resume": True,
                    "unknown_send_not_replayed": True, "external_notification_or_phone_proof": False}
         receipt["stop_and_native_question_binding_preserved"] = True
+        receipt["api_rollout_reservation_survived_owner_loss"] = True
         (root / "result.json").write_text(json.dumps(receipt, indent=2) + "\n")
         print(json.dumps(receipt))
     finally:

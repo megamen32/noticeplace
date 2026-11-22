@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for a Notice Place API release
+
+[Timer]
+OnBootSec=20s
+OnUnitInactiveSec=20s
+AccuracySec=1s
+RandomizedDelaySec=5s
+
+[Install]
+WantedBy=timers.target

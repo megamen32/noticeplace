@@ -1,0 +1,14 @@
+[Unit]
+Description=Notice Place quorum-coordinated API update
+After=network-online.target noticeplace-mesh-store.service noticeplace-mesh-api.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/noticeplace-mesh-api.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=GIT_TERMINAL_PROMPT=0
+StateDirectory=noticeplace-api-rollout
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 /opt/noticeplace-api-rollout/bin/noticeplace-api-rollout tick
+TimeoutStartSec=8min
