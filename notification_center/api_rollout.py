@@ -19,7 +19,7 @@ from .mesh_store import connect
 from .runtime_lease import claim
 
 REPOSITORY = "https://github.com/megamen32/noticeplace.git"
-LATEST = "https://api.github.com/repos/megamen32/noticeplace/releases/latest"
+RELEASES = "https://github.com/megamen32/noticeplace/releases"
 DISCOVERY_LEASE = "noticeplace-api-release-discovery"
 WORK = Path("/var/lib/noticeplace-api-rollout")
 PEER_TTL = 90
@@ -162,22 +162,21 @@ def command(*args, timeout=20):
 
 
 def latest_release():
-    request = urllib.request.Request(LATEST, headers={"Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(request, timeout=8) as response:
-        release = json.load(response)
-    tag = release['tag_name']
-    if release['draft'] or release['prerelease'] or not tag.startswith('v'):
+    # The stable release redirect also works when the fleet shares an exhausted API quota.
+    with urllib.request.urlopen(RELEASES + "/latest", timeout=8) as response:
+        candidate = response.geturl().removeprefix(RELEASES + "/tag/v")
+    if not VERSION.fullmatch(candidate):
         raise ValueError("expected a stable published GitHub release")
     bootstrap = (Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
-    if version(tag[1:]) < version(bootstrap):
+    if version(candidate) < version(bootstrap):
         raise ValueError("published API release predates this rollout controller")
-    ref = 'refs/tags/' + tag
+    ref = 'refs/tags/v' + candidate
     refs = dict((name, sha) for sha, name in
                 (row.split() for row in command("git", "ls-remote", "--tags", REPOSITORY, ref, ref + '^{}').splitlines()))
     revision = refs.get(ref + '^{}', refs.get(ref, ''))
     if not SHA.fullmatch(revision):
         raise ValueError("published release tag could not be resolved")
-    return Release(tag[1:], revision)
+    return Release(candidate, revision)
 
 
 def local_api():

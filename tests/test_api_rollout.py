@@ -1,4 +1,8 @@
 import sqlite3
+from contextlib import nullcontext
+from types import SimpleNamespace
+
+import pytest
 
 from notification_center import api_rollout
 from notification_center.api_rollout import Api, Queue, Release, tick
@@ -8,6 +12,34 @@ HOSTS = ['primary', 'standby-a', 'standby-b']
 OLD = Api('0.1.19', 'a' * 40, '/before')
 TARGET = Release('0.1.20', 'b' * 40)
 UPDATED = Api(TARGET.version, TARGET.revision, '/after')
+
+
+@pytest.mark.parametrize(('redirect', 'valid'), [
+    ('https://github.com/megamen32/noticeplace/releases/tag/v999.1.21', True),
+    ('https://github.com/megamen32/noticeplace/releases', False),
+    ('https://github.com/megamen32/noticeplace/releases/tag/v999.1.21-rc.1', False),
+])
+def test_discovery_uses_github_stable_release_redirect(monkeypatch, redirect, valid):
+    latest = 'https://github.com/megamen32/noticeplace/releases/latest'
+    tag = 'refs/tags/v999.1.21'
+    revision = 'c' * 40
+
+    def get_latest(url, *, timeout):
+        assert url == latest
+        return nullcontext(SimpleNamespace(geturl=lambda: redirect))
+
+    def resolve_tag(*args):
+        assert args[-2:] == (tag, tag + '^{}')
+        return f'{revision}\t{tag}'
+
+    monkeypatch.setattr(api_rollout.urllib.request, 'urlopen', get_latest)
+    monkeypatch.setattr(api_rollout, 'command', resolve_tag)
+
+    if not valid:
+        with pytest.raises(ValueError, match='stable published GitHub release'):
+            api_rollout.latest_release()
+    else:
+        assert api_rollout.latest_release() == Release('999.1.21', revision)
 
 
 def shared_queue(tmp_path):
