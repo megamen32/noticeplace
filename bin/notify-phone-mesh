@@ -106,7 +106,12 @@ class PhoneControl:
                 probe.settimeout(.5);probe.connect(self.socket);native=True
         except OSError:pass
         # Connect/close sends no control frame and never originates a call.
-        return {'ready':native and registered and active==0 and not busy and self.phone_idle(require_local_peer=True)}
+        ready=native and registered and active==0 and not busy and self.phone_idle(require_local_peer=True)
+        status={'ready':ready}
+        endpoint=os.environ.get('NOTICEPLACE_PHONE_PUBLIC_SIP_ENDPOINT')
+        if ready and endpoint:
+            status['sip_endpoint']=endpoint
+        return status
 
     @staticmethod
     def phone_idle(*,require_local_peer=False):
@@ -122,23 +127,32 @@ class PhoneControl:
                 '--minutes','1'],capture_output=True,text=True,timeout=15)
             if claim.returncode!=0:return False
             lease_id=json.loads(claim.stdout)['lease_id']
+            known_hosts=os.environ.get('NOTICEPLACE_S21_KNOWN_HOSTS')
+            host_key_options=(['-o','StrictHostKeyChecking=yes','-o',f'UserKnownHostsFile={known_hosts}']
+                              if known_hosts else [])
             result=subprocess.run(['ssh','-i','/home/roomhacker/.ssh/phone_gateway_ed25519',
                 '-p','22220','-o','BatchMode=yes','-o','ConnectTimeout=4','-o','LogLevel=ERROR',
-                'phone@127.0.0.1',
+                *host_key_options,'phone@127.0.0.1',
                 "su -c 'dumpsys telephony.registry' | sed -n 's/.*mCallState=\\([0-9]\\).*/\\1/p'; "
                 "su -c 'cat /data/user/0/com.callagent.gateway/shared_prefs/gateway.xml' | "
-                "sed -n 's/.*<string name=\"noticeplace_mesh_peer\">\\([^<]*\\)<.*/peer:\\1/p'"],
+                "sed -n -e 's/.*<string name=\"noticeplace_mesh_peer\">\\([^<]*\\)<.*/peer:\\1/p' "
+                "-e 's/.*<string name=\"noticeplace_sip_route\">\\([^<]*\\)<.*/route:\\1/p'"],
                 capture_output=True,text=True,timeout=8)
             lines=result.stdout.split()
-            states=[value for value in lines if not value.startswith('peer:')]
+            states=[value for value in lines if not value.startswith(('peer:', 'route:'))]
             peers=[value[5:] for value in lines if value.startswith('peer:')]
+            routes=[value[6:] for value in lines if value.startswith('route:')]
+            endpoint=os.environ.get('NOTICEPLACE_PHONE_PUBLIC_SIP_ENDPOINT')
             local={
                 'roomhacker-server-100':{'192.168.2.100','100.65.58.36','95.165.165.65','bezrabotnyi.com'},
                 'server-44':{'192.168.2.5','100.109.149.33'},
                 'roomhacker-server-88':{'192.168.2.75','100.101.226.91'},
             }.get(socket.gethostname(),set())
-            matches=not require_local_peer or (len(peers)==1 and peers[0] in local)
-            return result.returncode==0 and bool(states) and all(value=='0' for value in states) and matches
+            if endpoint or routes:
+                matches=bool(endpoint) and routes==[endpoint]
+            else:
+                matches=len(peers)==1 and peers[0] in local
+            return result.returncode==0 and bool(states) and all(value=='0' for value in states) and (matches or not require_local_peer)
         except (OSError,ValueError,subprocess.SubprocessError):
             return False
         finally:

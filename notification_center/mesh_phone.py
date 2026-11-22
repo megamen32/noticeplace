@@ -32,6 +32,13 @@ class PhoneMeshRequester:
         self.tls.load_cert_chain(cert, key)
 
     def __call__(self, _local_socket, payload, timeout):
+        return self._request(payload, timeout)
+
+    def readiness(self, timeout=15):
+        """Select via the same preflight as a call, then close without dialing."""
+        return self._request(None, timeout)
+
+    def _request(self, payload, timeout):
         deadline = time.monotonic() + timeout
         readiness_deadline = min(deadline, time.monotonic() + 15)
         route = normalize(self.core_socket, self.local_host, list(self.peers))
@@ -40,7 +47,9 @@ class PhoneMeshRequester:
                 remaining = readiness_deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                peer = self.peers[host]
+                peer = self.peers.get(host)
+                if peer is None:
+                    continue
                 connection = None
                 raw = None
                 try:
@@ -70,6 +79,8 @@ class PhoneMeshRequester:
                 # Only status checks repeat. Once any payload byte may have
                 # crossed this boundary, no retry or peer fallback is allowed.
                 try:
+                    if payload is None:
+                        return {'host': host, 'sip_endpoint': status.get('sip_endpoint')}
                     remaining = deadline-time.monotonic()
                     if remaining <= 0:
                         raise OSError('phone request deadline elapsed')
