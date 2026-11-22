@@ -3243,10 +3243,18 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                 if len(parts) == 6 and parts[:3] == ["", "v1", "incidents"] and parts[4] == "health":
                     incident_id, action = parts[3], parts[5]
                     center.authorize_incident(token, incident_id)
-                    # Selecting or recommending a plan can launch an executor.
-                    # Source verifiers report observations through check-result.
-                    if action in {"plans", "select"} and center._token_scope(token).get("incident_role") == "verifier":
-                        raise AuthorizationError("source verification credentials cannot schedule remediation plans")
+                    recommendation = normalize_health_recommendation(body.get("recommendation")) if action == "plans" else None
+                    auto_select = bool(recommendation and not recommendation["needs_human"] and recommendation["plan_id"])
+                    if action in {"plans", "select"}:
+                        role = center._token_scope(token).get("incident_role")
+                        if role == "verifier":
+                            raise AuthorizationError("source verification credentials cannot schedule remediation plans")
+                        # A source-managed incident already has a repair-first
+                        # route. A callback can report work, but cannot use the
+                        # legacy plan API to start another executor for it.
+                        if (role == "executor" and (action == "select" or auto_select)
+                                and center.incident_lifecycle(incident_id) is not None):
+                            raise AuthorizationError("executor credentials cannot schedule legacy remediation for a source-managed incident")
                     key = self.headers.get("Idempotency-Key") or ""
                     actor = str(body.get("actor") or "api")
                     if action == "work-finished":
@@ -3273,8 +3281,7 @@ def build_handler(center: NotificationCenter, health_token: str, mcp_token: str 
                         # tap. Fail-open: only an explicit needs_human=false
                         # with a pinned plan id auto-selects; any conflict
                         # leaves the operator-facing selection card untouched.
-                        recommendation = normalize_health_recommendation(body.get("recommendation"))
-                        if recommendation is not None and recommendation["needs_human"] is False and recommendation["plan_id"]:
+                        if auto_select:
                             try:
                                 health_workflow.select_plan(
                                     incident_id,
