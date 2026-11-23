@@ -3,6 +3,10 @@
 Purpose: prevent a lost or ambiguous native response from redialing elsewhere.
 Expected1s/max10s. Network doubles belong only to this local logic scenario.
 """
+import os
+from pathlib import Path
+import runpy
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
@@ -41,6 +45,41 @@ class PhoneAdmissionTests(unittest.TestCase):
              patch('notification_center.mesh_phone.read_frame',side_effect=[b'{"ready":false}',b'{"ready":true}',b'{"ok":true,"call_id":"unit-call"}']):
             self.assertIn(b'unit-call',requester('',b'{"message":"unit"}',30))
             self.assertEqual(connect.call_count,2)
+
+    def test_registration_failover_readback_sends_only_status_frames(self):
+        requester = self.requester()
+        old_peer, new_peer = Mock(), Mock()
+        requester.tls.wrap_socket.side_effect = [old_peer, new_peer]
+        with patch('notification_center.mesh_phone.normalize', return_value={'hosts': ['first', 'second']}), \
+             patch('notification_center.mesh_phone.socket.create_connection'), \
+             patch('notification_center.mesh_phone.read_frame', side_effect=[
+                 b'{"ready":false}',
+                 b'{"ready":true,"sip_endpoint":"bezrabotnyi.com:35244"}',
+             ]):
+            self.assertEqual(
+                requester.readiness(),
+                {'host': 'second', 'sip_endpoint': 'bezrabotnyi.com:35244'},
+            )
+        for connection in (old_peer, new_peer):
+            connection.sendall.assert_called_once_with(b'{"op":"status"}\n')
+            connection.close.assert_called_once()
+
+    def test_old_pbx_rejects_same_host_with_a_different_registered_port(self):
+        control = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'bin/notify-phone-mesh'))['PhoneControl']
+        phone = subprocess.CompletedProcess(
+            [], 0, stdout='0\n0\npeer:192.168.2.75\nroute:bezrabotnyi.com:35244\n'
+        )
+        for local_port, ready in ((35288, False), (35244, True)):
+            with self.subTest(port=local_port), \
+                 patch.dict(os.environ, {'NOTICEPLACE_PHONE_PUBLIC_SIP_ENDPOINT': f'bezrabotnyi.com:{local_port}'}), \
+                 patch('socket.gethostname', return_value='roomhacker-server-88'), \
+                 patch('subprocess.run', side_effect=[
+                     subprocess.CompletedProcess([], 0, stdout='{"lease_id":"test"}'),
+                     phone,
+                     subprocess.CompletedProcess([], 0),
+                 ]) as run:
+                self.assertEqual(control.phone_idle(require_local_peer=True), ready)
+                self.assertEqual(run.call_args.args[0][-2:], ['release', 'test'])
 
     def test_preflight_retries_registration_then_sends_payload_once(self):
         requester=self.requester();connection=Mock();requester.tls.wrap_socket.return_value=connection
