@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 from notification_center import incident_lifecycle
-from notification_center.core import NotificationCenter
+from notification_center.core import NotificationCenter, ValidationError
 
 
 class SharedRepairIdentityTests(unittest.TestCase):
@@ -147,14 +147,35 @@ class SharedRepairIdentityTests(unittest.TestCase):
         self.center.record_source_check('source', incident, 'check-one', dict(
             request_id=request['request_id'], generation=request['generation'],
             observed_state='healthy', evidence_refs=['probe:one']))
+        self.assertEqual(1, self._lifecycle(incident)['healthy_streak'])
+        # A new degraded observation of the same episode cancels the streak:
+        # the next green is a first sample again, not a confirmation.
+        degraded = self._event('roomhacker-server-100', 'omniroute')
+        degraded['observed_at'] = 200
+        self.center.create_event('source', 'node-a-degraded', degraded)
+        self.assertEqual(0, self._lifecycle(incident)['healthy_streak'])
+
+    def test_the_source_recovery_event_needs_a_sustained_confirmation(self):
+        incident = self.center.create_event('source', 'node-a', self._event('roomhacker-server-100', 'omniroute'))['incident_id']
+        request = incident_lifecycle.due_checks(self.center, 'source', 'omniroute-guard', 'host:roomhacker-server-100')[0]
+        self.center.record_source_check('source', incident, 'check-one', dict(
+            request_id=request['request_id'], generation=request['generation'],
+            observed_state='healthy', evidence_refs=['probe:one']))
+        recovery = {**self._event('roomhacker-server-100', 'omniroute'), 'action': 'resolve',
+                    'event_type': 'health.recovered', 'observed_at': 300}
+        with self.assertRaises(ValidationError):
+            self.center.resolve_event('source', 'recovery-one', recovery)
+        self.assertEqual('open', self.center.get_incident(incident)['state'],
+                         'one green of one observer does not close a shared target')
+        # The second, later confirmation makes the recovery sustained.
         self._due_now(incident)
         second = incident_lifecycle.due_checks(self.center, 'source', 'omniroute-guard', 'host:roomhacker-server-100')[0]
-        self.center.record_source_check('source', incident, 'check-degraded', dict(
+        self.center.record_source_check('source', incident, 'check-two', dict(
             request_id=second['request_id'], generation=second['generation'],
-            observed_state='degraded', evidence_refs=['probe:two']))
-
-        self.assertEqual('open', self.center.get_incident(incident)['state'])
-        self.assertEqual(0, self._lifecycle(incident)['healthy_streak'])
+            observed_state='healthy', evidence_refs=['probe:two']))
+        self.assertEqual('resolved', self.center.get_incident(incident)['state'])
+        # A later recovery event of the same episode finds nothing left to close.
+        self.assertFalse(self.center.resolve_event('source', 'recovery-two', recovery)['resolved'])
 
 
 if __name__ == '__main__':

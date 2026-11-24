@@ -465,7 +465,8 @@ def observe_degraded(center, token, incident_id, event):
       latest_observed_at=CASE WHEN latest_observed_at IS NULL OR excluded.latest_observed_at > latest_observed_at
         THEN excluded.latest_observed_at ELSE latest_observed_at END,
       verification_state='due', request_id=?, verification_due=?,
-      verification_requested_at=?, verification_deadline=?''',
+      verification_requested_at=?, verification_deadline=?,
+      healthy_streak=0, healthy_since=NULL, healthy_last=NULL''',
       (incident_id,principal(center,token),json.dumps(group,sort_keys=True),group_key(group),
        group['source_id'],observed,pending_nonce,now,now,now + VERIFICATION_TTL_SECONDS,
        pending_nonce,now,now,now + VERIFICATION_TTL_SECONDS))

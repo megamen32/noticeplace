@@ -2979,6 +2979,17 @@ class NotificationCenter:
                         raise AuthorizationError('recovery requires the original source principal')
                     if not source_matches:
                         raise ValidationError('recovery is stale or needs a current source check')
+                if lifecycle and event_type == 'health.recovered':
+                    # A shared target is observed by several nodes: one green of
+                    # one observer is not a recovery of the target.  The source
+                    # may not close such an episode on its own first sample.
+                    group = lifecycle.get('group') if isinstance(lifecycle, Mapping) else {}
+                    shared = bool(str((group or {}).get('service') or '').strip())
+                    if shared:
+                        from .incident_lifecycle import sustained_healthy
+                        if not sustained_healthy(self, incident_id):
+                            raise ValidationError(
+                                'health recovery of a shared target requires a sustained confirmation')
                 if event_type == 'health.phase_changed' and not source_matches:
                     raise ValidationError('health severity phase requires the matching typed source')
                 if not source_matches:
@@ -3621,14 +3632,33 @@ class NotificationCenter:
             return True
 
     def _call_problem_key(self, row: Mapping[str, Any]) -> str:
-        original = self._health_original_event(str(row["incident_id"])) or {}
+        incident_id = str(row["incident_id"])
+        original = self._health_original_event(incident_id) or {}
         host = str(original.get("host_id") or "").strip()
         signal = str(original.get("signal_type") or "").strip().lower()
         if signal in {"cpu", "load", "cpu_load", "cpu_percent", "load_per_core"}:
             signal = "cpu-pressure"
-        problem = ["host-signal", host, signal] if host and signal else ["dedup", str(row.get("collapse_key") or row["dedup_key"])]
+        # A shared service is one outage observed by several nodes.  The phone
+        # queue belongs to that service, not to the node that happened to
+        # report it: the operator gets one escalation lifecycle for the
+        # outage.  Every per-source record stays a record, and the repeat of
+        # an unfinished escalation is still admitted for the shared service.
+        service = self._shared_service_of(incident_id, original)
+        if service:
+            problem = ["service", service, signal or str(row.get("dedup_key") or "")]
+        else:
+            problem = ["host-signal", host, signal] if host and signal else ["dedup", str(row.get("collapse_key") or row["dedup_key"])]
         identity = [row["project"], row["recipient"], problem]
         return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+    def _shared_service_of(self, incident_id: str, original: Mapping[str, Any] | None = None) -> str:
+        """The shared target this episode declares, if it declares one."""
+        lifecycle = self.incident_lifecycle(incident_id)
+        group = lifecycle.get('group') if isinstance(lifecycle, Mapping) else None
+        service = str((group or {}).get('service') or '').strip()
+        if not service and original:
+            service = str(original.get('service') or '').strip()
+        return service[:128]
 
     def _reserve_problem_call(self, row: Mapping[str, Any], now: float) -> bool:
         """Share one durable call interval across episodes, channels and workers."""
