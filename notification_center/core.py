@@ -5599,6 +5599,12 @@ class NotificationCenter:
             actor,
             useful=state == "healthy",
         )
+        if not result.get("idempotent"):
+            # A new observation counts once. A replayed receipt repeats the
+            # previous observation and never confirms it.
+            from .incident_lifecycle import observe_healthy
+            with self._lock, self._connection:
+                observe_healthy(self, incident_id, state == "healthy")
         result["healthy"] = state == "healthy"
         result["observed_state"] = state
         result["source_id"] = source_id
@@ -5692,6 +5698,12 @@ class NotificationCenter:
         incident = self.get_incident(incident_id)
         if incident is None or not str(incident.get("event_type") or "").startswith("health."):
             return True
+        # One green is a sample, not a recovery: the episode closes only after
+        # the source confirmed the target healthy again, later than the first
+        # green and inside the bounded recovery window.
+        from .incident_lifecycle import sustained_healthy
+        if not sustained_healthy(self, incident_id):
+            return False
         original = self._health_original_event(incident_id)
         if not isinstance(original, dict):
             return False
@@ -6550,6 +6562,7 @@ class NotificationCenter:
                     "signal_type": self._health_text(original.get("signal_type") or original.get("event_type") or "", 64),
                     "correlation_id": self._health_text(original.get("correlation_id") or "", 256),
                     "source_fingerprint": self._health_text(original.get("source_fingerprint") or "", 128),
+                    "service": self._health_text(original.get("service") or "", 128),
                     "evidence_refs": [self._health_text(ref, 512) for ref in
                                       (original.get("evidence_refs") if isinstance(original.get("evidence_refs"), list) else [])[:16]
                                       if self._health_text(ref, 512)],

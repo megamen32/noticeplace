@@ -105,6 +105,7 @@ def _agent_job_event(job_id: str, payload: Mapping[str, Any], delivery_key: str 
             "signal_type": _safe_health_ref(health_context.get("signal_type"), 64),
             "correlation_id": _safe_health_ref(health_context.get("correlation_id")),
             "source_fingerprint": _safe_health_ref(health_context.get("source_fingerprint")),
+            "service": _safe_health_ref(health_context.get("service")),
             "evidence_refs": [_safe_health_ref(ref, 512) for ref in health_context.get("evidence_refs", [])[:16]] if isinstance(health_context.get("evidence_refs"), list) else [],
             "trace_refs": [_safe_health_ref(ref) for ref in health_context.get("trace_refs", [])[:16]] if isinstance(health_context.get("trace_refs"), list) else [],
         }
