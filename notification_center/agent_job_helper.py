@@ -190,6 +190,10 @@ def _repair_first_message(profile: Mapping[str, str], event: Mapping[str, Any], 
     from .incident_lifecycle import canonical_problem_type
     lifecycle = incident.get('lifecycle') if isinstance(incident.get('lifecycle'), Mapping) else {}
     group = lifecycle.get('group') if isinstance(lifecycle.get('group'), Mapping) else {}
+    # The shared target the source observes: one repair identity for every
+    # observer of that target, while the per-source facts above stay exact.
+    facts["service"] = sanitize_bounded_text(
+        health.get("service") or group.get("service") or incident.get("service"), 128)
     registered = str(incident.get('consumer_id') or '')
     fallback_consumer = registered if registered.startswith('consumer_') else (str(incident.get('project') or '') + '+' + str(facts.get('source_id') or '') if facts.get('source_id') else '')
     facts['consumer_id'] = sanitize_bounded_text(group.get('consumer_id') or fallback_consumer, 256)

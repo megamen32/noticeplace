@@ -27,6 +27,114 @@ VERIFICATION_TTL_SECONDS = 300
 MEASUREMENT_CLOCK_SKEW_SECONDS = 5
 MAX_TIMESTAMP_SECONDS = 253402300799  # End of year 9999; safely convertible to float.
 
+# A recovery is not one green. The source has to observe the target healthy
+# again, later than the first green and inside a bounded window; the operator
+# can tune all three bounds without restarting the worker.
+#
+# A shared target is observed by several nodes: one green of one observer is
+# not a recovery of the shared target, so that episode needs a sustained
+# confirmation. An episode with a single owner keeps the ordinary contract.
+HEALTH_RECOVERY_DEFAULT_CONFIRMATIONS = 1
+HEALTH_RECOVERY_DEFAULT_MIN_INTERVAL_SECONDS = 30.0
+HEALTH_RECOVERY_DEFAULT_MAX_WINDOW_SECONDS = 1800.0
+SHARED_RECOVERY_CONFIRMATIONS = 2
+RECOVERY_VERIFICATION_STATE = 'recovering'
+
+
+def recovery_bounds(center):
+    """The operator-tunable bounds of a sustained recovery."""
+    def bounded(key, default, low, high, cast):
+        try:
+            value = cast(center.get_runtime_setting(key, str(default)))
+        except (TypeError, ValueError):
+            value = default
+        return max(low, min(high, value))
+    return (
+        bounded('health_recovery_confirmations', HEALTH_RECOVERY_DEFAULT_CONFIRMATIONS, 1, 10, int),
+        bounded('health_recovery_min_interval_seconds', HEALTH_RECOVERY_DEFAULT_MIN_INTERVAL_SECONDS, 0.0, 3600.0, float),
+        bounded('health_recovery_max_window_seconds', HEALTH_RECOVERY_DEFAULT_MAX_WINDOW_SECONDS, 60.0, 86400.0, float),
+    )
+
+
+def shared_target_episode(center, incident_id):
+    """Does this episode repair a target that several nodes observe?"""
+    row = center._connection.execute(
+        'SELECT metadata_json FROM incident_lifecycle WHERE incident_id=?', (incident_id,)).fetchone()
+    if not row:
+        return False
+    try:
+        group = json.loads(row['metadata_json'])
+    except (TypeError, ValueError):
+        return False
+    return bool(str(group.get('service') or '').strip()) if isinstance(group, dict) else False
+
+
+def recovery_required(center, incident_id):
+    """How many healthy observations this episode needs before it closes.
+
+    An episode of a shared target always needs a sustained confirmation: the
+    observers are several, and one green of one of them is not a recovery of
+    the target. Everything else keeps the operator's floor.
+    """
+    required, min_interval, max_window = recovery_bounds(center)
+    if shared_target_episode(center, incident_id) and required < SHARED_RECOVERY_CONFIRMATIONS:
+        required = SHARED_RECOVERY_CONFIRMATIONS
+    return required, min_interval, max_window
+
+
+def observe_healthy(center, incident_id, healthy, now=None):
+    """Count one source observation of the target health.
+
+    The caller owns the transaction. The streak counts consecutive healthy
+    observations of one episode: an observation that arrives too soon repeats
+    the previous one instead of confirming it, and a streak that outlived its
+    window starts over. One transient green never becomes a recovery.
+    """
+    now = time.time() if now is None else now
+    _required, min_interval, max_window = recovery_required(center, incident_id)
+    row = center._connection.execute(
+        'SELECT healthy_streak, healthy_since, healthy_last FROM incident_lifecycle WHERE incident_id=?',
+        (incident_id,)).fetchone()
+    if row is None:
+        return 0
+    streak = int(row['healthy_streak'] or 0)
+    since = row['healthy_since']
+    last = row['healthy_last']
+    if not healthy:
+        streak, since, last = 0, None, None
+    elif streak and since is not None and last is not None and now - float(last) < min_interval:
+        # Too soon: this repeats the previous observation, it does not confirm it.
+        pass
+    elif streak and since is not None and now - float(since) > max_window:
+        streak, since, last = 1, now, now
+    else:
+        streak, since, last = streak + 1, (since if since is not None else now), now
+    center._connection.execute(
+        'UPDATE incident_lifecycle SET healthy_streak=?,healthy_since=?,healthy_last=? WHERE incident_id=?',
+        (streak, since, last, incident_id))
+    return streak
+
+
+def sustained_healthy(center, incident_id, now=None):
+    """Is the recovery of this episode confirmed by repeated observations?"""
+    now = time.time() if now is None else now
+    required, _min_interval, max_window = recovery_required(center, incident_id)
+    if required <= 1:
+        # The ordinary contract: the matching independent verification is the
+        # evidence of a recovery. Only a shared target needs a sustained one.
+        return True
+    row = center._connection.execute(
+        'SELECT healthy_streak, healthy_since, healthy_last FROM incident_lifecycle WHERE incident_id=?',
+        (incident_id,)).fetchone()
+    if row is None:
+        return False
+    streak = int(row['healthy_streak'] or 0)
+    since = row['healthy_since']
+    last = row['healthy_last']
+    if streak < required or since is None or last is None:
+        return False
+    return now - float(last) <= max_window
+
 
 def finite_timestamp(value):
     return (not isinstance(value, bool) and isinstance(value, (int, float))
@@ -86,7 +194,7 @@ def expire_verification_requests(center, *, now=None, limit=20):
     with center._lock, center._connection:
         rows = center._connection.execute("""SELECT l.* FROM incident_lifecycle l
           JOIN incidents i ON i.id=l.incident_id
-          WHERE l.verification_state IN ('due','unknown','degraded')
+          WHERE l.verification_state IN ('due','unknown','degraded','recovering')
           AND l.verification_deadline<=? AND i.state='open'
           AND l.attempt_state='work_finished'
           ORDER BY l.verification_deadline,l.incident_id LIMIT ?""", (now,limit)).fetchall()
@@ -196,6 +304,12 @@ def initialize(center):
         for name in ('verification_requested_at', 'verification_deadline'):
             if name not in columns:
                 center._connection.execute('ALTER TABLE incident_lifecycle ADD COLUMN ' + name + ' REAL')
+        # A sustained recovery is counted per episode: the streak of healthy
+        # observations and the window it belongs to.
+        for name in ('healthy_streak', 'healthy_since', 'healthy_last'):
+            if name not in columns:
+                center._connection.execute('ALTER TABLE incident_lifecycle ADD COLUMN ' + name + (
+                    ' INTEGER NOT NULL DEFAULT 0' if name == 'healthy_streak' else ' REAL'))
         center._connection.execute('CREATE INDEX IF NOT EXISTS incident_lifecycle_deadline ON incident_lifecycle(verification_state,verification_deadline)')
         # Upgrade existing accepted receipts without replaying a delivery. A
         # previously queued continuation retains its exact original operation.
@@ -283,6 +397,10 @@ def group_identity(event, consumer_id):
     identity = str(consumer_id or '')
     group['consumer_id'] = (identity if identity not in BUILTIN_DELIVERY_PROFILES else '') or group['project'] + '+' + group['source_id']
     group['problem_type'] = canonical_problem_type(event)
+    # The shared target the source observes. One repair identity belongs to
+    # that target; the per-source evidence above stays exactly as it is, so
+    # the source that reported remains the source that verifies.
+    group['service'] = str(event.get('service') or '')[:128]
     return group
 
 
@@ -326,7 +444,9 @@ def observe_degraded(center, token, incident_id, event):
     prior = center._connection.execute('SELECT * FROM incident_lifecycle WHERE incident_id=?',(incident_id,)).fetchone()
     if prior:
         original = json.loads(prior['metadata_json'])
-        if any(group[k] != original[k] for k in group):
+        # A key the stored episode never declared cannot be compared: an
+        # episode that predates the shared target may still declare it once.
+        if any(k in original and group.get(k, '') != str(original.get(k) or '') for k in group):
             raise ValidationError('health episode source identity cannot change')
         bind_source(center, token, prior)
     # A source-owned health episode needs an independent check even when no
@@ -589,7 +709,7 @@ def due_checks_page(center, token, project, source_id, limit=20, cursor=None, wa
                 params.extend(verification_consumer_ids)
             sql = ("SELECT l.* FROM incident_lifecycle l JOIN incidents i ON i.id=l.incident_id "
                    "WHERE i.project=? AND l.source_id=? AND (" + source_identity + ") "
-                   "AND i.state NOT IN ('resolved','discarded') AND l.verification_state IN ('due','unknown','degraded') "
+                   "AND i.state NOT IN ('resolved','discarded') AND l.verification_state IN ('due','unknown','degraded','recovering') "
                    "AND (l.executor_principal IS NULL OR l.executor_principal!=?) "
                    "AND l.verification_due<=?")
             params.extend([authenticated, time.time()])
@@ -647,7 +767,7 @@ def check(center, token, incident_id, key, body):
                 raise ValidationError('incident is terminal')
             if row['request_id']!=body.get('request_id') or row['generation']!=body.get('generation'):
                 raise ValidationError('stale verification request or generation')
-            if row['verification_state'] not in ('due','unknown','degraded'):
+            if row['verification_state'] not in ('due','unknown','degraded',RECOVERY_VERIFICATION_STATE):
                 raise ValidationError('verification request already has a terminal result')
             if state!='unknown' and (not isinstance(body.get('evidence_refs'),list) or not body['evidence_refs']):
                 raise ValidationError('a health measurement requires evidence_refs')
@@ -672,7 +792,11 @@ def _accept_check(center, token, incident_id, key, body, row, encoded):
     result=dict(incident_id=incident_id,request_id=row['request_id'],generation=row['generation'],observed_state=state)
     if 'observed_at' in body:
         result['observed_at'] = body['observed_at']
-    if state=='healthy':
+    # One healthy observation is a sample, not a recovery. The episode closes
+    # only after the source confirmed the target healthy again.
+    observe_healthy(center, incident_id, state == 'healthy')
+    confirmed = state == 'healthy' and sustained_healthy(center, incident_id)
+    if confirmed:
         center._transition(incident_id,'resolved',principal(center,token))
         center.schedule_health_outcome(incident_id,'recovered','source-check:'+row['request_id'])
     continuation = json.loads(row['continuation_json']) if row['continuation_json'] else None
@@ -706,14 +830,18 @@ def _accept_check(center, token, incident_id, key, body, row, encoded):
     # rotates; a lost HTTP response can be reconciled through incident GET.
     receipt = dict(idempotency_key=key,request_id=row['request_id'],result=result)
     now = time.time()
+    # A recovery that is not sustained yet keeps the episode open and asks the
+    # source to confirm: the next request carries a fresh nonce.
+    pending = state != 'healthy' or not confirmed
+    next_state = RECOVERY_VERIFICATION_STATE if (state == 'healthy' and pending) else state
     center._connection.execute("""UPDATE incident_lifecycle SET verification_state=?,verification_due=?,
       request_id=?,continuation_json=?,last_check_receipt_json=?,
       verification_requested_at=?,verification_deadline=? WHERE incident_id=?""",
-      (state,now+60 if state!='healthy' else None,
-       'check_' + uuid.uuid4().hex if state!='healthy' else row['request_id'],
+      (next_state,now+60 if pending else None,
+       'check_' + uuid.uuid4().hex if pending else row['request_id'],
        json.dumps(continuation,sort_keys=True) if continuation else None,
-       json.dumps(receipt,sort_keys=True),now if state!='healthy' else row['verification_requested_at'],
-       now+60+VERIFICATION_TTL_SECONDS if state!='healthy' else row['verification_deadline'],incident_id))
+       json.dumps(receipt,sort_keys=True),now if pending else row['verification_requested_at'],
+       now+60+VERIFICATION_TTL_SECONDS if pending else row['verification_deadline'],incident_id))
     center._connection.execute('INSERT INTO incident_check_receipts VALUES (?,?,?,?)',(key,row['request_id'],encoded,json.dumps(result,sort_keys=True)))
     center._audit(incident_id,'health.source_check',principal(center,token),{**result,'evidence_refs':center._health_value(body.get('evidence_refs') or [])})
     return result
