@@ -118,3 +118,60 @@ def test_upgrade_preserves_existing_operator_telegram_routes_env(publication):
     assert result.returncode==0,result.stderr
     assert routes.read_text(encoding='utf-8')==operator_config
     assert routes.stat().st_mode & 0o777 == 0o600
+
+
+def mesh_candidate(publication, *, version='0.1.23', tagged=True):
+    source, _, _, root, env, _ = publication
+    units = root / 'etc/systemd/system'
+    units.mkdir(parents=True)
+    (units / 'notification-center.service').symlink_to('/etc/systemd/system/noticeplace-mesh-api.service')
+    previous = root / 'opt/noticeplace-releases/old-0.1.22-fixture'
+    previous.mkdir(parents=True)
+    (previous / 'VERSION').write_text('0.1.22\n')
+    (root / 'opt/noticeplace').unlink()
+    (root / 'opt/noticeplace').symlink_to(previous)
+    (source / 'VERSION').write_text(version + '\n')
+    git(source, 'add', 'VERSION')
+    git(source, 'commit', '-m', 'Versioned API')
+    revision = git(source, 'rev-parse', 'HEAD')
+    git(source, 'push', 'origin', 'main')
+    if tagged:
+        git(source, 'tag', 'v' + version, revision)
+        git(source, 'push', 'origin', 'refs/tags/v' + version)
+    env['NOTICEPLACE_PUBLISHED_SHA'] = revision
+    env['NOTICEPLACE_EXPECTED_RELEASE'] = str(previous)
+    return previous, revision
+
+
+@pytest.mark.parametrize('refusal', ['no_cas', 'stale_cas', 'untagged', 'wrong_tag', 'same_version', 'downgrade'])
+def test_mesh_upgrade_rejects_unadmitted_or_unversioned_revision(publication, refusal):
+    source, _, _, root, env, _ = publication
+    version = {'same_version': '0.1.22', 'downgrade': '0.1.9'}.get(refusal, '0.1.23')
+    previous, _ = mesh_candidate(publication, version=version, tagged=refusal not in {'untagged','wrong_tag'})
+    if refusal == 'no_cas':
+        env.pop('NOTICEPLACE_EXPECTED_RELEASE')
+    elif refusal == 'stale_cas':
+        env['NOTICEPLACE_EXPECTED_RELEASE'] = str(previous) + '-stale'
+    elif refusal == 'wrong_tag':
+        git(source, 'tag', 'v0.1.23', 'HEAD^')
+        git(source, 'push', 'origin', 'refs/tags/v0.1.23')
+    result = upgrade(publication)
+    assert result.returncode != 0
+    assert 'upgrade was not started' in result.stderr
+    assert (root / 'opt/noticeplace').resolve() == previous
+    assert list((root / 'opt/noticeplace-releases').iterdir()) == [previous]
+
+
+def test_mesh_upgrade_uses_published_tag_even_after_main_runtime_advance(publication):
+    source, _, _, root, _, _ = publication
+    previous, revision = mesh_candidate(publication)
+    (source / 'notification_center/runtime.py').write_text('future_runtime = True\n')
+    git(source, 'add', '.')
+    git(source, 'commit', '-m', 'Future unpublished runtime')
+    git(source, 'push', 'origin', 'main')
+    result = upgrade(publication)
+    assert result.returncode == 0, result.stderr
+    assert 'Verified published source: ' + revision in result.stdout
+    assert (root / 'opt/noticeplace').resolve() != previous
+    assert (root / 'opt/noticeplace/VERSION').read_text().strip() == '0.1.23'
+    assert (root / 'opt/noticeplace/notification_center/runtime.py').read_text() == 'approved = True\n'

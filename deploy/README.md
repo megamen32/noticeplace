@@ -18,6 +18,12 @@ configured mesh host is updated last. Each node runs the regular native
 upgrade only at its own turn and checks its running API revision before the
 next node can proceed.
 
+Publish each tested mesh API revision as a new stable GitHub Release with an
+immutable `vVERSION` tag on the exact source commit. Do not install main
+directly on one mesh node: the native upgrade requires the rollout's expected
+previous-release path, a strictly increasing version, and the matching tag.
+A tagged rollout remains valid when main advances after publication.
+
 Inspect the recorded step with `journalctl -u noticeplace-api-rollout.service`.
 An interrupted or blocked step holds the queue until that node reports the
 exact target serving HTTP again. Stop the rollout timers on all nodes before
