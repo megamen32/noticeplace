@@ -174,3 +174,26 @@ def test_a_standalone_upgrade_is_not_gated_by_the_mesh_rule(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stderr
     assert (root / "opt" / "noticeplace" / "VERSION").read_text().strip() == "0.1.23"
+
+
+def test_a_mesh_install_may_not_bypass_the_published_release(tmp_path: Path) -> None:
+    """A mesh node is production: only the rollout may move it."""
+    source, remote = fixture(tmp_path)
+    root = tmp_path / "root"
+    unit = root / "etc" / "systemd" / "system" / "notification-center.service"
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.symlink_to("noticeplace-mesh-api.service")
+
+    env = {
+        **os.environ,
+        "NOTICEPLACE_DESTDIR": str(root),
+        "NOTICEPLACE_PUBLICATION_REMOTE": str(remote),
+        "NOTICEPLACE_REQUIRE_PUBLISHED": "1",
+    }
+    result = subprocess.run([str(source / "deploy" / "noticeplace"), "install", "--no-start"],
+                            cwd=source, env=env, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "upgrade was not started" in result.stderr
+    assert not (root / "opt" / "noticeplace").exists(), \
+        "a mesh node may not be installed around the published release"

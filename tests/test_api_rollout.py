@@ -111,3 +111,20 @@ def test_stale_peer_prevents_reservation(tmp_path):
         queue.db.execute("UPDATE api_rollout_peers SET seen_at=0 WHERE host='standby-b'")
     assert not queue.reserve(queue.plan(), 'standby-a', OLD)
     assert queue.plan()['state'] == 'ready'
+
+
+def test_discovery_refuses_a_release_that_reuses_or_predates_an_installed_version(tmp_path):
+    """A published version may not be reused and may not go backwards.
+
+    A node that runs one version at another revision is exactly the state a
+    manual deployment of an unreleased commit creates.  The rollout refuses to
+    discover such a release instead of rolling the fleet onto it.
+    """
+    queue = shared_queue(tmp_path)
+    reused = Release('0.1.19', 'd' * 40)
+    with pytest.raises(RuntimeError, match='version was reused'):
+        queue.discover('primary:owner', lambda: reused)
+    older = Release('0.1.18', 'e' * 40)
+    with pytest.raises(RuntimeError, match='older than an installed API'):
+        queue.discover('primary:owner', lambda: older)
+    assert queue.plan() is None

@@ -215,7 +215,7 @@ verify_publication() {
     timeout 30 "${publisher[@]}" -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" fetch --no-tags "$remote" refs/heads/main || die "publication verification failed; upgrade was not started"
     published=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse FETCH_HEAD) || die "published source unavailable; upgrade was not started"
     git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" merge-base --is-ancestor "$revision" "$published" || die "agreed source SHA is not published; upgrade was not started"
-    if [[ $COMMAND == upgrade ]] && mesh_api_alias; then
+    if mesh_api_alias; then
         # Native mesh upgrades belong to the quorum rollout, not an arbitrary
         # main commit with the same version. Check the CAS and immutable tag
         # before staging anything. Newer main commits do not invalidate a tag.
@@ -252,6 +252,11 @@ install_release() {
     need_root
     lock_local_deploy
     if [[ $COMMAND == upgrade && ( -z "$DESTDIR" || ${NOTICEPLACE_REQUIRE_PUBLISHED:-0} == 1 ) ]]; then
+        verify_publication
+    elif [[ $COMMAND == install ]] && mesh_api_alias; then
+        # A mesh node is production.  An install may not walk around the
+        # published version either: only the quorum rollout moves a mesh node,
+        # and only to the immutable published tag.
         verify_publication
     fi
     ensure_runtime_owner
