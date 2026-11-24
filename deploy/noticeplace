@@ -215,10 +215,58 @@ verify_publication() {
     timeout 30 "${publisher[@]}" -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" fetch --no-tags "$remote" refs/heads/main || die "publication verification failed; upgrade was not started"
     published=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse FETCH_HEAD) || die "published source unavailable; upgrade was not started"
     git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" merge-base --is-ancestor "$revision" "$published" || die "agreed source SHA is not published; upgrade was not started"
+
+    # A mesh node is production.  Only the automatic rollout may move it, and
+    # only to an immutable published version tag.  A manual upgrade carries
+    # neither and is refused here, before the active pointer moves.
+    if mesh_api_alias; then
+        verify_mesh_release "$revision" "$remote" "${publisher[@]}"
+        DEPLOY_REVISION=$revision
+        printf 'Verified published source: %s\n' "$revision"
+        return
+    fi
+
     collisions=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" diff --name-only "$revision" "$published" -- bin notification_center deploy scripts package.json) || die "source verification failed; upgrade was not started"
     [[ -z $collisions ]] || die "published runtime inputs changed after agreed SHA; upgrade was not started"
     DEPLOY_REVISION=$revision
     printf 'Verified published source: %s\n' "$revision"
+}
+
+# The mesh production gate: the rollout's expected-release CAS and the exact
+# published version tag.
+#
+# The rollout states the release it expects to replace; the upgrade must
+# replace exactly that release, and the new revision must be the immutable
+# published tag of its own version.  A version is never reused and never goes
+# backwards.  The tag is the reviewed artifact: main may advance with later
+# runtime edits without rejecting the tagged target.
+verify_mesh_release() {
+    local revision=$1 remote=$2 expected installed version tag current highest tag_sha="" deref_sha=""
+    shift 2
+    local -a publisher=("$@")
+
+    expected=${NOTICEPLACE_EXPECTED_RELEASE:-}
+    [[ -n $expected ]] || die "mesh upgrade requires the rollout's expected release; upgrade was not started"
+    installed=$(readlink -f "$APP_ROOT" 2>/dev/null || true)
+    [[ -n $installed && $installed == "$expected" ]] || die "installed release differs from the rollout's expected release; upgrade was not started"
+
+    version=$(tr -d '[:space:]' <"$SOURCE_ROOT/VERSION" 2>/dev/null || true)
+    [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "release version is invalid; upgrade was not started"
+    tag="v$version"
+    tag_ref="refs/tags/$tag"
+    while read -r sha ref; do
+        if [[ $ref == "$tag_ref^{}" ]]; then deref_sha=$sha; fi
+        if [[ $ref == "$tag_ref" ]]; then tag_sha=$sha; fi
+    done < <(timeout 30 "${publisher[@]}" -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" ls-remote --tags "$remote" "$tag_ref" "$tag_ref^{}" 2>/dev/null || true)
+    [[ -n ${deref_sha:-$tag_sha} ]] || die "published $tag tag is missing; upgrade was not started"
+    [[ ${deref_sha:-$tag_sha} == "$revision" ]] || die "release revision is not the published $tag tag; upgrade was not started"
+
+    current=$(tr -d '[:space:]' <"$installed/VERSION" 2>/dev/null || true)
+    if [[ -n $current ]]; then
+        [[ $current != "$version" ]] || die "release $version is already installed; upgrade was not started"
+        highest=$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -1)
+        [[ $highest == "$version" ]] || die "release $version is older than the installed $current; upgrade was not started"
+    fi
 }
 
 install_release() {
