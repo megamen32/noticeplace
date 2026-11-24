@@ -215,8 +215,35 @@ verify_publication() {
     timeout 30 "${publisher[@]}" -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" fetch --no-tags "$remote" refs/heads/main || die "publication verification failed; upgrade was not started"
     published=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" rev-parse FETCH_HEAD) || die "published source unavailable; upgrade was not started"
     git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" merge-base --is-ancestor "$revision" "$published" || die "agreed source SHA is not published; upgrade was not started"
-    collisions=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" diff --name-only "$revision" "$published" -- bin notification_center deploy scripts package.json) || die "source verification failed; upgrade was not started"
-    [[ -z $collisions ]] || die "published runtime inputs changed after agreed SHA; upgrade was not started"
+    if [[ $COMMAND == upgrade ]] && mesh_api_alias; then
+        # Native mesh upgrades belong to the quorum rollout, not an arbitrary
+        # main commit with the same version. Check the CAS and immutable tag
+        # before staging anything. Newer main commits do not invalidate a tag.
+        local candidate_version active_version tag refs tag_revision stable_version
+        stable_version='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+        [[ -n ${NOTICEPLACE_EXPECTED_RELEASE:-} ]] ||
+            die "mesh upgrade requires the published release and quorum rollout; upgrade was not started"
+        [[ $(readlink -f "$APP_ROOT") == "$NOTICEPLACE_EXPECTED_RELEASE" ]] ||
+            die "installed API changed after rollout admission; upgrade was not started"
+        candidate_version=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" show "$revision:VERSION") ||
+            die "candidate version unavailable; upgrade was not started"
+        active_version=$(cat "$APP_ROOT/VERSION") ||
+            die "installed version unavailable; upgrade was not started"
+        [[ $candidate_version =~ $stable_version && $active_version =~ $stable_version ]] ||
+            die "invalid stable API version; upgrade was not started"
+        [[ $candidate_version != "$active_version" &&
+            $(printf '%s\n%s\n' "$active_version" "$candidate_version" | sort -V | tail -n 1) == "$candidate_version" ]] ||
+            die "mesh API upgrade must increase the version; upgrade was not started"
+        tag="refs/tags/v$candidate_version"
+        refs=$(timeout 30 "${publisher[@]}" -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" ls-remote --tags "$remote" "$tag" "$tag^{}") ||
+            die "release tag verification failed; upgrade was not started"
+        tag_revision=$(awk -v tag="$tag" '$2 == tag { plain=$1 } $2 == tag "^{}" { peeled=$1 } END { print (peeled ? peeled : plain) }' <<<"$refs")
+        [[ $tag_revision == "$revision" ]] ||
+            die "stable version tag does not identify the candidate; upgrade was not started"
+    else
+        collisions=$(git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" diff --name-only "$revision" "$published" -- bin notification_center deploy scripts package.json) || die "source verification failed; upgrade was not started"
+        [[ -z $collisions ]] || die "published runtime inputs changed after agreed SHA; upgrade was not started"
+    fi
     DEPLOY_REVISION=$revision
     printf 'Verified published source: %s\n' "$revision"
 }
